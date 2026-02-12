@@ -1,0 +1,85 @@
+server:
+  port: ${APP_PORT:8080}
+  servlet:
+    context-path: /
+spring:
+  main:
+    web-application-type: reactive
+  application:
+    name: FrigateAnalyzer
+  webflux:
+    base-path: /frigate-analyzer
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:frigate_analyzer}
+    username: ${DB_USER:frigate_analyzer_rw}
+    password: ${DB_PASS:frigate_analyzer_rw}
+    pool:
+      enabled: true
+      initial-size: 10
+      max-size: 100
+  task:
+    scheduling:
+      pool:
+        size: 10
+    execution:
+      pool:
+        max-size: 10
+application:
+  disable-first-scan-task: ${DISABLE_FIRST_SCAN:false}
+  frigate-records-folder: ${FRIGATE_RECORDS_FOLDER:/mnt/data/frigate/recordings/}
+  temp-folder: ${TEMP_FOLDER:/tmp/frigate-analyzer/}
+  ffmpeg-path: ${FFMPEG_PATH:/usr/bin/ffmpeg}
+  connection-timeout: ${CONNECTION_TIMEOUT:10s}
+  read-timeout: ${READ_TIMEOUT:30s}
+  write-timeout: ${WRITE_TIMEOUT:30s}
+  response-timeout: ${RESPONSE_TIMEOUT:30s}
+  telegram:
+    enabled: ${TELEGRAM_ENABLED:true}
+    bot-token: ${TELEGRAM_BOT_TOKEN:}
+    owner: ${TELEGRAM_OWNER:}
+    unauthorized-message: ${TELEGRAM_UNAUTHORIZED_MESSAGE:Доступ запрещен. Вы не авторизованы для использования этого бота.}
+    queue-capacity: ${TELEGRAM_QUEUE_CAPACITY:100}
+  detection-filter:
+    enabled: ${DETECTION_FILTER_ENABLED:true}
+    allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,umbrella}
+  detect:
+    retry-delay: ${DETECT_RETRY_DELAY:500ms}
+    frame-timeout: ${DETECT_FRAME_TIMEOUT:60s}
+    frame-extraction-timeout: ${DETECT_FRAME_EXTRACTION_TIMEOUT:5m}
+    visualize-timeout: ${DETECT_VISUALIZE_TIMEOUT:60s}
+    health-check-timeout: ${DETECT_HEALTH_CHECK_TIMEOUT:5s}
+    health-check-interval: ${DETECT_HEALTH_CHECK_INTERVAL:30s}
+    default-confidence: ${DETECT_DEFAULT_CONFIDENCE:0.6}
+    default-img-size: ${DETECT_DEFAULT_IMG_SIZE:2016}
+    default-model: ${DETECT_DEFAULT_MODEL:yolo12s.pt}
+    good-model: ${DETECT_GOOD_MODEL:yolo12x.pt}
+    frame-extraction:
+      scene-threshold: ${DETECT_SCENE_THRESHOLD:0.05}
+      min-interval: ${DETECT_MIN_INTERVAL:1.0}
+      max-frames: ${DETECT_MAX_FRAMES:50}
+      quality: ${DETECT_FRAME_QUALITY:85}
+    visualize:
+      max-det: ${DETECT_MAX_DET:100}
+      line-width: ${DETECT_LINE_WIDTH:2}
+      show-labels: ${DETECT_SHOW_LABELS:true}
+      show-conf: ${DETECT_SHOW_CONF:true}
+      quality: ${DETECT_VISUALIZE_QUALITY:90}
+  pipeline:
+    frame:
+      channel-buffer-size: ${PIPELINE_FRAME_BUFFER_SIZE:500}
+      min-consumers: ${PIPELINE_FRAME_MIN_CONSUMERS:1}
+      producers-count: ${PIPELINE_FRAME_PRODUCERS_COUNT:6}
+    producer:
+      idle-delay: ${PIPELINE_IDLE_DELAY:1s}
+      error-delay: ${PIPELINE_ERROR_DELAY:5s}
+      batch-size: ${PIPELINE_BATCH_SIZE:10}
+  local-visualization:
+    line-width: ${LOCAL_VIZ_LINE_WIDTH:2}
+    quality: ${LOCAL_VIZ_QUALITY:90}
+    reference-height: ${LOCAL_VIZ_REFERENCE_HEIGHT:720}
+    min-font-scale: ${LOCAL_VIZ_MIN_FONT_SCALE:0.5}
+    max-font-scale: ${LOCAL_VIZ_MAX_FONT_SCALE:2.2}
+    base-font-scale: ${LOCAL_VIZ_BASE_FONT_SCALE:2.0}
+    base-font-size: ${LOCAL_VIZ_BASE_FONT_SIZE:16}
+    label-padding: ${LOCAL_VIZ_LABEL_PADDING:4}
+    max-frames: ${LOCAL_VIZ_MAX_FRAMES:10}

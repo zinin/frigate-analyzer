@@ -1,0 +1,28 @@
+Configuration:
+  status: warn
+  shutdownHook: disable
+
+  Appenders:
+    Console:
+      name: Console
+      target: SYSTEM_OUT
+      PatternLayout:
+        pattern: "%d{ISO8601} %5p [%t] %c{1.} :%L - %m%n"
+
+#    File:
+#      name: FileAppender
+#      fileName: app.log
+#      append: true
+#      PatternLayout:
+#        pattern: "%d{ISO8601} %5p [%t] %c{1.} :%L - %m%n"
+
+  Loggers:
+    Root:
+      level: info
+      AppenderRef:
+        - ref: Console
+#        - ref: FileAppender
+
+    Logger:
+      - name: ru.zinin
+        level: debug

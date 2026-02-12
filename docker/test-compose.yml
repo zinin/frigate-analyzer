@@ -1,0 +1,39 @@
+networks:
+  frigate-analyzer-internal:
+
+services:
+  frigate-analyzer-db:
+    build:
+      context: .
+      dockerfile: ./postgres/Dockerfile
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    healthcheck:
+      test: pg_isready -U postgres -d postgres -p 5432
+      interval: 2s
+      timeout: 3s
+      retries: 3
+    hostname: pghost
+    ports:
+      - 5432
+    networks:
+      - frigate-analyzer-internal
+
+  frigate-analyzer-liquibase:
+    build:
+      context: .
+      dockerfile: ./liquibase/Dockerfile
+    depends_on:
+      frigate-analyzer-db:
+        condition: service_healthy
+    environment:
+      - DB_HOST=pghost
+      - DB_PORT=5432
+      - DB_NAME=frigate_analyzer
+      - DB_USER=frigate_analyzer_rw
+      - DB_PASS=frigate_analyzer_rw
+      - LIQUI_CHANGELOG=master_frigate_analyzer.xml
+    networks:
+      - frigate-analyzer-internal

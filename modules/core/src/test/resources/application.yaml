@@ -1,0 +1,107 @@
+server:
+  servlet:
+    context-path: /
+spring:
+  profiles:
+    active: test
+  main:
+    web-application-type: reactive
+  application:
+    name: FrigateAnalyzer
+  webflux:
+    base-path: /frigate-analyzer
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:frigate_analyzer}
+    username: ${DB_USER:frigate_analyzer_rw}
+    password: ${DB_PASS:frigate_analyzer_rw}
+    pool:
+      enabled: true
+      initial-size: 10
+      max-size: 100
+  task:
+    scheduling:
+      pool:
+        size: 10
+    execution:
+      pool:
+        max-size: 10
+application:
+  disable-first-scan-task: true
+  frigate-records-folder: /tmp/frigate/recordings/
+  temp-folder: /tmp/frigate-analyzer/
+  ffmpeg-path: /usr/bin/ffmpeg
+  connection-timeout: 10s
+  read-timeout: 30s
+  write-timeout: 30s
+  response-timeout: 30s
+  telegram:
+    enabled: false
+    bot-token: 123
+    owner: username
+  detection-filter:
+    enabled: true
+    allowed-classes:
+      - person
+      - car
+      - motorcycle
+      - truck
+      - bicycle
+      - cat
+      - dog
+      - bird
+      - backpack
+      - umbrella
+  detect-servers:
+    mock:
+      host: "localhost"
+      port: 3001
+      frame-requests:
+        simultaneous-count: 4
+        priority: 1
+      frames-extract-requests:
+        simultaneous-count: 1
+        priority: 3
+      visualize-requests:
+        simultaneous-count: 4
+        priority: 1
+  detect:
+    retry-delay: 500ms
+    frame-timeout: 60s
+    frame-extraction-timeout: 5m
+    visualize-timeout: 60s
+    health-check-timeout: 5s
+    health-check-interval: 30s
+    default-confidence: 0.6
+    default-img-size: 2016
+    default-model: yolo12s.pt
+    good-model: yolo12x.pt
+    frame-extraction:
+      scene-threshold: 0.05
+      min-interval: 1.0
+      max-frames: 50
+      quality: 85
+    visualize:
+      max-det: 100
+      line-width: 2
+      show-labels: true
+      show-conf: true
+      quality: 90
+  pipeline:
+    frame:
+      channel-buffer-size: 500
+      min-consumers: 1
+      producers-count: 6
+    producer:
+      idle-delay: 1s
+      error-delay: 5s
+      batch-size: 10
+  local-visualization:
+    line-width: 2
+    quality: 90
+    reference-height: 720
+    min-font-scale: 0.5
+    max-font-scale: 2.2
+    base-font-scale: 2.0
+    base-font-size: 16
+    label-padding: 4
+    max-frames: 10

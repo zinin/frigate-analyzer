@@ -1,0 +1,301 @@
+package ru.zinin.frigate.analyzer.core.testsupport
+
+import mockwebserver3.Dispatcher
+import mockwebserver3.MockResponse
+import mockwebserver3.RecordedRequest
+import okio.Buffer
+import java.util.concurrent.atomic.AtomicInteger
+
+class DetectServiceDispatcher : Dispatcher() {
+    override fun dispatch(request: RecordedRequest): MockResponse {
+        val path = request.url.encodedPath
+        val method = request.method ?: "GET"
+
+        return when (path) {
+            "/" -> {
+                respondJson(200, "{}")
+            }
+
+            "/health" -> {
+                respondJson(200, "{}")
+            }
+
+            "/detect" -> {
+                if (method != "POST") {
+                    respondJson(405, errorJson("Method Not Allowed"))
+                } else {
+                    respondJson(200, detectResponseJson())
+                }
+            }
+
+            "/extract/frames" -> {
+                if (method != "POST") {
+                    respondJson(405, errorJson("Method Not Allowed"))
+                } else {
+                    respondJson(200, frameExtractionResponseJson())
+                }
+            }
+
+            "/detect/visualize" -> {
+                if (method != "POST") {
+                    respondJson(405, errorJson("Method Not Allowed"))
+                } else {
+                    respondBinary(200, "image/jpeg", fakeJpegBytes())
+                }
+            }
+
+            else -> {
+                respondJson(404, errorJson("Not Found"))
+            }
+        }
+    }
+
+    private fun respondJson(
+        status: Int,
+        body: String,
+    ): MockResponse =
+        MockResponse
+            .Builder()
+            .code(status)
+            .addHeader("Content-Type", "application/json; charset=utf-8")
+            .body(body)
+            .build()
+
+    private fun respondBinary(
+        status: Int,
+        contentType: String,
+        bytes: ByteArray,
+    ): MockResponse =
+        MockResponse
+            .Builder()
+            .code(status)
+            .addHeader("Content-Type", contentType)
+            .body(Buffer().write(bytes))
+            .build()
+
+    private fun errorJson(message: String): String = """{"detail":[{"loc":["request"],"msg":"$message","type":"mock"}]}"""
+
+    private fun detectResponseJson(): String =
+        """
+        {
+          "detections": [
+            {
+              "class_id": 0,
+              "class_name": "person",
+              "confidence": 0.95,
+              "bbox": {"x1": 100.0, "y1": 50.0, "x2": 300.0, "y2": 400.0}
+            }
+          ],
+          "processing_time": 42,
+          "image_size": {"width": 1920, "height": 1080},
+          "model": "yolo12s.pt"
+        }
+        """.trimIndent()
+
+    private fun frameExtractionResponseJson(): String =
+        """
+        {
+          "success": true,
+          "video_duration": 2.5,
+          "video_resolution": [1920, 1080],
+          "frames_extracted": 1,
+          "frames": [
+            {
+              "frame_number": 1,
+              "timestamp": 0.0,
+              "image_base64": "ZmFrZV9qcGVn",
+              "width": 1920,
+              "height": 1080
+            }
+          ],
+          "processing_time_ms": 80
+        }
+        """.trimIndent()
+
+    private fun fakeJpegBytes(): ByteArray {
+        // Minimal but valid JPEG: SOI + APP0 (JFIF) + EOI
+        return byteArrayOf(
+            0xFF.toByte(),
+            0xD8.toByte(), // SOI (Start of Image)
+            0xFF.toByte(),
+            0xE0.toByte(), // APP0 marker
+            0x00.toByte(),
+            0x10.toByte(), // Length: 16 bytes
+            0x4A.toByte(),
+            0x46.toByte(),
+            0x49.toByte(),
+            0x46.toByte(),
+            0x00.toByte(), // "JFIF\0"
+            0x01.toByte(),
+            0x01.toByte(), // Version 1.1
+            0x00.toByte(), // Units (aspect ratio)
+            0x01.toByte(),
+            0x00.toByte(), // X density
+            0x01.toByte(),
+            0x00.toByte(), // Y density
+            0x00.toByte(),
+            0x00.toByte(), // Thumbnail dimensions (0x0)
+            0xFF.toByte(),
+            0xD9.toByte(), // EOI (End of Image)
+        )
+    }
+}
+
+/**
+ * Configurable dispatcher for testing error scenarios.
+ *
+ * @param initialFailureCount Number of times to return errors before returning success
+ * @param httpErrorCode HTTP code to return on failure (default: 500)
+ */
+class ConfigurableDetectServiceDispatcher(
+    private val initialFailureCount: Int = 0,
+    private val httpErrorCode: Int = 500,
+) : Dispatcher() {
+    private val failureCount = AtomicInteger(initialFailureCount)
+    private val requestCount = AtomicInteger(0)
+
+    override fun dispatch(request: RecordedRequest): MockResponse {
+        val path = request.url.encodedPath
+        val method = request.method ?: "GET"
+        requestCount.incrementAndGet()
+
+        // Check if we should return failure
+        val failuresRemaining = failureCount.get()
+        if (failuresRemaining > 0) {
+            failureCount.decrementAndGet()
+            return respondJson(httpErrorCode, errorJson("Simulated failure"))
+        }
+
+        return when (path) {
+            "/" -> {
+                respondJson(200, "{}")
+            }
+
+            "/health" -> {
+                respondJson(200, "{}")
+            }
+
+            "/detect" -> {
+                if (method != "POST") {
+                    respondJson(405, errorJson("Method Not Allowed"))
+                } else {
+                    respondJson(200, detectResponseJson())
+                }
+            }
+
+            "/extract/frames" -> {
+                if (method != "POST") {
+                    respondJson(405, errorJson("Method Not Allowed"))
+                } else {
+                    respondJson(200, frameExtractionResponseJson())
+                }
+            }
+
+            "/detect/visualize" -> {
+                if (method != "POST") {
+                    respondJson(405, errorJson("Method Not Allowed"))
+                } else {
+                    respondBinary(200, "image/jpeg", fakeJpegBytes())
+                }
+            }
+
+            else -> {
+                respondJson(404, errorJson("Not Found"))
+            }
+        }
+    }
+
+    fun getRequestCount(): Int = requestCount.get()
+
+    fun getFailuresRemaining(): Int = failureCount.get()
+
+    private fun respondJson(
+        status: Int,
+        body: String,
+    ): MockResponse =
+        MockResponse
+            .Builder()
+            .code(status)
+            .addHeader("Content-Type", "application/json; charset=utf-8")
+            .body(body)
+            .build()
+
+    private fun respondBinary(
+        status: Int,
+        contentType: String,
+        bytes: ByteArray,
+    ): MockResponse =
+        MockResponse
+            .Builder()
+            .code(status)
+            .addHeader("Content-Type", contentType)
+            .body(Buffer().write(bytes))
+            .build()
+
+    private fun errorJson(message: String): String = """{"detail":[{"loc":["request"],"msg":"$message","type":"mock"}]}"""
+
+    private fun detectResponseJson(): String =
+        """
+        {
+          "detections": [
+            {
+              "class_id": 0,
+              "class_name": "person",
+              "confidence": 0.95,
+              "bbox": {"x1": 100.0, "y1": 50.0, "x2": 300.0, "y2": 400.0}
+            }
+          ],
+          "processing_time": 42,
+          "image_size": {"width": 1920, "height": 1080},
+          "model": "yolo12s.pt"
+        }
+        """.trimIndent()
+
+    private fun frameExtractionResponseJson(): String =
+        """
+        {
+          "success": true,
+          "video_duration": 2.5,
+          "video_resolution": [1920, 1080],
+          "frames_extracted": 1,
+          "frames": [
+            {
+              "frame_number": 1,
+              "timestamp": 0.0,
+              "image_base64": "ZmFrZV9qcGVn",
+              "width": 1920,
+              "height": 1080
+            }
+          ],
+          "processing_time_ms": 80
+        }
+        """.trimIndent()
+
+    private fun fakeJpegBytes(): ByteArray {
+        // Minimal but valid JPEG: SOI + APP0 (JFIF) + EOI
+        return byteArrayOf(
+            0xFF.toByte(),
+            0xD8.toByte(), // SOI (Start of Image)
+            0xFF.toByte(),
+            0xE0.toByte(), // APP0 marker
+            0x00.toByte(),
+            0x10.toByte(), // Length: 16 bytes
+            0x4A.toByte(),
+            0x46.toByte(),
+            0x49.toByte(),
+            0x46.toByte(),
+            0x00.toByte(), // "JFIF\0"
+            0x01.toByte(),
+            0x01.toByte(), // Version 1.1
+            0x00.toByte(), // Units (aspect ratio)
+            0x01.toByte(),
+            0x00.toByte(), // X density
+            0x01.toByte(),
+            0x00.toByte(), // Y density
+            0x00.toByte(),
+            0x00.toByte(), // Thumbnail dimensions (0x0)
+            0xFF.toByte(),
+            0xD9.toByte(), // EOI (End of Image)
+        )
+    }
+}
