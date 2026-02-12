@@ -1,5 +1,5 @@
 ---
-paths: "modules/core/**/loadbalancer/**,modules/core/**/service/Detect*,modules/core/**/service/*Visualization*,modules/core/**/service/*Filter*"
+paths: "modules/core/**/loadbalancer/**,modules/core/**/service/Detect*,modules/core/**/service/*Visualization*,modules/core/**/service/*Filter*,modules/core/**/service/Detection*"
 ---
 
 # Detection Server Management
@@ -10,42 +10,64 @@ paths: "modules/core/**/loadbalancer/**,modules/core/**/service/Detect*,modules/
 |-----------|----------|---------|
 | DetectServerLoadBalancer | `core/loadbalancer/` | Main coordinator, priority-based load balancing |
 | DetectServerRegistry | `core/loadbalancer/` | Thread-safe registry of server states |
-| ServerHealthMonitor | `core/loadbalancer/` | Health checks every 30s |
+| ServerHealthMonitor | `core/loadbalancer/` | Health checks (configurable interval/timeout) |
 | ServerSelectionStrategy | `core/loadbalancer/` | Priority-based selection considering load |
+| ServerState | `core/loadbalancer/` | Server state data class |
+| AcquiredServer | `core/loadbalancer/` | Acquired server handle with release |
+| RequestType | `core/loadbalancer/` | Enum: FRAME, FRAME_EXTRACTION, VISUALIZE |
 
 ## Request Types
 
 | Type | Purpose |
 |------|---------|
 | FRAME | Single frame detection |
-| FRAME_EXTRACTION | Extract frames from video |
-| VISUALIZE | Draw bounding boxes on frame |
+| FRAME_EXTRACTION | Extract frames from video on server |
+| VISUALIZE | Draw bounding boxes on frame (remote) |
 
 Each server has configurable capacity per request type.
 
-## DetectService
+## Detection Services
 
-Location: `core/service/DetectService.kt`
+| Service | Location | Purpose |
+|---------|----------|---------|
+| DetectService | `core/service/` | WebClient calls to detection servers |
+| DetectionPostProcessor | `core/service/` | Orchestrates detect + filter + retry |
+| DetectionFilterService | `core/service/` | Filters by allowed object classes |
+
+### DetectService
 
 - WebClient calls to detection servers
-- Automatic retry with 60s timeout
+- Automatic retry with configurable timeout per request type
 - Marks server dead on failure, retries with different server
 - Sends images as multipart/form-data to `/detect`
 
-## Post-Processing
+### DetectionPostProcessor
 
-| Service | Purpose |
-|---------|---------|
-| DetectionFilterService | Filters by allowed object classes |
-| FrameVisualizationService | Draws bounding boxes on frames |
+- Orchestrates detection flow: detect → filter → handle errors
+- Retries on `DetectTimeoutException`
+- Catches `CancellationException` for graceful shutdown
+
+## Visualization Services
+
+| Service | Location | Purpose |
+|---------|----------|---------|
+| FrameVisualizationService | `core/service/` | Orchestrates visualization (remote or local) |
+| LocalVisualizationService | `core/service/` | Draws bounding boxes locally using Java2D |
+
+### LocalVisualizationService
+
+- Pure Java2D rendering without external server
+- Configurable: line width, font scaling, quality, label padding
+- Auto-scales fonts based on image height relative to reference height
 
 ## Configuration
 
 Detection servers in `application.yaml` under `application.detect-servers`:
 - Each server: frame-requests, frames-extract-requests, visualize-requests
 - Each request type: simultaneous-count (capacity), priority (lower = preferred)
-- Override at runtime via system properties (see `start.sh`)
 
 Detection filtering in `application.detection-filter`:
 - `enabled` - on/off
 - `allowed-classes` - list (person, car, dog, etc.)
+
+See `.claude/rules/configuration.md` for all environment variables.

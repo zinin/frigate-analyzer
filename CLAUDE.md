@@ -2,7 +2,7 @@
 
 Video recording analysis system for Frigate security cameras using YOLO-based object detection.
 
-**Stack:** Kotlin 2.3.0, Spring Boot 4.0.1, WebFlux, R2DBC/PostgreSQL, Coroutines, Java 21
+**Stack:** Kotlin 2.3.10, Spring Boot 4.0.2, WebFlux, R2DBC/PostgreSQL, Coroutines, Java 21
 
 ## Critical Rules
 
@@ -67,17 +67,17 @@ Detailed docs in `.claude/rules/` with conditional loading via `paths:` frontmat
 
 | File | Content | Loads when working with |
 |------|---------|-------------------------|
-| pipeline.md | Producer-consumer architecture | `**/pipeline/**` |
-| detection.md | Load balancer, detect services | `**/loadbalancer/**`, `**/Detect*` |
-| telegram.md | Bot, notifications, user management | `**/telegram/**` |
-| configuration.md | Environment variables | `**/application.yaml` |
-| database.md | Schema, migrations | `**/liquibase/**`, `**/repository/**`, `**/entity/**` |
+| pipeline.md | Pipeline, facade, tasks | `**/pipeline/**`, `**/facade/**`, `**/task/**` |
+| detection.md | Load balancer, detect/filter/visualization services | `**/loadbalancer/**`, `**/Detect*`, `**/Visualization*`, `**/Filter*` |
+| telegram.md | Bot, notifications, queue, user management | `modules/telegram/**` |
+| configuration.md | All environment variables | `**/application.yaml` |
+| database.md | Schema, migrations | `**/liquibase/**`, `**/repository/**`, `**/entity/**`, `**/persistent/**` |
 
-## Skills & Commands
+## Skills
 
-| Location | Purpose |
-|----------|---------|
-| `.claude/commands/build.md` | `/build` - automated build |
-| `.claude/commands/deps-update.md` | `/deps-update` - update dependencies |
-| `.claude/skills/gradle-plugin-updater/` | Gradle plugin search/update |
-| `.claude/skills/claude-md-writer/` | CLAUDE.md best practices |
+| Skill | Purpose |
+|-------|---------|
+| `/build` | Automated build with error handling |
+| `/deps-update` | Update project dependencies |
+| `gradle-plugin-updater` | Gradle plugin search/update |
+| `claude-md-writer` | CLAUDE.md best practices |

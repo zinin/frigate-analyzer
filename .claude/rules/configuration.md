@@ -4,50 +4,102 @@ paths: "**/application.yaml,**/application*.yml,**/application*.properties"
 
 # Configuration Reference
 
-All settings in `application.yaml`.
+All settings in `modules/core/src/main/resources/application.yaml`.
 
 ## Core Settings
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `APP_PORT` | 8080 | Server port |
-| `FRIGATE_RECORDS_FOLDER` | - | Frigate recordings path |
-| `TEMP_FOLDER` | - | Extracted frames storage |
-| `FFMPEG_PATH` | - | ffmpeg binary path |
-| `DISABLE_FIRST_SCAN` | false | Skip initial scan |
+| `FRIGATE_RECORDS_FOLDER` | /mnt/data/frigate/recordings/ | Frigate recordings path |
+| `TEMP_FOLDER` | /tmp/frigate-analyzer/ | Extracted frames storage |
+| `FFMPEG_PATH` | /usr/bin/ffmpeg | ffmpeg binary path |
+| `DISABLE_FIRST_SCAN` | false | Skip initial scan on startup |
 
 ## Database
 
-| Variable | Purpose |
-|----------|---------|
-| `DB_HOST` | PostgreSQL host |
-| `DB_PORT` | PostgreSQL port |
-| `DB_NAME` | Database name |
-| `DB_USER` | Username |
-| `DB_PASS` | Password |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DB_HOST` | localhost | PostgreSQL host |
+| `DB_PORT` | 5432 | PostgreSQL port |
+| `DB_NAME` | frigate_analyzer | Database name |
+| `DB_USER` | frigate_analyzer_rw | Username |
+| `DB_PASS` | frigate_analyzer_rw | Password |
 
 ## HTTP Client
 
-| Variable | Purpose |
-|----------|---------|
-| `CONNECTION_TIMEOUT` | Connection timeout |
-| `READ_TIMEOUT` | Read timeout |
-| `WRITE_TIMEOUT` | Write timeout |
-| `RESPONSE_TIMEOUT` | Response timeout |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CONNECTION_TIMEOUT` | 10s | Connection timeout |
+| `READ_TIMEOUT` | 30s | Read timeout |
+| `WRITE_TIMEOUT` | 30s | Write timeout |
+| `RESPONSE_TIMEOUT` | 30s | Response timeout |
 
 ## Detection
 
-| Variable | Default    | Purpose |
-|----------|------------|---------|
-| `DETECT_DEFAULT_CONFIDENCE` | 0.6        | Confidence threshold |
-| `DETECT_DEFAULT_MODEL` | yolo12s.pt | YOLO model |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DETECT_DEFAULT_CONFIDENCE` | 0.6 | Confidence threshold |
+| `DETECT_DEFAULT_IMG_SIZE` | 2016 | Default image size |
+| `DETECT_DEFAULT_MODEL` | yolo12s.pt | Default YOLO model |
+| `DETECT_GOOD_MODEL` | yolo12x.pt | High-quality YOLO model |
+| `DETECT_RETRY_DELAY` | 500ms | Retry delay on failure |
+| `DETECT_FRAME_TIMEOUT` | 60s | Single frame detection timeout |
+| `DETECT_FRAME_EXTRACTION_TIMEOUT` | 5m | Frame extraction timeout |
+| `DETECT_VISUALIZE_TIMEOUT` | 60s | Visualization timeout |
+| `DETECT_HEALTH_CHECK_TIMEOUT` | 5s | Health check timeout |
+| `DETECT_HEALTH_CHECK_INTERVAL` | 30s | Health check interval |
+
+### Frame Extraction
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DETECT_SCENE_THRESHOLD` | 0.05 | Scene change threshold |
+| `DETECT_MIN_INTERVAL` | 1.0 | Min interval between frames (sec) |
+| `DETECT_MAX_FRAMES` | 50 | Max frames per recording |
+| `DETECT_FRAME_QUALITY` | 85 | Extracted frame JPEG quality |
+
+### Remote Visualization
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DETECT_MAX_DET` | 100 | Max detections to visualize |
+| `DETECT_LINE_WIDTH` | 2 | Bounding box line width |
+| `DETECT_SHOW_LABELS` | true | Show class labels |
+| `DETECT_SHOW_CONF` | true | Show confidence scores |
+| `DETECT_VISUALIZE_QUALITY` | 90 | Output JPEG quality |
+
+## Detection Filter
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DETECTION_FILTER_ENABLED` | true | Enable/disable filtering |
+| `DETECTION_FILTER_CLASSES` | person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,umbrella | Allowed object classes |
 
 ## Pipeline
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PIPELINE_FRAME_BUFFER_SIZE` | 500 | Channel buffer size |
+| `PIPELINE_FRAME_MIN_CONSUMERS` | 1 | Min consumer coroutines |
 | `PIPELINE_FRAME_PRODUCERS_COUNT` | 6 | Producer coroutines |
+| `PIPELINE_IDLE_DELAY` | 1s | Producer idle delay |
+| `PIPELINE_ERROR_DELAY` | 5s | Producer error delay |
+| `PIPELINE_BATCH_SIZE` | 10 | Recording batch size |
+
+## Local Visualization
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LOCAL_VIZ_LINE_WIDTH` | 2 | Bounding box line width |
+| `LOCAL_VIZ_QUALITY` | 90 | Output JPEG quality |
+| `LOCAL_VIZ_REFERENCE_HEIGHT` | 720 | Reference height for scaling |
+| `LOCAL_VIZ_MIN_FONT_SCALE` | 0.5 | Min font scale factor |
+| `LOCAL_VIZ_MAX_FONT_SCALE` | 2.2 | Max font scale factor |
+| `LOCAL_VIZ_BASE_FONT_SCALE` | 2.0 | Base font scale factor |
+| `LOCAL_VIZ_BASE_FONT_SIZE` | 16 | Base font size (px) |
+| `LOCAL_VIZ_LABEL_PADDING` | 4 | Label padding (px) |
+| `LOCAL_VIZ_MAX_FRAMES` | 10 | Max frames to visualize |
 
 ## Telegram
 
