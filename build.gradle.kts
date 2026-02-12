@@ -6,7 +6,7 @@ plugins {
     id("maven-publish")
     id("org.jlleitschuh.gradle.ktlint") version "14.0.1"
     id("jacoco")
-    id("com.gorylenko.gradle-git-properties") version "2.5.6" apply false
+    id("com.gorylenko.gradle-git-properties") version "2.5.7" apply false
     kotlin("kapt") version "2.3.10" apply false
 }
 
@@ -110,7 +110,7 @@ subprojects {
 }
 
 extra["kotlinLoggingVersion"] = "7.0.14"
-extra["postgresqlVersion"] = "42.7.9"
+extra["postgresqlVersion"] = "42.7.10"
 extra["mapstructVersion"] = "1.6.3"
 extra["mapstructSpringExtensionsVersion"] = "2.0.0"
 extra["jakartaInjectApiVersion"] = "2.0.1"
