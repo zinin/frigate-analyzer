@@ -45,6 +45,7 @@ RUN apk add --no-cache ffmpeg curl
 .kotlin
 build/
 **/build/
+!modules/core/build/libs/*.jar
 *.iml
 *.iws
 *.ipr
@@ -105,7 +106,7 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=docker
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${HOST_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/frigate-analyzer/actuator/health"]
       interval: 30s
@@ -157,8 +158,8 @@ TELEGRAM_OWNER=your-username
 # Paths
 FRIGATE_RECORDS_FOLDER=/mnt/data/frigate/recordings
 
-# App
-APP_PORT=8080
+# Host port mapping (internal container port is always 8080)
+HOST_PORT=8080
 
 # Docker image version (use specific version for reproducible deploys)
 IMAGE_TAG=latest
@@ -221,6 +222,9 @@ on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -268,6 +272,9 @@ name: Docker Publish
 on:
   push:
     tags: [ 'v*' ]
+
+permissions:
+  contents: read
 
 jobs:
   publish:

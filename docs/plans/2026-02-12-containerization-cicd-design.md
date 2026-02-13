@@ -26,7 +26,7 @@ docker/deploy/
   docker-compose.yml                   # Production: app + liquibase (external DB)
   .env.example                         # Environment variables template
   application-docker.yaml.example      # Detect-servers config template
-.dockerignore                            # Excludes .git, build/, .gradle from Docker context
+.dockerignore                            # Excludes .git, build/, .gradle from Docker context (with JAR exception)
 ```
 
 ### Deleted
@@ -46,6 +46,7 @@ docker/deploy/
 
 - **Triggers:** push to `master`, pull requests to `master`
 - **Steps:** checkout -> setup Java 25 (Zulu) -> Gradle build -> tests
+- **Permissions:** `contents: read`
 - **Purpose:** Ensure code compiles and tests pass
 
 ### Workflow 2: `docker-publish.yml` — Docker Build & Publish
@@ -58,6 +59,7 @@ docker/deploy/
   4. Login to DockerHub
   5. Build & push `avzinin/frigate-analyzer` (from `docker/deploy/Dockerfile`)
   6. Build & push `avzinin/frigate-analyzer-liquibase` (from `docker/liquibase/Dockerfile`)
+- **Permissions:** `contents: read`
 - **Secrets:** `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
 - **Image tags:** extract version from git tag `v1.2.3` -> `1.2.3` + `latest`
 - **Version:** passed to Gradle via `-Pversion` so JAR contains correct version
@@ -91,7 +93,7 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=docker
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${HOST_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/frigate-analyzer/actuator/health"]
       interval: 30s
@@ -122,8 +124,8 @@ TELEGRAM_OWNER=your-username
 # Paths
 FRIGATE_RECORDS_FOLDER=/mnt/data/frigate/recordings
 
-# App
-APP_PORT=8080
+# Host port mapping (internal container port is always 8080)
+HOST_PORT=8080
 
 # Docker image version (use specific version for reproducible deploys)
 IMAGE_TAG=latest
