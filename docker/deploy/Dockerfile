@@ -10,7 +10,7 @@ FROM azul/zulu-openjdk-alpine:25
 WORKDIR /application
 
 # Установка ffmpeg
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg curl
 
 # Создание временных директорий и non-root user
 RUN mkdir -p /tmp/frigate-analyzer && \
