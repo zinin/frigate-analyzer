@@ -46,5 +46,8 @@ docker/.env
 docker/deploy/.env
 **/application-docker.yaml
 
+### Plans and prompts (local only) ###
+docs/plans/
+
 ### MCP configuration (contains API keys) ###
 .mcp.json
