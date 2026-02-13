@@ -25,7 +25,8 @@ docker/deploy/
   Dockerfile                           # App Dockerfile (moved from docker/app/)
   docker-compose.yml                   # Production: app + liquibase (external DB)
   .env.example                         # Environment variables template
-  application-local.yaml.example       # Detect-servers config template
+  application-docker.yaml.example      # Detect-servers config template
+.dockerignore                            # Excludes .git, build/, .gradle from Docker context
 ```
 
 ### Deleted
@@ -52,12 +53,14 @@ docker/deploy/
 - **Triggers:** tag `v*` only
 - **Steps:**
   1. Checkout
-  2. Setup Java 25 (Zulu) -> Gradle build (produces JAR)
-  3. Login to DockerHub
-  4. Build & push `avzinin/frigate-analyzer` (from `docker/deploy/Dockerfile`)
-  5. Build & push `avzinin/frigate-analyzer-liquibase` (from `docker/liquibase/Dockerfile`)
+  2. Setup Java 25 (Zulu) -> Gradle build with tests (`./gradlew build`)
+  3. Extract version from tag, pass to bootJar via `-Pversion`
+  4. Login to DockerHub
+  5. Build & push `avzinin/frigate-analyzer` (from `docker/deploy/Dockerfile`)
+  6. Build & push `avzinin/frigate-analyzer-liquibase` (from `docker/liquibase/Dockerfile`)
 - **Secrets:** `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
 - **Image tags:** extract version from git tag `v1.2.3` -> `1.2.3` + `latest`
+- **Version:** passed to Gradle via `-Pversion` so JAR contains correct version
 
 ## Production Docker Compose
 
@@ -66,28 +69,35 @@ docker/deploy/
 ```yaml
 services:
   frigate-analyzer-liquibase:
-    image: avzinin/frigate-analyzer-liquibase:latest
+    image: avzinin/frigate-analyzer-liquibase:${IMAGE_TAG:-latest}
     environment:
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
       - DB_NAME=${DB_NAME:-frigate_analyzer}
       - DB_USER=${DB_USER:-frigate_analyzer_rw}
       - DB_PASS=${DB_PASS}
+      - LIQUI_CHANGELOG=master_frigate_analyzer.xml
     restart: "no"
 
   frigate-analyzer:
-    image: avzinin/frigate-analyzer:latest
+    image: avzinin/frigate-analyzer:${IMAGE_TAG:-latest}
     depends_on:
       frigate-analyzer-liquibase:
         condition: service_completed_successfully
     env_file: .env
     volumes:
       - ${FRIGATE_RECORDS_FOLDER:-/mnt/data/frigate/recordings}:/mnt/data/frigate/recordings:ro
-      - ./application-local.yaml:/application/config/application-local.yaml:ro
+      - ./application-docker.yaml:/application/config/application-docker.yaml:ro
     environment:
-      - SPRING_PROFILES_ACTIVE=local
+      - SPRING_PROFILES_ACTIVE=docker
     ports:
       - "${APP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/frigate-analyzer/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
 ```
 
@@ -114,11 +124,14 @@ FRIGATE_RECORDS_FOLDER=/mnt/data/frigate/recordings
 
 # App
 APP_PORT=8080
+
+# Docker image version (use specific version for reproducible deploys)
+IMAGE_TAG=latest
 ```
 
 ### Complex structures via YAML bind mount
 
-`application-local.yaml.example` — for detect-servers and other nested config:
+`application-docker.yaml.example` — for detect-servers and other nested config:
 
 ```yaml
 application:
@@ -137,12 +150,12 @@ application:
         priority: 1
 ```
 
-File is mounted to `/application/config/application-local.yaml`. Spring Boot automatically discovers config files in `./config/` directory relative to working directory (`/application`).
+File is mounted to `/application/config/application-docker.yaml`. Spring Boot automatically discovers config files in `./config/` directory relative to working directory (`/application`).
 
 ## Deployment Flow
 
-1. User creates `.env` from `.env.example`
-2. User creates `application-local.yaml` from example
+1. User creates `.env` from `.env.example`, sets `IMAGE_TAG` to desired version
+2. User creates `application-docker.yaml` from example
 3. `docker compose up -d` starts liquibase (migrations) then app
 4. Frigate recordings are mounted read-only from host
 

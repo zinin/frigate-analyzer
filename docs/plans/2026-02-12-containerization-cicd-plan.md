@@ -12,11 +12,13 @@
 
 ---
 
-### Task 1: Move Dockerfile from `docker/app/` to `docker/deploy/`
+### Task 1: Move Dockerfile, add healthcheck support, create .dockerignore
 
 **Files:**
 - Move: `docker/app/Dockerfile` -> `docker/deploy/Dockerfile`
 - Delete: `docker/app/` directory
+- Modify: `docker/deploy/Dockerfile` (add curl for healthcheck)
+- Create: `.dockerignore`
 
 **Step 1: Create deploy directory and move Dockerfile**
 
@@ -25,7 +27,35 @@ mkdir -p docker/deploy
 git mv docker/app/Dockerfile docker/deploy/Dockerfile
 ```
 
-**Step 2: Verify the file is in the new location**
+**Step 2: Add curl to Dockerfile for healthcheck support**
+
+In `docker/deploy/Dockerfile`, update the `apk add` line to include `curl`:
+
+```dockerfile
+RUN apk add --no-cache ffmpeg curl
+```
+
+**Step 3: Create `.dockerignore` at project root**
+
+```
+.git
+.gradle
+.idea
+.vscode
+.kotlin
+build/
+**/build/
+*.iml
+*.iws
+*.ipr
+docs/
+docker/
+!docker/deploy/Dockerfile
+```
+
+Note: Docker context for app image is `.` (project root), so `.dockerignore` applies there. Liquibase uses `docker/` as context but its Dockerfile only copies `./liquibase/migration/` so no `.dockerignore` needed.
+
+**Step 4: Verify the file is in the new location**
 
 ```bash
 ls docker/deploy/Dockerfile
@@ -34,11 +64,11 @@ ls docker/app/ 2>/dev/null
 # Expected: error or empty (directory removed)
 ```
 
-**Step 3: Commit**
+**Step 5: Commit**
 
 ```bash
-git add -A docker/app docker/deploy/Dockerfile
-git commit -m "Move app Dockerfile to docker/deploy/"
+git add -A docker/app docker/deploy/Dockerfile .dockerignore
+git commit -m "Move app Dockerfile to docker/deploy/, add healthcheck support, add .dockerignore"
 ```
 
 ---
@@ -53,7 +83,7 @@ git commit -m "Move app Dockerfile to docker/deploy/"
 ```yaml
 services:
   frigate-analyzer-liquibase:
-    image: avzinin/frigate-analyzer-liquibase:latest
+    image: avzinin/frigate-analyzer-liquibase:${IMAGE_TAG:-latest}
     environment:
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
@@ -64,18 +94,24 @@ services:
     restart: "no"
 
   frigate-analyzer:
-    image: avzinin/frigate-analyzer:latest
+    image: avzinin/frigate-analyzer:${IMAGE_TAG:-latest}
     depends_on:
       frigate-analyzer-liquibase:
         condition: service_completed_successfully
     env_file: .env
     volumes:
       - ${FRIGATE_RECORDS_FOLDER:-/mnt/data/frigate/recordings}:/mnt/data/frigate/recordings:ro
-      - ./application-local.yaml:/application/config/application-local.yaml:ro
+      - ./application-docker.yaml:/application/config/application-docker.yaml:ro
     environment:
-      - SPRING_PROFILES_ACTIVE=local
+      - SPRING_PROFILES_ACTIVE=docker
     ports:
       - "${APP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/frigate-analyzer/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
 ```
 
@@ -102,7 +138,7 @@ git commit -m "Add production docker-compose for deployment"
 
 **Files:**
 - Create: `docker/deploy/.env.example`
-- Create: `docker/deploy/application-local.yaml.example`
+- Create: `docker/deploy/application-docker.yaml.example`
 
 **Step 1: Create .env.example**
 
@@ -123,13 +159,16 @@ FRIGATE_RECORDS_FOLDER=/mnt/data/frigate/recordings
 
 # App
 APP_PORT=8080
+
+# Docker image version (use specific version for reproducible deploys)
+IMAGE_TAG=latest
 ```
 
-**Step 2: Create application-local.yaml.example**
+**Step 2: Create application-docker.yaml.example**
 
 ```yaml
 # Detect servers configuration
-# Copy this file to application-local.yaml and adjust for your setup
+# Copy this file to application-docker.yaml and adjust for your setup
 application:
   detect-servers:
     mypc:
@@ -148,18 +187,19 @@ application:
 
 **Step 3: Update .gitignore for deploy directory**
 
-The existing `.gitignore` has `docker/.env` but not `docker/deploy/.env`. Also `**/application-local.yaml` already covers `docker/deploy/application-local.yaml`. Add rule for deploy `.env`:
+The existing `.gitignore` has `docker/.env` but not `docker/deploy/.env`. Also need to add patterns for docker profile files. Add rules for deploy directory:
 
 Append to `.gitignore` in the `### Environment files ###` section:
 
 ```
 docker/deploy/.env
+**/application-docker.yaml
 ```
 
 **Step 4: Commit**
 
 ```bash
-git add docker/deploy/.env.example docker/deploy/application-local.yaml.example .gitignore
+git add docker/deploy/.env.example docker/deploy/application-docker.yaml.example .gitignore
 git commit -m "Add deployment configuration templates and .gitignore rules"
 ```
 
@@ -245,12 +285,15 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build JAR
-        run: ./gradlew :frigate-analyzer-core:bootJar
-
       - name: Extract version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        run: ./gradlew build
+
+      - name: Build JAR with version
+        run: ./gradlew :frigate-analyzer-core:bootJar -Pversion=${{ steps.version.outputs.VERSION }}
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -283,7 +326,8 @@ jobs:
 ```
 
 Key points:
-- `./gradlew :frigate-analyzer-core:bootJar` builds only the JAR (skips tests — they ran in CI workflow already)
+- `./gradlew build` runs full build with tests to ensure the tag is safe to release
+- `./gradlew :frigate-analyzer-core:bootJar -Pversion` rebuilds JAR with correct version from tag
 - App image context is `.` (project root) because Dockerfile references `modules/core/build/libs/frigate-analyzer-core.jar`
 - Liquibase image context is `docker/` because its Dockerfile does `COPY ./liquibase/migration/`
 - Version extraction: `v1.2.3` -> `1.2.3` via `${GITHUB_REF_NAME#v}`
@@ -307,7 +351,7 @@ git commit -m "Add Docker publish workflow for tag-based releases"
 ls -la docker/deploy/Dockerfile
 ls -la docker/deploy/docker-compose.yml
 ls -la docker/deploy/.env.example
-ls -la docker/deploy/application-local.yaml.example
+ls -la docker/deploy/application-docker.yaml.example
 ls -la .github/workflows/ci.yml
 ls -la .github/workflows/docker-publish.yml
 
@@ -320,14 +364,14 @@ ls docker/app/ 2>/dev/null && echo "ERROR: docker/app/ still exists" || echo "OK
 ```bash
 # These patterns should match:
 # docker/deploy/.env -> matched by "docker/deploy/.env"
-# docker/deploy/application-local.yaml -> matched by "**/application-local.yaml"
-git check-ignore docker/deploy/.env docker/deploy/application-local.yaml
+# docker/deploy/application-docker.yaml -> matched by "**/application-docker.yaml"
+git check-ignore docker/deploy/.env docker/deploy/application-docker.yaml
 ```
 
 Expected output:
 ```
 docker/deploy/.env
-docker/deploy/application-local.yaml
+docker/deploy/application-docker.yaml
 ```
 
 **Step 3: Review all changes**
@@ -337,6 +381,15 @@ git log --oneline master..HEAD
 ```
 
 Expected: 5 commits (move Dockerfile, compose, templates, CI, Docker publish).
+
+**Step 4: Unify trailing slashes in paths**
+
+Check that `FRIGATE_RECORDS_FOLDER` defaults are consistent (no trailing slash) in:
+- `docker/deploy/docker-compose.yml` → `/mnt/data/frigate/recordings` (no slash)
+- `docker/deploy/.env.example` → `/mnt/data/frigate/recordings` (no slash)
+- `modules/core/src/main/resources/application.yaml` → remove trailing slash from default
+
+If trailing slash exists in application.yaml default, remove it for consistency.
 
 ---
 
@@ -365,15 +418,15 @@ This triggers `docker-publish.yml` which builds and pushes:
 # On the host with Frigate recordings:
 mkdir -p ~/frigate-analyzer && cd ~/frigate-analyzer
 
-# Download compose and templates
-curl -O https://raw.githubusercontent.com/zinin/frigate-analyzer/master/docker/deploy/docker-compose.yml
-curl -O https://raw.githubusercontent.com/zinin/frigate-analyzer/master/docker/deploy/.env.example
-curl -O https://raw.githubusercontent.com/zinin/frigate-analyzer/master/docker/deploy/application-local.yaml.example
+# Download compose and templates (replace v0.1.0 with your desired version)
+curl -O https://raw.githubusercontent.com/zinin/frigate-analyzer/v0.1.0/docker/deploy/docker-compose.yml
+curl -O https://raw.githubusercontent.com/zinin/frigate-analyzer/v0.1.0/docker/deploy/.env.example
+curl -O https://raw.githubusercontent.com/zinin/frigate-analyzer/v0.1.0/docker/deploy/application-docker.yaml.example
 
 # Configure
 cp .env.example .env
-cp application-local.yaml.example application-local.yaml
-# Edit .env and application-local.yaml with your values
+cp application-docker.yaml.example application-docker.yaml
+# Edit .env and application-docker.yaml with your values
 
 # Start
 docker compose up -d
