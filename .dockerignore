@@ -1,0 +1,14 @@
+.git
+.gradle
+.idea
+.vscode
+.kotlin
+build/
+**/build/
+!modules/core/build/libs/*.jar
+*.iml
+*.iws
+*.ipr
+docs/
+docker/
+!docker/deploy/Dockerfile
