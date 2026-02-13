@@ -21,6 +21,7 @@ services:
       - ./application-docker.yaml:/application/config/application-docker.yaml:ro
     environment:
       - SPRING_PROFILES_ACTIVE=docker
+      - FRIGATE_RECORDS_FOLDER=/mnt/data/frigate/recordings
     ports:
       - "${HOST_PORT:-8080}:8080"
     healthcheck:
