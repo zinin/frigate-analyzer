@@ -9,6 +9,8 @@ services:
       - DB_PASS=${DB_PASS}
       - LIQUI_CHANGELOG=master_frigate_analyzer.xml
     restart: "no"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   frigate-analyzer:
     image: avzinin/frigate-analyzer:${IMAGE_TAG:-latest}
@@ -31,3 +33,5 @@ services:
       start_period: 60s
       retries: 3
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
