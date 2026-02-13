@@ -1,0 +1,32 @@
+services:
+  frigate-analyzer-liquibase:
+    image: avzinin/frigate-analyzer-liquibase:${IMAGE_TAG:-latest}
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-frigate_analyzer}
+      - DB_USER=${DB_USER:-frigate_analyzer_rw}
+      - DB_PASS=${DB_PASS}
+      - LIQUI_CHANGELOG=master_frigate_analyzer.xml
+    restart: "no"
+
+  frigate-analyzer:
+    image: avzinin/frigate-analyzer:${IMAGE_TAG:-latest}
+    depends_on:
+      frigate-analyzer-liquibase:
+        condition: service_completed_successfully
+    env_file: .env
+    volumes:
+      - ${FRIGATE_RECORDS_FOLDER:-/mnt/data/frigate/recordings}:/mnt/data/frigate/recordings:ro
+      - ./application-docker.yaml:/application/config/application-docker.yaml:ro
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/frigate-analyzer/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
