@@ -1,0 +1,16 @@
+# Detect servers configuration
+# Copy this file to application-docker.yaml and adjust for your setup
+application:
+  detect-servers:
+    mypc:
+      host: 192.168.1.50
+      port: 3001
+      frame-requests:
+        simultaneous-count: 4
+        priority: 1
+      frames-extract-requests:
+        simultaneous-count: 1
+        priority: 3
+      visualize-requests:
+        simultaneous-count: 1
+        priority: 1
