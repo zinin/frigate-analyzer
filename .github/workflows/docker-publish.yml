@@ -1,0 +1,63 @@
+name: Docker Publish
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        run: ./gradlew build
+
+      - name: Build JAR with version
+        run: ./gradlew :frigate-analyzer-core:bootJar -Pversion=${{ steps.version.outputs.VERSION }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/deploy/Dockerfile
+          push: true
+          tags: |
+            avzinin/frigate-analyzer:${{ steps.version.outputs.VERSION }}
+            avzinin/frigate-analyzer:latest
+
+      - name: Build and push liquibase image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          file: docker/liquibase/Dockerfile
+          push: true
+          tags: |
+            avzinin/frigate-analyzer-liquibase:${{ steps.version.outputs.VERSION }}
+            avzinin/frigate-analyzer-liquibase:latest
