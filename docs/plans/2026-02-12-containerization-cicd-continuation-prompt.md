@@ -27,6 +27,8 @@ Do NOT begin implementation until the user explicitly tells you to start.
 - [x] Plan document created and reviewed
 - [x] External design review (iteration 1) — 3 agents (Codex, Gemini, CCS)
 - [x] Review findings applied to design and plan documents
+- [x] External design review (iteration 2) — 3 agents (Codex, Gemini, CCS)
+- [x] Review findings from iteration 2 applied to documents
 
 **Remaining tasks (from plan):**
 - [ ] Task 1: Move Dockerfile, add healthcheck support, create .dockerignore
@@ -66,7 +68,13 @@ Key decisions and context from the brainstorming and review sessions not fully c
 - **Trailing slash unified**: All `FRIGATE_RECORDS_FOLDER` defaults should be without trailing slash
 - **Deploy instructions from tag**: curl commands use `v0.1.0` instead of `master`
 
-### Rejected/Deferred (from review)
+### Review Decisions (from iteration 2)
+- **`.dockerignore` JAR exception**: `!modules/core/build/libs/*.jar` MUST be added — without it, `**/build/` rule excludes the JAR and Docker build fails
+- **`APP_PORT` → `HOST_PORT`**: Renamed in compose and .env.example. Reason: `APP_PORT` from `.env` leaks into container via `env_file` and changes `server.port` (via `application.yaml`), breaking healthcheck and port mapping which expect 8080 inside container
+- **`permissions: contents: read`**: Added to both `ci.yml` and `docker-publish.yml` for least-privilege security
+- **`latest` on pre-release tags**: Left as is — low risk for personal project with controlled tag creation
+
+### Rejected/Deferred (from reviews)
 - ARM64 multi-arch build — deferred (not needed now)
 - Secrets management — deferred (operational concern)
 - Rollback strategy for migrations — deferred
@@ -83,6 +91,12 @@ Key decisions and context from the brainstorming and review sessions not fully c
 - `.gitignore` already has `**/application-local.yaml` and `docker/.env`, need to add `docker/deploy/.env` and `**/application-docker.yaml`
 - Current branch is `feature/docker-hub-publish`
 - Healthcheck uses `curl` — must install curl alongside ffmpeg in Dockerfile: `apk add --no-cache ffmpeg curl`
+
+### Verified False Positives (do NOT re-investigate)
+- **JAR filename with -Pversion**: `archiveFileName` is fixed without version in `modules/core/build.gradle.kts:14` — always `frigate-analyzer-core.jar`
+- **Running as root**: Dockerfile already creates `appuser:appgroup` (lines 16-19) and uses `USER appuser` (line 35)
+- **Gradle caching**: `gradle/actions/setup-gradle@v4` handles caching automatically
+- **`apk` compatibility**: Base image is `azul/zulu-openjdk-alpine:25` — Alpine, `apk` is correct
 
 ### Build System Notes
 - Gradle module for JAR: `:frigate-analyzer-core:bootJar` produces `modules/core/build/libs/frigate-analyzer-core.jar`
