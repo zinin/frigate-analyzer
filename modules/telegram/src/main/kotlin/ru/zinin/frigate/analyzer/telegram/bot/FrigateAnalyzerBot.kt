@@ -44,16 +44,19 @@ class FrigateAnalyzerBot(
     private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     companion object {
-        private val DEFAULT_COMMANDS = listOf(
-            BotCommand("start", "Начать работу с ботом"),
-            BotCommand("help", "Помощь"),
-        )
+        private val DEFAULT_COMMANDS =
+            listOf(
+                BotCommand("start", "Начать работу с ботом"),
+                BotCommand("help", "Помощь"),
+            )
 
-        private val OWNER_COMMANDS = DEFAULT_COMMANDS + listOf(
-            BotCommand("adduser", "Добавить пользователя"),
-            BotCommand("removeuser", "Удалить пользователя"),
-            BotCommand("users", "Список пользователей"),
-        )
+        private val OWNER_COMMANDS =
+            DEFAULT_COMMANDS +
+                listOf(
+                    BotCommand("adduser", "Добавить пользователя"),
+                    BotCommand("removeuser", "Удалить пользователя"),
+                    BotCommand("users", "Список пользователей"),
+                )
     }
 
     @PostConstruct
