@@ -20,6 +20,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneOffset
 import java.time.format.DateTimeParseException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -32,9 +33,13 @@ private const val POLL_PERIOD = 500L
 
 private val DATE_PATTERN = Regex("""\d{4}-\d{2}-\d{2}""")
 
-internal fun extractDateFromPath(path: Path): LocalDate? {
-    for (i in path.nameCount - 1 downTo 0) {
-        val name = path.getName(i).toString()
+internal fun extractDateFromPath(
+    path: Path,
+    rootFolder: Path,
+): LocalDate? {
+    val relativePath = if (path.startsWith(rootFolder)) rootFolder.relativize(path) else path
+    for (i in relativePath.nameCount - 1 downTo 0) {
+        val name = relativePath.getName(i).toString()
         if (DATE_PATTERN.matches(name)) {
             return try {
                 LocalDate.parse(name)
@@ -48,11 +53,12 @@ internal fun extractDateFromPath(path: Path): LocalDate? {
 
 internal fun isWithinWatchPeriod(
     path: Path,
+    rootFolder: Path,
     watchPeriod: Duration,
     clock: Clock,
 ): Boolean {
-    val date = extractDateFromPath(path) ?: return true
-    val cutoff = LocalDate.now(clock).minusDays(watchPeriod.toDays())
+    val date = extractDateFromPath(path, rootFolder) ?: return true
+    val cutoff = LocalDate.now(clock.withZone(ZoneOffset.UTC)).minusDays(watchPeriod.toDays())
     return !date.isBefore(cutoff)
 }
 
@@ -94,7 +100,7 @@ class WatchRecordsTask(
                     logger.info { "New file created: $fullPath" }
 
                     if (Files.isDirectory(fullPath)) {
-                        if (isWithinWatchPeriod(fullPath, recordsWatcherProperties.watchPeriod, clock)) {
+                        if (isWithinWatchPeriod(fullPath, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
                             registerAllDirs(fullPath, watchService)
                         } else {
                             logger.info { "Skipping old directory: $fullPath" }
@@ -157,7 +163,7 @@ class WatchRecordsTask(
             .walk(start)
             .filter { Files.isDirectory(it) }
             .forEach { dir ->
-                if (isWithinWatchPeriod(dir, recordsWatcherProperties.watchPeriod, clock)) {
+                if (isWithinWatchPeriod(dir, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
                     registeredDirs.computeIfAbsent(dir) {
                         val key = dir.register(watchService, ENTRY_CREATE)
                         registered++
@@ -168,16 +174,14 @@ class WatchRecordsTask(
                 }
             }
 
-        if (skipped > 0) {
-            logger.info { "Registered $registered directories, skipped $skipped old directories." }
-        }
+        logger.info { "Registered $registered directories, skipped $skipped old directories." }
     }
 
     private fun cleanupExpiredDirs() {
         var removed = 0
 
         registeredDirs.entries.removeIf { (dir, watchKey) ->
-            if (!isWithinWatchPeriod(dir, recordsWatcherProperties.watchPeriod, clock)) {
+            if (!isWithinWatchPeriod(dir, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
                 watchKey.cancel()
                 removed++
                 true
