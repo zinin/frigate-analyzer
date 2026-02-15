@@ -85,7 +85,7 @@ class DetectServiceTest {
         runBlocking {
             val response = detectService.detectWithRetry(byteArrayOf(1, 2, 3))
 
-            assertEquals("yolo12s.pt", response.model)
+            assertEquals("yolo26s.pt", response.model)
             assertEquals(1, response.detections.size)
             assertEquals("person", response.detections.first().className)
             assertEquals(0, registry.getServer("test")!!.processingFrameRequestsCount.get())
@@ -196,7 +196,7 @@ class DetectServiceTest {
 
             val response = detectService.detectWithRetry(byteArrayOf(1, 2, 3))
 
-            assertEquals("yolo12s.pt", response.model)
+            assertEquals("yolo26s.pt", response.model)
             assertEquals(1, response.detections.size)
             assertEquals(0, server.processingFrameRequestsCount.get())
 
@@ -242,7 +242,7 @@ class DetectServiceTest {
 
             val response = detectService.detectWithRetry(byteArrayOf(1, 2, 3))
 
-            assertEquals("yolo12s.pt", response.model)
+            assertEquals("yolo26s.pt", response.model)
             // Primary server (priority 0) should be used
             assertEquals(0, primaryServer.processingFrameRequestsCount.get())
             assertEquals(0, registry.getServer("secondary")!!.processingFrameRequestsCount.get())
@@ -272,7 +272,7 @@ class DetectServiceTest {
 
             val response = detectService.detectWithRetry(byteArrayOf(1, 2, 3))
 
-            assertEquals("yolo12s.pt", response.model)
+            assertEquals("yolo26s.pt", response.model)
             // Secondary server should be used
             assertEquals(1, primaryServer.processingFrameRequestsCount.get()) // Still at capacity
             assertEquals(0, secondaryServer.processingFrameRequestsCount.get()) // Released

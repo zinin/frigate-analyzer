@@ -46,18 +46,18 @@ Settings under `application.records-watcher` in `application.yaml`.
 
 ## Detection
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `DETECT_DEFAULT_CONFIDENCE` | 0.6 | Confidence threshold |
-| `DETECT_DEFAULT_IMG_SIZE` | 2016 | Default image size |
-| `DETECT_DEFAULT_MODEL` | yolo12s.pt | Default YOLO model |
-| `DETECT_GOOD_MODEL` | yolo12x.pt | High-quality YOLO model |
-| `DETECT_RETRY_DELAY` | 500ms | Retry delay on failure |
-| `DETECT_FRAME_TIMEOUT` | 60s | Single frame detection timeout |
-| `DETECT_FRAME_EXTRACTION_TIMEOUT` | 5m | Frame extraction timeout |
-| `DETECT_VISUALIZE_TIMEOUT` | 60s | Visualization timeout |
-| `DETECT_HEALTH_CHECK_TIMEOUT` | 5s | Health check timeout |
-| `DETECT_HEALTH_CHECK_INTERVAL` | 30s | Health check interval |
+| Variable | Default    | Purpose |
+|----------|------------|---------|
+| `DETECT_DEFAULT_CONFIDENCE` | 0.6        | Confidence threshold |
+| `DETECT_DEFAULT_IMG_SIZE` | 2016       | Default image size |
+| `DETECT_DEFAULT_MODEL` | yolo26s.pt | Default YOLO model |
+| `DETECT_GOOD_MODEL` | yolo26x.pt | High-quality YOLO model |
+| `DETECT_RETRY_DELAY` | 500ms      | Retry delay on failure |
+| `DETECT_FRAME_TIMEOUT` | 60s        | Single frame detection timeout |
+| `DETECT_FRAME_EXTRACTION_TIMEOUT` | 5m         | Frame extraction timeout |
+| `DETECT_VISUALIZE_TIMEOUT` | 60s        | Visualization timeout |
+| `DETECT_HEALTH_CHECK_TIMEOUT` | 5s         | Health check timeout |
+| `DETECT_HEALTH_CHECK_INTERVAL` | 30s        | Health check interval |
 
 ### Frame Extraction
 

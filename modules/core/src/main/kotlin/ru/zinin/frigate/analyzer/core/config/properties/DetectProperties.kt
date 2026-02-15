@@ -21,8 +21,8 @@ data class DetectProperties(
     val defaultConfidence: Double = 0.6,
     @field:Min(320)
     val defaultImgSize: Int = 2016,
-    val defaultModel: String = "yolo12s.pt",
-    val goodModel: String = "yolo12x.pt",
+    val defaultModel: String = "yolo26s.pt",
+    val goodModel: String = "yolo26x.pt",
     @field:Valid
     val frameExtraction: FrameExtractionConfig = FrameExtractionConfig(),
     @field:Valid

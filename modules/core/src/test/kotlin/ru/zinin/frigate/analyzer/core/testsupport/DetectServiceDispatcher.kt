@@ -88,7 +88,7 @@ class DetectServiceDispatcher : Dispatcher() {
           ],
           "processing_time": 42,
           "image_size": {"width": 1920, "height": 1080},
-          "model": "yolo12s.pt"
+          "model": "yolo26s.pt"
         }
         """.trimIndent()
 
@@ -247,7 +247,7 @@ class ConfigurableDetectServiceDispatcher(
           ],
           "processing_time": 42,
           "image_size": {"width": 1920, "height": 1080},
-          "model": "yolo12s.pt"
+          "model": "yolo26s.pt"
         }
         """.trimIndent()
 

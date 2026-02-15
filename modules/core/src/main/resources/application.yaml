@@ -54,8 +54,8 @@ application:
     health-check-interval: ${DETECT_HEALTH_CHECK_INTERVAL:30s}
     default-confidence: ${DETECT_DEFAULT_CONFIDENCE:0.6}
     default-img-size: ${DETECT_DEFAULT_IMG_SIZE:2016}
-    default-model: ${DETECT_DEFAULT_MODEL:yolo12s.pt}
-    good-model: ${DETECT_GOOD_MODEL:yolo12x.pt}
+    default-model: ${DETECT_DEFAULT_MODEL:yolo26s.pt}
+    good-model: ${DETECT_GOOD_MODEL:yolo26x.pt}
     frame-extraction:
       scene-threshold: ${DETECT_SCENE_THRESHOLD:0.05}
       min-interval: ${DETECT_MIN_INTERVAL:1.0}
