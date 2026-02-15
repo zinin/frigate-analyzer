@@ -2,10 +2,16 @@ package ru.zinin.frigate.analyzer.telegram.bot
 
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.extensions.api.bot.getMe
+import dev.inmo.tgbotapi.extensions.api.bot.setMyCommands
 import dev.inmo.tgbotapi.extensions.api.send.reply
 import dev.inmo.tgbotapi.extensions.behaviour_builder.buildBehaviourWithLongPolling
 import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onCommand
 import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onContentMessage
+import dev.inmo.tgbotapi.types.BotCommand
+import dev.inmo.tgbotapi.types.ChatId
+import dev.inmo.tgbotapi.types.RawChatId
+import dev.inmo.tgbotapi.types.commands.BotCommandScopeChat
+import dev.inmo.tgbotapi.types.commands.BotCommandScopeDefault
 import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
@@ -37,6 +43,19 @@ class FrigateAnalyzerBot(
 ) {
     private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
+    companion object {
+        private val DEFAULT_COMMANDS = listOf(
+            BotCommand("start", "Начать работу с ботом"),
+            BotCommand("help", "Помощь"),
+        )
+
+        private val OWNER_COMMANDS = DEFAULT_COMMANDS + listOf(
+            BotCommand("adduser", "Добавить пользователя"),
+            BotCommand("removeuser", "Удалить пользователя"),
+            BotCommand("users", "Список пользователей"),
+        )
+    }
+
     @PostConstruct
     fun start() {
         logger.info { "Starting Telegram bot with long polling..." }
@@ -45,6 +64,13 @@ class FrigateAnalyzerBot(
             try {
                 val botInfo = bot.getMe()
                 logger.info { "Bot started: ${botInfo.username} (${botInfo.firstName})" }
+
+                registerDefaultCommands()
+
+                val owner = userService.findActiveByUsername(properties.owner)
+                if (owner?.chatId != null) {
+                    registerOwnerCommands(owner.chatId)
+                }
 
                 bot
                     .buildBehaviourWithLongPolling {
@@ -116,6 +142,7 @@ class FrigateAnalyzerBot(
                 )
             }
             bot.reply(message, "Добро пожаловать, владелец! Используйте /help для списка команд.")
+            registerOwnerCommands(chatId)
             return
         }
 
@@ -265,6 +292,24 @@ class FrigateAnalyzerBot(
             }
 
         bot.reply(message, text)
+    }
+
+    private suspend fun registerDefaultCommands() {
+        try {
+            bot.setMyCommands(DEFAULT_COMMANDS, scope = BotCommandScopeDefault)
+            logger.info { "Default bot commands registered" }
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to register default bot commands" }
+        }
+    }
+
+    private suspend fun registerOwnerCommands(chatId: Long) {
+        try {
+            bot.setMyCommands(OWNER_COMMANDS, scope = BotCommandScopeChat(ChatId(RawChatId(chatId))))
+            logger.info { "Owner bot commands registered for chat $chatId" }
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to register owner bot commands for chat $chatId" }
+        }
     }
 
     @PreDestroy
