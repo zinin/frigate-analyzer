@@ -25,8 +25,11 @@ spring:
       pool:
         max-size: 10
 application:
-  disable-first-scan-task: ${DISABLE_FIRST_SCAN:false}
-  frigate-records-folder: ${FRIGATE_RECORDS_FOLDER:/mnt/data/frigate/recordings}
+  records-watcher:
+    disable-first-scan: ${DISABLE_FIRST_SCAN:false}
+    folder: ${FRIGATE_RECORDS_FOLDER:/mnt/data/frigate/recordings}
+    watch-period: ${WATCH_PERIOD:P1D}
+    cleanup-interval: ${WATCH_CLEANUP_INTERVAL:PT1H}
   temp-folder: ${TEMP_FOLDER:/tmp/frigate-analyzer/}
   ffmpeg-path: ${FFMPEG_PATH:/usr/bin/ffmpeg}
   connection-timeout: ${CONNECTION_TIMEOUT:10s}

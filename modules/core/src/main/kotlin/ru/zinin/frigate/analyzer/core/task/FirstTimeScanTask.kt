@@ -12,7 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
+import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
 import ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest
 import ru.zinin.frigate.analyzer.service.helper.RecordingEntityHelper
 import ru.zinin.frigate.analyzer.service.helper.RecordingFileHelper
@@ -25,7 +25,7 @@ private val logger = KotlinLogging.logger {}
 
 @Component
 class FirstTimeScanTask(
-    val applicationProperties: ApplicationProperties,
+    val recordsWatcherProperties: RecordsWatcherProperties,
     val recordingEntityHelper: RecordingEntityHelper,
     val recordingFileHelper: RecordingFileHelper,
 ) {
@@ -36,7 +36,7 @@ class FirstTimeScanTask(
 
         CoroutineScope(Dispatchers.Default).launch {
             Files
-                .walk(applicationProperties.frigateRecordsFolder)
+                .walk(recordsWatcherProperties.folder)
                 .asSequence()
                 .filter { Files.isRegularFile(it) }
                 .asFlow()
