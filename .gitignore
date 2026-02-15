@@ -48,3 +48,6 @@ docker/deploy/.env
 
 ### MCP configuration (contains API keys) ###
 .mcp.json
+
+### Git worktrees ###
+.worktrees/

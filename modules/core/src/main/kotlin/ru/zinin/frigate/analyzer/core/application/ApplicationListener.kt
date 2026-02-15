@@ -7,7 +7,7 @@ import org.springframework.boot.info.GitProperties
 import org.springframework.context.event.ContextClosedEvent
 import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
+import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
 import ru.zinin.frigate.analyzer.core.helper.SpringProfileHelper
 import ru.zinin.frigate.analyzer.core.task.FirstTimeScanTask
 import ru.zinin.frigate.analyzer.core.task.WatchRecordsTask
@@ -20,7 +20,7 @@ class ApplicationListener(
     val buildProperties: BuildProperties,
     val watchRecordsTask: WatchRecordsTask,
     val firstTimeScanTask: FirstTimeScanTask,
-    val applicationProperties: ApplicationProperties,
+    val recordsWatcherProperties: RecordsWatcherProperties,
     val springProfileHelper: SpringProfileHelper,
 ) {
     @EventListener(ApplicationReadyEvent::class)
@@ -39,7 +39,7 @@ class ApplicationListener(
         }
         if (springProfileHelper.isTestProfile()) {
             logger.info { "Test profile detected. First time scan task skipped." }
-        } else if (!applicationProperties.disableFirstScanTask) {
+        } else if (!recordsWatcherProperties.disableFirstScan) {
             firstTimeScanTask.run()
         } else {
             logger.info { "First time scan task skipped." }

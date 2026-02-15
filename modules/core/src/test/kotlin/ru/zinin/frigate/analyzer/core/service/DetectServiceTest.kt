@@ -338,8 +338,6 @@ class DetectServiceTest {
         val dummyDuration = Duration.ofSeconds(1)
 
         return ApplicationProperties(
-            disableFirstScanTask = true,
-            frigateRecordsFolder = dummyPath,
             tempFolder = dummyPath,
             ffmpegPath = dummyPath,
             connectionTimeout = dummyDuration,
