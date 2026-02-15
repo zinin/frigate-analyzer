@@ -16,6 +16,10 @@ import java.nio.file.WatchEvent
 import java.nio.file.WatchKey
 import java.nio.file.WatchService
 import java.nio.file.attribute.BasicFileAttributes
+import java.time.Clock
+import java.time.Duration
+import java.time.LocalDate
+import java.time.format.DateTimeParseException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,6 +28,32 @@ import kotlin.io.path.absolutePathString
 private val logger = KotlinLogging.logger {}
 
 private const val POLL_PERIOD = 500L
+
+private val DATE_PATTERN = Regex("""\d{4}-\d{2}-\d{2}""")
+
+internal fun extractDateFromPath(path: Path): LocalDate? {
+    for (i in path.nameCount - 1 downTo 0) {
+        val name = path.getName(i).toString()
+        if (DATE_PATTERN.matches(name)) {
+            return try {
+                LocalDate.parse(name)
+            } catch (_: DateTimeParseException) {
+                null
+            }
+        }
+    }
+    return null
+}
+
+internal fun isWithinWatchPeriod(
+    path: Path,
+    watchPeriod: Duration,
+    clock: Clock,
+): Boolean {
+    val date = extractDateFromPath(path) ?: return true
+    val cutoff = LocalDate.now(clock).minusDays(watchPeriod.toDays())
+    return !date.isBefore(cutoff)
+}
 
 @Component
 class WatchRecordsTask(
