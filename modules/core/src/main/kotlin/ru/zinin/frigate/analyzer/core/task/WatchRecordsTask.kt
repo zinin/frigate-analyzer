@@ -4,7 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
+import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
 import ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest
 import ru.zinin.frigate.analyzer.service.helper.RecordingEntityHelper
 import ru.zinin.frigate.analyzer.service.helper.RecordingFileHelper
@@ -27,7 +27,7 @@ private const val POLL_PERIOD = 500L
 
 @Component
 class WatchRecordsTask(
-    val applicationProperties: ApplicationProperties,
+    val recordsWatcherProperties: RecordsWatcherProperties,
     val recordingEntityHelper: RecordingEntityHelper,
     val recordingFileHelper: RecordingFileHelper,
 ) {
@@ -37,7 +37,7 @@ class WatchRecordsTask(
 
     @Async
     fun run() {
-        val folderPath = applicationProperties.frigateRecordsFolder
+        val folderPath = recordsWatcherProperties.folder
         logger.info { "Starting watch records in folder: $folderPath" }
 
         val watchService = FileSystems.getDefault().newWatchService()

@@ -10,9 +10,6 @@ import java.time.Duration
 @ConfigurationProperties(prefix = "application")
 @Validated
 data class ApplicationProperties(
-    val disableFirstScanTask: Boolean = false,
-    @field:NotNull
-    val frigateRecordsFolder: Path,
     @field:NotNull
     val tempFolder: Path,
     @field:NotNull
