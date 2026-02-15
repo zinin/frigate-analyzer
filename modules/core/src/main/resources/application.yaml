@@ -41,7 +41,7 @@ application:
     queue-capacity: ${TELEGRAM_QUEUE_CAPACITY:100}
   detection-filter:
     enabled: ${DETECTION_FILTER_ENABLED:true}
-    allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,umbrella}
+    allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe}
   detect:
     retry-delay: ${DETECT_RETRY_DELAY:500ms}
     frame-timeout: ${DETECT_FRAME_TIMEOUT:60s}
