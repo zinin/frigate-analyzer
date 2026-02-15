@@ -43,11 +43,21 @@ Register commands at bot startup using `setMyCommands` with role-based scoping.
 ### Implementation Approach
 
 All changes in `FrigateAnalyzerBot.kt`:
+- Define `DEFAULT_COMMANDS` and `OWNER_COMMANDS` as companion object constants (DRY — no duplication)
 - Add `registerDefaultCommands()` method — sets default scope commands
 - Add `registerOwnerCommands(chatId)` method — sets owner-scoped commands
+- Both methods wrapped in `try-catch` — command registration is UX enhancement, not critical for bot operation
 - Call `registerDefaultCommands()` in `start()` after `bot.getMe()`
 - Attempt owner command registration in `start()` if owner is already in DB
-- Call `registerOwnerCommands(chatId)` in `handleStart()` when owner activates
+- Call `registerOwnerCommands(chatId)` in `handleStart()` inside the `if (username == properties.owner)` block only
+
+### Error Handling
+
+`setMyCommands` failures are logged as warnings but do not prevent bot startup or operation.
+
+### Known Limitations
+
+- If owner is somehow deactivated, their extended command menu remains until bot restart. This is acceptable since owner self-removal is not a supported scenario.
 
 ### Language
 

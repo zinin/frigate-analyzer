@@ -4,7 +4,7 @@
 
 **Goal:** Register bot commands via Telegram Bot API `setMyCommands` at startup so users see a command menu in Telegram.
 
-**Architecture:** Add two methods to `FrigateAnalyzerBot` — `registerDefaultCommands()` and `registerOwnerCommands(chatId)`. Default commands registered at startup; owner commands registered when owner's chatId is known (from DB at startup or after `/start`).
+**Architecture:** Add command constants and two registration methods to `FrigateAnalyzerBot`. Default commands registered at startup; owner commands registered when owner's chatId is known (from DB at startup or after `/start`). Errors in `setMyCommands` are logged but don't block bot startup.
 
 **Tech Stack:** Kotlin, ktgbotapi 30.0.2 (`dev.inmo.tgbotapi`), Spring Boot
 
@@ -30,40 +30,56 @@ import dev.inmo.tgbotapi.types.commands.BotCommandScopeChat
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeDefault
 ```
 
-**Step 2: Add `registerDefaultCommands()` method**
+**Step 2: Add command constants**
+
+Add a companion object inside `FrigateAnalyzerBot` class (after the `botScope` property):
+
+```kotlin
+companion object {
+    private val DEFAULT_COMMANDS = listOf(
+        BotCommand("start", "Начать работу с ботом"),
+        BotCommand("help", "Помощь"),
+    )
+
+    private val OWNER_COMMANDS = DEFAULT_COMMANDS + listOf(
+        BotCommand("adduser", "Добавить пользователя"),
+        BotCommand("removeuser", "Удалить пользователя"),
+        BotCommand("users", "Список пользователей"),
+    )
+}
+```
+
+**Step 3: Add `registerDefaultCommands()` method**
 
 Add this private method to `FrigateAnalyzerBot` class (after `handleUsers()`, before `stop()`):
 
 ```kotlin
 private suspend fun registerDefaultCommands() {
-    bot.setMyCommands(
-        BotCommand("start", "Начать работу с ботом"),
-        BotCommand("help", "Помощь"),
-        scope = BotCommandScopeDefault,
-    )
-    logger.info { "Default bot commands registered" }
+    try {
+        bot.setMyCommands(DEFAULT_COMMANDS, scope = BotCommandScopeDefault)
+        logger.info { "Default bot commands registered" }
+    } catch (e: Exception) {
+        logger.warn(e) { "Failed to register default bot commands" }
+    }
 }
 ```
 
-**Step 3: Add `registerOwnerCommands()` method**
+**Step 4: Add `registerOwnerCommands()` method**
 
 Add this private method right after `registerDefaultCommands()`:
 
 ```kotlin
 private suspend fun registerOwnerCommands(chatId: Long) {
-    bot.setMyCommands(
-        BotCommand("start", "Начать работу с ботом"),
-        BotCommand("help", "Помощь"),
-        BotCommand("adduser", "Добавить пользователя"),
-        BotCommand("removeuser", "Удалить пользователя"),
-        BotCommand("users", "Список пользователей"),
-        scope = BotCommandScopeChat(ChatId(RawChatId(chatId))),
-    )
-    logger.info { "Owner bot commands registered for chat $chatId" }
+    try {
+        bot.setMyCommands(OWNER_COMMANDS, scope = BotCommandScopeChat(ChatId(RawChatId(chatId))))
+        logger.info { "Owner bot commands registered for chat $chatId" }
+    } catch (e: Exception) {
+        logger.warn(e) { "Failed to register owner bot commands for chat $chatId" }
+    }
 }
 ```
 
-**Step 4: Call registration at bot startup**
+**Step 5: Call registration at bot startup**
 
 In the `start()` method, after the line `logger.info { "Bot started: ${botInfo.username} (${botInfo.firstName})" }` and before `bot.buildBehaviourWithLongPolling {`, add:
 
@@ -76,15 +92,15 @@ if (owner?.chatId != null) {
 }
 ```
 
-**Step 5: Call registration on owner's `/start`**
+**Step 6: Call registration on owner's `/start`**
 
-In `handleStart()`, after the line `bot.reply(message, "Добро пожаловать, владелец! Используйте /help для списка команд.")` and before the `return` on line 119, add:
+In `handleStart()`, **inside the `if (username == properties.owner)` block**, after the line `bot.reply(message, "Добро пожаловать, владелец! Используйте /help для списка команд.")` and before the `return`:
 
 ```kotlin
 registerOwnerCommands(chatId)
 ```
 
-**Step 6: Commit**
+**Step 7: Commit**
 
 ```bash
 git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt
