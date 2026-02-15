@@ -13,6 +13,7 @@ import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectionFilterProperties
 import ru.zinin.frigate.analyzer.core.config.properties.LocalVisualizationProperties
 import ru.zinin.frigate.analyzer.core.config.properties.PipelineProperties
+import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
 
 private val logger = KotlinLogging.logger {}
 
@@ -25,6 +26,7 @@ private val logger = KotlinLogging.logger {}
     DetectProperties::class,
     PipelineProperties::class,
     LocalVisualizationProperties::class,
+    RecordsWatcherProperties::class,
 )
 @EnableR2dbcRepositories(basePackages = ["ru.zinin.frigate.analyzer.service.repository", "ru.zinin.frigate.analyzer.telegram.repository"])
 class FrigateAnalyzerApplication : CommandLineRunner {
