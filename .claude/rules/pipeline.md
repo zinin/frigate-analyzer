@@ -60,6 +60,11 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 | WatchRecordsTask | Monitors Frigate folder via Java WatchService |
 | FirstTimeScanTask | Initial scan on startup (disable: `DISABLE_FIRST_SCAN=true`) |
 
+WatchRecordsTask uses selective watching to limit monitored directories:
+- Only directories within the configured `WATCH_PERIOD` are monitored (date extracted from Frigate's `YYYY-MM-DD` directory structure)
+- The root recordings directory is always watched to catch new date directories
+- A periodic cleanup task removes expired watch keys based on `WATCH_CLEANUP_INTERVAL`
+
 WatchRecordsTask parses `.mp4` filenames to extract camera ID, date, time, timestamp.
 
 ## Configuration

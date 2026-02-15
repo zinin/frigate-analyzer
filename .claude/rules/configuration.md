@@ -11,10 +11,19 @@ All settings in `modules/core/src/main/resources/application.yaml`.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `APP_PORT` | 8080 | Server port |
-| `FRIGATE_RECORDS_FOLDER` | /mnt/data/frigate/recordings/ | Frigate recordings path |
 | `TEMP_FOLDER` | /tmp/frigate-analyzer/ | Extracted frames storage |
 | `FFMPEG_PATH` | /usr/bin/ffmpeg | ffmpeg binary path |
+
+## Records Watcher
+
+Settings under `application.records-watcher` in `application.yaml`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FRIGATE_RECORDS_FOLDER` | /mnt/data/frigate/recordings/ | Frigate recordings path |
 | `DISABLE_FIRST_SCAN` | false | Skip initial scan on startup |
+| `WATCH_PERIOD` | P1D | ISO-8601 duration, how far back to watch directories |
+| `WATCH_CLEANUP_INTERVAL` | PT1H | How often to clean up expired watch keys |
 
 ## Database
 
