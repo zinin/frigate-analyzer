@@ -70,9 +70,13 @@ class FrigateAnalyzerBot(
 
                 registerDefaultCommands()
 
-                val owner = userService.findActiveByUsername(properties.owner)
-                if (owner?.chatId != null) {
-                    registerOwnerCommands(owner.chatId)
+                try {
+                    val owner = userService.findActiveByUsername(properties.owner)
+                    if (owner?.chatId != null) {
+                        registerOwnerCommands(owner.chatId)
+                    }
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to look up owner for command registration" }
                 }
 
                 bot
