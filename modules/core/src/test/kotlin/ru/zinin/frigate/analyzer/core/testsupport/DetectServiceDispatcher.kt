@@ -44,8 +44,22 @@ class DetectServiceDispatcher : Dispatcher() {
                 }
             }
 
+            "/detect/video/visualize" -> {
+                if (method != "POST") {
+                    respondJson(405, errorJson("Method Not Allowed"))
+                } else {
+                    respondJson(202, jobCreatedResponseJson())
+                }
+            }
+
             else -> {
-                respondJson(404, errorJson("Not Found"))
+                if (path.matches(Regex("/jobs/[^/]+/download"))) {
+                    respondBinary(200, "video/mp4", fakeVideoBytes())
+                } else if (path.matches(Regex("/jobs/[^/]+"))) {
+                    respondJson(200, jobStatusCompletedJson())
+                } else {
+                    respondJson(404, errorJson("Not Found"))
+                }
             }
         }
     }
@@ -139,6 +153,41 @@ class DetectServiceDispatcher : Dispatcher() {
             0xD9.toByte(), // EOI (End of Image)
         )
     }
+
+    private fun jobCreatedResponseJson(): String =
+        """
+        {
+          "job_id": "test-job-123",
+          "status": "queued",
+          "message": "Video annotation job created"
+        }
+        """.trimIndent()
+
+    private fun jobStatusCompletedJson(): String =
+        """
+        {
+          "job_id": "test-job-123",
+          "status": "completed",
+          "progress": 100,
+          "created_at": "2026-02-16T12:00:00Z",
+          "completed_at": "2026-02-16T12:05:00Z",
+          "download_url": "/jobs/test-job-123/download",
+          "error": null,
+          "stats": {
+            "total_frames": 300,
+            "detected_frames": 50,
+            "tracked_frames": 250,
+            "total_detections": 120,
+            "processing_time_ms": 15000
+          }
+        }
+        """.trimIndent()
+
+    private fun fakeVideoBytes(): ByteArray =
+        byteArrayOf(
+            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x1C.toByte(),
+            0x66.toByte(), 0x74.toByte(), 0x79.toByte(), 0x70.toByte(),
+        )
 }
 
 /**
@@ -199,8 +248,22 @@ class ConfigurableDetectServiceDispatcher(
                 }
             }
 
+            "/detect/video/visualize" -> {
+                if (method != "POST") {
+                    respondJson(405, errorJson("Method Not Allowed"))
+                } else {
+                    respondJson(202, jobCreatedResponseJson())
+                }
+            }
+
             else -> {
-                respondJson(404, errorJson("Not Found"))
+                if (path.matches(Regex("/jobs/[^/]+/download"))) {
+                    respondBinary(200, "video/mp4", fakeVideoBytes())
+                } else if (path.matches(Regex("/jobs/[^/]+"))) {
+                    respondJson(200, jobStatusCompletedJson())
+                } else {
+                    respondJson(404, errorJson("Not Found"))
+                }
             }
         }
     }
@@ -298,4 +361,39 @@ class ConfigurableDetectServiceDispatcher(
             0xD9.toByte(), // EOI (End of Image)
         )
     }
+
+    private fun jobCreatedResponseJson(): String =
+        """
+        {
+          "job_id": "test-job-123",
+          "status": "queued",
+          "message": "Video annotation job created"
+        }
+        """.trimIndent()
+
+    private fun jobStatusCompletedJson(): String =
+        """
+        {
+          "job_id": "test-job-123",
+          "status": "completed",
+          "progress": 100,
+          "created_at": "2026-02-16T12:00:00Z",
+          "completed_at": "2026-02-16T12:05:00Z",
+          "download_url": "/jobs/test-job-123/download",
+          "error": null,
+          "stats": {
+            "total_frames": 300,
+            "detected_frames": 50,
+            "tracked_frames": 250,
+            "total_detections": 120,
+            "processing_time_ms": 15000
+          }
+        }
+        """.trimIndent()
+
+    private fun fakeVideoBytes(): ByteArray =
+        byteArrayOf(
+            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x1C.toByte(),
+            0x66.toByte(), 0x74.toByte(), 0x79.toByte(), 0x70.toByte(),
+        )
 }
