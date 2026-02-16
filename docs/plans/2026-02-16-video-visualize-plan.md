@@ -1097,28 +1097,11 @@ git commit -m "test: add error scenario tests for VideoVisualizationService"
 
 ---
 
-### Task 10: Save OpenAPI Spec & Final Build
+### Task 10: Final Build
 
-**Files:**
-- Create: `docs/openapi/detect-server-openapi-v2.2.0.json`
-
-**Step 1: Copy openapi.json**
-
-```bash
-mkdir -p docs/openapi
-cp /tmp/fa-18-attachments/openapi.json docs/openapi/detect-server-openapi-v2.2.0.json
-```
-
-**Step 2: Run full build**
+**Step 1: Run full build**
 
 Run: `./gradlew build`
 Expected: BUILD SUCCESSFUL (all tests pass, ktlint clean)
 
 If ktlint fails: `./gradlew ktlintFormat` then retry build.
-
-**Step 3: Commit**
-
-```bash
-git add docs/openapi/detect-server-openapi-v2.2.0.json
-git commit -m "docs: add detect server OpenAPI v2.2.0 spec"
-```
