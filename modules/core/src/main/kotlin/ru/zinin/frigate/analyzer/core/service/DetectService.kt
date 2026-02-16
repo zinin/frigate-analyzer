@@ -23,6 +23,7 @@ import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.FrameExtractionResponse
 import ru.zinin.frigate.analyzer.model.response.JobCreatedResponse
+import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
 import java.nio.file.Path
 
 private val logger = KotlinLogging.logger {}
@@ -317,6 +318,27 @@ class DetectService(
             .bodyToMono<JobCreatedResponse>()
             .awaitSingle()
     }
+
+    /**
+     * Опрашивает статус job на конкретном сервере.
+     * Не использует load balancer — обращается напрямую к серверу, на котором запущен job.
+     */
+    suspend fun getJobStatus(
+        acquired: AcquiredServer,
+        jobId: String,
+    ): JobStatusResponse =
+        webClient
+            .get()
+            .uri { uriBuilder ->
+                uriBuilder
+                    .scheme(acquired.schema)
+                    .host(acquired.host)
+                    .port(acquired.port)
+                    .path("/jobs/{jobId}")
+                    .build(jobId)
+            }.retrieve()
+            .bodyToMono<JobStatusResponse>()
+            .awaitSingle()
 
     /**
      * Универсальный метод retry с таймаутом.

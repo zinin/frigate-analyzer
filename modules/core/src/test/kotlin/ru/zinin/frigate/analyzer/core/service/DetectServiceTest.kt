@@ -21,6 +21,7 @@ import ru.zinin.frigate.analyzer.core.loadbalancer.ServerSelectionStrategy
 import ru.zinin.frigate.analyzer.core.testsupport.ConfigurableDetectServiceDispatcher
 import ru.zinin.frigate.analyzer.core.testsupport.DetectServiceDispatcher
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.response.JobStatus
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
 import tools.jackson.databind.json.JsonMapper
@@ -197,6 +198,23 @@ class DetectServiceTest {
             // Cleanup: release manually (submitVideoVisualize does NOT release)
             loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
             Files.deleteIfExists(testVideoPath)
+        }
+
+    @Test
+    fun `getJobStatus returns job status from specific server`() =
+        runBlocking {
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
+
+            val status = detectService.getJobStatus(acquired, "test-job-123")
+
+            assertEquals("test-job-123", status.jobId)
+            assertEquals(JobStatus.COMPLETED, status.status)
+            assertEquals(100, status.progress)
+            assertNotNull(status.stats)
+            assertEquals(300, status.stats!!.totalFrames)
+
+            // Cleanup
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
         }
 
     // ==================== Timeout Tests ====================
