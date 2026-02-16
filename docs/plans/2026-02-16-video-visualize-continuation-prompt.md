@@ -1,8 +1,8 @@
 ## TASK
 
-Continue executing the implementation plan for Video Visualize — DetectService Extension (FA-18).
+Finalize the development branch for Video Visualize — DetectService Extension (FA-18).
 
-Use `/superpowers:subagent-driven-development` skill for execution.
+All 10 implementation tasks are **COMPLETE**. Use `/superpowers:finishing-a-development-branch` skill.
 
 ## CRITICAL: DO NOT START WORKING
 
@@ -17,7 +17,7 @@ After loading all context below, you MUST:
 - Start implementing tasks
 - Make any code changes
 - Run any commands (except reading documents)
-- Assume what task to work on next
+- Assume what to do next
 
 **The user will tell you exactly what to do.** Until then, only read and summarize.
 
@@ -30,23 +30,23 @@ Read both documents first.
 
 ## PROGRESS
 
-**Completed tasks:**
+**All 10 tasks COMPLETE:**
 - [x] Task 1: Response Models & Exception (`fd738b0`) — JobCreatedResponse, JobStatus, JobStatusResponse, JobStats, VideoAnnotationFailedException
 - [x] Task 2: Configuration — VideoVisualizeConfig (`c928e7b`) — VideoVisualizeConfig data class в DetectProperties + application.yaml (main + test)
 - [x] Task 3: Load Balancer — VIDEO_VISUALIZE support (`57c7b49`) — RequestType, ServerState, DetectServerProperties, StatisticsResponse, DetectServerLoadBalancer, test configs, docker template
 - [x] Task 4: Test Dispatcher — Video Endpoints (`57a4526`) — mock endpoints в обоих диспетчерах: POST /detect/video/visualize (202), GET /jobs/{id} (completed), GET /jobs/{id}/download (binary mp4)
-- [x] Task 5: DetectService.submitVideoVisualize (`f8cf084`) — multipart POST через FileSystemResource(videoPath), принимает AcquiredServer, не управляет слотами + тест
-- [x] Task 6: DetectService.getJobStatus (`20bb813`) — GET /jobs/{jobId} через URI template, возвращает JobStatusResponse + тест
+- [x] Task 5: DetectService.submitVideoVisualize (`f8cf084`) — multipart POST через FileSystemResource(videoPath), принимает AcquiredServer, не управляет слотами
+- [x] Task 6: DetectService.getJobStatus (`20bb813`) — GET /jobs/{jobId} через URI template, возвращает JobStatusResponse
+- [x] Task 7: DetectService.downloadJobResult (`a9a95b0`) — streaming в temp file через DataBuffer, cleanup на ошибке, возвращает Path
+- [x] Task 8: VideoVisualizationService — Happy Path (`18cd3f7`) — оркестратор с 3 фазами (submit с retry → poll → download), slot lifecycle, orphan logging
+- [x] Task 9: Error Scenarios (`c78b509`) — 3 error-сценария (job failed, timeout, retry) + 3 mock-диспетчера (JobFailedDispatcher, NeverCompletingDispatcher, TransientSubmitFailureDispatcher)
+- [x] Task 10: Final Build (`d56fa41`) — ktlint-форматирование, BUILD SUCCESSFUL (все 50 тестов прошли)
 
-**Remaining tasks (4 of 10):**
-- [ ] Task 7: DetectService.downloadJobResult
-- [ ] Task 8: VideoVisualizationService — Happy Path
-- [ ] Task 9: VideoVisualizationService — Error Scenarios
-- [ ] Task 10: Final Build
+**Branch:** `feature/FA-18` (21 commits ahead of master)
 
 ## SESSION CONTEXT
 
-Key decisions from brainstorming + design review sessions (2 iterations, 35 issues total):
+Key decisions from brainstorming + design review + implementation sessions:
 
 ### Architecture Decisions (brainstorming)
 
@@ -66,55 +66,48 @@ Key decisions from brainstorming + design review sessions (2 iterations, 35 issu
 
 7. **[C2] Download streaming:** downloadJobResult возвращает `Path` (streaming запись во временный файл) вместо `ByteArray`. Это предотвращает OOM на больших видео.
 
-8. **[C3] Retry policy:** Делать по аналогии с существующими методами DetectService. Проверить как они работают перед реализацией.
+8. **[C3] Retry policy:** По аналогии с существующими методами DetectService.
 
 9. **[N1] Orphan job logging:** При timeout/cancel логировать WARN что job может ещё работать на сервере. Detection server API v2.2.0 не поддерживает DELETE /jobs/{id}.
 
-10. **[N5] JobStatus enum:** `enum class JobStatus { QUEUED, PROCESSING, COMPLETED, FAILED }` с `@JsonProperty`. Используется в `JobStatusResponse.status`.
+10. **[N5] JobStatus enum:** `enum class JobStatus { QUEUED, PROCESSING, COMPLETED, FAILED }` с `@JsonProperty`.
 
 11. **[C4] videoVisualizeRequests:** Обязательное поле в DetectServerProperties (без дефолта).
 
-12. **Destination:** Standalone → Telegram. Видео отправляется пользователю, временный файл удаляется.
-
 ### Design Review Decisions (iteration 2)
 
-13. **[C5] Slot management pseudocode (FIXED):** Design теперь показывает корректный retry pattern: acquire внутри retry loop, release на failure, keep на success. completed flag для orphan logging.
+12. **[C5] Slot management pseudocode (FIXED):** acquire внутри retry loop, release на failure, keep на success. completed flag для orphan logging.
 
-14. **[C6] Temp file cleanup:** downloadJobResult удаляет temp file в catch при ошибке streaming. Plan Task 7 обновлён: single OutputStream + try-catch с Files.deleteIfExists.
+13. **[C6] Temp file cleanup:** downloadJobResult удаляет temp file в catch при ошибке streaming.
 
-15. **[C7] 404 при polling = терминальная ошибка:** Если getJobStatus получает 404 (сервер перезагрузился, job потерян) — бросать VideoAnnotationFailedException, не ретраить бесконечно.
+14. **[C7] 404 при polling = терминальная ошибка:** Бросать VideoAnnotationFailedException, не ретраить бесконечно.
 
-16. **[C8] Orphan logging only on failure:** var completed = false, логировать только если !completed && jobId != null.
+15. **[C8] Orphan logging only on failure:** var completed = false, логировать только если !completed && jobId != null.
 
-17. **[N9] Idempotency — accepted risk:** Retry submit может создать duplicate orphan job. API не поддерживает idempotency key. Риск минимален.
+16. **[N10] WebClient timeout:** Глобальный response-timeout=30s НЕ был проблемой при реализации (submit 202 мгновенно, download через streaming не блокируется).
 
-18. **[N10] WebClient timeout:** Глобальный response-timeout=30s может мешать video запросам. Проверить при реализации Task 7. При необходимости переопределить на уровне отдельных запросов.
+17. **[N12] onProgress exception wrapping:** try { onProgress(status) } catch { logger.warn } — ошибка callback не должна убивать job.
 
-19. **[N11] Single OutputStream:** downloadJobResult открывает OutputStream один раз перед collect (не на каждый DataBuffer chunk).
+18. **[N18] Input video as Path (NOT ByteArray):** annotateVideo и submitVideoVisualize принимают `videoPath: Path`.
 
-20. **[N12] onProgress exception wrapping:** try { onProgress(status) } catch { logger.warn } — ошибка callback не должна убивать job.
+### Implementation Notes (from Tasks 1-10 execution)
 
-21. **[N13] Gradle paths:** Правильные пути `:core:test`, `:model:test` (НЕ `:modules-core:test`). Исправлено в плане.
+19. **Jackson import fix:** План указывал `tools.jackson.annotation.JsonProperty`, но правильный импорт — `com.fasterxml.jackson.annotation.JsonProperty`. В Jackson 3.x модуль `jackson-annotations` — исключение из миграции пакетов.
 
-22. **[N14] Docker template:** Task 3 включает обновление `docker/deploy/application-docker.yaml.example`.
+20. **jackson-annotations dependency:** При реализации Task 7 обнаружена отсутствующая зависимость `com.fasterxml.jackson.core:jackson-annotations` в model модуле. Добавлена в `modules/model/build.gradle.kts`.
 
-23. **[N18] Input video as Path (NOT ByteArray):** annotateVideo и submitVideoVisualize принимают `videoPath: Path` вместо `bytes: ByteArray`. Видео собирается из файлов Frigate на диске — streaming upload через FileSystemResource.
+21. **Все spec compliance reviews пройдены с первой попытки** (Tasks 7, 8, 9).
 
-24. **[N19] detectEvery validation:** @field:Min(1) для detectEvery: Int? в VideoVisualizeConfig.
+22. **ktlint fixes (Task 10):** DetectServerLoadBalancer.kt (line-length fix — extracted variables), DetectService.kt (import ordering + code style), JobStatus.kt (enum formatting).
 
-25. **[S8] Submit retry test:** Task 9 включает тест retry при transient submit failure.
+23. **50 тестов всего**, все проходят. 4 новых теста для VideoVisualizationService (happy path + 3 error scenarios), 12 тестов DetectService (включая 3 новых для video endpoints).
 
-26. **[S6] jobId в логах:** Включать jobId во все логи VideoVisualizationService при реализации Task 8.
+## NEXT STEPS
 
-### Implementation Notes (from Tasks 1-6 execution)
-
-27. **Jackson import fix:** План указывал `tools.jackson.annotation.JsonProperty`, но правильный импорт — `com.fasterxml.jackson.annotation.JsonProperty`. В Jackson 3.x модуль `jackson-annotations` — исключение из миграции пакетов, он остаётся в `com.fasterxml.jackson.annotation`. Это подтверждено Jackson 3 migration guide и реальной кодбазой.
-
-28. **Tasks 4-6 прошли без проблем.** Все spec compliance reviews пройдены с первой попытки. Паттерны submitVideoVisualize и getJobStatus следуют существующим паттернам DetectService, но без acquire/release (per C1). Mock dispatcher обрабатывает `/jobs/{id}` через regex в else-ветке (download проверяется раньше status, чтобы `/jobs/{id}/download` не матчился как `/jobs/{id}`).
-
-29. **WebClient timeout (N10) не был проблемой для Task 5** (submit возвращает 202 мгновенно). Может быть актуально для Task 7 (download больших видео).
-
-**Note:** Plan и Design doc синхронизированы после обоих раундов ревью. Оба документа отражают актуальные решения.
+Implementation is complete. Next steps:
+1. **Code review** — run reviewers against the full diff (master..HEAD)
+2. **Clean up plan docs** — `git rm docs/plans/` files before PR (per workflow rules)
+3. **Create PR** — to master
 
 ## PLAN QUALITY WARNING
 
