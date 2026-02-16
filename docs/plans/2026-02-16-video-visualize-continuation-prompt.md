@@ -34,11 +34,11 @@ Read both documents first.
 - [x] Task 1: Response Models & Exception (`fd738b0`) — JobCreatedResponse, JobStatus, JobStatusResponse, JobStats, VideoAnnotationFailedException
 - [x] Task 2: Configuration — VideoVisualizeConfig (`c928e7b`) — VideoVisualizeConfig data class в DetectProperties + application.yaml (main + test)
 - [x] Task 3: Load Balancer — VIDEO_VISUALIZE support (`57c7b49`) — RequestType, ServerState, DetectServerProperties, StatisticsResponse, DetectServerLoadBalancer, test configs, docker template
+- [x] Task 4: Test Dispatcher — Video Endpoints (`57a4526`) — mock endpoints в обоих диспетчерах: POST /detect/video/visualize (202), GET /jobs/{id} (completed), GET /jobs/{id}/download (binary mp4)
+- [x] Task 5: DetectService.submitVideoVisualize (`f8cf084`) — multipart POST через FileSystemResource(videoPath), принимает AcquiredServer, не управляет слотами + тест
+- [x] Task 6: DetectService.getJobStatus (`20bb813`) — GET /jobs/{jobId} через URI template, возвращает JobStatusResponse + тест
 
-**Remaining tasks (7 of 10):**
-- [ ] Task 4: Test Dispatcher — Video Endpoints (mock endpoints in DetectServiceDispatcher)
-- [ ] Task 5: DetectService.submitVideoVisualize
-- [ ] Task 6: DetectService.getJobStatus
+**Remaining tasks (4 of 10):**
 - [ ] Task 7: DetectService.downloadJobResult
 - [ ] Task 8: VideoVisualizationService — Happy Path
 - [ ] Task 9: VideoVisualizationService — Error Scenarios
@@ -88,7 +88,7 @@ Key decisions from brainstorming + design review sessions (2 iterations, 35 issu
 
 17. **[N9] Idempotency — accepted risk:** Retry submit может создать duplicate orphan job. API не поддерживает idempotency key. Риск минимален.
 
-18. **[N10] WebClient timeout:** Глобальный response-timeout=30s может мешать video запросам. Проверить при реализации Task 5 и 7. При необходимости переопределить на уровне отдельных запросов.
+18. **[N10] WebClient timeout:** Глобальный response-timeout=30s может мешать video запросам. Проверить при реализации Task 7. При необходимости переопределить на уровне отдельных запросов.
 
 19. **[N11] Single OutputStream:** downloadJobResult открывает OutputStream один раз перед collect (не на каждый DataBuffer chunk).
 
@@ -106,9 +106,13 @@ Key decisions from brainstorming + design review sessions (2 iterations, 35 issu
 
 26. **[S6] jobId в логах:** Включать jobId во все логи VideoVisualizationService при реализации Task 8.
 
-### Implementation Notes (from Tasks 1-3 execution)
+### Implementation Notes (from Tasks 1-6 execution)
 
 27. **Jackson import fix:** План указывал `tools.jackson.annotation.JsonProperty`, но правильный импорт — `com.fasterxml.jackson.annotation.JsonProperty`. В Jackson 3.x модуль `jackson-annotations` — исключение из миграции пакетов, он остаётся в `com.fasterxml.jackson.annotation`. Это подтверждено Jackson 3 migration guide и реальной кодбазой.
+
+28. **Tasks 4-6 прошли без проблем.** Все spec compliance reviews пройдены с первой попытки. Паттерны submitVideoVisualize и getJobStatus следуют существующим паттернам DetectService, но без acquire/release (per C1). Mock dispatcher обрабатывает `/jobs/{id}` через regex в else-ветке (download проверяется раньше status, чтобы `/jobs/{id}/download` не матчился как `/jobs/{id}`).
+
+29. **WebClient timeout (N10) не был проблемой для Task 5** (submit возвращает 202 мгновенно). Может быть актуально для Task 7 (download больших видео).
 
 **Note:** Plan и Design doc синхронизированы после обоих раундов ревью. Оба документа отражают актуальные решения.
 
