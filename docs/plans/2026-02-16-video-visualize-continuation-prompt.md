@@ -1,6 +1,6 @@
 ## TASK
 
-Execute the implementation plan for Video Visualize — DetectService Extension (FA-18).
+Continue executing the implementation plan for Video Visualize — DetectService Extension (FA-18).
 
 Use `/superpowers:subagent-driven-development` skill for execution.
 
@@ -30,12 +30,12 @@ Read both documents first.
 
 ## PROGRESS
 
-**Completed tasks:** None — implementation has not started yet.
+**Completed tasks:**
+- [x] Task 1: Response Models & Exception (`fd738b0`) — JobCreatedResponse, JobStatus, JobStatusResponse, JobStats, VideoAnnotationFailedException
+- [x] Task 2: Configuration — VideoVisualizeConfig (`c928e7b`) — VideoVisualizeConfig data class в DetectProperties + application.yaml (main + test)
+- [x] Task 3: Load Balancer — VIDEO_VISUALIZE support (`57c7b49`) — RequestType, ServerState, DetectServerProperties, StatisticsResponse, DetectServerLoadBalancer, test configs, docker template
 
-**Remaining tasks (all 10):**
-- [ ] Task 1: Response Models & Exception (JobCreatedResponse, JobStatusResponse, JobStatus enum, JobStats, VideoAnnotationFailedException)
-- [ ] Task 2: Configuration — VideoVisualizeConfig in DetectProperties + application.yaml
-- [ ] Task 3: Load Balancer — VIDEO_VISUALIZE support (RequestType, ServerState, DetectServerProperties, statistics)
+**Remaining tasks (7 of 10):**
 - [ ] Task 4: Test Dispatcher — Video Endpoints (mock endpoints in DetectServiceDispatcher)
 - [ ] Task 5: DetectService.submitVideoVisualize
 - [ ] Task 6: DetectService.getJobStatus
@@ -105,6 +105,10 @@ Key decisions from brainstorming + design review sessions (2 iterations, 35 issu
 25. **[S8] Submit retry test:** Task 9 включает тест retry при transient submit failure.
 
 26. **[S6] jobId в логах:** Включать jobId во все логи VideoVisualizationService при реализации Task 8.
+
+### Implementation Notes (from Tasks 1-3 execution)
+
+27. **Jackson import fix:** План указывал `tools.jackson.annotation.JsonProperty`, но правильный импорт — `com.fasterxml.jackson.annotation.JsonProperty`. В Jackson 3.x модуль `jackson-annotations` — исключение из миграции пакетов, он остаётся в `com.fasterxml.jackson.annotation`. Это подтверждено Jackson 3 migration guide и реальной кодбазой.
 
 **Note:** Plan и Design doc синхронизированы после обоих раундов ревью. Оба документа отражают актуальные решения.
 
