@@ -91,6 +91,7 @@ data class VideoVisualizeConfig(
     val timeout: Duration = Duration.ofMinutes(15),
     val pollInterval: Duration = Duration.ofSeconds(3),
     val maxDet: Int = 100,
+    @field:Min(1)
     val detectEvery: Int? = null,
     val lineWidth: Int = 2,
     val showLabels: Boolean = true,
@@ -105,8 +106,7 @@ data class VideoVisualizeConfig(
 // Does NOT acquire or release server — caller manages slot lifecycle.
 suspend fun submitVideoVisualize(
     acquired: AcquiredServer,
-    bytes: ByteArray,
-    filePath: String,
+    videoPath: Path,
     conf: Double, imgsz: Int, maxDet: Int,
     detectEvery: Int?, classes: String?,
     lineWidth: Int, showLabels: Boolean, showConf: Boolean,
@@ -124,7 +124,7 @@ suspend fun downloadJobResult(acquired: AcquiredServer, jobId: String): Path
 
 `getJobStatus` и `downloadJobResult` обращаются к конкретному серверу через `acquired.schema/host/port` — load balancer не участвует.
 
-`downloadJobResult` использует streaming запись во временный файл для избежания OOM на больших видео.
+`downloadJobResult` использует streaming запись во временный файл для избежания OOM на больших видео. При ошибке во время streaming удаляет частично записанный temp-файл (try-catch с cleanup).
 
 ### 5. VideoVisualizationService — оркестратор
 
@@ -138,8 +138,7 @@ class VideoVisualizationService(
     private val detectProperties: DetectProperties,
 ) {
     suspend fun annotateVideo(
-        bytes: ByteArray,
-        filePath: String,
+        videoPath: Path,
         conf: Double = detectProperties.detect.defaultConfidence,
         // ... остальные params с defaults из detectProperties.videoVisualize
         onProgress: suspend (JobStatusResponse) -> Unit = {},
@@ -155,28 +154,41 @@ class VideoVisualizationService(
 
 **Slot management — оркестратор управляет lifecycle:**
 ```
-val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
+var completed = false
+var acquired: AcquiredServer? = null
+var jobId: String? = null
+
 try {
-    // Фаза 1, 2, 3
+    withTimeout(videoVisualize.timeout) {
+        // Фаза 1: SUBMIT (с retry между серверами)
+        // Фаза 2: POLL
+        // Фаза 3: DOWNLOAD
+    }
+    completed = true
 } finally {
-    loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
-    // Если job не завершился (timeout/cancel) — логируем orphan:
-    // logger.warn { "Orphan job $jobId may still be running on server ${acquired.id}" }
+    acquired?.let { server ->
+        loadBalancer.releaseServer(server.id, RequestType.VIDEO_VISUALIZE)
+        if (!completed && jobId != null) {
+            logger.warn { "Orphan job $jobId may still be running on server ${server.id}" }
+        }
+    }
 }
 ```
 
 **Фаза 1: SUBMIT (с retry между серверами)**
 ```
-withTimeout(videoVisualize.timeout) {
-    retrySubmit: while (true) {
-        try {
-            val acquired = loadBalancer.acquireServer(VIDEO_VISUALIZE)
-            val job = detectService.submitVideoVisualize(acquired, bytes, ...)
-        } catch (e: Exception) {
-            loadBalancer.releaseServer(acquired.id, VIDEO_VISUALIZE)
-            // Если DetectServerUnavailableException → delay, retry
-            // retry по аналогии с существующими методами DetectService
-        }
+while (true) {
+    val server = loadBalancer.acquireServer(VIDEO_VISUALIZE)
+    try {
+        val job = detectService.submitVideoVisualize(server, videoPath, ...)
+        acquired = server
+        jobId = job.jobId
+        break // submit succeeded
+    } catch (e: CancellationException) { throw e }
+    catch (e: Exception) {
+        loadBalancer.releaseServer(server.id, VIDEO_VISUALIZE)
+        // retry по аналогии с существующими методами DetectService
+        delay(retryDelay)
     }
 }
 ```
@@ -185,8 +197,8 @@ withTimeout(videoVisualize.timeout) {
 ```
 while (true) {
     delay(pollInterval)
-    val status = detectService.getJobStatus(acquired, job.jobId)
-    onProgress(status)
+    val status = detectService.getJobStatus(acquired, jobId)
+    try { onProgress(status) } catch (e: Exception) { logger.warn(e) { "onProgress callback failed" } }
     when (status.status) {
         JobStatus.COMPLETED -> break
         JobStatus.FAILED -> throw VideoAnnotationFailedException(status.error)
@@ -194,6 +206,8 @@ while (true) {
     }
 }
 ```
+
+**Обработка 404 при polling:** Если getJobStatus получает `404 Not Found` (сервер перезагрузился, job потерян) — это терминальная ошибка, бросаем `VideoAnnotationFailedException`. Не ретраим бесконечно.
 
 **Фаза 3: DOWNLOAD (с того же сервера)**
 ```
@@ -209,9 +223,13 @@ return videoPath
 | Submit HTTP error | release server, retry с другим сервером |
 | No servers | delay, retry (DetectServerUnavailableException) |
 | Job failed | throw VideoAnnotationFailedException, release |
+| Server returns 404 on poll | throw VideoAnnotationFailedException (job lost after server restart) |
 | Server down during poll | retry poll, при общем таймауте → DetectTimeoutException |
 | Coroutine cancelled | CancellationException, finally → release + log orphan job |
 | Total timeout | withTimeout → DetectTimeoutException, release + log orphan job |
+| onProgress exception | catch + log WARN, не прерывает job |
+
+**Accepted risk:** Retry submit на другом сервере может создать orphan job на первом сервере, если POST был принят, но ответ потерян. Detection server API v2.2.0 не поддерживает idempotency key. Риск минимален (1 сервер, редкий сценарий). Orphan jobs логируются (N1).
 
 ### 6. application.yaml changes
 
@@ -242,6 +260,3 @@ class VideoAnnotationFailedException(message: String?, cause: Throwable? = null)
     : RuntimeException(message, cause)
 ```
 
-### 8. OpenAPI spec
-
-Сохранить загруженный `openapi.json` (v2.2.0) в `docs/openapi/detect-server-openapi.json` для справки.

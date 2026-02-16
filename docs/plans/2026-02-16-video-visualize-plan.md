@@ -4,7 +4,7 @@
 
 **Goal:** Extend DetectService with async job-based `/detect/video/visualize` API and create VideoVisualizationService orchestrator.
 
-**Architecture:** Three new HTTP methods in DetectService (submit, pollStatus, download) that take `AcquiredServer` as parameter (no slot management). VideoVisualizationService orchestrates the full lifecycle (acquire slot → submit → poll → download → release slot) with progress callback. Download streams to temp file (returns `Path`). New RequestType.VIDEO_VISUALIZE in load balancer with dedicated capacity slots held until job completion. JobStatus enum for type-safe status handling.
+**Architecture:** Three new HTTP methods in DetectService (submit, pollStatus, download) that take `AcquiredServer` as parameter (no slot management). VideoVisualizationService orchestrates the full lifecycle (acquire slot → submit → poll → download → release slot) with progress callback. Input video as `Path` (streaming upload from file). Download streams to temp file (returns `Path`). New RequestType.VIDEO_VISUALIZE in load balancer with dedicated capacity slots held until job completion. JobStatus enum for type-safe status handling. 404 during polling = terminal error. Orphan job logging only on abnormal termination.
 
 **Tech Stack:** Kotlin, Spring WebFlux WebClient, Coroutines, MockWebServer (tests)
 
@@ -117,6 +117,7 @@ data class VideoVisualizeConfig(
     val pollInterval: Duration = Duration.ofSeconds(3),
     @field:Min(1)
     val maxDet: Int = 100,
+    @field:Min(1)
     val detectEvery: Int? = null,
     @field:Min(1)
     val lineWidth: Int = 2,
@@ -265,10 +266,19 @@ Also update the `secondaryProps` in multi-server tests (around lines 232-240, 26
 
 **Step 7: Run existing tests to verify nothing broke**
 
-Run: `./gradlew :modules-core:test`
+Run: `./gradlew :core:test`
 Expected: All existing tests PASS
 
-**Step 8: Commit**
+**Step 8: Update docker template**
+
+In `docker/deploy/application-docker.yaml.example`, add `video-visualize-requests` to each detect server config:
+```yaml
+      video-visualize-requests:
+        simultaneous-count: 1
+        priority: 1
+```
+
+**Step 9: Commit**
 
 ```bash
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/loadbalancer/RequestType.kt \
@@ -277,7 +287,8 @@ git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/loadbalancer
        modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/StatisticsResponse.kt \
        modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/loadbalancer/DetectServerLoadBalancer.kt \
        modules/core/src/test/resources/application.yaml \
-       modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt
+       modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt \
+       docker/deploy/application-docker.yaml.example
 git commit -m "feat: add VIDEO_VISUALIZE to load balancer"
 ```
 
@@ -359,7 +370,7 @@ Apply the same changes to the `when (path)` block and add the same helper method
 
 **Step 3: Run existing tests**
 
-Run: `./gradlew :modules-core:test`
+Run: `./gradlew :core:test`
 Expected: All existing tests PASS (new endpoints are additive)
 
 **Step 4: Commit**
@@ -389,10 +400,12 @@ Add to `DetectServiceTest.kt`:
         runBlocking {
             val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
 
+            val testVideoPath = Files.createTempFile("test-video-", ".mp4")
+            Files.write(testVideoPath, byteArrayOf(1, 2, 3))
+
             val jobResponse = detectService.submitVideoVisualize(
                 acquired = acquired,
-                bytes = byteArrayOf(1, 2, 3),
-                filePath = "/test/video.mp4",
+                videoPath = testVideoPath,
             )
 
             assertEquals("test-job-123", jobResponse.jobId)
@@ -411,7 +424,7 @@ Add to `DetectServiceTest.kt`:
 
 **Step 2: Run test to verify it fails**
 
-Run: `./gradlew :modules-core:test --tests '*DetectServiceTest.submitVideoVisualize*'`
+Run: `./gradlew :core:test --tests '*DetectServiceTest.submitVideoVisualize*'`
 Expected: FAIL — method does not exist
 
 **Step 3: Implement submitVideoVisualize in DetectService.kt**
@@ -433,8 +446,7 @@ Add method:
      */
     suspend fun submitVideoVisualize(
         acquired: AcquiredServer,
-        bytes: ByteArray,
-        filePath: String,
+        videoPath: Path,
         conf: Double = detectProperties.defaultConfidence,
         imgSize: Int = detectProperties.defaultImgSize,
         maxDet: Int = detectProperties.videoVisualize.maxDet,
@@ -445,11 +457,12 @@ Add method:
         showConf: Boolean = detectProperties.videoVisualize.showConf,
         model: String = detectProperties.defaultModel,
     ): JobCreatedResponse {
-        val filename = Path.of(filePath).fileName.toString()
+        val filename = videoPath.fileName.toString()
+        val fileResource = FileSystemResource(videoPath)
         val multipartData =
             MultipartBodyBuilder()
                 .apply {
-                    part("file", ByteArrayResource(bytes))
+                    part("file", fileResource)
                         .contentType(MediaType.parseMediaType("video/mp4"))
                         .filename(filename)
                 }.build()
@@ -483,7 +496,7 @@ Add method:
 
 **Step 4: Run test to verify it passes**
 
-Run: `./gradlew :modules-core:test --tests '*DetectServiceTest.submitVideoVisualize*'`
+Run: `./gradlew :core:test --tests '*DetectServiceTest.submitVideoVisualize*'`
 Expected: PASS
 
 **Step 5: Commit**
@@ -525,7 +538,7 @@ git commit -m "feat: add DetectService.submitVideoVisualize"
 
 **Step 2: Run test to verify it fails**
 
-Run: `./gradlew :modules-core:test --tests '*DetectServiceTest.getJobStatus*'`
+Run: `./gradlew :core:test --tests '*DetectServiceTest.getJobStatus*'`
 Expected: FAIL — method does not exist
 
 **Step 3: Implement getJobStatus in DetectService.kt**
@@ -561,7 +574,7 @@ Add method:
 
 **Step 4: Run test to verify it passes**
 
-Run: `./gradlew :modules-core:test --tests '*DetectServiceTest.getJobStatus*'`
+Run: `./gradlew :core:test --tests '*DetectServiceTest.getJobStatus*'`
 Expected: PASS
 
 **Step 5: Commit**
@@ -610,7 +623,7 @@ git commit -m "feat: add DetectService.getJobStatus"
 
 **Step 2: Run test to verify it fails**
 
-Run: `./gradlew :modules-core:test --tests '*DetectServiceTest.downloadJobResult*'`
+Run: `./gradlew :core:test --tests '*DetectServiceTest.downloadJobResult*'`
 Expected: FAIL — method does not exist
 
 **Step 3: Implement downloadJobResult in DetectService.kt**
@@ -631,29 +644,32 @@ Uses `DataBuffer` streaming to write directly to a temp file instead of loading 
     ): Path {
         val tempFile = Files.createTempFile("video-annotated-", ".mp4")
 
-        webClient
-            .get()
-            .uri { uriBuilder ->
-                uriBuilder
-                    .scheme(acquired.schema)
-                    .host(acquired.host)
-                    .port(acquired.port)
-                    .path("/jobs/{jobId}/download")
-                    .build(jobId)
-            }.retrieve()
-            .bodyToFlux<DataBuffer>()
-            .asFlow()
-            .collect { dataBuffer ->
-                try {
-                    Files.newOutputStream(tempFile, StandardOpenOption.APPEND).use { outputStream ->
-                        dataBuffer.asInputStream().use { inputStream ->
-                            inputStream.copyTo(outputStream)
+        try {
+            Files.newOutputStream(tempFile).use { outputStream ->
+                webClient
+                    .get()
+                    .uri { uriBuilder ->
+                        uriBuilder
+                            .scheme(acquired.schema)
+                            .host(acquired.host)
+                            .port(acquired.port)
+                            .path("/jobs/{jobId}/download")
+                            .build(jobId)
+                    }.retrieve()
+                    .bodyToFlux<DataBuffer>()
+                    .asFlow()
+                    .collect { dataBuffer ->
+                        try {
+                            outputStream.write(dataBuffer.asInputStream().readAllBytes())
+                        } finally {
+                            DataBufferUtils.release(dataBuffer)
                         }
                     }
-                } finally {
-                    DataBufferUtils.release(dataBuffer)
-                }
             }
+        } catch (e: Exception) {
+            Files.deleteIfExists(tempFile)
+            throw e
+        }
 
         return tempFile
     }
@@ -663,7 +679,7 @@ Note: Check existing codebase for DataBuffer/streaming patterns and adapt accord
 
 **Step 4: Run test to verify it passes**
 
-Run: `./gradlew :modules-core:test --tests '*DetectServiceTest.downloadJobResult*'`
+Run: `./gradlew :core:test --tests '*DetectServiceTest.downloadJobResult*'`
 Expected: PASS
 
 **Step 5: Commit**
@@ -681,8 +697,13 @@ git commit -m "feat: add DetectService.downloadJobResult with streaming"
 **IMPORTANT (review decisions):**
 - **C1:** VideoVisualizationService manages slot lifecycle (acquireServer/releaseServer). DetectService methods just do HTTP.
 - **C2:** annotateVideo returns `Path` (temp file), not `ByteArray`.
+- **C5:** Slot management pseudocode: acquire in retry loop, release on failure, keep on success.
+- **C7:** 404 during polling = terminal error (job lost after server restart).
+- **C8:** Orphan job logging only when !completed (use flag).
 - **N1:** Log orphan jobs on timeout/cancel.
 - **N5:** Use `JobStatus` enum in when blocks.
+- **N12:** Wrap onProgress in try-catch (exception in callback must not kill job).
+- **N18:** Input video as `Path`, not `ByteArray` (streaming upload from file).
 - **C3:** Retry logic by analogy with existing DetectService methods.
 
 **Files:**
@@ -699,9 +720,11 @@ Create `VideoVisualizationServiceTest.kt` with setUp (MockWebServer, DetectServi
         runBlocking {
             val progressUpdates = mutableListOf<JobStatusResponse>()
 
+            val testVideoPath = Files.createTempFile("test-input-", ".mp4")
+            Files.write(testVideoPath, byteArrayOf(1, 2, 3))
+
             val resultPath = service.annotateVideo(
-                bytes = byteArrayOf(1, 2, 3),
-                filePath = "/test/video.mp4",
+                videoPath = testVideoPath,
                 onProgress = { progressUpdates.add(it) },
             )
 
@@ -723,7 +746,7 @@ Create `VideoVisualizationServiceTest.kt` with setUp (MockWebServer, DetectServi
 
 **Step 2: Run test to verify it fails**
 
-Run: `./gradlew :modules-core:test --tests '*VideoVisualizationServiceTest*'`
+Run: `./gradlew :core:test --tests '*VideoVisualizationServiceTest*'`
 Expected: FAIL — class does not exist
 
 **Step 3: Implement VideoVisualizationService**
@@ -751,8 +774,7 @@ class VideoVisualizationService(
      * @return Path к временному файлу с аннотированным видео. Caller отвечает за удаление.
      */
     suspend fun annotateVideo(
-        bytes: ByteArray,
-        filePath: String,
+        videoPath: Path,
         conf: Double = detectProperties.defaultConfidence,
         imgSize: Int = detectProperties.defaultImgSize,
         maxDet: Int = detectProperties.videoVisualize.maxDet,
@@ -768,11 +790,12 @@ class VideoVisualizationService(
         val pollIntervalMs = detectProperties.videoVisualize.pollInterval.toMillis()
         var acquired: AcquiredServer? = null
         var jobId: String? = null
+        var completed = false
 
         try {
-            return withTimeout(timeoutMs) {
+            val result = withTimeout(timeoutMs) {
                 // Phase 1: Submit with retry (acquireServer + submit, retry on failure)
-                val (server, job) = submitWithRetry(bytes, filePath, conf, imgSize, maxDet,
+                val (server, job) = submitWithRetry(videoPath, conf, imgSize, maxDet,
                     detectEvery, classes, lineWidth, showLabels, showConf, model)
                 acquired = server
                 jobId = job.jobId
@@ -785,12 +808,18 @@ class VideoVisualizationService(
                     val status = try {
                         detectService.getJobStatus(server, job.jobId)
                     } catch (e: CancellationException) { throw e }
+                    catch (e: WebClientResponseException.NotFound) {
+                        // 404 = job lost (server restarted) — terminal error
+                        throw VideoAnnotationFailedException(
+                            "Job ${job.jobId} not found on server ${server.id} (server may have restarted)", e)
+                    }
                     catch (e: Exception) {
                         logger.warn { "Poll failed for job ${job.jobId}: ${e.message}" }
                         continue
                     }
 
-                    onProgress(status)
+                    try { onProgress(status) } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { logger.warn(e) { "onProgress callback failed for job ${job.jobId}" } }
 
                     when (status.status) {
                         JobStatus.COMPLETED -> {
@@ -806,15 +835,16 @@ class VideoVisualizationService(
                 // Phase 3: Download (streaming to temp file)
                 detectService.downloadJobResult(server, job.jobId)
             }
+            completed = true
+            return result
         } catch (e: TimeoutCancellationException) {
-            logger.error { "Video annotation timed out after ${timeoutMs}ms (filePath=$filePath)" }
+            logger.error { "Video annotation timed out after ${timeoutMs}ms (videoPath=$videoPath)" }
             throw DetectTimeoutException("Video annotation timed out after ${timeoutMs}ms", e)
         } finally {
             acquired?.let { server ->
                 loadBalancer.releaseServer(server.id, RequestType.VIDEO_VISUALIZE)
-                // Log orphan job if it wasn't completed (timeout/cancel scenario)
-                jobId?.let { id ->
-                    logger.warn { "Orphan job $id may still be running on server ${server.id}" }
+                if (!completed && jobId != null) {
+                    logger.warn { "Orphan job $jobId may still be running on server ${server.id}" }
                 }
             }
         }
@@ -822,9 +852,12 @@ class VideoVisualizationService(
 
     private suspend fun submitWithRetry(...): Pair<AcquiredServer, JobCreatedResponse> {
         // Retry logic by analogy with existing DetectService methods.
-        // acquireServer → submitVideoVisualize. On failure: releaseServer, delay, retry.
-        // On DetectServerUnavailableException: delay, retry.
-        // On CancellationException: rethrow.
+        // In a loop:
+        //   val server = loadBalancer.acquireServer(VIDEO_VISUALIZE)
+        //   try { submit → return Pair(server, job) }
+        //   catch (e: CancellationException) { releaseServer; rethrow }
+        //   catch (e: Exception) { releaseServer; delay; retry }
+        // On DetectServerUnavailableException from acquireServer: delay, retry.
     }
 }
 ```
@@ -834,7 +867,7 @@ Adjust the logging condition based on whether the method returned successfully o
 
 **Step 4: Run test to verify it passes**
 
-Run: `./gradlew :modules-core:test --tests '*VideoVisualizationServiceTest*'`
+Run: `./gradlew :core:test --tests '*VideoVisualizationServiceTest*'`
 Expected: PASS
 
 **Step 5: Commit**
@@ -896,9 +929,10 @@ Add to `VideoVisualizationServiceTest.kt`:
             mockWebServer.dispatcher = ru.zinin.frigate.analyzer.core.testsupport.JobFailedDispatcher()
 
             val exception = assertFailsWith<VideoAnnotationFailedException> {
+                val testVideoPath = Files.createTempFile("test-input-", ".mp4")
+                Files.write(testVideoPath, byteArrayOf(1, 2, 3))
                 service.annotateVideo(
-                    bytes = byteArrayOf(1, 2, 3),
-                    filePath = "/test/video.mp4",
+                    videoPath = testVideoPath,
                 )
             }
 
@@ -958,17 +992,30 @@ Add to `VideoVisualizationServiceTest.kt`:
         }
 ```
 
+**Step 3: Add submit retry test (review decision S8)**
+
+Add test that verifies retry on transient submit failure:
+```kotlin
+    @Test
+    fun `annotateVideo retries submit on transient server error`() =
+        runBlocking {
+            // Dispatcher: first POST returns 500, second POST returns 202, then normal flow
+            // Use ConfigurableDetectServiceDispatcher or custom dispatcher with failCount
+            // Verify: job completes successfully after retry, server is released
+        }
+```
+
 Add import to test file:
 ```kotlin
 import kotlin.test.assertFailsWith
 ```
 
-**Step 3: Run tests**
+**Step 4: Run tests**
 
-Run: `./gradlew :modules-core:test --tests '*VideoVisualizationServiceTest*'`
+Run: `./gradlew :core:test --tests '*VideoVisualizationServiceTest*'`
 Expected: All PASS
 
-**Step 4: Commit**
+**Step 5: Commit**
 
 ```bash
 git add modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/VideoVisualizationServiceTest.kt \
