@@ -5,14 +5,18 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.reactor.awaitSingle
+import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.withTimeout
 import org.springframework.core.io.ByteArrayResource
 import org.springframework.core.io.FileSystemResource
+import org.springframework.core.io.buffer.DataBuffer
+import org.springframework.core.io.buffer.DataBufferUtils
 import org.springframework.http.MediaType
 import org.springframework.http.client.MultipartBodyBuilder
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.bodyToFlux
 import org.springframework.web.reactive.function.client.bodyToMono
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.core.loadbalancer.AcquiredServer
@@ -24,6 +28,7 @@ import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.FrameExtractionResponse
 import ru.zinin.frigate.analyzer.model.response.JobCreatedResponse
 import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
+import java.nio.file.Files
 import java.nio.file.Path
 
 private val logger = KotlinLogging.logger {}
@@ -339,6 +344,49 @@ class DetectService(
             }.retrieve()
             .bodyToMono<JobStatusResponse>()
             .awaitSingle()
+
+    /**
+     * Скачивает результат аннотированного видео с конкретного сервера.
+     * Использует streaming запись во временный файл для избежания OOM.
+     * Не использует load balancer — обращается напрямую к серверу, на котором завершился job.
+     *
+     * @return Path к временному файлу с видео. Caller отвечает за удаление.
+     */
+    suspend fun downloadJobResult(
+        acquired: AcquiredServer,
+        jobId: String,
+    ): Path {
+        val tempFile = Files.createTempFile("video-annotated-", ".mp4")
+
+        try {
+            Files.newOutputStream(tempFile).use { outputStream ->
+                webClient
+                    .get()
+                    .uri { uriBuilder ->
+                        uriBuilder
+                            .scheme(acquired.schema)
+                            .host(acquired.host)
+                            .port(acquired.port)
+                            .path("/jobs/{jobId}/download")
+                            .build(jobId)
+                    }.retrieve()
+                    .bodyToFlux<DataBuffer>()
+                    .asFlow()
+                    .collect { dataBuffer ->
+                        try {
+                            outputStream.write(dataBuffer.asInputStream().readAllBytes())
+                        } finally {
+                            DataBufferUtils.release(dataBuffer)
+                        }
+                    }
+            }
+        } catch (e: Exception) {
+            Files.deleteIfExists(tempFile)
+            throw e
+        }
+
+        return tempFile
+    }
 
     /**
      * Универсальный метод retry с таймаутом.

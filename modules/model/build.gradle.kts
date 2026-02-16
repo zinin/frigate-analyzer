@@ -10,6 +10,7 @@ dependencies {
     implementation(project(":frigate-analyzer-common"))
 
     implementation("org.springframework.boot:spring-boot-starter")
+    implementation("com.fasterxml.jackson.core:jackson-annotations")
     implementation("org.springframework.data:spring-data-r2dbc")
 
     implementation("com.github.f4b6a3:uuid-creator:${property("uuidCreatorVersion")}")

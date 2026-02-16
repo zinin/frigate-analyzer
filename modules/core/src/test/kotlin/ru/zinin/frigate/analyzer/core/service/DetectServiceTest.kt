@@ -217,6 +217,28 @@ class DetectServiceTest {
             loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
         }
 
+    @Test
+    fun `downloadJobResult streams video to temp file`() =
+        runBlocking {
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
+
+            val videoPath = detectService.downloadJobResult(acquired, "test-job-123")
+
+            // Verify file exists and has content
+            assertTrue(Files.exists(videoPath))
+            val videoBytes = Files.readAllBytes(videoPath)
+            assertTrue(videoBytes.isNotEmpty())
+            // fakeVideoBytes from dispatcher: ftyp MP4 header
+            assertEquals(0x66.toByte(), videoBytes[4]) // 'f'
+            assertEquals(0x74.toByte(), videoBytes[5]) // 't'
+            assertEquals(0x79.toByte(), videoBytes[6]) // 'y'
+            assertEquals(0x70.toByte(), videoBytes[7]) // 'p'
+
+            // Cleanup
+            Files.deleteIfExists(videoPath)
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
+        }
+
     // ==================== Timeout Tests ====================
 
     @Test
