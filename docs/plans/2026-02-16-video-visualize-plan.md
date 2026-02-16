@@ -116,6 +116,7 @@ After the `visualize:` block (after line 69), add:
       timeout: ${DETECT_VIDEO_VISUALIZE_TIMEOUT:15m}
       poll-interval: ${DETECT_VIDEO_VISUALIZE_POLL_INTERVAL:3s}
       max-det: ${DETECT_VIDEO_VISUALIZE_MAX_DET:100}
+      detect-every: ${DETECT_VIDEO_VISUALIZE_DETECT_EVERY:}
       line-width: ${DETECT_VIDEO_VISUALIZE_LINE_WIDTH:2}
       show-labels: ${DETECT_VIDEO_VISUALIZE_SHOW_LABELS:true}
       show-conf: ${DETECT_VIDEO_VISUALIZE_SHOW_CONF:true}
