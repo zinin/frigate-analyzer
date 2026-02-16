@@ -58,6 +58,7 @@ class DetectServiceTest {
                 frameRequests = RequestConfig(simultaneousCount = 1, priority = 0),
                 framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 0),
                 visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
             )
         registry.register("test", serverProps)
         registry.getServer("test")!!.alive = true
@@ -236,6 +237,7 @@ class DetectServiceTest {
                     frameRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                     framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                     visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
+                    videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                 )
             registry.register("secondary", secondaryProps)
             registry.getServer("secondary")!!.alive = true
@@ -265,6 +267,7 @@ class DetectServiceTest {
                     frameRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                     framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                     visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
+                    videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                 )
             registry.register("secondary", secondaryProps)
             val secondaryServer = registry.getServer("secondary")!!

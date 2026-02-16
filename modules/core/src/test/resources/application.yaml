@@ -67,6 +67,9 @@ application:
       visualize-requests:
         simultaneous-count: 4
         priority: 1
+      video-visualize-requests:
+        simultaneous-count: 1
+        priority: 1
   detect:
     retry-delay: 500ms
     frame-timeout: 60s

@@ -34,6 +34,12 @@ data class DetectServerProperties(
     @field:NotNull
     @field:Valid
     val visualizeRequests: RequestConfig,
+    /**
+     * Конфигурация для запросов видео-визуализации
+     */
+    @field:NotNull
+    @field:Valid
+    val videoVisualizeRequests: RequestConfig,
 ) {
     fun buildUrl(): String = "$schema://$host:$port"
 }

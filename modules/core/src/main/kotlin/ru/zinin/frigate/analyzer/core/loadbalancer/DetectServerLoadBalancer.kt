@@ -39,7 +39,9 @@ class DetectServerLoadBalancer(
                     "frameExtractionRequests(count=${props.framesExtractRequests.simultaneousCount}, " +
                     "priority=${props.framesExtractRequests.priority}), " +
                     "visualizeRequests(count=${props.visualizeRequests.simultaneousCount}, " +
-                    "priority=${props.visualizeRequests.priority})"
+                    "priority=${props.visualizeRequests.priority}), " +
+                    "videoVisualizeRequests(count=${props.videoVisualizeRequests.simultaneousCount}, " +
+                    "priority=${props.videoVisualizeRequests.priority})"
             }
         }
 
@@ -97,6 +99,11 @@ class DetectServerLoadBalancer(
                         current = server.processingVisualizeRequestsCount.get(),
                         maximum = server.properties.visualizeRequests.simultaneousCount,
                     ),
+                videoVisualizeRequests =
+                    ServerLoad(
+                        current = server.processingVideoVisualizeRequestsCount.get(),
+                        maximum = server.properties.videoVisualizeRequests.simultaneousCount,
+                    ),
             )
         }
 
@@ -107,7 +114,8 @@ class DetectServerLoadBalancer(
                     "frames=${server.processingFrameRequestsCount.get()}/${server.properties.frameRequests.simultaneousCount}, " +
                     "frameExtract=${server.processingFrameExtractionRequestsCount.get()}/" +
                     "${server.properties.framesExtractRequests.simultaneousCount}, " +
-                    "visualize=${server.processingVisualizeRequestsCount.get()}/${server.properties.visualizeRequests.simultaneousCount})"
+                    "visualize=${server.processingVisualizeRequestsCount.get()}/${server.properties.visualizeRequests.simultaneousCount}, " +
+                    "videoVisualize=${server.processingVideoVisualizeRequestsCount.get()}/${server.properties.videoVisualizeRequests.simultaneousCount})"
             }
         return "No detect server available for $requestType. Current statuses: [$statuses]"
     }
