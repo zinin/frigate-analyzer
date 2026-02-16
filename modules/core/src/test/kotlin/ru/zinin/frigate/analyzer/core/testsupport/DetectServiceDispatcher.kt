@@ -185,8 +185,14 @@ class DetectServiceDispatcher : Dispatcher() {
 
     private fun fakeVideoBytes(): ByteArray =
         byteArrayOf(
-            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x1C.toByte(),
-            0x66.toByte(), 0x74.toByte(), 0x79.toByte(), 0x70.toByte(),
+            0x00.toByte(),
+            0x00.toByte(),
+            0x00.toByte(),
+            0x1C.toByte(),
+            0x66.toByte(),
+            0x74.toByte(),
+            0x79.toByte(),
+            0x70.toByte(),
         )
 }
 
@@ -393,7 +399,165 @@ class ConfigurableDetectServiceDispatcher(
 
     private fun fakeVideoBytes(): ByteArray =
         byteArrayOf(
-            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x1C.toByte(),
-            0x66.toByte(), 0x74.toByte(), 0x79.toByte(), 0x70.toByte(),
+            0x00.toByte(),
+            0x00.toByte(),
+            0x00.toByte(),
+            0x1C.toByte(),
+            0x66.toByte(),
+            0x74.toByte(),
+            0x79.toByte(),
+            0x70.toByte(),
+        )
+}
+
+/**
+ * Dispatcher that returns a failed job status for testing error scenarios.
+ */
+class JobFailedDispatcher : Dispatcher() {
+    override fun dispatch(request: RecordedRequest): MockResponse {
+        val path = request.url.encodedPath
+
+        return when {
+            path == "/detect/video/visualize" -> {
+                respondJson(202, """{"job_id":"fail-job","status":"queued","message":"Created"}""")
+            }
+
+            path.matches(Regex("/jobs/[^/]+")) && !path.contains("/download") -> {
+                respondJson(
+                    200,
+                    """{"job_id":"fail-job","status":"failed","progress":0,"created_at":"2026-02-16T12:00:00Z","error":"Out of GPU memory"}""",
+                )
+            }
+
+            else -> {
+                respondJson(404, """{"detail":"Not Found"}""")
+            }
+        }
+    }
+
+    private fun respondJson(
+        status: Int,
+        body: String,
+    ): MockResponse =
+        MockResponse
+            .Builder()
+            .code(status)
+            .addHeader("Content-Type", "application/json; charset=utf-8")
+            .body(body)
+            .build()
+}
+
+/**
+ * Dispatcher that always returns "processing" status, never completing.
+ * Used for testing timeout scenarios.
+ */
+class NeverCompletingDispatcher : Dispatcher() {
+    override fun dispatch(request: RecordedRequest): MockResponse {
+        val path = request.url.encodedPath
+
+        return when {
+            path == "/detect/video/visualize" -> {
+                respondJson(202, """{"job_id":"slow-job","status":"queued","message":"Created"}""")
+            }
+
+            path.matches(Regex("/jobs/[^/]+")) && !path.contains("/download") -> {
+                respondJson(
+                    200,
+                    """{"job_id":"slow-job","status":"processing","progress":10,"created_at":"2026-02-16T12:00:00Z"}""",
+                )
+            }
+
+            else -> {
+                respondJson(404, """{"detail":"Not Found"}""")
+            }
+        }
+    }
+
+    private fun respondJson(
+        status: Int,
+        body: String,
+    ): MockResponse =
+        MockResponse
+            .Builder()
+            .code(status)
+            .addHeader("Content-Type", "application/json; charset=utf-8")
+            .body(body)
+            .build()
+}
+
+/**
+ * Dispatcher that fails the first N POST requests to /detect/video/visualize with a 500 error,
+ * then succeeds normally (submit + poll completed + download).
+ */
+class TransientSubmitFailureDispatcher(
+    private val failCount: Int = 1,
+) : Dispatcher() {
+    private val submitAttempts = AtomicInteger(0)
+
+    override fun dispatch(request: RecordedRequest): MockResponse {
+        val path = request.url.encodedPath
+
+        return when {
+            path == "/detect/video/visualize" -> {
+                val attempt = submitAttempts.incrementAndGet()
+                if (attempt <= failCount) {
+                    respondJson(500, """{"detail":"Internal Server Error"}""")
+                } else {
+                    respondJson(202, """{"job_id":"retry-job","status":"queued","message":"Created"}""")
+                }
+            }
+
+            path.matches(Regex("/jobs/[^/]+/download")) -> {
+                respondBinary(200, "video/mp4", fakeVideoBytes())
+            }
+
+            path.matches(Regex("/jobs/[^/]+")) -> {
+                respondJson(
+                    200,
+                    """{"job_id":"retry-job","status":"completed","progress":100,"created_at":"2026-02-16T12:00:00Z","completed_at":"2026-02-16T12:05:00Z","download_url":"/jobs/retry-job/download","error":null,"stats":{"total_frames":100,"detected_frames":20,"tracked_frames":80,"total_detections":50,"processing_time_ms":5000}}""",
+                )
+            }
+
+            else -> {
+                respondJson(404, """{"detail":"Not Found"}""")
+            }
+        }
+    }
+
+    fun getSubmitAttempts(): Int = submitAttempts.get()
+
+    private fun respondJson(
+        status: Int,
+        body: String,
+    ): MockResponse =
+        MockResponse
+            .Builder()
+            .code(status)
+            .addHeader("Content-Type", "application/json; charset=utf-8")
+            .body(body)
+            .build()
+
+    private fun respondBinary(
+        status: Int,
+        contentType: String,
+        bytes: ByteArray,
+    ): MockResponse =
+        MockResponse
+            .Builder()
+            .code(status)
+            .addHeader("Content-Type", contentType)
+            .body(Buffer().write(bytes))
+            .build()
+
+    private fun fakeVideoBytes(): ByteArray =
+        byteArrayOf(
+            0x00.toByte(),
+            0x00.toByte(),
+            0x00.toByte(),
+            0x1C.toByte(),
+            0x66.toByte(),
+            0x74.toByte(),
+            0x79.toByte(),
+            0x70.toByte(),
         )
 }
