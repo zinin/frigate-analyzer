@@ -70,27 +70,15 @@ Key decisions from brainstorming + design review sessions:
 
 9. **[N1] Orphan job logging:** При timeout/cancel логировать WARN что job может ещё работать на сервере. Detection server API v2.2.0 не поддерживает DELETE /jobs/{id}.
 
-10. **[N5] JobStatus enum (NEW, not in original plan):** Добавить `enum class JobStatus { QUEUED, PROCESSING, COMPLETED, FAILED }` с `@JsonProperty`. Использовать в `JobStatusResponse.status` вместо String. Design doc обновлён, plan — нет.
+10. **[N5] JobStatus enum:** `enum class JobStatus { QUEUED, PROCESSING, COMPLETED, FAILED }` с `@JsonProperty`. Используется в `JobStatusResponse.status`.
 
-11. **[N4] detect-every in plan YAML:** Было пропущено в plan YAML блоке, добавлено.
+11. **[N4] detect-every in plan YAML:** Синхронизировано.
 
-12. **[C4] videoVisualizeRequests:** Оставить обязательным полем в DetectServerProperties (без дефолта).
+12. **[C4] videoVisualizeRequests:** Обязательное поле в DetectServerProperties (без дефолта).
 
 13. **Destination:** Standalone → Telegram. Видео отправляется пользователю, временный файл удаляется.
 
-### IMPORTANT: Plan vs Design Discrepancies
-
-The plan was written BEFORE the design review. Several plan details conflict with review decisions:
-
-- **Task 5 (submitVideoVisualize):** Plan shows method doing `acquireServer` internally and returning `Pair<AcquiredServer, JobCreatedResponse>`. ACTUAL design: method takes `AcquiredServer` as parameter, returns only `JobCreatedResponse`. No acquire/release inside.
-
-- **Task 7 (downloadJobResult):** Plan shows returning `ByteArray`. ACTUAL design: returns `Path` (streaming to temp file).
-
-- **Task 1 (Response Models):** Plan doesn't include `JobStatus` enum. MUST add it based on review decision N5.
-
-- **Task 8 (VideoVisualizationService):** Plan shows `annotateVideo` returning `ByteArray`. ACTUAL design: returns `Path`. Orchestrator manages acquire/release (not DetectService).
-
-**Always follow the DESIGN DOC over the PLAN when they conflict.**
+**Note:** Plan и Design doc синхронизированы после ревью. Оба документа отражают актуальные решения.
 
 ## PLAN QUALITY WARNING
 
