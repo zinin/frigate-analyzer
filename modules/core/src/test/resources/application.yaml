@@ -89,6 +89,14 @@ application:
       show-labels: true
       show-conf: true
       quality: 90
+    video-visualize:
+      timeout: 15m
+      poll-interval: 3s
+      max-det: 100
+      detect-every:
+      line-width: 2
+      show-labels: true
+      show-conf: true
   pipeline:
     frame:
       channel-buffer-size: 500
