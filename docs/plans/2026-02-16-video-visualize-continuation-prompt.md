@@ -46,7 +46,7 @@ Read both documents first.
 
 ## SESSION CONTEXT
 
-Key decisions from brainstorming + design review sessions:
+Key decisions from brainstorming + design review sessions (2 iterations, 35 issues total):
 
 ### Architecture Decisions (brainstorming)
 
@@ -62,9 +62,9 @@ Key decisions from brainstorming + design review sessions:
 
 ### Design Review Decisions (iteration 1)
 
-6. **[C1] Slot management pattern (CHANGED from original plan):** submitVideoVisualize принимает `AcquiredServer` как параметр — НЕ делает acquireServer/releaseServer внутри. VideoVisualizationService управляет slot lifecycle (acquire в начале annotateVideo, release в finally). Это отличается от плана, где submitVideoVisualize делал acquire внутри и возвращал Pair<AcquiredServer, JobCreatedResponse>.
+6. **[C1] Slot management pattern:** submitVideoVisualize принимает `AcquiredServer` как параметр — НЕ делает acquireServer/releaseServer внутри. VideoVisualizationService управляет slot lifecycle (acquire в начале annotateVideo, release в finally).
 
-7. **[C2] Download streaming (CHANGED from original plan):** downloadJobResult возвращает `Path` (streaming запись во временный файл) вместо `ByteArray`. Это предотвращает OOM на больших видео. Plan пока показывает ByteArray — при реализации Task 7 нужно использовать Path.
+7. **[C2] Download streaming:** downloadJobResult возвращает `Path` (streaming запись во временный файл) вместо `ByteArray`. Это предотвращает OOM на больших видео.
 
 8. **[C3] Retry policy:** Делать по аналогии с существующими методами DetectService. Проверить как они работают перед реализацией.
 
@@ -72,13 +72,41 @@ Key decisions from brainstorming + design review sessions:
 
 10. **[N5] JobStatus enum:** `enum class JobStatus { QUEUED, PROCESSING, COMPLETED, FAILED }` с `@JsonProperty`. Используется в `JobStatusResponse.status`.
 
-11. **[N4] detect-every in plan YAML:** Синхронизировано.
+11. **[C4] videoVisualizeRequests:** Обязательное поле в DetectServerProperties (без дефолта).
 
-12. **[C4] videoVisualizeRequests:** Обязательное поле в DetectServerProperties (без дефолта).
+12. **Destination:** Standalone → Telegram. Видео отправляется пользователю, временный файл удаляется.
 
-13. **Destination:** Standalone → Telegram. Видео отправляется пользователю, временный файл удаляется.
+### Design Review Decisions (iteration 2)
 
-**Note:** Plan и Design doc синхронизированы после ревью. Оба документа отражают актуальные решения.
+13. **[C5] Slot management pseudocode (FIXED):** Design теперь показывает корректный retry pattern: acquire внутри retry loop, release на failure, keep на success. completed flag для orphan logging.
+
+14. **[C6] Temp file cleanup:** downloadJobResult удаляет temp file в catch при ошибке streaming. Plan Task 7 обновлён: single OutputStream + try-catch с Files.deleteIfExists.
+
+15. **[C7] 404 при polling = терминальная ошибка:** Если getJobStatus получает 404 (сервер перезагрузился, job потерян) — бросать VideoAnnotationFailedException, не ретраить бесконечно.
+
+16. **[C8] Orphan logging only on failure:** var completed = false, логировать только если !completed && jobId != null.
+
+17. **[N9] Idempotency — accepted risk:** Retry submit может создать duplicate orphan job. API не поддерживает idempotency key. Риск минимален.
+
+18. **[N10] WebClient timeout:** Глобальный response-timeout=30s может мешать video запросам. Проверить при реализации Task 5 и 7. При необходимости переопределить на уровне отдельных запросов.
+
+19. **[N11] Single OutputStream:** downloadJobResult открывает OutputStream один раз перед collect (не на каждый DataBuffer chunk).
+
+20. **[N12] onProgress exception wrapping:** try { onProgress(status) } catch { logger.warn } — ошибка callback не должна убивать job.
+
+21. **[N13] Gradle paths:** Правильные пути `:core:test`, `:model:test` (НЕ `:modules-core:test`). Исправлено в плане.
+
+22. **[N14] Docker template:** Task 3 включает обновление `docker/deploy/application-docker.yaml.example`.
+
+23. **[N18] Input video as Path (NOT ByteArray):** annotateVideo и submitVideoVisualize принимают `videoPath: Path` вместо `bytes: ByteArray`. Видео собирается из файлов Frigate на диске — streaming upload через FileSystemResource.
+
+24. **[N19] detectEvery validation:** @field:Min(1) для detectEvery: Int? в VideoVisualizeConfig.
+
+25. **[S8] Submit retry test:** Task 9 включает тест retry при transient submit failure.
+
+26. **[S6] jobId в логах:** Включать jobId во все логи VideoVisualizationService при реализации Task 8.
+
+**Note:** Plan и Design doc синхронизированы после обоих раундов ревью. Оба документа отражают актуальные решения.
 
 ## PLAN QUALITY WARNING
 
