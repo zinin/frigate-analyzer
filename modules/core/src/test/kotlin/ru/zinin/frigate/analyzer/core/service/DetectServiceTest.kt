@@ -76,7 +76,7 @@ class DetectServiceTest {
                 ServerHealthMonitor(registry, webClient, clock, detectProperties),
             )
 
-        detectService = DetectService(webClient, loadBalancer, detectProperties)
+        detectService = DetectService(webClient, loadBalancer, detectProperties, applicationProperties(serverProps))
     }
 
     @AfterEach

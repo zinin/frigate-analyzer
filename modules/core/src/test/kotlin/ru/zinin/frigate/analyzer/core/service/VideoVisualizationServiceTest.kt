@@ -79,7 +79,7 @@ class VideoVisualizationServiceTest {
                 ServerHealthMonitor(registry, webClient, clock, detectProperties),
             )
 
-        val detectService = DetectService(webClient, loadBalancer, detectProperties)
+        val detectService = DetectService(webClient, loadBalancer, detectProperties, applicationProperties(serverProps))
         service = VideoVisualizationService(detectService, loadBalancer, detectProperties)
     }
 
@@ -181,7 +181,19 @@ class VideoVisualizationServiceTest {
                     ServerSelectionStrategy(),
                     ServerHealthMonitor(registry, webClient, clock, shortDetectProperties),
                 )
-            val shortDetectService = DetectService(webClient, shortLoadBalancer, shortDetectProperties)
+            val shortAppProps =
+                applicationProperties(
+                    DetectServerProperties(
+                        schema = "http",
+                        host = "localhost",
+                        port = mockWebServer.port,
+                        frameRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                        framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                        visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                        videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                    ),
+                )
+            val shortDetectService = DetectService(webClient, shortLoadBalancer, shortDetectProperties, shortAppProps)
             val shortService = VideoVisualizationService(shortDetectService, shortLoadBalancer, shortDetectProperties)
 
             val testVideoPath = Files.createTempFile("test-input-", ".mp4")
@@ -235,7 +247,19 @@ class VideoVisualizationServiceTest {
                     ServerSelectionStrategy(),
                     ServerHealthMonitor(registry, webClient, clock, retryDetectProperties),
                 )
-            val retryDetectService = DetectService(webClient, retryLoadBalancer, retryDetectProperties)
+            val retryAppProps =
+                applicationProperties(
+                    DetectServerProperties(
+                        schema = "http",
+                        host = "localhost",
+                        port = mockWebServer.port,
+                        frameRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                        framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                        visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                        videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                    ),
+                )
+            val retryDetectService = DetectService(webClient, retryLoadBalancer, retryDetectProperties, retryAppProps)
             val retryService = VideoVisualizationService(retryDetectService, retryLoadBalancer, retryDetectProperties)
 
             val testVideoPath = Files.createTempFile("test-input-", ".mp4")

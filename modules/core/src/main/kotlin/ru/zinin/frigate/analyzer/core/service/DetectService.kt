@@ -2,10 +2,12 @@ package ru.zinin.frigate.analyzer.core.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.reactor.awaitSingle
+import kotlinx.coroutines.reactor.awaitSingleOrNull
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.springframework.core.io.ByteArrayResource
 import org.springframework.core.io.FileSystemResource
@@ -18,6 +20,7 @@ import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.bodyToFlux
 import org.springframework.web.reactive.function.client.bodyToMono
+import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.core.loadbalancer.AcquiredServer
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
@@ -30,6 +33,7 @@ import ru.zinin.frigate.analyzer.model.response.JobCreatedResponse
 import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 
 private val logger = KotlinLogging.logger {}
 
@@ -38,6 +42,7 @@ class DetectService(
     private val webClient: WebClient,
     private val detectServerLoadBalancer: DetectServerLoadBalancer,
     private val detectProperties: DetectProperties,
+    private val applicationProperties: ApplicationProperties,
 ) {
     /**
      * Выполняет детекцию с автоматическим retry при любых ошибках.
@@ -355,10 +360,13 @@ class DetectService(
         acquired: AcquiredServer,
         jobId: String,
     ): Path {
-        val tempFile = Files.createTempFile("video-annotated-", ".mp4")
+        val tempFile =
+            withContext(Dispatchers.IO) {
+                Files.createTempFile(applicationProperties.tempFolder, "video-annotated-", ".mp4")
+            }
 
         try {
-            Files.newOutputStream(tempFile).use { outputStream ->
+            val flux =
                 webClient
                     .get()
                     .uri { uriBuilder ->
@@ -370,17 +378,13 @@ class DetectService(
                             .build(jobId)
                     }.retrieve()
                     .bodyToFlux<DataBuffer>()
-                    .asFlow()
-                    .collect { dataBuffer ->
-                        try {
-                            outputStream.write(dataBuffer.asInputStream().readAllBytes())
-                        } finally {
-                            DataBufferUtils.release(dataBuffer)
-                        }
-                    }
-            }
+
+            DataBufferUtils
+                .write(flux, tempFile, StandardOpenOption.WRITE)
+                .then()
+                .awaitSingleOrNull()
         } catch (e: Exception) {
-            Files.deleteIfExists(tempFile)
+            withContext(Dispatchers.IO) { Files.deleteIfExists(tempFile) }
             throw e
         }
 
