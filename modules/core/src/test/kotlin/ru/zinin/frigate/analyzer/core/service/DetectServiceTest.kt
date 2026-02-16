@@ -15,6 +15,7 @@ import ru.zinin.frigate.analyzer.core.config.properties.DetectServerProperties
 import ru.zinin.frigate.analyzer.core.config.properties.RequestConfig
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerRegistry
+import ru.zinin.frigate.analyzer.core.loadbalancer.RequestType
 import ru.zinin.frigate.analyzer.core.loadbalancer.ServerHealthMonitor
 import ru.zinin.frigate.analyzer.core.loadbalancer.ServerSelectionStrategy
 import ru.zinin.frigate.analyzer.core.testsupport.ConfigurableDetectServiceDispatcher
@@ -23,6 +24,7 @@ import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
 import tools.jackson.databind.json.JsonMapper
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Clock
 import java.time.Duration
@@ -167,6 +169,34 @@ class DetectServiceTest {
             assertTrue(request.url.query!!.contains("show_labels=true"))
             assertTrue(request.url.query!!.contains("show_conf=true"))
             assertTrue(request.url.query!!.contains("quality=90"))
+        }
+
+    @Test
+    fun `submitVideoVisualize returns job response for given server`() =
+        runBlocking {
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
+
+            val testVideoPath = Files.createTempFile("test-video-", ".mp4")
+            Files.write(testVideoPath, byteArrayOf(1, 2, 3))
+
+            val jobResponse =
+                detectService.submitVideoVisualize(
+                    acquired = acquired,
+                    videoPath = testVideoPath,
+                )
+
+            assertEquals("test-job-123", jobResponse.jobId)
+            assertEquals("queued", jobResponse.status)
+
+            val request = mockWebServer.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/detect/video/visualize", request.url.encodedPath)
+            assertTrue(request.url.query!!.contains("conf=0.6"))
+            assertTrue(request.url.query!!.contains("imgsz=2016"))
+
+            // Cleanup: release manually (submitVideoVisualize does NOT release)
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
+            Files.deleteIfExists(testVideoPath)
         }
 
     // ==================== Timeout Tests ====================
