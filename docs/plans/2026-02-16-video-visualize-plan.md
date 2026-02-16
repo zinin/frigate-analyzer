@@ -4,7 +4,7 @@
 
 **Goal:** Extend DetectService with async job-based `/detect/video/visualize` API and create VideoVisualizationService orchestrator.
 
-**Architecture:** Three new HTTP methods in DetectService (submit, pollStatus, download) + VideoVisualizationService that orchestrates the full lifecycle (submit → poll → download) with progress callback. New RequestType.VIDEO_VISUALIZE in load balancer with dedicated capacity slots held until job completion.
+**Architecture:** Three new HTTP methods in DetectService (submit, pollStatus, download) that take `AcquiredServer` as parameter (no slot management). VideoVisualizationService orchestrates the full lifecycle (acquire slot → submit → poll → download → release slot) with progress callback. Download streams to temp file (returns `Path`). New RequestType.VIDEO_VISUALIZE in load balancer with dedicated capacity slots held until job completion. JobStatus enum for type-safe status handling.
 
 **Tech Stack:** Kotlin, Spring WebFlux WebClient, Coroutines, MockWebServer (tests)
 
@@ -16,6 +16,7 @@
 
 **Files:**
 - Create: `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/JobCreatedResponse.kt`
+- Create: `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/JobStatus.kt`
 - Create: `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/JobStatusResponse.kt`
 - Create: `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/exception/VideoAnnotationFailedException.kt`
 
@@ -31,14 +32,29 @@ data class JobCreatedResponse(
 )
 ```
 
-**Step 2: Create JobStatusResponse.kt**
+**Step 2: Create JobStatus.kt**
+
+```kotlin
+package ru.zinin.frigate.analyzer.model.response
+
+import tools.jackson.annotation.JsonProperty
+
+enum class JobStatus {
+    @JsonProperty("queued") QUEUED,
+    @JsonProperty("processing") PROCESSING,
+    @JsonProperty("completed") COMPLETED,
+    @JsonProperty("failed") FAILED,
+}
+```
+
+**Step 3: Create JobStatusResponse.kt**
 
 ```kotlin
 package ru.zinin.frigate.analyzer.model.response
 
 data class JobStatusResponse(
     val jobId: String,
-    val status: String,
+    val status: JobStatus,
     val progress: Int,
     val createdAt: String,
     val completedAt: String?,
@@ -56,7 +72,7 @@ data class JobStats(
 )
 ```
 
-**Step 3: Create VideoAnnotationFailedException.kt**
+**Step 4: Create VideoAnnotationFailedException.kt**
 
 ```kotlin
 package ru.zinin.frigate.analyzer.model.exception
@@ -67,10 +83,11 @@ class VideoAnnotationFailedException(
 ) : RuntimeException(message, cause)
 ```
 
-**Step 4: Commit**
+**Step 5: Commit**
 
 ```bash
 git add modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/JobCreatedResponse.kt \
+       modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/JobStatus.kt \
        modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/JobStatusResponse.kt \
        modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/exception/VideoAnnotationFailedException.kt
 git commit -m "feat: add video visualize response models and exception"
@@ -360,24 +377,26 @@ git commit -m "test: add video visualize endpoints to mock dispatcher"
 - Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/DetectService.kt` — add method
 - Modify: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt` — add test
 
+**IMPORTANT (review decision C1):** submitVideoVisualize принимает `AcquiredServer` как параметр. НЕ делает acquire/release внутри. Caller (VideoVisualizationService) управляет slot lifecycle.
+
 **Step 1: Write failing test**
 
 Add to `DetectServiceTest.kt`:
 
 ```kotlin
     @Test
-    fun `submitVideoVisualize returns acquired server and job response`() =
+    fun `submitVideoVisualize returns job response for given server`() =
         runBlocking {
-            val (acquired, jobResponse) = detectService.submitVideoVisualize(
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
+
+            val jobResponse = detectService.submitVideoVisualize(
+                acquired = acquired,
                 bytes = byteArrayOf(1, 2, 3),
                 filePath = "/test/video.mp4",
             )
 
             assertEquals("test-job-123", jobResponse.jobId)
             assertEquals("queued", jobResponse.status)
-            assertEquals("test", acquired.id)
-            // Server slot should still be held (not released)
-            assertEquals(1, registry.getServer("test")!!.processingVideoVisualizeRequestsCount.get())
 
             val request = mockWebServer.takeRequest()
             assertEquals("POST", request.method)
@@ -386,7 +405,7 @@ Add to `DetectServiceTest.kt`:
             assertTrue(request.url.query!!.contains("imgsz=2016"))
 
             // Cleanup: release manually
-            loadBalancer.releaseServer(acquired.id, ru.zinin.frigate.analyzer.core.loadbalancer.RequestType.VIDEO_VISUALIZE)
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
         }
 ```
 
@@ -407,13 +426,13 @@ Add method:
 
 ```kotlin
     /**
-     * Отправляет видео на аннотацию. Возвращает acquired сервер и ответ с job_id.
-     * Caller ОБЯЗАН вызвать loadBalancer.releaseServer() после завершения job.
+     * Отправляет видео на аннотацию на конкретный сервер.
+     * НЕ управляет слотами — caller отвечает за acquire/release.
      *
-     * @throws DetectServerUnavailableException если нет доступных серверов
      * @throws Exception при ошибке от сервера
      */
     suspend fun submitVideoVisualize(
+        acquired: AcquiredServer,
         bytes: ByteArray,
         filePath: String,
         conf: Double = detectProperties.defaultConfidence,
@@ -425,7 +444,7 @@ Add method:
         showLabels: Boolean = detectProperties.videoVisualize.showLabels,
         showConf: Boolean = detectProperties.videoVisualize.showConf,
         model: String = detectProperties.defaultModel,
-    ): Pair<AcquiredServer, JobCreatedResponse> {
+    ): JobCreatedResponse {
         val filename = Path.of(filePath).fileName.toString()
         val multipartData =
             MultipartBodyBuilder()
@@ -435,42 +454,30 @@ Add method:
                         .filename(filename)
                 }.build()
 
-        val acquired = detectServerLoadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
-
-        try {
-            val response =
-                webClient
-                    .post()
-                    .uri { uriBuilder ->
-                        uriBuilder
-                            .scheme(acquired.schema)
-                            .host(acquired.host)
-                            .port(acquired.port)
-                            .path("/detect/video/visualize")
-                            .queryParam("conf", conf)
-                            .queryParam("imgsz", imgSize)
-                            .queryParam("max_det", maxDet)
-                            .apply {
-                                detectEvery?.let { queryParam("detect_every", it) }
-                                classes?.let { queryParam("classes", it) }
-                            }
-                            .queryParam("line_width", lineWidth)
-                            .queryParam("show_labels", showLabels)
-                            .queryParam("show_conf", showConf)
-                            .queryParam("model", model)
-                            .build()
-                    }.body(BodyInserters.fromMultipartData(multipartData))
-                    .retrieve()
-                    .bodyToMono<JobCreatedResponse>()
-                    .awaitSingle()
-
-            return Pair(acquired, response)
-        } catch (e: Exception) {
-            // Release server on submit failure — caller won't have acquired reference
-            detectServerLoadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
-            logger.warn { "Video visualize submit failed on server ${acquired.id}: ${e.message}" }
-            throw e
-        }
+        return webClient
+            .post()
+            .uri { uriBuilder ->
+                uriBuilder
+                    .scheme(acquired.schema)
+                    .host(acquired.host)
+                    .port(acquired.port)
+                    .path("/detect/video/visualize")
+                    .queryParam("conf", conf)
+                    .queryParam("imgsz", imgSize)
+                    .queryParam("max_det", maxDet)
+                    .apply {
+                        detectEvery?.let { queryParam("detect_every", it) }
+                        classes?.let { queryParam("classes", it) }
+                    }
+                    .queryParam("line_width", lineWidth)
+                    .queryParam("show_labels", showLabels)
+                    .queryParam("show_conf", showConf)
+                    .queryParam("model", model)
+                    .build()
+            }.body(BodyInserters.fromMultipartData(multipartData))
+            .retrieve()
+            .bodyToMono<JobCreatedResponse>()
+            .awaitSingle()
     }
 ```
 
@@ -501,21 +508,18 @@ git commit -m "feat: add DetectService.submitVideoVisualize"
     @Test
     fun `getJobStatus returns job status from specific server`() =
         runBlocking {
-            val (acquired, _) = detectService.submitVideoVisualize(
-                bytes = byteArrayOf(1, 2, 3),
-                filePath = "/test/video.mp4",
-            )
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
 
             val status = detectService.getJobStatus(acquired, "test-job-123")
 
             assertEquals("test-job-123", status.jobId)
-            assertEquals("completed", status.status)
+            assertEquals(JobStatus.COMPLETED, status.status)
             assertEquals(100, status.progress)
             assertNotNull(status.stats)
             assertEquals(300, status.stats!!.totalFrames)
 
             // Cleanup
-            loadBalancer.releaseServer(acquired.id, ru.zinin.frigate.analyzer.core.loadbalancer.RequestType.VIDEO_VISUALIZE)
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
         }
 ```
 
@@ -572,6 +576,8 @@ git commit -m "feat: add DetectService.getJobStatus"
 
 ### Task 7: DetectService.downloadJobResult
 
+**IMPORTANT (review decision C2):** downloadJobResult использует streaming запись во временный файл и возвращает `Path` вместо `ByteArray`. Это предотвращает OOM на больших видео.
+
 **Files:**
 - Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/DetectService.kt` — add method
 - Modify: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt` — add test
@@ -580,24 +586,25 @@ git commit -m "feat: add DetectService.getJobStatus"
 
 ```kotlin
     @Test
-    fun `downloadJobResult returns video bytes from specific server`() =
+    fun `downloadJobResult streams video to temp file`() =
         runBlocking {
-            val (acquired, _) = detectService.submitVideoVisualize(
-                bytes = byteArrayOf(1, 2, 3),
-                filePath = "/test/video.mp4",
-            )
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
 
-            val videoBytes = detectService.downloadJobResult(acquired, "test-job-123")
+            val videoPath = detectService.downloadJobResult(acquired, "test-job-123")
 
-            // fakeVideoBytes from dispatcher: ftyp MP4 header
+            // Verify file exists and has content
+            assertTrue(Files.exists(videoPath))
+            val videoBytes = Files.readAllBytes(videoPath)
             assertTrue(videoBytes.isNotEmpty())
+            // fakeVideoBytes from dispatcher: ftyp MP4 header
             assertEquals(0x66.toByte(), videoBytes[4]) // 'f'
             assertEquals(0x74.toByte(), videoBytes[5]) // 't'
             assertEquals(0x79.toByte(), videoBytes[6]) // 'y'
             assertEquals(0x70.toByte(), videoBytes[7]) // 'p'
 
             // Cleanup
-            loadBalancer.releaseServer(acquired.id, ru.zinin.frigate.analyzer.core.loadbalancer.RequestType.VIDEO_VISUALIZE)
+            Files.deleteIfExists(videoPath)
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
         }
 ```
 
@@ -608,15 +615,22 @@ Expected: FAIL — method does not exist
 
 **Step 3: Implement downloadJobResult in DetectService.kt**
 
+Uses `DataBuffer` streaming to write directly to a temp file instead of loading into memory.
+
 ```kotlin
     /**
      * Скачивает результат аннотированного видео с конкретного сервера.
+     * Использует streaming запись во временный файл для избежания OOM.
      * Не использует load balancer — обращается напрямую к серверу, на котором завершился job.
+     *
+     * @return Path к временному файлу с видео. Caller отвечает за удаление.
      */
     suspend fun downloadJobResult(
         acquired: AcquiredServer,
         jobId: String,
-    ): ByteArray =
+    ): Path {
+        val tempFile = Files.createTempFile("video-annotated-", ".mp4")
+
         webClient
             .get()
             .uri { uriBuilder ->
@@ -627,9 +641,25 @@ Expected: FAIL — method does not exist
                     .path("/jobs/{jobId}/download")
                     .build(jobId)
             }.retrieve()
-            .bodyToMono<ByteArray>()
-            .awaitSingle()
+            .bodyToFlux<DataBuffer>()
+            .asFlow()
+            .collect { dataBuffer ->
+                try {
+                    Files.newOutputStream(tempFile, StandardOpenOption.APPEND).use { outputStream ->
+                        dataBuffer.asInputStream().use { inputStream ->
+                            inputStream.copyTo(outputStream)
+                        }
+                    }
+                } finally {
+                    DataBufferUtils.release(dataBuffer)
+                }
+            }
+
+        return tempFile
+    }
 ```
+
+Note: Check existing codebase for DataBuffer/streaming patterns and adapt accordingly.
 
 **Step 4: Run test to verify it passes**
 
@@ -641,12 +671,19 @@ Expected: PASS
 ```bash
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/DetectService.kt \
        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt
-git commit -m "feat: add DetectService.downloadJobResult"
+git commit -m "feat: add DetectService.downloadJobResult with streaming"
 ```
 
 ---
 
 ### Task 8: VideoVisualizationService — Happy Path
+
+**IMPORTANT (review decisions):**
+- **C1:** VideoVisualizationService manages slot lifecycle (acquireServer/releaseServer). DetectService methods just do HTTP.
+- **C2:** annotateVideo returns `Path` (temp file), not `ByteArray`.
+- **N1:** Log orphan jobs on timeout/cancel.
+- **N5:** Use `JobStatus` enum in when blocks.
+- **C3:** Retry logic by analogy with existing DetectService methods.
 
 **Files:**
 - Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/VideoVisualizationService.kt`
@@ -654,149 +691,34 @@ git commit -m "feat: add DetectService.downloadJobResult"
 
 **Step 1: Write failing test — happy path**
 
-Create `VideoVisualizationServiceTest.kt`:
+Create `VideoVisualizationServiceTest.kt` with setUp (MockWebServer, DetectServiceDispatcher, registry, loadBalancer, detectProperties, service). See existing `DetectServiceTest` for patterns.
 
 ```kotlin
-package ru.zinin.frigate.analyzer.core.service
-
-import kotlinx.coroutines.runBlocking
-import mockwebserver3.MockWebServer
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
-import org.springframework.http.codec.json.JacksonJsonDecoder
-import org.springframework.http.codec.json.JacksonJsonEncoder
-import org.springframework.web.reactive.function.client.ExchangeStrategies
-import org.springframework.web.reactive.function.client.WebClient
-import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
-import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
-import ru.zinin.frigate.analyzer.core.config.properties.DetectServerProperties
-import ru.zinin.frigate.analyzer.core.config.properties.RequestConfig
-import ru.zinin.frigate.analyzer.core.config.properties.VideoVisualizeConfig
-import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
-import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerRegistry
-import ru.zinin.frigate.analyzer.core.loadbalancer.RequestType
-import ru.zinin.frigate.analyzer.core.loadbalancer.ServerHealthMonitor
-import ru.zinin.frigate.analyzer.core.loadbalancer.ServerSelectionStrategy
-import ru.zinin.frigate.analyzer.core.testsupport.DetectServiceDispatcher
-import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
-import tools.jackson.databind.DeserializationFeature
-import tools.jackson.databind.PropertyNamingStrategies
-import tools.jackson.databind.json.JsonMapper
-import java.nio.file.Path
-import java.time.Clock
-import java.time.Duration
-import java.time.Instant
-import java.time.ZoneOffset
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
-
-class VideoVisualizationServiceTest {
-    private lateinit var mockWebServer: MockWebServer
-    private lateinit var service: VideoVisualizationService
-    private lateinit var registry: DetectServerRegistry
-    private lateinit var loadBalancer: DetectServerLoadBalancer
-
-    @BeforeEach
-    fun setUp() {
-        mockWebServer = MockWebServer()
-        mockWebServer.dispatcher = DetectServiceDispatcher()
-        mockWebServer.start()
-
-        val webClient = buildWebClient()
-        val clock = Clock.fixed(Instant.EPOCH, ZoneOffset.UTC)
-
-        registry = DetectServerRegistry()
-        val serverProps =
-            DetectServerProperties(
-                schema = "http",
-                host = "localhost",
-                port = mockWebServer.port,
-                frameRequests = RequestConfig(simultaneousCount = 1, priority = 0),
-                framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 0),
-                visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
-                videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
-            )
-        registry.register("test", serverProps)
-        registry.getServer("test")!!.alive = true
-
-        val detectProperties =
-            DetectProperties(
-                videoVisualize = VideoVisualizeConfig(
-                    timeout = Duration.ofSeconds(10),
-                    pollInterval = Duration.ofMillis(100),
-                ),
-            )
-
-        loadBalancer =
-            DetectServerLoadBalancer(
-                applicationProperties(serverProps),
-                registry,
-                ServerSelectionStrategy(),
-                ServerHealthMonitor(registry, webClient, clock, detectProperties),
-            )
-
-        val detectService = DetectService(webClient, loadBalancer, detectProperties)
-        service = VideoVisualizationService(detectService, loadBalancer, detectProperties)
-    }
-
-    @AfterEach
-    fun tearDown() {
-        mockWebServer.close()
-    }
-
     @Test
-    fun `annotateVideo returns video bytes and releases server`() =
+    fun `annotateVideo returns video file path and releases server`() =
         runBlocking {
             val progressUpdates = mutableListOf<JobStatusResponse>()
 
-            val result = service.annotateVideo(
+            val resultPath = service.annotateVideo(
                 bytes = byteArrayOf(1, 2, 3),
                 filePath = "/test/video.mp4",
                 onProgress = { progressUpdates.add(it) },
             )
 
-            assertTrue(result.isNotEmpty())
+            // Verify result is a valid file
+            assertTrue(Files.exists(resultPath))
+            assertTrue(Files.size(resultPath) > 0)
+
+            // Verify progress callback was called
             assertTrue(progressUpdates.isNotEmpty())
-            assertEquals("completed", progressUpdates.last().status)
+            assertEquals(JobStatus.COMPLETED, progressUpdates.last().status)
+
             // Server should be released
             assertEquals(0, registry.getServer("test")!!.processingVideoVisualizeRequestsCount.get())
+
+            // Cleanup temp file
+            Files.deleteIfExists(resultPath)
         }
-
-    private fun buildWebClient(): WebClient {
-        val mapper =
-            JsonMapper
-                .builder()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                .build()
-
-        val strategies =
-            ExchangeStrategies
-                .builder()
-                .codecs { codecs ->
-                    codecs.defaultCodecs().jacksonJsonEncoder(JacksonJsonEncoder(mapper))
-                    codecs.defaultCodecs().jacksonJsonDecoder(JacksonJsonDecoder(mapper))
-                }.build()
-
-        return WebClient.builder().exchangeStrategies(strategies).build()
-    }
-
-    private fun applicationProperties(serverProps: DetectServerProperties): ApplicationProperties {
-        val dummyPath = Path.of(".")
-        val dummyDuration = Duration.ofSeconds(1)
-
-        return ApplicationProperties(
-            tempFolder = dummyPath,
-            ffmpegPath = dummyPath,
-            connectionTimeout = dummyDuration,
-            readTimeout = dummyDuration,
-            writeTimeout = dummyDuration,
-            responseTimeout = dummyDuration,
-            detectServers = mapOf("test" to serverProps),
-        )
-    }
-}
 ```
 
 **Step 2: Run test to verify it fails**
@@ -809,25 +731,6 @@ Expected: FAIL — class does not exist
 Create `VideoVisualizationService.kt`:
 
 ```kotlin
-package ru.zinin.frigate.analyzer.core.service
-
-import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.TimeoutCancellationException
-import org.springframework.stereotype.Service
-import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
-import ru.zinin.frigate.analyzer.core.loadbalancer.AcquiredServer
-import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
-import ru.zinin.frigate.analyzer.core.loadbalancer.RequestType
-import ru.zinin.frigate.analyzer.model.exception.DetectServerUnavailableException
-import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
-import ru.zinin.frigate.analyzer.model.exception.VideoAnnotationFailedException
-import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
-
-private val logger = KotlinLogging.logger {}
-
 @Service
 class VideoVisualizationService(
     private val detectService: DetectService,
@@ -840,14 +743,12 @@ class VideoVisualizationService(
      * Три фазы:
      * 1. Submit — с retry между серверами при ошибках
      * 2. Poll — на фиксированном сервере до completed/failed
-     * 3. Download — с того же сервера
+     * 3. Download — с того же сервера (streaming в temp file)
      *
-     * Слот VIDEO_VISUALIZE удерживается всё время обработки.
+     * Оркестратор управляет slot lifecycle (acquire/release).
      *
-     * @param onProgress вызывается на каждом успешном poll (для обновления прогресса в UI)
-     * @return ByteArray аннотированного видео
-     * @throws DetectTimeoutException если превышен общий таймаут
-     * @throws VideoAnnotationFailedException если job завершился с ошибкой
+     * @param onProgress вызывается на каждом успешном poll
+     * @return Path к временному файлу с аннотированным видео. Caller отвечает за удаление.
      */
     suspend fun annotateVideo(
         bytes: ByteArray,
@@ -862,95 +763,74 @@ class VideoVisualizationService(
         showConf: Boolean = detectProperties.videoVisualize.showConf,
         model: String = detectProperties.defaultModel,
         onProgress: suspend (JobStatusResponse) -> Unit = {},
-    ): ByteArray {
+    ): Path {
         val timeoutMs = detectProperties.videoVisualize.timeout.toMillis()
         val pollIntervalMs = detectProperties.videoVisualize.pollInterval.toMillis()
         var acquired: AcquiredServer? = null
+        var jobId: String? = null
 
         try {
             return withTimeout(timeoutMs) {
-                // Phase 1: Submit with retry
+                // Phase 1: Submit with retry (acquireServer + submit, retry on failure)
                 val (server, job) = submitWithRetry(bytes, filePath, conf, imgSize, maxDet,
                     detectEvery, classes, lineWidth, showLabels, showConf, model)
                 acquired = server
+                jobId = job.jobId
 
                 logger.info { "Video annotation job ${job.jobId} submitted to server ${server.id}" }
 
                 // Phase 2: Poll until completed/failed
                 while (true) {
                     delay(pollIntervalMs)
-
                     val status = try {
                         detectService.getJobStatus(server, job.jobId)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        logger.warn { "Poll failed for job ${job.jobId} on server ${server.id}: ${e.message}" }
-                        continue // Retry poll
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) {
+                        logger.warn { "Poll failed for job ${job.jobId}: ${e.message}" }
+                        continue
                     }
 
                     onProgress(status)
 
                     when (status.status) {
-                        "completed" -> {
+                        JobStatus.COMPLETED -> {
                             logger.info { "Job ${job.jobId} completed. Stats: ${status.stats}" }
                             break
                         }
-                        "failed" -> {
-                            throw VideoAnnotationFailedException(
-                                "Video annotation job ${job.jobId} failed: ${status.error}"
-                            )
-                        }
+                        JobStatus.FAILED -> throw VideoAnnotationFailedException(
+                            "Video annotation job ${job.jobId} failed: ${status.error}")
+                        else -> {} // QUEUED, PROCESSING → continue polling
                     }
                 }
 
-                // Phase 3: Download
+                // Phase 3: Download (streaming to temp file)
                 detectService.downloadJobResult(server, job.jobId)
             }
         } catch (e: TimeoutCancellationException) {
             logger.error { "Video annotation timed out after ${timeoutMs}ms (filePath=$filePath)" }
             throw DetectTimeoutException("Video annotation timed out after ${timeoutMs}ms", e)
         } finally {
-            acquired?.let {
-                loadBalancer.releaseServer(it.id, RequestType.VIDEO_VISUALIZE)
+            acquired?.let { server ->
+                loadBalancer.releaseServer(server.id, RequestType.VIDEO_VISUALIZE)
+                // Log orphan job if it wasn't completed (timeout/cancel scenario)
+                jobId?.let { id ->
+                    logger.warn { "Orphan job $id may still be running on server ${server.id}" }
+                }
             }
         }
     }
 
-    private suspend fun submitWithRetry(
-        bytes: ByteArray,
-        filePath: String,
-        conf: Double,
-        imgSize: Int,
-        maxDet: Int,
-        detectEvery: Int?,
-        classes: String?,
-        lineWidth: Int,
-        showLabels: Boolean,
-        showConf: Boolean,
-        model: String,
-    ): Pair<AcquiredServer, ru.zinin.frigate.analyzer.model.response.JobCreatedResponse> {
-        var attempt = 0
-        while (true) {
-            attempt++
-            try {
-                return detectService.submitVideoVisualize(
-                    bytes, filePath, conf, imgSize, maxDet,
-                    detectEvery, classes, lineWidth, showLabels, showConf, model,
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: DetectServerUnavailableException) {
-                logger.debug { "Submit attempt $attempt: no servers available, retrying..." }
-                delay(detectProperties.retryDelay.toMillis())
-            } catch (e: Exception) {
-                logger.warn { "Submit attempt $attempt failed: ${e.message}, retrying..." }
-                delay(detectProperties.retryDelay.toMillis())
-            }
-        }
+    private suspend fun submitWithRetry(...): Pair<AcquiredServer, JobCreatedResponse> {
+        // Retry logic by analogy with existing DetectService methods.
+        // acquireServer → submitVideoVisualize. On failure: releaseServer, delay, retry.
+        // On DetectServerUnavailableException: delay, retry.
+        // On CancellationException: rethrow.
     }
 }
 ```
+
+Note: The orphan job warning in finally should only log when the job didn't complete normally.
+Adjust the logging condition based on whether the method returned successfully or threw.
 
 **Step 4: Run test to verify it passes**
 
@@ -1015,7 +895,7 @@ Add to `VideoVisualizationServiceTest.kt`:
         runBlocking {
             mockWebServer.dispatcher = ru.zinin.frigate.analyzer.core.testsupport.JobFailedDispatcher()
 
-            val exception = assertFailsWith<ru.zinin.frigate.analyzer.model.exception.VideoAnnotationFailedException> {
+            val exception = assertFailsWith<VideoAnnotationFailedException> {
                 service.annotateVideo(
                     bytes = byteArrayOf(1, 2, 3),
                     filePath = "/test/video.mp4",
@@ -1066,7 +946,7 @@ Add to `VideoVisualizationServiceTest.kt`:
                 shortTimeoutProps,
             )
 
-            assertFailsWith<ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException> {
+            assertFailsWith<DetectTimeoutException> {
                 shortTimeoutService.annotateVideo(
                     bytes = byteArrayOf(1, 2, 3),
                     filePath = "/test/video.mp4",
