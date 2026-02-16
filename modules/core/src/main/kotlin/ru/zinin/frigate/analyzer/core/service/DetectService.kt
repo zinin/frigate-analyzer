@@ -4,8 +4,8 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactive.asFlow
+import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.withTimeout
 import org.springframework.core.io.ByteArrayResource
 import org.springframework.core.io.FileSystemResource
@@ -312,8 +312,7 @@ class DetectService(
                     .apply {
                         detectEvery?.let { queryParam("detect_every", it) }
                         classes?.let { queryParam("classes", it) }
-                    }
-                    .queryParam("line_width", lineWidth)
+                    }.queryParam("line_width", lineWidth)
                     .queryParam("show_labels", showLabels)
                     .queryParam("show_conf", showConf)
                     .queryParam("model", model)

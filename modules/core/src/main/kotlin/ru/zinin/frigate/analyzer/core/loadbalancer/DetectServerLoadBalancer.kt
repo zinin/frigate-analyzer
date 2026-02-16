@@ -110,12 +110,19 @@ class DetectServerLoadBalancer(
     private fun buildUnavailableMessage(requestType: RequestType): String {
         val statuses =
             registry.getAllServers().joinToString(", ") { server ->
+                val frameRequestsCount = server.processingFrameRequestsCount.get()
+                val frameRequestsMax = server.properties.frameRequests.simultaneousCount
+                val frameExtractCount = server.processingFrameExtractionRequestsCount.get()
+                val frameExtractMax = server.properties.framesExtractRequests.simultaneousCount
+                val visualizeCount = server.processingVisualizeRequestsCount.get()
+                val visualizeMax = server.properties.visualizeRequests.simultaneousCount
+                val videoVisualizeCount = server.processingVideoVisualizeRequestsCount.get()
+                val videoVisualizeMax = server.properties.videoVisualizeRequests.simultaneousCount
                 "${server.id}(alive=${server.alive}, " +
-                    "frames=${server.processingFrameRequestsCount.get()}/${server.properties.frameRequests.simultaneousCount}, " +
-                    "frameExtract=${server.processingFrameExtractionRequestsCount.get()}/" +
-                    "${server.properties.framesExtractRequests.simultaneousCount}, " +
-                    "visualize=${server.processingVisualizeRequestsCount.get()}/${server.properties.visualizeRequests.simultaneousCount}, " +
-                    "videoVisualize=${server.processingVideoVisualizeRequestsCount.get()}/${server.properties.videoVisualizeRequests.simultaneousCount})"
+                    "frames=$frameRequestsCount/$frameRequestsMax, " +
+                    "frameExtract=$frameExtractCount/$frameExtractMax, " +
+                    "visualize=$visualizeCount/$visualizeMax, " +
+                    "videoVisualize=$videoVisualizeCount/$videoVisualizeMax)"
             }
         return "No detect server available for $requestType. Current statuses: [$statuses]"
     }
