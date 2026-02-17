@@ -18,4 +18,6 @@ interface VideoExportService {
         endTime: LocalTime,
         camId: String,
     ): Path
+
+    suspend fun cleanupExportFile(path: Path)
 }

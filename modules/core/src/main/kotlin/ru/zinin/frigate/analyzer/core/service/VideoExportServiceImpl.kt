@@ -81,4 +81,8 @@ class VideoExportServiceImpl(
             throw e
         }
     }
+
+    override suspend fun cleanupExportFile(path: Path) {
+        tempFileHelper.deleteIfExists(path)
+    }
 }
