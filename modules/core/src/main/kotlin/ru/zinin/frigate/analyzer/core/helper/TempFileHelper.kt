@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.inputStream
@@ -86,6 +87,37 @@ class TempFileHelper(
             }
         }.flowOn(Dispatchers.IO)
     }
+
+    suspend fun deleteIfExists(path: Path): Boolean {
+        requirePathInTempDir(path)
+        return withContext(Dispatchers.IO) {
+            if (Files.isDirectory(path)) {
+                logger.warn { "Refusing to delete directory: $path" }
+                return@withContext false
+            }
+            Files.deleteIfExists(path)
+        }
+    }
+
+    suspend fun deleteFiles(files: List<Path>): Int =
+        withContext(Dispatchers.IO) {
+            var count = 0
+            for (file in files) {
+                try {
+                    requirePathInTempDir(file)
+                    if (Files.isDirectory(file)) {
+                        logger.warn { "Skipping directory: $file" }
+                        continue
+                    }
+                    if (Files.deleteIfExists(file)) {
+                        count++
+                    }
+                } catch (e: IOException) {
+                    logger.error(e) { "Error deleting file: $file" }
+                }
+            }
+            count
+        }
 
     private fun requirePathInTempDir(path: Path) {
         require(path.normalize().startsWith(tempDirPath)) {

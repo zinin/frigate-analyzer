@@ -3,6 +3,8 @@ package ru.zinin.frigate.analyzer.core.helper
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -92,5 +94,38 @@ class TempFileHelperTest {
         helper.readFile(path).collect { chunks.add(it) }
 
         assertTrue(chunks.isEmpty())
+    }
+
+    @Test
+    fun `deleteIfExists deletes file and returns true`() = runTest {
+        val path = helper.createTempFile("del-", ".tmp")
+        assertTrue(Files.exists(path))
+
+        val result = helper.deleteIfExists(path)
+
+        assertTrue(result)
+        assertTrue(Files.notExists(path))
+    }
+
+    @Test
+    fun `deleteIfExists returns false for non-existent file`() = runTest {
+        val path = tempDir.resolve("non-existent.tmp")
+
+        val result = helper.deleteIfExists(path)
+
+        assertFalse(result)
+    }
+
+    @Test
+    fun `deleteFiles deletes multiple files and returns count`() = runTest {
+        val path1 = helper.createTempFile("multi1-", ".tmp")
+        val path2 = helper.createTempFile("multi2-", ".tmp")
+        val nonExistent = tempDir.resolve("gone.tmp")
+
+        val count = helper.deleteFiles(listOf(path1, path2, nonExistent))
+
+        assertEquals(2, count)
+        assertTrue(Files.notExists(path1))
+        assertTrue(Files.notExists(path2))
     }
 }
