@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import java.nio.file.Files
+import java.io.ByteArrayOutputStream
 import java.nio.file.Path
 import java.time.Clock
 import java.time.Duration
@@ -68,5 +69,28 @@ class TempFileHelperTest {
 
         assertTrue(Files.exists(path))
         assertArrayEquals("Hello, world!".toByteArray(), Files.readAllBytes(path))
+    }
+
+    @Test
+    fun `readFile returns file content in chunks`() = runTest {
+        val content = ByteArray(100_000) { (it % 256).toByte() }
+        val path = helper.createTempFile("read-", ".bin", content)
+
+        val result = ByteArrayOutputStream()
+        helper.readFile(path, bufferSize = 1024).collect { chunk ->
+            result.write(chunk)
+        }
+
+        assertArrayEquals(content, result.toByteArray())
+    }
+
+    @Test
+    fun `readFile returns empty flow for empty file`() = runTest {
+        val path = helper.createTempFile("empty-", ".bin")
+
+        val chunks = mutableListOf<ByteArray>()
+        helper.readFile(path).collect { chunks.add(it) }
+
+        assertTrue(chunks.isEmpty())
     }
 }
