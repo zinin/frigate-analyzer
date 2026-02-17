@@ -112,10 +112,8 @@ class VideoMergeHelper(
                         .redirectErrorStream(true)
                         .start()
 
-                if (logger.isTraceEnabled()) {
-                    process.inputStream.bufferedReader().useLines { lines ->
-                        lines.forEach { logger.trace { "ffmpeg: $it" } }
-                    }
+                process.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line -> logger.trace { "ffmpeg: $line" } }
                 }
 
                 val completed = process.waitFor(FFMPEG_TIMEOUT_SECONDS, TimeUnit.SECONDS)

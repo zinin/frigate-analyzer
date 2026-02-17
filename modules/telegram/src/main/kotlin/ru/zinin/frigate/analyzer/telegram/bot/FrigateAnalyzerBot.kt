@@ -343,6 +343,8 @@ class FrigateAnalyzerBot(
 
         val chatId = message.chat.id
 
+        var userNotified = false
+
         val dialogResult =
             withTimeoutOrNull(EXPORT_DIALOG_TIMEOUT_MS) {
                 // Step 1: Date selection
@@ -371,6 +373,7 @@ class FrigateAnalyzerBot(
 
                 if (dateCallback.data == "export:cancel") {
                     sendTextMessage(chatId, "Экспорт отменён.")
+                    userNotified = true
                     return@withTimeoutOrNull null
                 }
 
@@ -393,12 +396,14 @@ class FrigateAnalyzerBot(
                             val dateInput = dateMsg.content.text.trim()
                             if (dateInput == "/cancel" || dateInput.equals("отмена", ignoreCase = true)) {
                                 sendTextMessage(chatId, "Экспорт отменён.")
+                                userNotified = true
                                 return@withTimeoutOrNull null
                             }
                             try {
                                 LocalDate.parse(dateInput)
                             } catch (e: DateTimeParseException) {
                                 sendTextMessage(chatId, "Неверный формат даты. Используйте YYYY-MM-DD. Экспорт отменён.")
+                                userNotified = true
                                 return@withTimeoutOrNull null
                             }
                         }
@@ -418,12 +423,14 @@ class FrigateAnalyzerBot(
                 val timeInput = timeMsg.content.text.trim()
                 if (timeInput == "/cancel" || timeInput.equals("отмена", ignoreCase = true)) {
                     sendTextMessage(chatId, "Экспорт отменён.")
+                    userNotified = true
                     return@withTimeoutOrNull null
                 }
 
                 val timeRange = parseTimeRange(timeInput)
                 if (timeRange == null) {
                     sendTextMessage(chatId, "Неверный формат. Используйте HH:MM-HH:MM. Экспорт отменён.")
+                    userNotified = true
                     return@withTimeoutOrNull null
                 }
 
@@ -434,6 +441,7 @@ class FrigateAnalyzerBot(
                         chatId,
                         "Диапазон должен быть от 1 до $MAX_EXPORT_DURATION_MINUTES минут. Экспорт отменён.",
                     )
+                    userNotified = true
                     return@withTimeoutOrNull null
                 }
 
@@ -441,6 +449,7 @@ class FrigateAnalyzerBot(
                 val cameras = videoExportService.findCamerasWithRecordings(date, startTime, endTime)
                 if (cameras.isEmpty()) {
                     sendTextMessage(chatId, "Записей за $date $startTime-$endTime не найдено.")
+                    userNotified = true
                     return@withTimeoutOrNull null
                 }
 
@@ -472,6 +481,7 @@ class FrigateAnalyzerBot(
 
                 if (camCallback.data == "export:cancel") {
                     sendTextMessage(chatId, "Экспорт отменён.")
+                    userNotified = true
                     return@withTimeoutOrNull null
                 }
 
@@ -480,7 +490,9 @@ class FrigateAnalyzerBot(
             }
 
         if (dialogResult == null) {
-            sendTextMessage(chatId, "Время ожидания истекло. Попробуйте снова /export.")
+            if (!userNotified) {
+                sendTextMessage(chatId, "Время ожидания истекло. Попробуйте снова /export.")
+            }
             return
         }
 
@@ -488,6 +500,7 @@ class FrigateAnalyzerBot(
         val (startTime, endTime) = timePair
 
         // Step 4: Export video (separate timeout from dialog)
+        sendTextMessage(chatId, "Обработка видео, подождите...")
         try {
             val videoPath =
                 withTimeoutOrNull(EXPORT_PROCESSING_TIMEOUT_MS) {
@@ -514,7 +527,7 @@ class FrigateAnalyzerBot(
             }
         } catch (e: Exception) {
             logger.error(e) { "Video export failed" }
-            sendTextMessage(chatId, "Ошибка экспорта видео: ${e.message}")
+            sendTextMessage(chatId, "Ошибка экспорта видео. Попробуйте меньший диапазон или другую камеру.")
         }
     }
 

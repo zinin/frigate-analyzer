@@ -122,6 +122,7 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
           AND record_time >= :startTime - INTERVAL '10 seconds'
           AND record_time <= :endTime
           AND file_path IS NOT NULL
+          AND cam_id IS NOT NULL
         GROUP BY cam_id
         ORDER BY cam_id
         """,
