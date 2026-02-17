@@ -181,6 +181,12 @@ class VideoVisualizationService(
                         "Job $jobId not found on server ${server.id} (server may have restarted)",
                         e,
                     )
+                } catch (e: WebClientResponseException) {
+                    if (e.statusCode.is4xxClientError) {
+                        throw e
+                    }
+                    logger.warn { "Poll failed for job $jobId: ${e.message}" }
+                    continue
                 } catch (e: Exception) {
                     logger.warn { "Poll failed for job $jobId: ${e.message}" }
                     continue
