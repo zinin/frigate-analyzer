@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.core.helper
 
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -55,5 +56,17 @@ class TempFileHelperTest {
         assertTrue(Files.exists(path))
         assertTrue(path.fileName.toString().startsWith("frigate-analyzer-tmp-"))
         assertArrayEquals(content, Files.readAllBytes(path))
+    }
+
+    @Test
+    fun `createTempFile with flow writes chunked content`() = runTest {
+        val chunk1 = "Hello, ".toByteArray()
+        val chunk2 = "world!".toByteArray()
+        val content = flowOf(chunk1, chunk2)
+
+        val path = helper.createTempFile("flow-", ".bin", content)
+
+        assertTrue(Files.exists(path))
+        assertArrayEquals("Hello, world!".toByteArray(), Files.readAllBytes(path))
     }
 }

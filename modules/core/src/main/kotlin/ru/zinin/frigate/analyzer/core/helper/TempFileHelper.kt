@@ -3,11 +3,13 @@ package ru.zinin.frigate.analyzer.core.helper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.io.path.outputStream
 import java.time.Clock
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -44,6 +46,21 @@ class TempFileHelper(
         try {
             withContext(Dispatchers.IO) {
                 Files.write(path, content)
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.IO) { Files.deleteIfExists(path) }
+            throw e
+        }
+        return path
+    }
+
+    suspend fun createTempFile(prefix: String, suffix: String, content: Flow<ByteArray>): Path {
+        val path = createTempFile(prefix, suffix)
+        try {
+            withContext(Dispatchers.IO) {
+                path.outputStream().buffered().use { out ->
+                    content.collect { chunk -> out.write(chunk) }
+                }
             }
         } catch (e: Exception) {
             withContext(Dispatchers.IO) { Files.deleteIfExists(path) }
