@@ -39,6 +39,19 @@ class TempFileHelper(
             Files.createTempFile(tempDirPath, fullPrefix, suffix)
         }
 
+    suspend fun createTempFile(prefix: String, suffix: String, content: ByteArray): Path {
+        val path = createTempFile(prefix, suffix)
+        try {
+            withContext(Dispatchers.IO) {
+                Files.write(path, content)
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.IO) { Files.deleteIfExists(path) }
+            throw e
+        }
+        return path
+    }
+
     companion object {
         private const val PREFIX = "frigate-analyzer-tmp-"
         private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss")

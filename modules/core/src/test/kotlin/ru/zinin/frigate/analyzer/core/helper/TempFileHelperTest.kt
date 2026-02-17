@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.core.helper
 
 import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -44,5 +45,15 @@ class TempFileHelperTest {
         assertTrue(path.fileName.toString().endsWith(".txt"))
         assertTrue(path.startsWith(tempDir))
         assertTrue(Files.size(path) == 0L)
+    }
+
+    @Test
+    fun `createTempFile with byte array writes content`() = runTest {
+        val content = "Hello, world!".toByteArray()
+        val path = helper.createTempFile("data-", ".bin", content)
+
+        assertTrue(Files.exists(path))
+        assertTrue(path.fileName.toString().startsWith("frigate-analyzer-tmp-"))
+        assertArrayEquals(content, Files.readAllBytes(path))
     }
 }
