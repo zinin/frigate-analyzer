@@ -37,6 +37,7 @@ data class DetectServerProperties(
     /**
      * Конфигурация для запросов видео-визуализации
      */
+    @field:NotNull
     @field:Valid
     val videoVisualizeRequests: RequestConfig = RequestConfig(simultaneousCount = 1, priority = 1),
 ) {
