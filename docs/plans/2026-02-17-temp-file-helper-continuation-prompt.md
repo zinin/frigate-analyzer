@@ -1,8 +1,8 @@
 ## TASK
 
-Execute the implementation plan for TempFileHelper.
+Continue work on the TempFileHelper feature branch (FA-18). Implementation is complete.
 
-Use `/superpowers:subagent-driven-development` skill for execution.
+Use `/superpowers:subagent-driven-development` skill for execution if new tasks arise.
 
 ## CRITICAL: DO NOT START WORKING
 
@@ -30,67 +30,71 @@ Read both documents to understand the full picture.
 
 ## PROGRESS
 
-**Completed tasks:** None — implementation not started yet.
+**All 8 tasks completed:**
+- [x] Task 1: TempFileHelper — create empty temp file (TDD) → `7a846b2`
+- [x] Task 2: TempFileHelper — write byte array to temp file (TDD) → `48b3b31`
+- [x] Task 3: TempFileHelper — write Flow<ByteArray> to temp file (TDD) → `e8e50ac`
+- [x] Task 4: TempFileHelper — read file as Flow<ByteArray> (TDD) → `649a724`
+- [x] Task 5: TempFileHelper — delete files (TDD) → `346c18c`
+- [x] Task 6: TempFileHelper — findOldFiles and cleanOldFiles (TDD) → `a329143`
+- [x] Task 7: Refactor DetectService to use TempFileHelper → `d8215e4`
+- [x] Task 8: Full build verification → `a9e1cd7` (ktlint formatting)
 
-**Remaining tasks (all 8):**
-- [ ] Task 1: TempFileHelper — create empty temp file (TDD)
-- [ ] Task 2: TempFileHelper — write byte array to temp file (TDD)
-- [ ] Task 3: TempFileHelper — write Flow<ByteArray> to temp file (TDD)
-- [ ] Task 4: TempFileHelper — read file as Flow<ByteArray> (TDD)
-- [ ] Task 5: TempFileHelper — delete files (TDD)
-- [ ] Task 6: TempFileHelper — findOldFiles and cleanOldFiles (TDD)
-- [ ] Task 7: Refactor DetectService to use TempFileHelper
-- [ ] Task 8: Full build verification
+**Remaining tasks:** None — implementation is complete.
+
+**Possible next steps:**
+- Code review
+- PR creation (remember to `git rm` plan docs before PR per CLAUDE.md rules)
+- Branch finishing (`superpowers:finishing-a-development-branch`)
 
 ## SESSION CONTEXT
 
-Key decisions and context from the brainstorming session:
+Key decisions and context from implementation sessions:
+
+### Implementation was straightforward
+
+All 8 tasks executed cleanly via subagent-driven development. No deviations from the plan were needed. Each task followed TDD: write test → implement → verify → commit.
+
+### Files created/modified
+
+**New files:**
+- `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/helper/TempFileHelper.kt` (173 lines)
+- `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/helper/TempFileHelperTest.kt` (181 lines, 11 tests)
+
+**Modified files (Task 7 refactoring):**
+- `DetectService.kt` — constructor changed from `ApplicationProperties` to `TempFileHelper`, `downloadJobResult` uses `tempFileHelper.createTempFile/deleteIfExists`
+- `DetectServiceTest.kt` — creates `TempFileHelper` in setUp, passes to `DetectService`
+- `VideoVisualizationServiceTest.kt` — same change, but in **3 places** (setUp + 2 additional test methods that create DetectService independently)
+
+### Import cleanup in DetectService
+
+After refactoring, these imports were removed from DetectService.kt:
+- `ApplicationProperties` — no longer a dependency
+- `Dispatchers` — was only used in `downloadJobResult`
+- `withContext` — was only used in `downloadJobResult`
+- `java.nio.file.Files` — was only used in `downloadJobResult`
+
+### ktlint formatting
+
+ktlintFormat changed 4 files after Task 7. Main changes were multiline expression wrapping in test files. This is expected — subagents don't always match exact ktlint style.
+
+### Build verification
+
+Full `./gradlew build` passes. All 58 core module tests pass.
 
 ### Approach: Suspend-first with `withContext(Dispatchers.IO)`
 
 - **Chosen over** Reactor-style (`Mono`/`Flux<DataBuffer>`) and hybrid approaches
-- **Reason:** Project already uses coroutines idiomatically (`suspend fun` + `withContext(IO)` everywhere). Reactor would be inconsistent.
-
-### Back-pressure discussion
-
-- `Flow<ByteArray>` has built-in back-pressure (pull-based) — next chunk is not read until collector processes the current one
-- Memory bounded to one buffer (32KB default)
-- No need for `AsynchronousFileChannel` — regular `InputStream` inside `withContext(IO)` is simpler and equivalent for local files
-- User explicitly wants chunked read/write to avoid loading entire files into memory
+- **Reason:** Project already uses coroutines idiomatically (`suspend fun` + `withContext(IO)` everywhere)
 
 ### Module placement: `core` (not `service` or `common`)
 
 - **Reason:** Needs `ApplicationProperties.tempFolder` which lives in `core`
 - Package: `ru.zinin.frigate.analyzer.core.helper` (next to existing `SpringProfileHelper`)
 
-### Cleanup mechanism: `@Scheduled`
-
-- Chosen over coroutine-with-delay and Task+ApplicationListener patterns
-- `@EnableScheduling` is already enabled in `FrigateAnalyzerApplication.kt`
-- Uses `runBlocking(Dispatchers.IO)` inside `@Scheduled` since Spring scheduling doesn't support coroutines natively
-
-### Refactoring scope
-
-- **DetectService.downloadJobResult()** — replace `Files.createTempFile` and `Files.deleteIfExists` with `TempFileHelper` calls. `DataBufferUtils.write(flux, tempFile)` stays as-is (writes from WebClient stream, not TempFileHelper's concern)
-- **VideoServiceImpl — NOT refactored** — uses `Files.createDirectories()` for ffmpeg work dirs, different pattern, and lives in `service` module which has no dependency on `core`
-
-### DetectService constructor change
-
-- After refactoring, `DetectService` takes `TempFileHelper` instead of `ApplicationProperties` (was only used for `tempFolder`)
-- `DetectServiceTest` needs updating to pass `TempFileHelper` instead of `ApplicationProperties`
-- **IMPORTANT:** `VideoVisualizationServiceTest` ALSO creates `DetectService(...)` directly (line 82) — must be updated too
-- `ApplicationProperties` is still needed in tests for `DetectServerLoadBalancer` — only `DetectService` stops using it directly
-
-### Testing patterns in this project
-
-- JUnit 5, `kotlinx-coroutines-test` (`runTest`), no mockk needed for TempFileHelper (pure file ops)
-- `@TempDir` for filesystem isolation
-- `Clock.fixed()` for deterministic timestamps (e.g., `Clock.fixed(Instant.parse("2026-02-17T10:30:45Z"), ZoneOffset.UTC)`)
-- See `WatchRecordsTaskTest.kt` for Clock usage reference
-
 ### Design review fixes already applied to documents (iteration 1)
 
-The following issues were found during design review and already fixed in the design/plan docs:
+The following issues were found during design review and already fixed in the design/plan docs before implementation:
 
 1. **readFile: `emit()` inside `withContext` violates Flow invariant** → Fixed to use `.flowOn(Dispatchers.IO)`
 2. **deleteFiles: incorrect count** → Fixed to `if (Files.deleteIfExists(file)) count++`
@@ -103,8 +107,6 @@ The following issues were found during design review and already fixed in the de
 9. **Missing test: malformed timestamp** → Added `findOldFiles skips files with malformed timestamp` test
 10. **VideoVisualizationServiceTest** → Added to Task 7 update list
 11. **Clock.fixed() in tests** → Fixed from `Clock.systemDefaultZone()` to `Clock.fixed()`
-
-These fixes are already in the plan/design docs — no need to re-apply.
 
 ## PLAN QUALITY WARNING
 
