@@ -96,7 +96,7 @@ class VideoVisualizationService(
             acquired?.let { server ->
                 loadBalancer.releaseServer(server.id, RequestType.VIDEO_VISUALIZE)
                 if (!completed && jobId != null) {
-                    logger.warn { "Orphan job $jobId may still be running on server ${server.id}" }
+                    logger.warn { "Video annotation did not complete successfully. Job $jobId on server ${server.id} may be orphaned" }
                 }
             }
         }
@@ -147,6 +147,13 @@ class VideoVisualizationService(
             } catch (e: CancellationException) {
                 loadBalancer.releaseServer(server.id, RequestType.VIDEO_VISUALIZE)
                 throw e
+            } catch (e: WebClientResponseException) {
+                loadBalancer.releaseServer(server.id, RequestType.VIDEO_VISUALIZE)
+                if (e.statusCode.is4xxClientError) {
+                    throw e
+                }
+                logger.warn { "Submit video visualize failed on server ${server.id} (attempt $attempt): ${e.message}" }
+                delay(detectProperties.retryDelay.toMillis())
             } catch (e: Exception) {
                 loadBalancer.releaseServer(server.id, RequestType.VIDEO_VISUALIZE)
                 logger.warn { "Submit video visualize failed on server ${server.id} (attempt $attempt): ${e.message}" }

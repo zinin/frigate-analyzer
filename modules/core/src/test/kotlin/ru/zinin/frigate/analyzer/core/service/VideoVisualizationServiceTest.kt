@@ -6,6 +6,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.junit.jupiter.api.io.TempDir
 import org.springframework.http.codec.json.JacksonJsonDecoder
 import org.springframework.http.codec.json.JacksonJsonEncoder
 import org.springframework.web.reactive.function.client.ExchangeStrategies
@@ -41,6 +42,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class VideoVisualizationServiceTest {
+    @TempDir
+    lateinit var tempDir: Path
+
     private lateinit var mockWebServer: MockWebServer
     private lateinit var registry: DetectServerRegistry
     private lateinit var webClient: WebClient
@@ -96,7 +100,7 @@ class VideoVisualizationServiceTest {
         runBlocking {
             val progressUpdates = mutableListOf<JobStatusResponse>()
 
-            val testVideoPath = Files.createTempFile("test-input-", ".mp4")
+            val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
             Files.write(testVideoPath, byteArrayOf(1, 2, 3))
 
             try {
@@ -131,7 +135,7 @@ class VideoVisualizationServiceTest {
         runBlocking {
             mockWebServer.dispatcher = JobFailedDispatcher()
 
-            val testVideoPath = Files.createTempFile("test-input-", ".mp4")
+            val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
             Files.write(testVideoPath, byteArrayOf(1, 2, 3))
 
             try {
@@ -201,7 +205,7 @@ class VideoVisualizationServiceTest {
             val shortDetectService = DetectService(webClient, shortLoadBalancer, shortDetectProperties, shortTempFileHelper)
             val shortService = VideoVisualizationService(shortDetectService, shortLoadBalancer, shortDetectProperties)
 
-            val testVideoPath = Files.createTempFile("test-input-", ".mp4")
+            val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
             Files.write(testVideoPath, byteArrayOf(1, 2, 3))
 
             try {
@@ -269,7 +273,7 @@ class VideoVisualizationServiceTest {
             val retryDetectService = DetectService(webClient, retryLoadBalancer, retryDetectProperties, retryTempFileHelper)
             val retryService = VideoVisualizationService(retryDetectService, retryLoadBalancer, retryDetectProperties)
 
-            val testVideoPath = Files.createTempFile("test-input-", ".mp4")
+            val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
             Files.write(testVideoPath, byteArrayOf(1, 2, 3))
 
             try {
@@ -316,12 +320,11 @@ class VideoVisualizationServiceTest {
     }
 
     private fun applicationProperties(serverProps: DetectServerProperties): ApplicationProperties {
-        val dummyPath = Path.of(".")
         val dummyDuration = Duration.ofSeconds(1)
 
         return ApplicationProperties(
-            tempFolder = dummyPath,
-            ffmpegPath = dummyPath,
+            tempFolder = tempDir,
+            ffmpegPath = Path.of("/usr/bin/ffmpeg"),
             connectionTimeout = dummyDuration,
             readTimeout = dummyDuration,
             writeTimeout = dummyDuration,

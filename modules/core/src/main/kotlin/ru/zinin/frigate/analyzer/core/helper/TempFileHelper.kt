@@ -11,7 +11,6 @@ import kotlinx.coroutines.withContext
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
-import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Clock
@@ -32,7 +31,7 @@ class TempFileHelper(
 
     @PostConstruct
     fun init() {
-        tempDirPath = applicationProperties.tempFolder
+        tempDirPath = applicationProperties.tempFolder.toAbsolutePath().normalize()
         if (Files.exists(tempDirPath)) {
             check(Files.isDirectory(tempDirPath)) { "tempFolder='$tempDirPath' is not a directory" }
             logger.debug { "tempFolder='$tempDirPath' exists" }
@@ -129,7 +128,7 @@ class TempFileHelper(
                     if (Files.deleteIfExists(file)) {
                         count++
                     }
-                } catch (e: IOException) {
+                } catch (e: Exception) {
                     logger.error(e) { "Error deleting file: $file" }
                 }
             }
