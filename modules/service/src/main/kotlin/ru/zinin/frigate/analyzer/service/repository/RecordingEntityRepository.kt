@@ -5,9 +5,12 @@ import org.springframework.data.r2dbc.repository.Query
 import org.springframework.data.repository.kotlin.CoroutineCrudRepository
 import org.springframework.data.repository.query.Param
 import org.springframework.stereotype.Repository
+import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.model.dto.CameraStatisticsDto
 import ru.zinin.frigate.analyzer.model.persistent.RecordingEntity
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalTime
 import java.util.UUID
 
 @Repository
@@ -91,6 +94,43 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         """,
     )
     suspend fun getStatisticsByCameras(): List<CameraStatisticsDto>
+
+    @Query(
+        """
+        SELECT *
+        FROM recordings
+        WHERE cam_id = :camId
+          AND record_date = :recordDate
+          AND record_time >= :startTime - INTERVAL '10 seconds'
+          AND record_time <= :endTime
+          AND file_path IS NOT NULL
+        ORDER BY record_time ASC
+        """,
+    )
+    suspend fun findByCamIdAndDateAndTimeRange(
+        @Param("camId") camId: String,
+        @Param("recordDate") recordDate: LocalDate,
+        @Param("startTime") startTime: LocalTime,
+        @Param("endTime") endTime: LocalTime,
+    ): List<RecordingEntity>
+
+    @Query(
+        """
+        SELECT cam_id, COUNT(*) as recordings_count
+        FROM recordings
+        WHERE record_date = :recordDate
+          AND record_time >= :startTime - INTERVAL '10 seconds'
+          AND record_time <= :endTime
+          AND file_path IS NOT NULL
+        GROUP BY cam_id
+        ORDER BY cam_id
+        """,
+    )
+    suspend fun findCamerasWithRecordings(
+        @Param("recordDate") recordDate: LocalDate,
+        @Param("startTime") startTime: LocalTime,
+        @Param("endTime") endTime: LocalTime,
+    ): List<CameraRecordingCountDto>
 
     @Query(
         """
