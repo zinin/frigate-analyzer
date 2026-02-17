@@ -12,6 +12,13 @@
 
 **Note:** Design doc specified in-memory ConcurrentHashMap state machine. Plan uses ktgbotapi waiter pattern instead — same UX, much less code. Waiters suspend the coroutine until user responds, with timeout for cleanup.
 
+**Review decisions (iter-1):** See `docs/plans/2026-02-17-telegram-video-export-review-iter-1.md` for full review. Key changes applied:
+- **Task order:** Task 7 (API check) MUST be executed FIRST — it's a critical fork deciding waiter vs state machine approach
+- **CameraRecordingCountDto:** Added @Column annotations (matching CameraStatisticsDto pattern)
+- **SQL queries:** Extended to capture overlapping fragments (`startTime - 10 seconds`)
+- **VideoMergeHelper:** Added ffmpeg process timeout + path escaping in concat file
+- **FrigateAnalyzerBot:** Added chatId filtering in all waiters, separate dialog/processing timeouts, /cancel support in text input, TempFileHelper for cleanup
+
 ---
 
 ### Task 1: Add CameraRecordingCountDto
@@ -25,7 +32,9 @@
 package ru.zinin.frigate.analyzer.model.dto
 
 data class CameraRecordingCountDto(
+    @Column("cam_id")
     val camId: String,
+    @Column("recordings_count")
     val recordingsCount: Long,
 )
 ```
@@ -57,7 +66,7 @@ Add to `RecordingEntityRepository` interface:
     FROM recordings
     WHERE cam_id = :camId
       AND record_date = :recordDate
-      AND record_time >= :startTime
+      AND record_time >= :startTime - INTERVAL '10 seconds'
       AND record_time <= :endTime
       AND file_path IS NOT NULL
     ORDER BY record_time ASC
@@ -81,7 +90,7 @@ Add required imports: `java.time.LocalDate`, `java.time.LocalTime`.
     SELECT cam_id, COUNT(*) as recordings_count
     FROM recordings
     WHERE record_date = :recordDate
-      AND record_time >= :startTime
+      AND record_time >= :startTime - INTERVAL '10 seconds'
       AND record_time <= :endTime
       AND file_path IS NOT NULL
     GROUP BY cam_id
@@ -188,7 +197,7 @@ class VideoMergeHelper(
             withContext(Dispatchers.IO) {
                 Files.write(
                     concatFile,
-                    filePaths.map { "file '${it.toAbsolutePath()}'" },
+                    filePaths.map { "file '${escapePath(it)}'" },
                 )
             }
 
@@ -266,7 +275,12 @@ class VideoMergeHelper(
                 }
             }
 
-            process.waitFor()
+            val completed = process.waitFor(FFMPEG_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                throw RuntimeException("ffmpeg timed out after ${FFMPEG_TIMEOUT_SECONDS}s")
+            }
+            process.exitValue()
         }
 
         if (exitCode != 0) {
@@ -274,9 +288,14 @@ class VideoMergeHelper(
         }
     }
 
+    private fun escapePath(path: Path): String {
+        return path.toAbsolutePath().toString().replace("'", "'\\''")
+    }
+
     companion object {
         const val MAX_FILE_SIZE_BYTES = 50L * 1024 * 1024 // 50 MB
         const val COMPRESS_THRESHOLD_BYTES = 45L * 1024 * 1024 // 45 MB
+        const val FFMPEG_TIMEOUT_SECONDS = 300L // 5 minutes
     }
 }
 ```
@@ -438,6 +457,7 @@ class FrigateAnalyzerBot(
     private val userService: TelegramUserService,
     private val properties: TelegramProperties,
     private val videoExportService: VideoExportService,
+    private val tempFileHelper: TempFileHelper,
 ) {
 ```
 
@@ -479,7 +499,7 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
 
     val chatId = message.chat.id
 
-    withTimeoutOrNull(EXPORT_TIMEOUT_MS) {
+    val dialogResult = withTimeoutOrNull(EXPORT_DIALOG_TIMEOUT_MS) {
         // Step 1: Date selection
         val dateKeyboard = InlineKeyboardMarkup(
             keyboard = matrix {
@@ -497,7 +517,7 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
         sendTextMessage(chatId, "Выберите дату:", replyMarkup = dateKeyboard)
 
         val dateCallback = waitDataCallbackQuery(
-            filter = { it.data.startsWith("export:") },
+            filter = { it.data.startsWith("export:") && it.message?.chat?.id == chatId },
         ).first()
         answer(dateCallback)
 
@@ -510,12 +530,17 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
             "export:today" -> LocalDate.now()
             "export:yesterday" -> LocalDate.now().minusDays(1)
             "export:custom" -> {
-                sendTextMessage(chatId, "Введите дату (формат: YYYY-MM-DD):")
+                sendTextMessage(chatId, "Введите дату (формат: YYYY-MM-DD) или /cancel для отмены:")
                 val dateText = waitText(
                     filter = { it.chat.id == chatId },
                 ).first()
+                val dateInput = dateText.content.text.trim()
+                if (dateInput == "/cancel" || dateInput.equals("отмена", ignoreCase = true)) {
+                    sendTextMessage(chatId, "Экспорт отменён.")
+                    return@withTimeoutOrNull
+                }
                 try {
-                    LocalDate.parse(dateText.content.text.trim())
+                    LocalDate.parse(dateInput)
                 } catch (e: DateTimeParseException) {
                     sendTextMessage(chatId, "Неверный формат даты. Используйте YYYY-MM-DD. Экспорт отменён.")
                     return@withTimeoutOrNull
@@ -525,12 +550,18 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
         }
 
         // Step 2: Time range input
-        sendTextMessage(chatId, "Введите диапазон времени (например: 09:15-09:20, макс. 5 минут):")
+        sendTextMessage(chatId, "Введите диапазон времени (например: 09:15-09:20, макс. 5 минут) или /cancel:")
         val timeText = waitText(
             filter = { it.chat.id == chatId },
         ).first()
 
-        val timeRange = parseTimeRange(timeText.content.text.trim())
+        val timeInput = timeText.content.text.trim()
+        if (timeInput == "/cancel" || timeInput.equals("отмена", ignoreCase = true)) {
+            sendTextMessage(chatId, "Экспорт отменён.")
+            return@withTimeoutOrNull
+        }
+
+        val timeRange = parseTimeRange(timeInput)
         if (timeRange == null) {
             sendTextMessage(chatId, "Неверный формат. Используйте HH:MM-HH:MM. Экспорт отменён.")
             return@withTimeoutOrNull
@@ -569,7 +600,7 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
         sendTextMessage(chatId, "Выберите камеру:", replyMarkup = cameraKeyboard)
 
         val camCallback = waitDataCallbackQuery(
-            filter = { it.data.startsWith("export:") },
+            filter = { it.data.startsWith("export:") && it.message?.chat?.id == chatId },
         ).first()
         answer(camCallback)
 
@@ -580,29 +611,46 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
 
         val camId = camCallback.data.removePrefix("export:cam:")
 
-        // Step 4: Export video
-        try {
-            val videoPath = videoExportService.exportVideo(date, startTime, endTime, camId)
-            try {
-                val fileName = "export_${camId}_${date}_${startTime}-${endTime}.mp4"
-                    .replace(":", "-")
-                bot.sendVideo(
-                    chatId,
-                    videoPath.toFile().readBytes().asMultipartFile(fileName),
-                )
-            } finally {
-                // Clean up temp file - non-critical, TempFileHelper auto-cleans old files
-                try {
-                    java.nio.file.Files.deleteIfExists(videoPath)
-                } catch (e: Exception) {
-                    logger.warn(e) { "Failed to delete temp file: $videoPath" }
-                }
-            }
-        } catch (e: Exception) {
-            logger.error(e) { "Video export failed" }
-            sendTextMessage(chatId, "Ошибка экспорта видео: ${e.message}")
+        // Return collected params for processing outside dialog timeout
+        Triple(date, startTime to endTime, camId)
+    }
+
+    if (dialogResult == null) {
+        sendTextMessage(chatId, "Время ожидания истекло. Попробуйте снова /export.")
+        return
+    }
+
+    val (date, timePair, camId) = dialogResult
+    val (startTime, endTime) = timePair
+
+    // Step 4: Export video (separate timeout from dialog)
+    try {
+        val videoPath = withTimeoutOrNull(EXPORT_PROCESSING_TIMEOUT_MS) {
+            videoExportService.exportVideo(date, startTime, endTime, camId)
+        } ?: run {
+            sendTextMessage(chatId, "Обработка видео заняла слишком много времени. Попробуйте меньший диапазон.")
+            return
         }
-    } ?: sendTextMessage(message.chat.id, "Время ожидания истекло. Попробуйте снова /export.")
+
+        try {
+            val fileName = "export_${camId}_${date}_${startTime}-${endTime}.mp4"
+                .replace(":", "-")
+            bot.sendVideo(
+                chatId,
+                videoPath.toFile().readBytes().asMultipartFile(fileName),
+            )
+        } finally {
+            // Clean up temp file via TempFileHelper
+            try {
+                tempFileHelper.deleteIfExists(videoPath)
+            } catch (e: Exception) {
+                logger.warn(e) { "Failed to delete temp file: $videoPath" }
+            }
+        }
+    } catch (e: Exception) {
+        logger.error(e) { "Video export failed" }
+        sendTextMessage(chatId, "Ошибка экспорта видео: ${e.message}")
+    }
 }
 
 private fun parseTimeRange(input: String): Pair<LocalTime, LocalTime>? {
@@ -624,7 +672,8 @@ private fun parseTimeRange(input: String): Pair<LocalTime, LocalTime>? {
 Add to the existing companion object:
 
 ```kotlin
-private const val EXPORT_TIMEOUT_MS = 600_000L // 10 minutes
+private const val EXPORT_DIALOG_TIMEOUT_MS = 600_000L // 10 minutes for user interaction
+private const val EXPORT_PROCESSING_TIMEOUT_MS = 300_000L // 5 minutes for ffmpeg processing
 private const val MAX_EXPORT_DURATION_MINUTES = 5L
 ```
 
@@ -653,7 +702,9 @@ git commit -m "feat: add /export command with waiter-based dialog for video expo
 
 ---
 
-### Task 7: Verify waitDataCallbackQuery API compatibility
+### Task 7: Verify waitDataCallbackQuery API compatibility (EXECUTE FIRST!)
+
+**IMPORTANT:** This task MUST be executed BEFORE all other tasks. It determines whether the waiter pattern works or we need the fallback state machine approach.
 
 **Context:** The plan uses `waitDataCallbackQuery` from ktgbotapi expectations. This needs verification against the actual library version (v30.0.2).
 
