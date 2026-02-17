@@ -105,27 +105,42 @@ class VideoMergeHelper(
     private suspend fun runFfmpeg(command: List<String>) {
         logger.debug { "Running ffmpeg: ${command.joinToString(" ")}" }
 
-        val exitCode =
-            withContext(Dispatchers.IO) {
-                val process =
-                    ProcessBuilder(command)
-                        .redirectErrorStream(true)
-                        .start()
+        withContext(Dispatchers.IO) {
+            val process =
+                ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .start()
 
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line -> logger.trace { "ffmpeg: $line" } }
+            // Drain stdout in a separate thread so waitFor timeout works correctly
+            val outputLines = mutableListOf<String>()
+            val outputThread =
+                kotlin.concurrent.thread(isDaemon = true) {
+                    process.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            logger.trace { "ffmpeg: $line" }
+                            synchronized(outputLines) {
+                                if (outputLines.size < MAX_OUTPUT_LINES) {
+                                    outputLines.add(line)
+                                }
+                            }
+                        }
+                    }
                 }
 
-                val completed = process.waitFor(FFMPEG_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                if (!completed) {
-                    process.destroyForcibly()
-                    throw RuntimeException("ffmpeg timed out after ${FFMPEG_TIMEOUT_SECONDS}s")
-                }
-                process.exitValue()
+            val completed = process.waitFor(FFMPEG_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                outputThread.join(OUTPUT_THREAD_JOIN_TIMEOUT_MS)
+                throw RuntimeException("ffmpeg timed out after ${FFMPEG_TIMEOUT_SECONDS}s")
             }
+            outputThread.join(OUTPUT_THREAD_JOIN_TIMEOUT_MS)
 
-        if (exitCode != 0) {
-            throw RuntimeException("ffmpeg exited with code $exitCode")
+            val exitCode = process.exitValue()
+            if (exitCode != 0) {
+                val lastLines = synchronized(outputLines) { outputLines.takeLast(ERROR_TAIL_LINES) }
+                val errorDetail = if (lastLines.isNotEmpty()) ": ${lastLines.joinToString("\n")}" else ""
+                throw RuntimeException("ffmpeg exited with code $exitCode$errorDetail")
+            }
         }
     }
 
@@ -135,5 +150,8 @@ class VideoMergeHelper(
         const val MAX_FILE_SIZE_BYTES = 50L * 1024 * 1024
         const val COMPRESS_THRESHOLD_BYTES = 45L * 1024 * 1024
         const val FFMPEG_TIMEOUT_SECONDS = 300L
+        private const val MAX_OUTPUT_LINES = 500
+        private const val ERROR_TAIL_LINES = 20
+        private const val OUTPUT_THREAD_JOIN_TIMEOUT_MS = 5000L
     }
 }

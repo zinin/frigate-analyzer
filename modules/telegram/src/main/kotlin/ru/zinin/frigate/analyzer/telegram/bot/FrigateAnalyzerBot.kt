@@ -46,6 +46,7 @@ import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import java.time.Clock
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -62,6 +63,7 @@ class FrigateAnalyzerBot(
     private val userService: TelegramUserService,
     private val properties: TelegramProperties,
     private val videoExportService: VideoExportService,
+    private val clock: Clock,
 ) {
     private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -380,11 +382,11 @@ class FrigateAnalyzerBot(
                 val date: LocalDate =
                     when (dateCallback.data) {
                         "export:today" -> {
-                            LocalDate.now()
+                            LocalDate.now(clock)
                         }
 
                         "export:yesterday" -> {
-                            LocalDate.now().minusDays(1)
+                            LocalDate.now(clock).minusDays(1)
                         }
 
                         "export:custom" -> {
@@ -429,7 +431,7 @@ class FrigateAnalyzerBot(
 
                 val timeRange = parseTimeRange(timeInput)
                 if (timeRange == null) {
-                    sendTextMessage(chatId, "Неверный формат. Используйте HH:MM-HH:MM. Экспорт отменён.")
+                    sendTextMessage(chatId, "Неверный формат. Используйте H:MM-H:MM (например, 9:15-9:20). Экспорт отменён.")
                     userNotified = true
                     return@withTimeoutOrNull null
                 }
@@ -475,8 +477,10 @@ class FrigateAnalyzerBot(
 
                 val camCallback =
                     waitDataCallbackQuery()
-                        .filter { it.data.startsWith("export:") && (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId }
-                        .first()
+                        .filter {
+                            (it.data.startsWith("export:cam:") || it.data == "export:cancel") &&
+                                (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId
+                        }.first()
                 answer(camCallback)
 
                 if (camCallback.data == "export:cancel") {
