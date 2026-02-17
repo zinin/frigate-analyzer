@@ -4,7 +4,7 @@
 
 **Goal:** Add `/export` Telegram bot command that lets users select date, time range, and camera via inline buttons/text, then merges Frigate recording segments with ffmpeg and sends the resulting video.
 
-**Architecture:** Waiter-based dialog flow inside `onCommand("export")` using ktgbotapi's `waitDataCallbackQuery`/`waitText` expectations. `VideoExportService` interface in telegram module, implementation in core module (which has access to both service repositories and ApplicationProperties). `VideoMergeHelper` in core handles ffmpeg concat/compress.
+**Architecture:** Waiter-based dialog flow inside `onCommand("export")` using ktgbotapi's `waitDataCallbackQuery`/`waitTextMessage` expectations (Flow-based filtering, verified in v30.0.2). `VideoExportService` interface in telegram module, implementation in core module (which has access to both service repositories and ApplicationProperties). `VideoMergeHelper` in core handles ffmpeg concat/compress.
 
 **Tech Stack:** Kotlin, ktgbotapi (v30.0.2 — inline keyboards, callback queries, waiters), Spring Data R2DBC, ffmpeg (ProcessBuilder), coroutines
 
@@ -432,8 +432,10 @@ import dev.inmo.tgbotapi.extensions.api.edit.edit
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.extensions.api.send.media.sendVideo
 import dev.inmo.tgbotapi.extensions.behaviour_builder.expectations.waitDataCallbackQuery
-import dev.inmo.tgbotapi.extensions.behaviour_builder.expectations.waitText
+import dev.inmo.tgbotapi.extensions.behaviour_builder.expectations.waitTextMessage
 import dev.inmo.tgbotapi.requests.abstracts.asMultipartFile
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.utils.matrix
@@ -516,9 +518,9 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
 
         sendTextMessage(chatId, "Выберите дату:", replyMarkup = dateKeyboard)
 
-        val dateCallback = waitDataCallbackQuery(
-            filter = { it.data.startsWith("export:") && it.message?.chat?.id == chatId },
-        ).first()
+        val dateCallback = waitDataCallbackQuery()
+            .filter { it.data.startsWith("export:") && it.message?.chat?.id == chatId }
+            .first()
         answer(dateCallback)
 
         if (dateCallback.data == "export:cancel") {
@@ -531,10 +533,10 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
             "export:yesterday" -> LocalDate.now().minusDays(1)
             "export:custom" -> {
                 sendTextMessage(chatId, "Введите дату (формат: YYYY-MM-DD) или /cancel для отмены:")
-                val dateText = waitText(
-                    filter = { it.chat.id == chatId },
-                ).first()
-                val dateInput = dateText.content.text.trim()
+                val dateMsg = waitTextMessage()
+                    .filter { it.chat.id == chatId }
+                    .first()
+                val dateInput = dateMsg.content.text.trim()
                 if (dateInput == "/cancel" || dateInput.equals("отмена", ignoreCase = true)) {
                     sendTextMessage(chatId, "Экспорт отменён.")
                     return@withTimeoutOrNull
@@ -551,11 +553,11 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
 
         // Step 2: Time range input
         sendTextMessage(chatId, "Введите диапазон времени (например: 09:15-09:20, макс. 5 минут) или /cancel:")
-        val timeText = waitText(
-            filter = { it.chat.id == chatId },
-        ).first()
+        val timeMsg = waitTextMessage()
+            .filter { it.chat.id == chatId }
+            .first()
 
-        val timeInput = timeText.content.text.trim()
+        val timeInput = timeMsg.content.text.trim()
         if (timeInput == "/cancel" || timeInput.equals("отмена", ignoreCase = true)) {
             sendTextMessage(chatId, "Экспорт отменён.")
             return@withTimeoutOrNull
@@ -599,9 +601,9 @@ private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextCon
 
         sendTextMessage(chatId, "Выберите камеру:", replyMarkup = cameraKeyboard)
 
-        val camCallback = waitDataCallbackQuery(
-            filter = { it.data.startsWith("export:") && it.message?.chat?.id == chatId },
-        ).first()
+        val camCallback = waitDataCallbackQuery()
+            .filter { it.data.startsWith("export:") && it.message?.chat?.id == chatId }
+            .first()
         answer(camCallback)
 
         if (camCallback.data == "export:cancel") {
@@ -702,53 +704,25 @@ git commit -m "feat: add /export command with waiter-based dialog for video expo
 
 ---
 
-### Task 7: Verify waitDataCallbackQuery API compatibility (EXECUTE FIRST!)
+### Task 7: Verify waitDataCallbackQuery API compatibility (EXECUTE FIRST!) — DONE
 
-**IMPORTANT:** This task MUST be executed BEFORE all other tasks. It determines whether the waiter pattern works or we need the fallback state machine approach.
+**Status:** VERIFIED. Waiter pattern confirmed working in ktgbotapi v30.0.2.
 
-**Context:** The plan uses `waitDataCallbackQuery` from ktgbotapi expectations. This needs verification against the actual library version (v30.0.2).
+**Results (verified against source at github.com/InsanusMokrassar/ktgbotapi):**
 
-**Step 1: Check ktgbotapi expectations API**
+| API | Exists | Signature notes |
+|-----|--------|----------------|
+| `waitDataCallbackQuery()` | Yes | Returns `Flow<DataCallbackQuery>`. No `filter` param — use Flow `.filter{}.first()` |
+| `waitTextMessage()` | Yes | Returns `Flow<CommonMessage<TextContent>>` — use instead of `waitText` for chatId access |
+| `waitText()` | Yes | Returns `Flow<TextContent>` (no chatId) — NOT suitable for chatId filtering |
+| `answer(callbackQuery)` | Yes | Extension function on BehaviourContext |
 
-Look for available waiter functions in the project's classpath:
-- `dev.inmo.tgbotapi.extensions.behaviour_builder.expectations.waitDataCallbackQuery`
-- If not found, check for `waitCallbackQuery` and filter by data presence
+**Key corrections applied to Task 6:**
+1. `waitDataCallbackQuery(filter = {...}).first()` → `waitDataCallbackQuery().filter { ... }.first()`
+2. `waitText(filter = {...}).first()` → `waitTextMessage().filter { ... }.first()` (provides `chat.id` for filtering)
+3. Added imports: `kotlinx.coroutines.flow.filter`, `kotlinx.coroutines.flow.first`
 
-Reference Context7: `/insanusmokrassar/ktgbotapi` for up-to-date API examples.
-
-**Step 2: If waitDataCallbackQuery is not available, fallback approach**
-
-Replace waiter-based callback handling with manual `onDataCallbackQuery` + in-memory state:
-
-```kotlin
-// In buildBehaviourWithLongPolling:
-onDataCallbackQuery { query ->
-    if (query.data.startsWith("export:")) {
-        handleExportCallback(query)
-    }
-}
-```
-
-With a simple state map:
-```kotlin
-private val exportStates = ConcurrentHashMap<Long, ExportState>()
-
-data class ExportState(
-    val step: ExportStep,
-    val date: LocalDate? = null,
-    val startTime: LocalTime? = null,
-    val endTime: LocalTime? = null,
-    val createdAt: Instant = Instant.now(),
-)
-
-enum class ExportStep { WAITING_DATE, WAITING_CUSTOM_DATE, WAITING_TIME, WAITING_CAMERA }
-```
-
-**Step 3: Build and verify compilation**
-
-Run: `/build` (delegates to build-runner agent)
-
-Expected: BUILD SUCCESSFUL
+**Fallback to state machine is NOT needed.**
 
 ---
 
@@ -796,6 +770,6 @@ git commit -m "fix: resolve build issues for video export feature"
 
 ## Key risks
 
-1. **`waitDataCallbackQuery` API** — might not exist in v30.0.2 or have different signature. Task 7 has fallback.
+1. **`waitDataCallbackQuery` API** — VERIFIED in v30.0.2. Uses Flow-based filtering (no `filter` param). `waitTextMessage` used for text input with chatId filtering.
 2. **ffmpeg concat** — assumes all recording segments have compatible codecs/formats (Frigate records consistently, so this should work).
 3. **50MB Telegram limit** — compression with CRF 28 should handle most 5-min videos, but very high resolution sources might still exceed the limit.
