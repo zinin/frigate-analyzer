@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runBlocking
+import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import java.io.IOException
@@ -15,6 +17,7 @@ import java.nio.file.Path
 import kotlin.io.path.inputStream
 import kotlin.io.path.outputStream
 import java.time.Clock
+import java.util.regex.Pattern
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -119,6 +122,41 @@ class TempFileHelper(
             count
         }
 
+    suspend fun findOldFiles(): List<Path> =
+        withContext(Dispatchers.IO) {
+            Files.list(tempDirPath).use { stream ->
+                stream
+                    .filter { Files.isRegularFile(it) }
+                    .filter { it.fileName.toString().startsWith(PREFIX) }
+                    .filter { path ->
+                        val filename = path.fileName.toString()
+                        val matcher = PATTERN.matcher(filename)
+                        if (matcher.matches()) {
+                            try {
+                                val timestamp = LocalDateTime.parse(matcher.group(1), DATE_FORMAT)
+                                timestamp.isBefore(LocalDateTime.now(clock).minusDays(MAX_AGE_DAYS))
+                            } catch (e: java.time.format.DateTimeParseException) {
+                                logger.warn(e) { "Cannot parse timestamp from filename: $filename" }
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    .toList()
+            }
+        }
+
+    @Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT1H")
+    fun cleanOldFiles() {
+        runBlocking(Dispatchers.IO) {
+            logger.debug { "Cleaning old temp files..." }
+            val oldFiles = findOldFiles()
+            val count = deleteFiles(oldFiles)
+            logger.debug { "Cleaned $count old temp files" }
+        }
+    }
+
     private fun requirePathInTempDir(path: Path) {
         require(path.normalize().startsWith(tempDirPath)) {
             "Path '$path' is outside tempFolder '$tempDirPath'"
@@ -128,6 +166,8 @@ class TempFileHelper(
     companion object {
         private const val PREFIX = "frigate-analyzer-tmp-"
         private const val BUFFER_SIZE = 32 * 1024
+        private const val MAX_AGE_DAYS = 7L
         private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss")
+        private val PATTERN = Pattern.compile("""frigate-analyzer-tmp-(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})-.+""")
     }
 }

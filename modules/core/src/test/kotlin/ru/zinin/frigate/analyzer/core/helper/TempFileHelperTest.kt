@@ -128,4 +128,54 @@ class TempFileHelperTest {
         assertTrue(Files.notExists(path1))
         assertTrue(Files.notExists(path2))
     }
+
+    @Test
+    fun `findOldFiles returns files older than MAX_AGE_DAYS`() = runTest {
+        // clock is fixed at 2026-02-17T10:30:45Z
+        // Create a file with timestamp 8 days ago (older than 7 days)
+        val oldPrefix = "frigate-analyzer-tmp-2026-02-09-10-30-45-old-"
+        Files.createTempFile(tempDir, oldPrefix, ".tmp")
+
+        // Create a file with timestamp today (fresh)
+        val freshPrefix = "frigate-analyzer-tmp-2026-02-17-10-30-45-fresh-"
+        Files.createTempFile(tempDir, freshPrefix, ".tmp")
+
+        // Create a non-matching file
+        Files.createTempFile(tempDir, "unrelated-", ".tmp")
+
+        val oldFiles = helper.findOldFiles()
+
+        assertEquals(1, oldFiles.size)
+        assertTrue(oldFiles[0].fileName.toString().contains("old-"))
+    }
+
+    @Test
+    fun `cleanOldFiles deletes stale files`() = runTest {
+        val oldPrefix = "frigate-analyzer-tmp-2026-02-09-10-30-45-stale-"
+        val oldFile = Files.createTempFile(tempDir, oldPrefix, ".tmp")
+
+        val freshPrefix = "frigate-analyzer-tmp-2026-02-17-10-30-45-keep-"
+        val freshFile = Files.createTempFile(tempDir, freshPrefix, ".tmp")
+
+        helper.cleanOldFiles()
+
+        assertTrue(Files.notExists(oldFile))
+        assertTrue(Files.exists(freshFile))
+    }
+
+    @Test
+    fun `findOldFiles skips files with malformed timestamp`() = runTest {
+        // Valid old file
+        val oldPrefix = "frigate-analyzer-tmp-2026-02-09-10-30-45-old-"
+        Files.createTempFile(tempDir, oldPrefix, ".tmp")
+
+        // Malformed timestamp (99 month)
+        val malformedPrefix = "frigate-analyzer-tmp-2026-99-09-10-30-45-bad-"
+        Files.createTempFile(tempDir, malformedPrefix, ".tmp")
+
+        val oldFiles = helper.findOldFiles()
+
+        assertEquals(1, oldFiles.size)
+        assertTrue(oldFiles[0].fileName.toString().contains("old-"))
+    }
 }
