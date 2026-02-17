@@ -40,15 +40,16 @@ class VideoExportServiceImpl(
             throw IllegalStateException("No recordings found for camId=$camId, date=$date, time=$startTime-$endTime")
         }
 
-        val existingFiles = recordings.mapNotNull { recording ->
-            val path = recording.filePath?.let { Path.of(it) }
-            if (path != null && withContext(Dispatchers.IO) { Files.exists(path) }) {
-                path
-            } else {
-                logger.warn { "Recording file not found: ${recording.filePath} (id=${recording.id})" }
-                null
+        val existingFiles =
+            recordings.mapNotNull { recording ->
+                val path = recording.filePath?.let { Path.of(it) }
+                if (path != null && withContext(Dispatchers.IO) { Files.exists(path) }) {
+                    path
+                } else {
+                    logger.warn { "Recording file not found: ${recording.filePath} (id=${recording.id})" }
+                    null
+                }
             }
-        }
 
         if (existingFiles.isEmpty()) {
             throw IllegalStateException("All recording files are missing from disk")

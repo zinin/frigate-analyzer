@@ -39,10 +39,14 @@ class VideoMergeHelper(
                     listOf(
                         applicationProperties.ffmpegPath.toString(),
                         "-hide_banner",
-                        "-f", "concat",
-                        "-safe", "0",
-                        "-i", concatFile.toString(),
-                        "-c", "copy",
+                        "-f",
+                        "concat",
+                        "-safe",
+                        "0",
+                        "-i",
+                        concatFile.toString(),
+                        "-c",
+                        "copy",
                         "-y",
                         outputFile.toString(),
                     ),
@@ -64,11 +68,16 @@ class VideoMergeHelper(
                 listOf(
                     applicationProperties.ffmpegPath.toString(),
                     "-hide_banner",
-                    "-i", inputPath.toString(),
-                    "-vcodec", "libx264",
-                    "-crf", "28",
-                    "-preset", "fast",
-                    "-acodec", "aac",
+                    "-i",
+                    inputPath.toString(),
+                    "-vcodec",
+                    "libx264",
+                    "-crf",
+                    "28",
+                    "-preset",
+                    "fast",
+                    "-acodec",
+                    "aac",
                     "-y",
                     outputFile.toString(),
                 ),
@@ -96,24 +105,26 @@ class VideoMergeHelper(
     private suspend fun runFfmpeg(command: List<String>) {
         logger.debug { "Running ffmpeg: ${command.joinToString(" ")}" }
 
-        val exitCode = withContext(Dispatchers.IO) {
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
+        val exitCode =
+            withContext(Dispatchers.IO) {
+                val process =
+                    ProcessBuilder(command)
+                        .redirectErrorStream(true)
+                        .start()
 
-            if (logger.isTraceEnabled()) {
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { logger.trace { "ffmpeg: $it" } }
+                if (logger.isTraceEnabled()) {
+                    process.inputStream.bufferedReader().useLines { lines ->
+                        lines.forEach { logger.trace { "ffmpeg: $it" } }
+                    }
                 }
-            }
 
-            val completed = process.waitFor(FFMPEG_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            if (!completed) {
-                process.destroyForcibly()
-                throw RuntimeException("ffmpeg timed out after ${FFMPEG_TIMEOUT_SECONDS}s")
+                val completed = process.waitFor(FFMPEG_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                if (!completed) {
+                    process.destroyForcibly()
+                    throw RuntimeException("ffmpeg timed out after ${FFMPEG_TIMEOUT_SECONDS}s")
+                }
+                process.exitValue()
             }
-            process.exitValue()
-        }
 
         if (exitCode != 0) {
             throw RuntimeException("ffmpeg exited with code $exitCode")
