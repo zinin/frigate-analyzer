@@ -11,6 +11,7 @@ import org.springframework.web.reactive.function.client.ExchangeStrategies
 import org.springframework.web.reactive.function.client.WebClient
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
+import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
 import ru.zinin.frigate.analyzer.core.config.properties.DetectServerProperties
 import ru.zinin.frigate.analyzer.core.config.properties.RequestConfig
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
@@ -76,7 +77,9 @@ class DetectServiceTest {
                 ServerHealthMonitor(registry, webClient, clock, detectProperties),
             )
 
-        detectService = DetectService(webClient, loadBalancer, detectProperties, applicationProperties(serverProps))
+        val tempFileHelper = TempFileHelper(applicationProperties(serverProps), Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
+        tempFileHelper.init()
+        detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper)
     }
 
     @AfterEach

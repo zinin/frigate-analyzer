@@ -2,12 +2,10 @@ package ru.zinin.frigate.analyzer.core.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.springframework.core.io.ByteArrayResource
 import org.springframework.core.io.FileSystemResource
@@ -20,8 +18,8 @@ import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.bodyToFlux
 import org.springframework.web.reactive.function.client.bodyToMono
-import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
+import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
 import ru.zinin.frigate.analyzer.core.loadbalancer.AcquiredServer
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
 import ru.zinin.frigate.analyzer.core.loadbalancer.RequestType
@@ -31,7 +29,6 @@ import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.FrameExtractionResponse
 import ru.zinin.frigate.analyzer.model.response.JobCreatedResponse
 import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
-import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
@@ -42,7 +39,7 @@ class DetectService(
     private val webClient: WebClient,
     private val detectServerLoadBalancer: DetectServerLoadBalancer,
     private val detectProperties: DetectProperties,
-    private val applicationProperties: ApplicationProperties,
+    private val tempFileHelper: TempFileHelper,
 ) {
     /**
      * Выполняет детекцию с автоматическим retry при любых ошибках.
@@ -360,10 +357,7 @@ class DetectService(
         acquired: AcquiredServer,
         jobId: String,
     ): Path {
-        val tempFile =
-            withContext(Dispatchers.IO) {
-                Files.createTempFile(applicationProperties.tempFolder, "video-annotated-", ".mp4")
-            }
+        val tempFile = tempFileHelper.createTempFile("video-annotated-", ".mp4")
 
         try {
             val flux =
@@ -384,7 +378,7 @@ class DetectService(
                 .then()
                 .awaitSingleOrNull()
         } catch (e: Exception) {
-            withContext(Dispatchers.IO) { Files.deleteIfExists(tempFile) }
+            tempFileHelper.deleteIfExists(tempFile)
             throw e
         }
 

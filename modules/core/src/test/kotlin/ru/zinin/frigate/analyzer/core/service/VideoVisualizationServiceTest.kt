@@ -12,6 +12,7 @@ import org.springframework.web.reactive.function.client.ExchangeStrategies
 import org.springframework.web.reactive.function.client.WebClient
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
+import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
 import ru.zinin.frigate.analyzer.core.config.properties.DetectServerProperties
 import ru.zinin.frigate.analyzer.core.config.properties.RequestConfig
 import ru.zinin.frigate.analyzer.core.config.properties.VideoVisualizeConfig
@@ -79,7 +80,9 @@ class VideoVisualizationServiceTest {
                 ServerHealthMonitor(registry, webClient, clock, detectProperties),
             )
 
-        val detectService = DetectService(webClient, loadBalancer, detectProperties, applicationProperties(serverProps))
+        val tempFileHelper = TempFileHelper(applicationProperties(serverProps), Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
+        tempFileHelper.init()
+        val detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper)
         service = VideoVisualizationService(detectService, loadBalancer, detectProperties)
     }
 
@@ -193,7 +196,9 @@ class VideoVisualizationServiceTest {
                         videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
                     ),
                 )
-            val shortDetectService = DetectService(webClient, shortLoadBalancer, shortDetectProperties, shortAppProps)
+            val shortTempFileHelper = TempFileHelper(shortAppProps, clock)
+            shortTempFileHelper.init()
+            val shortDetectService = DetectService(webClient, shortLoadBalancer, shortDetectProperties, shortTempFileHelper)
             val shortService = VideoVisualizationService(shortDetectService, shortLoadBalancer, shortDetectProperties)
 
             val testVideoPath = Files.createTempFile("test-input-", ".mp4")
@@ -259,7 +264,9 @@ class VideoVisualizationServiceTest {
                         videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
                     ),
                 )
-            val retryDetectService = DetectService(webClient, retryLoadBalancer, retryDetectProperties, retryAppProps)
+            val retryTempFileHelper = TempFileHelper(retryAppProps, clock)
+            retryTempFileHelper.init()
+            val retryDetectService = DetectService(webClient, retryLoadBalancer, retryDetectProperties, retryTempFileHelper)
             val retryService = VideoVisualizationService(retryDetectService, retryLoadBalancer, retryDetectProperties)
 
             val testVideoPath = Files.createTempFile("test-input-", ".mp4")
