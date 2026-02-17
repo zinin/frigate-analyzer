@@ -18,6 +18,7 @@ import dev.inmo.tgbotapi.types.BotCommand
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
+import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeChat
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeDefault
@@ -342,122 +343,141 @@ class FrigateAnalyzerBot(
 
         val chatId = message.chat.id
 
-        val dialogResult = withTimeoutOrNull(EXPORT_DIALOG_TIMEOUT_MS) {
-            // Step 1: Date selection
-            val dateKeyboard = InlineKeyboardMarkup(
-                keyboard = matrix {
-                    row {
-                        +CallbackDataInlineKeyboardButton("Сегодня", "export:today")
-                        +CallbackDataInlineKeyboardButton("Вчера", "export:yesterday")
-                    }
-                    row {
-                        +CallbackDataInlineKeyboardButton("Ввести дату", "export:custom")
-                        +CallbackDataInlineKeyboardButton("Отмена", "export:cancel")
-                    }
-                },
-            )
+        val dialogResult =
+            withTimeoutOrNull(EXPORT_DIALOG_TIMEOUT_MS) {
+                // Step 1: Date selection
+                val dateKeyboard =
+                    InlineKeyboardMarkup(
+                        keyboard =
+                            matrix {
+                                row {
+                                    +CallbackDataInlineKeyboardButton("Сегодня", "export:today")
+                                    +CallbackDataInlineKeyboardButton("Вчера", "export:yesterday")
+                                }
+                                row {
+                                    +CallbackDataInlineKeyboardButton("Ввести дату", "export:custom")
+                                    +CallbackDataInlineKeyboardButton("Отмена", "export:cancel")
+                                }
+                            },
+                    )
 
-            sendTextMessage(chatId, "Выберите дату:", replyMarkup = dateKeyboard)
+                sendTextMessage(chatId, "Выберите дату:", replyMarkup = dateKeyboard)
 
-            val dateCallback = waitDataCallbackQuery()
-                .filter { it.data.startsWith("export:") && it.message?.chat?.id == chatId }
-                .first()
-            answer(dateCallback)
-
-            if (dateCallback.data == "export:cancel") {
-                sendTextMessage(chatId, "Экспорт отменён.")
-                return@withTimeoutOrNull null
-            }
-
-            val date: LocalDate = when (dateCallback.data) {
-                "export:today" -> LocalDate.now()
-                "export:yesterday" -> LocalDate.now().minusDays(1)
-                "export:custom" -> {
-                    sendTextMessage(chatId, "Введите дату (формат: YYYY-MM-DD) или /cancel для отмены:")
-                    val dateMsg = waitTextMessage()
-                        .filter { it.chat.id == chatId }
+                val dateCallback =
+                    waitDataCallbackQuery()
+                        .filter { it.data.startsWith("export:") && (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId }
                         .first()
-                    val dateInput = dateMsg.content.text.trim()
-                    if (dateInput == "/cancel" || dateInput.equals("отмена", ignoreCase = true)) {
-                        sendTextMessage(chatId, "Экспорт отменён.")
-                        return@withTimeoutOrNull null
-                    }
-                    try {
-                        LocalDate.parse(dateInput)
-                    } catch (e: DateTimeParseException) {
-                        sendTextMessage(chatId, "Неверный формат даты. Используйте YYYY-MM-DD. Экспорт отменён.")
-                        return@withTimeoutOrNull null
-                    }
+                answer(dateCallback)
+
+                if (dateCallback.data == "export:cancel") {
+                    sendTextMessage(chatId, "Экспорт отменён.")
+                    return@withTimeoutOrNull null
                 }
-                else -> return@withTimeoutOrNull null
-            }
 
-            // Step 2: Time range input
-            sendTextMessage(chatId, "Введите диапазон времени (например: 09:15-09:20, макс. 5 минут) или /cancel:")
-            val timeMsg = waitTextMessage()
-                .filter { it.chat.id == chatId }
-                .first()
+                val date: LocalDate =
+                    when (dateCallback.data) {
+                        "export:today" -> {
+                            LocalDate.now()
+                        }
 
-            val timeInput = timeMsg.content.text.trim()
-            if (timeInput == "/cancel" || timeInput.equals("отмена", ignoreCase = true)) {
-                sendTextMessage(chatId, "Экспорт отменён.")
-                return@withTimeoutOrNull null
-            }
+                        "export:yesterday" -> {
+                            LocalDate.now().minusDays(1)
+                        }
 
-            val timeRange = parseTimeRange(timeInput)
-            if (timeRange == null) {
-                sendTextMessage(chatId, "Неверный формат. Используйте HH:MM-HH:MM. Экспорт отменён.")
-                return@withTimeoutOrNull null
-            }
+                        "export:custom" -> {
+                            sendTextMessage(chatId, "Введите дату (формат: YYYY-MM-DD) или /cancel для отмены:")
+                            val dateMsg =
+                                waitTextMessage()
+                                    .filter { it.chat.id == chatId }
+                                    .first()
+                            val dateInput = dateMsg.content.text.trim()
+                            if (dateInput == "/cancel" || dateInput.equals("отмена", ignoreCase = true)) {
+                                sendTextMessage(chatId, "Экспорт отменён.")
+                                return@withTimeoutOrNull null
+                            }
+                            try {
+                                LocalDate.parse(dateInput)
+                            } catch (e: DateTimeParseException) {
+                                sendTextMessage(chatId, "Неверный формат даты. Используйте YYYY-MM-DD. Экспорт отменён.")
+                                return@withTimeoutOrNull null
+                            }
+                        }
 
-            val (startTime, endTime) = timeRange
-            val durationMinutes = ChronoUnit.MINUTES.between(startTime, endTime)
-            if (durationMinutes > MAX_EXPORT_DURATION_MINUTES || durationMinutes <= 0) {
-                sendTextMessage(
-                    chatId,
-                    "Диапазон должен быть от 1 до $MAX_EXPORT_DURATION_MINUTES минут. Экспорт отменён.",
-                )
-                return@withTimeoutOrNull null
-            }
-
-            // Step 3: Camera selection
-            val cameras = videoExportService.findCamerasWithRecordings(date, startTime, endTime)
-            if (cameras.isEmpty()) {
-                sendTextMessage(chatId, "Записей за $date $startTime-$endTime не найдено.")
-                return@withTimeoutOrNull null
-            }
-
-            val cameraKeyboard = InlineKeyboardMarkup(
-                keyboard = matrix {
-                    cameras.forEach { cam ->
-                        row {
-                            +CallbackDataInlineKeyboardButton(
-                                "${cam.camId} (${cam.recordingsCount})",
-                                "export:cam:${cam.camId}",
-                            )
+                        else -> {
+                            return@withTimeoutOrNull null
                         }
                     }
-                    row {
-                        +CallbackDataInlineKeyboardButton("Отмена", "export:cancel")
-                    }
-                },
-            )
 
-            sendTextMessage(chatId, "Выберите камеру:", replyMarkup = cameraKeyboard)
+                // Step 2: Time range input
+                sendTextMessage(chatId, "Введите диапазон времени (например: 09:15-09:20, макс. 5 минут) или /cancel:")
+                val timeMsg =
+                    waitTextMessage()
+                        .filter { it.chat.id == chatId }
+                        .first()
 
-            val camCallback = waitDataCallbackQuery()
-                .filter { it.data.startsWith("export:") && it.message?.chat?.id == chatId }
-                .first()
-            answer(camCallback)
+                val timeInput = timeMsg.content.text.trim()
+                if (timeInput == "/cancel" || timeInput.equals("отмена", ignoreCase = true)) {
+                    sendTextMessage(chatId, "Экспорт отменён.")
+                    return@withTimeoutOrNull null
+                }
 
-            if (camCallback.data == "export:cancel") {
-                sendTextMessage(chatId, "Экспорт отменён.")
-                return@withTimeoutOrNull null
+                val timeRange = parseTimeRange(timeInput)
+                if (timeRange == null) {
+                    sendTextMessage(chatId, "Неверный формат. Используйте HH:MM-HH:MM. Экспорт отменён.")
+                    return@withTimeoutOrNull null
+                }
+
+                val (startTime, endTime) = timeRange
+                val durationMinutes = ChronoUnit.MINUTES.between(startTime, endTime)
+                if (durationMinutes > MAX_EXPORT_DURATION_MINUTES || durationMinutes <= 0) {
+                    sendTextMessage(
+                        chatId,
+                        "Диапазон должен быть от 1 до $MAX_EXPORT_DURATION_MINUTES минут. Экспорт отменён.",
+                    )
+                    return@withTimeoutOrNull null
+                }
+
+                // Step 3: Camera selection
+                val cameras = videoExportService.findCamerasWithRecordings(date, startTime, endTime)
+                if (cameras.isEmpty()) {
+                    sendTextMessage(chatId, "Записей за $date $startTime-$endTime не найдено.")
+                    return@withTimeoutOrNull null
+                }
+
+                val cameraKeyboard =
+                    InlineKeyboardMarkup(
+                        keyboard =
+                            matrix {
+                                cameras.forEach { cam ->
+                                    row {
+                                        +CallbackDataInlineKeyboardButton(
+                                            "${cam.camId} (${cam.recordingsCount})",
+                                            "export:cam:${cam.camId}",
+                                        )
+                                    }
+                                }
+                                row {
+                                    +CallbackDataInlineKeyboardButton("Отмена", "export:cancel")
+                                }
+                            },
+                    )
+
+                sendTextMessage(chatId, "Выберите камеру:", replyMarkup = cameraKeyboard)
+
+                val camCallback =
+                    waitDataCallbackQuery()
+                        .filter { it.data.startsWith("export:") && (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId }
+                        .first()
+                answer(camCallback)
+
+                if (camCallback.data == "export:cancel") {
+                    sendTextMessage(chatId, "Экспорт отменён.")
+                    return@withTimeoutOrNull null
+                }
+
+                val camId = camCallback.data.removePrefix("export:cam:")
+                Triple(date, startTime to endTime, camId)
             }
-
-            val camId = camCallback.data.removePrefix("export:cam:")
-            Triple(date, startTime to endTime, camId)
-        }
 
         if (dialogResult == null) {
             sendTextMessage(chatId, "Время ожидания истекло. Попробуйте снова /export.")
@@ -469,16 +489,18 @@ class FrigateAnalyzerBot(
 
         // Step 4: Export video (separate timeout from dialog)
         try {
-            val videoPath = withTimeoutOrNull(EXPORT_PROCESSING_TIMEOUT_MS) {
-                videoExportService.exportVideo(date, startTime, endTime, camId)
-            } ?: run {
-                sendTextMessage(chatId, "Обработка видео заняла слишком много времени. Попробуйте меньший диапазон.")
-                return
-            }
+            val videoPath =
+                withTimeoutOrNull(EXPORT_PROCESSING_TIMEOUT_MS) {
+                    videoExportService.exportVideo(date, startTime, endTime, camId)
+                } ?: run {
+                    sendTextMessage(chatId, "Обработка видео заняла слишком много времени. Попробуйте меньший диапазон.")
+                    return
+                }
 
             try {
-                val fileName = "export_${camId}_${date}_${startTime}-${endTime}.mp4"
-                    .replace(":", "-")
+                val fileName =
+                    "export_${camId}_${date}_$startTime-$endTime.mp4"
+                        .replace(":", "-")
                 sendVideo(
                     chatId,
                     videoPath.toFile().readBytes().asMultipartFile(fileName),
