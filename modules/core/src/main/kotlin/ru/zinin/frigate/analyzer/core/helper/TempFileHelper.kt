@@ -6,20 +6,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
-import kotlin.io.path.inputStream
-import kotlin.io.path.outputStream
 import java.time.Clock
-import java.util.regex.Pattern
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.regex.Pattern
+import kotlin.io.path.inputStream
+import kotlin.io.path.outputStream
 
 private val logger = KotlinLogging.logger {}
 
@@ -42,13 +42,20 @@ class TempFileHelper(
         }
     }
 
-    suspend fun createTempFile(prefix: String, suffix: String): Path =
+    suspend fun createTempFile(
+        prefix: String,
+        suffix: String,
+    ): Path =
         withContext(Dispatchers.IO) {
             val fullPrefix = PREFIX + DATE_FORMAT.format(LocalDateTime.now(clock)) + "-" + prefix
             Files.createTempFile(tempDirPath, fullPrefix, suffix)
         }
 
-    suspend fun createTempFile(prefix: String, suffix: String, content: ByteArray): Path {
+    suspend fun createTempFile(
+        prefix: String,
+        suffix: String,
+        content: ByteArray,
+    ): Path {
         val path = createTempFile(prefix, suffix)
         try {
             withContext(Dispatchers.IO) {
@@ -61,7 +68,11 @@ class TempFileHelper(
         return path
     }
 
-    suspend fun createTempFile(prefix: String, suffix: String, content: Flow<ByteArray>): Path {
+    suspend fun createTempFile(
+        prefix: String,
+        suffix: String,
+        content: Flow<ByteArray>,
+    ): Path {
         val path = createTempFile(prefix, suffix)
         try {
             withContext(Dispatchers.IO) {
@@ -76,7 +87,10 @@ class TempFileHelper(
         return path
     }
 
-    fun readFile(path: Path, bufferSize: Int = BUFFER_SIZE): Flow<ByteArray> {
+    fun readFile(
+        path: Path,
+        bufferSize: Int = BUFFER_SIZE,
+    ): Flow<ByteArray> {
         require(bufferSize > 0) { "bufferSize must be positive" }
         requirePathInTempDir(path)
         return flow {
@@ -142,8 +156,7 @@ class TempFileHelper(
                         } else {
                             false
                         }
-                    }
-                    .toList()
+                    }.toList()
             }
         }
 
