@@ -61,7 +61,7 @@ class TempFileHelperTest {
         val path = helper.createTempFile("test-", ".txt")
 
         assertTrue(Files.exists(path))
-        assertTrue(path.fileName.toString().startsWith("frigate-analyzer-tmp-17-02-2026-10-30-45-test-"))
+        assertTrue(path.fileName.toString().startsWith("frigate-analyzer-tmp-2026-02-17-10-30-45-test-"))
         assertTrue(path.fileName.toString().endsWith(".txt"))
         assertTrue(path.startsWith(tempDir))
         assertTrue(Files.size(path) == 0L)
@@ -120,7 +120,7 @@ class TempFileHelper(
 
     companion object {
         private const val PREFIX = "frigate-analyzer-tmp-"
-        private val DATE_FORMAT = DateTimeFormatter.ofPattern("dd-MM-yyyy-HH-mm-ss")
+        private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss")
     }
 }
 ```
@@ -176,8 +176,13 @@ Add to `TempFileHelper`:
 ```kotlin
 suspend fun createTempFile(prefix: String, suffix: String, content: ByteArray): Path {
     val path = createTempFile(prefix, suffix)
-    withContext(Dispatchers.IO) {
-        Files.write(path, content)
+    try {
+        withContext(Dispatchers.IO) {
+            Files.write(path, content)
+        }
+    } catch (e: Exception) {
+        withContext(Dispatchers.IO) { Files.deleteIfExists(path) }
+        throw e
     }
     return path
 }
@@ -236,10 +241,15 @@ Add to `TempFileHelper`:
 ```kotlin
 suspend fun createTempFile(prefix: String, suffix: String, content: Flow<ByteArray>): Path {
     val path = createTempFile(prefix, suffix)
-    withContext(Dispatchers.IO) {
-        path.outputStream().buffered().use { out ->
-            content.collect { chunk -> out.write(chunk) }
+    try {
+        withContext(Dispatchers.IO) {
+            path.outputStream().buffered().use { out ->
+                content.collect { chunk -> out.write(chunk) }
+            }
         }
+    } catch (e: Exception) {
+        withContext(Dispatchers.IO) { Files.deleteIfExists(path) }
+        throw e
     }
     return path
 }
@@ -312,8 +322,10 @@ Expected: FAIL — readFile method does not exist
 Add to `TempFileHelper`:
 
 ```kotlin
-fun readFile(path: Path, bufferSize: Int = BUFFER_SIZE): Flow<ByteArray> = flow {
-    withContext(Dispatchers.IO) {
+fun readFile(path: Path, bufferSize: Int = BUFFER_SIZE): Flow<ByteArray> {
+    require(bufferSize > 0) { "bufferSize must be positive" }
+    requirePathInTempDir(path)
+    return flow {
         path.inputStream().buffered().use { stream ->
             val buffer = ByteArray(bufferSize)
             while (true) {
@@ -322,18 +334,28 @@ fun readFile(path: Path, bufferSize: Int = BUFFER_SIZE): Flow<ByteArray> = flow 
                 emit(buffer.copyOf(bytesRead))
             }
         }
-    }
+    }.flowOn(Dispatchers.IO)
 }
 ```
 
 Add imports:
 ```kotlin
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 ```
 
 Add to companion object:
 ```kotlin
 private const val BUFFER_SIZE = 32 * 1024
+```
+
+Add private helper method:
+```kotlin
+private fun requirePathInTempDir(path: Path) {
+    require(path.normalize().startsWith(tempDirPath)) {
+        "Path '$path' is outside tempFolder '$tempDirPath'"
+    }
+}
 ```
 
 **Step 4: Run tests to verify they pass**
@@ -412,18 +434,30 @@ Expected: FAIL — methods do not exist
 Add to `TempFileHelper`:
 
 ```kotlin
-suspend fun deleteIfExists(path: Path): Boolean =
-    withContext(Dispatchers.IO) {
+suspend fun deleteIfExists(path: Path): Boolean {
+    requirePathInTempDir(path)
+    return withContext(Dispatchers.IO) {
+        if (Files.isDirectory(path)) {
+            logger.warn { "Refusing to delete directory: $path" }
+            return@withContext false
+        }
         Files.deleteIfExists(path)
     }
+}
 
 suspend fun deleteFiles(files: List<Path>): Int =
     withContext(Dispatchers.IO) {
         var count = 0
         for (file in files) {
             try {
-                Files.deleteIfExists(file)
-                count++
+                requirePathInTempDir(file)
+                if (Files.isDirectory(file)) {
+                    logger.warn { "Skipping directory: $file" }
+                    continue
+                }
+                if (Files.deleteIfExists(file)) {
+                    count++
+                }
             } catch (e: IOException) {
                 logger.error(e) { "Error deleting file: $file" }
             }
@@ -464,11 +498,11 @@ Add to `TempFileHelperTest`:
 fun `findOldFiles returns files older than MAX_AGE_DAYS`() = runTest {
     // clock is fixed at 2026-02-17T10:30:45Z
     // Create a file with timestamp 8 days ago (older than 7 days)
-    val oldPrefix = "frigate-analyzer-tmp-09-02-2026-10-30-45-old-"
+    val oldPrefix = "frigate-analyzer-tmp-2026-02-09-10-30-45-old-"
     Files.createTempFile(tempDir, oldPrefix, ".tmp")
 
     // Create a file with timestamp today (fresh)
-    val freshPrefix = "frigate-analyzer-tmp-17-02-2026-10-30-45-fresh-"
+    val freshPrefix = "frigate-analyzer-tmp-2026-02-17-10-30-45-fresh-"
     Files.createTempFile(tempDir, freshPrefix, ".tmp")
 
     // Create a non-matching file
@@ -482,16 +516,32 @@ fun `findOldFiles returns files older than MAX_AGE_DAYS`() = runTest {
 
 @Test
 fun `cleanOldFiles deletes stale files`() = runTest {
-    val oldPrefix = "frigate-analyzer-tmp-09-02-2026-10-30-45-stale-"
+    val oldPrefix = "frigate-analyzer-tmp-2026-02-09-10-30-45-stale-"
     val oldFile = Files.createTempFile(tempDir, oldPrefix, ".tmp")
 
-    val freshPrefix = "frigate-analyzer-tmp-17-02-2026-10-30-45-keep-"
+    val freshPrefix = "frigate-analyzer-tmp-2026-02-17-10-30-45-keep-"
     val freshFile = Files.createTempFile(tempDir, freshPrefix, ".tmp")
 
     helper.cleanOldFiles()
 
     assertTrue(Files.notExists(oldFile))
     assertTrue(Files.exists(freshFile))
+}
+
+@Test
+fun `findOldFiles skips files with malformed timestamp`() = runTest {
+    // Valid old file
+    val oldPrefix = "frigate-analyzer-tmp-2026-02-09-10-30-45-old-"
+    Files.createTempFile(tempDir, oldPrefix, ".tmp")
+
+    // Malformed timestamp (99 month)
+    val malformedPrefix = "frigate-analyzer-tmp-2026-99-09-10-30-45-bad-"
+    Files.createTempFile(tempDir, malformedPrefix, ".tmp")
+
+    val oldFiles = helper.findOldFiles()
+
+    assertEquals(1, oldFiles.size)
+    assertTrue(oldFiles[0].fileName.toString().contains("old-"))
 }
 ```
 
@@ -509,13 +559,19 @@ suspend fun findOldFiles(): List<Path> =
     withContext(Dispatchers.IO) {
         Files.list(tempDirPath).use { stream ->
             stream
+                .filter { Files.isRegularFile(it) }
                 .filter { it.fileName.toString().startsWith(PREFIX) }
                 .filter { path ->
                     val filename = path.fileName.toString()
                     val matcher = PATTERN.matcher(filename)
                     if (matcher.matches()) {
-                        val timestamp = LocalDateTime.parse(matcher.group(1), DATE_FORMAT)
-                        timestamp.isBefore(LocalDateTime.now(clock).minusDays(MAX_AGE_DAYS))
+                        try {
+                            val timestamp = LocalDateTime.parse(matcher.group(1), DATE_FORMAT)
+                            timestamp.isBefore(LocalDateTime.now(clock).minusDays(MAX_AGE_DAYS))
+                        } catch (e: java.time.format.DateTimeParseException) {
+                            logger.warn(e) { "Cannot parse timestamp from filename: $filename" }
+                            false
+                        }
                     } else {
                         false
                     }
@@ -545,7 +601,7 @@ import java.util.regex.Pattern
 Add to companion object:
 ```kotlin
 private const val MAX_AGE_DAYS = 7L
-private val PATTERN = Pattern.compile("""frigate-analyzer-tmp-(\d\d-\d\d-\d\d\d\d-\d\d-\d\d-\d\d)-.+""")
+private val PATTERN = Pattern.compile("""frigate-analyzer-tmp-(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})-.+""")
 ```
 
 **Step 4: Run tests to verify they pass**
@@ -567,7 +623,8 @@ git commit -m "feat: add TempFileHelper.findOldFiles and @Scheduled cleanOldFile
 
 **Files:**
 - Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/DetectService.kt`
-- Modify: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt` (if test creates ApplicationProperties for tempFolder — update)
+- Modify: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt`
+- Modify: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/VideoVisualizationServiceTest.kt`
 
 **Step 1: Modify DetectService constructor**
 
@@ -637,11 +694,24 @@ Actually, check carefully: `Dispatchers` and `withContext` are NOT used in other
 
 In `DetectServiceTest.kt`, the constructor of `DetectService` will need updating. Read the test file to see how `DetectService` is instantiated and update to pass `TempFileHelper` instead of `ApplicationProperties`.
 
-The test currently passes `ApplicationProperties` with a `tempFolder`. Replace with a real `TempFileHelper` instance:
+The test currently passes `ApplicationProperties` to `DetectService`. Note: `ApplicationProperties` is still needed for `DetectServerLoadBalancer` — only `DetectService` stops using it directly.
+
+Replace `DetectService` instantiation with `TempFileHelper`:
 
 ```kotlin
 // In setUp or wherever DetectService is created:
-val tempFileHelper = TempFileHelper(applicationProperties, Clock.systemDefaultZone())
+// applicationProperties is still created for DetectServerLoadBalancer (unchanged)
+val tempFileHelper = TempFileHelper(applicationProperties(serverProps), Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
+tempFileHelper.init()
+val detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper)
+```
+
+**Step 3b: Update VideoVisualizationServiceTest**
+
+Same change — `VideoVisualizationServiceTest` also creates `DetectService(...)` directly (line 82). Update to pass `TempFileHelper` instead of `ApplicationProperties`:
+
+```kotlin
+val tempFileHelper = TempFileHelper(applicationProperties(serverProps), Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
 tempFileHelper.init()
 val detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper)
 ```
@@ -655,7 +725,8 @@ Expected: ALL PASS
 
 ```bash
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/DetectService.kt \
-       modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt
+       modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt \
+       modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/VideoVisualizationServiceTest.kt
 git commit -m "refactor: use TempFileHelper in DetectService (FA-18)"
 ```
 

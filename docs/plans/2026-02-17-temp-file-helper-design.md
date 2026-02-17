@@ -18,7 +18,7 @@ Centralized component for temporary file management: creation, reading, writing,
 ## File Naming Convention
 
 ```
-frigate-analyzer-tmp-{dd-MM-yyyy-HH-mm-ss}-{prefix}{random}{suffix}
+frigate-analyzer-tmp-{yyyy-MM-dd-HH-mm-ss}-{prefix}{random}{suffix}
 ```
 
 Timestamp embedded in filename enables age-based cleanup without filesystem metadata queries.
@@ -70,23 +70,28 @@ Verify `applicationProperties.tempFolder` exists and is a directory. Create if m
 All blocking I/O wrapped in `withContext(Dispatchers.IO)`:
 
 - **createTempFile(prefix, suffix):** Creates empty temp file via `Files.createTempFile(tempFolder, fullPrefix, suffix)`
-- **createTempFile(prefix, suffix, content: ByteArray):** Creates file, writes content in one call
-- **createTempFile(prefix, suffix, content: Flow<ByteArray>):** Creates file, writes chunked content from Flow — no full file in memory
-- **readFile(path):** Returns `Flow<ByteArray>` — reads chunks of `BUFFER_SIZE`, back-pressure via Flow's pull-based nature
-- **deleteFiles(files):** Deletes list of files, returns count of successfully deleted
-- **deleteIfExists(path):** Deletes single file, returns true if existed
+- **createTempFile(prefix, suffix, content: ByteArray):** Creates file, writes content in one call. On write failure, deletes the created file before re-throwing.
+- **createTempFile(prefix, suffix, content: Flow<ByteArray>):** Creates file, writes chunked content from Flow — no full file in memory. On write failure, deletes the created file before re-throwing.
+- **readFile(path, bufferSize):** Returns `Flow<ByteArray>` — reads chunks of `bufferSize`, back-pressure via Flow's pull-based nature. Validates `bufferSize > 0`. Validates path is inside `tempFolder`. Uses `.flowOn(Dispatchers.IO)` for context safety.
+- **deleteFiles(files):** Deletes list of files (regular files only, skips directories), returns count of successfully deleted. Validates paths are inside `tempFolder`.
+- **deleteIfExists(path):** Deletes single file (regular file only), returns true if existed. Validates path is inside `tempFolder`.
 
 ### Periodic Cleanup
 
 `@Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT1H")` — runs hourly.
 
-Scans `tempFolder` for files matching `frigate-analyzer-tmp-{timestamp}-*` pattern, parses timestamp, deletes files older than 7 days.
+Scans `tempFolder` for files matching `frigate-analyzer-tmp-{timestamp}-*` pattern, parses timestamp, deletes files older than 7 days. Handles `DateTimeParseException` per-file (log + skip) to avoid one corrupted filename breaking the entire cleanup.
 
 Uses `runBlocking(Dispatchers.IO)` inside `@Scheduled` method since Spring scheduling doesn't support coroutines natively.
+
+### Path Validation
+
+Methods that accept `Path` (`readFile`, `deleteIfExists`, `deleteFiles`) validate that `path.normalize().startsWith(tempDirPath)`. Throws `IllegalArgumentException` if path is outside `tempFolder`.
 
 ### Error Handling
 
 - I/O errors logged via kotlin-logging, re-thrown to caller
+- `createTempFile` with content: on write failure, deletes created file before re-throwing
 - Cleanup job logs errors per-file but continues processing remaining files
 
 ## Refactoring
@@ -122,3 +127,4 @@ Unit tests with JUnit 5:
 - `@TempDir` for isolated filesystem
 - `Clock.fixed()` for deterministic timestamps
 - Test cases: create/read/write files, findOldFiles with aged timestamps, cleanOldFiles deletes stale files
+- Negative tests: malformed filename in findOldFiles (skip + continue), path validation rejection, write failure cleanup
