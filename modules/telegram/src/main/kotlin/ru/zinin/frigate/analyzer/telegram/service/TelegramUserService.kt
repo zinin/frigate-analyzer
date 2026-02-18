@@ -26,7 +26,10 @@ interface TelegramUserService {
 
     suspend fun getUserZone(chatId: Long): ZoneId
 
-    suspend fun updateTimezone(chatId: Long, olsonCode: String)
+    suspend fun updateTimezone(
+        chatId: Long,
+        olsonCode: String,
+    )
 
     suspend fun getAuthorizedUsersWithZones(): List<Pair<Long, ZoneId>>
 }

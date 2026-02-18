@@ -53,7 +53,10 @@ class TelegramNotificationServiceImpl(
         logger.debug { "Enqueued notification for ${usersWithZones.size} subscribers" }
     }
 
-    private fun formatRecordingMessage(recording: RecordingDto, zone: ZoneId): String {
+    private fun formatRecordingMessage(
+        recording: RecordingDto,
+        zone: ZoneId,
+    ): String {
         val fileName = recording.filePath.substringAfterLast("/")
         val camId = recording.camId
         val detectionsCount = recording.detectionsCount

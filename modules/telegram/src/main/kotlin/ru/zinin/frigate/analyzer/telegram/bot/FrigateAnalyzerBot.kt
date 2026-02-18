@@ -395,6 +395,7 @@ class FrigateAnalyzerBot(
             callback.data == "tz:cancel" -> {
                 sendTextMessage(chatId, "Отменено.")
             }
+
             callback.data == "tz:manual" -> {
                 sendTextMessage(chatId, "Введите Olson ID часового пояса (например: Europe/Moscow, Asia/Tokyo):")
                 val inputMsg =
@@ -411,6 +412,7 @@ class FrigateAnalyzerBot(
                     sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова или выберите из списка.")
                 }
             }
+
             else -> {
                 val olsonCode = callback.data.removePrefix("tz:")
                 val zone = ZoneId.of(olsonCode)
@@ -503,7 +505,10 @@ class FrigateAnalyzerBot(
                     }
 
                 // Step 2: Time range input
-                sendTextMessage(chatId, "Введите диапазон времени (например: 9:15-9:20, макс. 5 минут)\nВремя в вашем часовом поясе: $userZone\nИли /cancel:")
+                sendTextMessage(
+                    chatId,
+                    "Введите диапазон времени (например: 9:15-9:20, макс. 5 минут)\nВремя в вашем часовом поясе: $userZone\nИли /cancel:",
+                )
                 val timeMsg =
                     waitTextMessage()
                         .filter { it.chat.id == chatId }
@@ -608,7 +613,7 @@ class FrigateAnalyzerBot(
                 val localDate = startInstant.atZone(userZone).toLocalDate()
                 val localStart = startInstant.atZone(userZone).toLocalTime()
                 val localEnd = endInstant.atZone(userZone).toLocalTime()
-                val fileName = "export_${camId}_${localDate}_${localStart}-${localEnd}.mp4".replace(":", "-")
+                val fileName = "export_${camId}_${localDate}_$localStart-$localEnd.mp4".replace(":", "-")
                 sendVideo(
                     chatId,
                     videoPath.toFile().readBytes().asMultipartFile(fileName),
