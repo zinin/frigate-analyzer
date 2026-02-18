@@ -11,8 +11,7 @@ import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.nio.file.Files
 import java.nio.file.Path
-import java.time.LocalDate
-import java.time.LocalTime
+import java.time.Instant
 
 private val logger = KotlinLogging.logger {}
 
@@ -23,21 +22,19 @@ class VideoExportServiceImpl(
     private val tempFileHelper: TempFileHelper,
 ) : VideoExportService {
     override suspend fun findCamerasWithRecordings(
-        date: LocalDate,
-        startTime: LocalTime,
-        endTime: LocalTime,
-    ): List<CameraRecordingCountDto> = recordingRepository.findCamerasWithRecordings(date, startTime, endTime)
+        startInstant: Instant,
+        endInstant: Instant,
+    ): List<CameraRecordingCountDto> = recordingRepository.findCamerasWithRecordings(startInstant, endInstant)
 
     override suspend fun exportVideo(
-        date: LocalDate,
-        startTime: LocalTime,
-        endTime: LocalTime,
+        startInstant: Instant,
+        endInstant: Instant,
         camId: String,
     ): Path {
-        val recordings = recordingRepository.findByCamIdAndDateAndTimeRange(camId, date, startTime, endTime)
+        val recordings = recordingRepository.findByCamIdAndInstantRange(camId, startInstant, endInstant)
 
         if (recordings.isEmpty()) {
-            throw IllegalStateException("No recordings found for camId=$camId, date=$date, time=$startTime-$endTime")
+            throw IllegalStateException("No recordings found for camId=$camId, range=$startInstant-$endInstant")
         }
 
         val existingFiles =
@@ -55,7 +52,7 @@ class VideoExportServiceImpl(
             throw IllegalStateException("All recording files are missing from disk")
         }
 
-        logger.info { "Exporting ${existingFiles.size} recordings for camId=$camId, date=$date, time=$startTime-$endTime" }
+        logger.info { "Exporting ${existingFiles.size} recordings for camId=$camId, range=$startInstant-$endInstant" }
 
         var mergedFile = videoMergeHelper.mergeVideos(existingFiles)
 
