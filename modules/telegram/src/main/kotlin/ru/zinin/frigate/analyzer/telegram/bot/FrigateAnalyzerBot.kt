@@ -423,7 +423,7 @@ class FrigateAnalyzerBot(
                         sendTextMessage(chatId, "Ошибка сохранения часового пояса.")
                         return
                     }
-                    val offset = zone.rules.getOffset(Instant.now())
+                    val offset = zone.rules.getOffset(Instant.now(clock))
                     sendTextMessage(chatId, "Часовой пояс сохранён: ${zone.id} (UTC$offset)")
                 } catch (e: DateTimeException) {
                     sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова или выберите из списка.")
@@ -438,7 +438,7 @@ class FrigateAnalyzerBot(
                         sendTextMessage(chatId, "Ошибка сохранения часового пояса.")
                         return
                     }
-                    val offset = zone.rules.getOffset(Instant.now())
+                    val offset = zone.rules.getOffset(Instant.now(clock))
                     sendTextMessage(chatId, "Часовой пояс сохранён: $olsonCode (UTC$offset)")
                 } catch (e: DateTimeException) {
                     sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова.")
