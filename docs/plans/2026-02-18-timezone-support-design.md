@@ -69,7 +69,8 @@ Column is nullable. Default handling is in code: `ZoneId.of(entity.olsonCode ?: 
 | Liquibase migration (new file) | — | `ALTER TABLE telegram_users ADD COLUMN olson_code VARCHAR(50)` |
 | `TelegramUserEntity` | telegram | + field `olsonCode: String?` |
 | `TelegramUserRepository` | telegram | + method to update `olsonCode` |
-| `TelegramUserService` | telegram | + `getUserZone(chatId): ZoneId`, `updateTimezone(chatId, olsonCode)`, `getAuthorizedUsersWithZones(): List<Pair<Long, ZoneId>>` |
+| `UserZoneInfo` (new DTO) | telegram | `data class UserZoneInfo(val chatId: Long, val zone: ZoneId)` |
+| `TelegramUserService` | telegram | + `getUserZone(chatId): ZoneId` (with try/catch fallback to UTC), `updateTimezone(chatId, olsonCode)` (with validation + affected rows check), `getAuthorizedUsersWithZones(): List<UserZoneInfo>` |
 | `RecordingEntityRepository` | service | Rewrite 2 queries: `(LocalDate, LocalTime, LocalTime)` → `(Instant, Instant)` |
 | `VideoExportService` (interface) | telegram | Method signatures → `(Instant, Instant, ...)` |
 | `VideoExportServiceImpl` | core | Method signatures → `(Instant, Instant, ...)` |
@@ -87,8 +88,10 @@ Column is nullable. Default handling is in code: `ZoneId.of(entity.olsonCode ?: 
 ### /export
 
 ```
-User inputs date + time (in their TZ)
-  → FrigateAnalyzerBot loads userZone = userService.getUserZone(chatId)
+FrigateAnalyzerBot loads userZone = userService.getUserZone(chatId)
+User selects date:
+  → "Сегодня"/"Вчера" computed in user's TZ: Instant.now(clock).atZone(userZone).toLocalDate()
+User inputs time range (in their TZ)
   → startInstant = LocalDateTime.of(date, startTime).atZone(userZone).toInstant()
   → endInstant   = LocalDateTime.of(date, endTime).atZone(userZone).toInstant()
   → videoExportService.findCamerasWithRecordings(startInstant, endInstant)
@@ -101,6 +104,8 @@ User inputs date + time (in their TZ)
 ```sql
 SELECT cam_id, COUNT(*) as recordings_count
 FROM recordings
+-- 10-second buffer: Frigate records in segments; a recording's record_timestamp
+-- marks the segment start, so the actual content may extend slightly before it.
 WHERE record_timestamp >= :startInstant - INTERVAL '10 seconds'
   AND record_timestamp <= :endInstant
   AND file_path IS NOT NULL
@@ -114,6 +119,7 @@ ORDER BY cam_id
 SELECT *
 FROM recordings
 WHERE cam_id = :camId
+  -- 10-second buffer: same reason as above
   AND record_timestamp >= :startInstant - INTERVAL '10 seconds'
   AND record_timestamp <= :endInstant
   AND file_path IS NOT NULL
@@ -125,7 +131,7 @@ ORDER BY record_timestamp ASC
 ```
 Detection event
   → TelegramNotificationServiceImpl
-  → userService.getAuthorizedUsersWithZones() → List<Pair<Long, ZoneId>>
+  → userService.getAuthorizedUsersWithZones() → List<UserZoneInfo>
   → for each (chatId, userZone):
       format recordTimestamp.atZone(userZone)
       send individual message to chatId
@@ -145,12 +151,16 @@ Predefined zones:
 - `Asia/Yakutsk` (UTC+9)
 - `Asia/Vladivostok` (UTC+10)
 
-Manual input: `ZoneId.of(input)` — throws `ZoneRulesException` on invalid ID, caught and shown as error message.
+Manual input validation:
+1. Reject offset-based IDs (without `/`): `GMT+3`, `UTC+03:00` etc. — these lose DST handling. Only accept region-based Olson IDs (e.g. `Europe/Moscow`, `Asia/Tokyo`).
+2. `ZoneId.of(input)` — catch `DateTimeException` (parent of `ZoneRulesException`) for both invalid format and unknown region IDs.
 
 ## Error Handling
 
 | Situation | Response |
 |-----------|----------|
-| Invalid Olson ID (manual input) | "Неизвестный часовой пояс. Попробуйте снова или выберите из списка." |
+| Invalid Olson ID (manual input) | "Неизвестный часовой пояс. Попробуйте снова или выберите из списка." (catch `DateTimeException`) |
+| Offset-based zone (manual input, no `/` in ID) | "Пожалуйста, используйте формат Continent/City (например: Europe/Moscow)." |
+| Invalid `olson_code` in DB | Fallback to UTC + log warning (in `getUserZone` and `getAuthorizedUsersWithZones`) |
 | /timezone canceled | "Отменено." |
 | No recordings in Instant range | "Записей за указанный период не найдено." (same as before) |

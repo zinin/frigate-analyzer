@@ -124,8 +124,10 @@ suspend fun getUserZone(chatId: Long): ZoneId
 
 suspend fun updateTimezone(chatId: Long, olsonCode: String)
 
-suspend fun getAuthorizedUsersWithZones(): List<Pair<Long, ZoneId>>
+suspend fun getAuthorizedUsersWithZones(): List<UserZoneInfo>
 ```
+
+Add `data class UserZoneInfo(val chatId: Long, val zone: ZoneId)` to the interface file (or a separate file in the same package).
 
 Add import to interface file: `import java.time.ZoneId`
 
@@ -137,21 +139,43 @@ Add after `getAllActiveChatIds()`:
 @Transactional(readOnly = true)
 override suspend fun getUserZone(chatId: Long): ZoneId {
     val olsonCode = repository.findByChatId(chatId)?.olsonCode
-    return ZoneId.of(olsonCode ?: "UTC")
+    return try {
+        ZoneId.of(olsonCode ?: "UTC")
+    } catch (e: DateTimeException) {
+        logger.warn { "Invalid olson_code='$olsonCode' for chatId=$chatId, falling back to UTC" }
+        ZoneId.of("UTC")
+    }
 }
 
 @Transactional
 override suspend fun updateTimezone(chatId: Long, olsonCode: String) {
-    repository.updateOlsonCode(chatId, olsonCode)
-    logger.info { "Updated timezone for chatId=$chatId to $olsonCode" }
+    // Validate before saving — reject offset-based zones (no '/')
+    require(olsonCode.contains('/')) { "Offset-based zone IDs are not allowed: $olsonCode" }
+    ZoneId.of(olsonCode) // throws DateTimeException if invalid
+    val updated = repository.updateOlsonCode(chatId, olsonCode)
+    if (updated == 0L) {
+        logger.warn { "updateTimezone: no rows updated for chatId=$chatId" }
+    } else {
+        logger.info { "Updated timezone for chatId=$chatId to $olsonCode" }
+    }
 }
 
 @Transactional(readOnly = true)
-override suspend fun getAuthorizedUsersWithZones(): List<Pair<Long, ZoneId>> =
+override suspend fun getAuthorizedUsersWithZones(): List<UserZoneInfo> =
     repository.findAllByStatus(UserStatus.ACTIVE.name)
         .filter { it.chatId != null }
-        .map { user -> user.chatId!! to ZoneId.of(user.olsonCode ?: "UTC") }
+        .map { user ->
+            val zone = try {
+                ZoneId.of(user.olsonCode ?: "UTC")
+            } catch (e: DateTimeException) {
+                logger.warn { "Invalid olson_code='${user.olsonCode}' for chatId=${user.chatId}, falling back to UTC" }
+                ZoneId.of("UTC")
+            }
+            UserZoneInfo(user.chatId!!, zone)
+        }
 ```
+
+Add import: `import java.time.DateTimeException`
 
 Add import to impl file: `import java.time.ZoneId`
 
@@ -180,6 +204,7 @@ Remove the old method (lines 98–115) and add:
     SELECT *
     FROM recordings
     WHERE cam_id = :camId
+      -- 10s buffer: Frigate segments start at record_timestamp, content may extend before it
       AND record_timestamp >= :startInstant - INTERVAL '10 seconds'
       AND record_timestamp <= :endInstant
       AND file_path IS NOT NULL
@@ -202,6 +227,7 @@ Remove the old method (lines 117–134) and add:
     """
     SELECT cam_id, COUNT(*) as recordings_count
     FROM recordings
+    -- 10s buffer: Frigate segments start at record_timestamp, content may extend before it
     WHERE record_timestamp >= :startInstant - INTERVAL '10 seconds'
       AND record_timestamp <= :endInstant
       AND file_path IS NOT NULL
@@ -382,10 +408,10 @@ This is the largest task. Make changes in order.
 
 Add these imports to the existing import block:
 ```kotlin
+import java.time.DateTimeException
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
-import java.time.zone.ZoneRulesException
 ```
 
 **Step 2: Add /timezone to DEFAULT_COMMANDS**
@@ -471,12 +497,16 @@ private suspend fun BehaviourContext.handleTimezone(message: CommonMessage<TextC
                     .filter { it.chat.id == chatId }
                     .first()
             val input = inputMsg.content.text.trim()
+            if (!input.contains('/')) {
+                sendTextMessage(chatId, "Пожалуйста, используйте формат Continent/City (например: Europe/Moscow).")
+                return
+            }
             try {
                 val zone = ZoneId.of(input)
                 userService.updateTimezone(chatId.chatId.long, zone.id)
                 val offset = zone.rules.getOffset(Instant.now())
                 sendTextMessage(chatId, "Часовой пояс сохранён: ${zone.id} (UTC$offset)")
-            } catch (e: ZoneRulesException) {
+            } catch (e: DateTimeException) {
                 sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова или выберите из списка.")
             }
         }
@@ -496,6 +526,12 @@ private suspend fun BehaviourContext.handleTimezone(message: CommonMessage<TextC
 In `handleExport`, immediately after the role check and before `var userNotified = false`, add:
 ```kotlin
 val userZone = userService.getUserZone(chatId.chatId.long)
+```
+
+**IMPORTANT (Review fix A):** Update date selection buttons to use user timezone instead of server clock. Replace `LocalDate.now(clock)` with `Instant.now(clock).atZone(userZone).toLocalDate()` in both "export:today" and "export:yesterday" branches:
+```kotlin
+"export:today" -> Instant.now(clock).atZone(userZone).toLocalDate()
+"export:yesterday" -> Instant.now(clock).atZone(userZone).toLocalDate().minusDays(1)
 ```
 
 In Step 2 of the dialog (time range prompt), replace:
@@ -605,12 +641,12 @@ override suspend fun sendRecordingNotification(
         return
     }
 
-    usersWithZones.forEach { (chatId, zone) ->
-        val message = formatRecordingMessage(recording, zone)
+    usersWithZones.forEach { userZone ->
+        val message = formatRecordingMessage(recording, userZone.zone)
         val task =
             NotificationTask(
                 uuidGeneratorHelper.generateV1(),
-                chatId,
+                userZone.chatId,
                 message,
                 visualizedFrames,
             )
@@ -688,8 +724,8 @@ git commit -m "fix: resolve build issues for timezone support (FA-18)"
 | — | `docker/liquibase/migration/master_frigate_analyzer.xml` | Include new migration |
 | telegram | `entity/TelegramUserEntity.kt` | + `olsonCode: String?` field |
 | telegram | `repository/TelegramUserRepository.kt` | + `findByChatId`, `updateOlsonCode` |
-| telegram | `service/TelegramUserService.kt` | + `getUserZone`, `updateTimezone`, `getAuthorizedUsersWithZones` |
-| telegram | `service/impl/TelegramUserServiceImpl.kt` | Implement 3 new methods |
+| telegram | `service/TelegramUserService.kt` | + `getUserZone` (fallback UTC), `updateTimezone` (validation + affected rows), `getAuthorizedUsersWithZones` → `List<UserZoneInfo>` |
+| telegram | `service/impl/TelegramUserServiceImpl.kt` | Implement 3 methods with validation, try/catch fallback, affected rows check |
 | service | `repository/RecordingEntityRepository.kt` | Replace 2 queries with Instant-based |
 | telegram | `service/VideoExportService.kt` | Signatures: `LocalDate/LocalTime` → `Instant` |
 | core | `service/VideoExportServiceImpl.kt` | Signatures + repo calls updated |
