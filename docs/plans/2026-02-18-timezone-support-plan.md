@@ -127,7 +127,15 @@ suspend fun updateTimezone(chatId: Long, olsonCode: String)
 suspend fun getAuthorizedUsersWithZones(): List<UserZoneInfo>
 ```
 
-Add `data class UserZoneInfo(val chatId: Long, val zone: ZoneId)` to the interface file (or a separate file in the same package).
+Create a separate file `UserZoneInfo.kt` in `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/dto/UserZoneInfo.kt`:
+
+```kotlin
+package ru.zinin.frigate.analyzer.telegram.dto
+
+import java.time.ZoneId
+
+data class UserZoneInfo(val chatId: Long, val zone: ZoneId)
+```
 
 Add import to interface file: `import java.time.ZoneId`
 
@@ -138,7 +146,12 @@ Add after `getAllActiveChatIds()`:
 ```kotlin
 @Transactional(readOnly = true)
 override suspend fun getUserZone(chatId: Long): ZoneId {
-    val olsonCode = repository.findByChatId(chatId)?.olsonCode
+    val user = repository.findByChatId(chatId)
+    if (user == null) {
+        logger.warn { "User with chatId=$chatId not found, falling back to UTC" }
+        return ZoneId.of("UTC")
+    }
+    val olsonCode = user.olsonCode
     return try {
         ZoneId.of(olsonCode ?: "UTC")
     } catch (e: DateTimeException) {
@@ -478,11 +491,11 @@ private suspend fun BehaviourContext.handleTimezone(message: CommonMessage<TextC
                 },
         )
 
-    sendTextMessage(chatId, "Ваш текущий часовой пояс: $currentZone\nВыберите часовой пояс:", replyMarkup = tzKeyboard)
+    val sentMessage = sendTextMessage(chatId, "Ваш текущий часовой пояс: $currentZone\nВыберите часовой пояс:", replyMarkup = tzKeyboard)
 
     val callback =
         waitDataCallbackQuery()
-            .filter { it.data.startsWith("tz:") && (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId }
+            .filter { it.data.startsWith("tz:") && (it as? MessageDataCallbackQuery)?.message?.messageId == sentMessage.messageId }
             .first()
     answer(callback)
 
@@ -497,6 +510,10 @@ private suspend fun BehaviourContext.handleTimezone(message: CommonMessage<TextC
                     .filter { it.chat.id == chatId }
                     .first()
             val input = inputMsg.content.text.trim()
+            if (input == "/cancel") {
+                sendTextMessage(chatId, "Отменено.")
+                return
+            }
             if (!input.contains('/')) {
                 sendTextMessage(chatId, "Пожалуйста, используйте формат Continent/City (например: Europe/Moscow).")
                 return
@@ -523,6 +540,8 @@ private suspend fun BehaviourContext.handleTimezone(message: CommonMessage<TextC
 
 **Step 5: Update handleExport — load user timezone and convert inputs**
 
+**IMPORTANT (Review fix — callback binding):** All `waitDataCallbackQuery()` filters in `handleExport` must be bound to the `messageId` of the sent keyboard message (not just `chatId` + prefix). Capture the return value of `sendTextMessage` and filter by `(it as? MessageDataCallbackQuery)?.message?.messageId == sentMessage.messageId`. This prevents catching callbacks from stale keyboards in the same chat.
+
 In `handleExport`, immediately after the role check and before `var userNotified = false`, add:
 ```kotlin
 val userZone = userService.getUserZone(chatId.chatId.long)
@@ -547,6 +566,14 @@ After `val (startTime, endTime) = timeRange` and duration validation, add Instan
 ```kotlin
 val startInstant = LocalDateTime.of(date, startTime).atZone(userZone).toInstant()
 val endInstant = LocalDateTime.of(date, endTime).atZone(userZone).toInstant()
+
+// DST guard: validate duration after timezone conversion
+// (DST transitions can cause local 5 min to become != 5 min UTC)
+val actualDuration = Duration.between(startInstant, endInstant)
+if (actualDuration.toMinutes() > 5) {
+    sendTextMessage(chatId, "Диапазон после конвертации в UTC превышает 5 минут (возможно из-за перехода на летнее/зимнее время). Попробуйте другой диапазон.")
+    return@run null
+}
 ```
 
 Replace:
@@ -704,7 +731,7 @@ Use `/build` command (dispatches build-runner agent).
 Common issues to watch for:
 - Unused imports (LocalDate/LocalTime removed from RecordingEntityRepository)
 - `DialogResult` type changed from `Triple<LocalDate, Pair<LocalTime,LocalTime>, String>` to `Triple<Instant, Instant, String>` — ensure all usage sites updated
-- `ZoneRulesException` needs `java.time.zone.ZoneRulesException` import (not `java.time.ZoneId.ZoneRulesException`)
+- Exception handling uses `DateTimeException` (`java.time.DateTimeException`), NOT `ZoneRulesException` — this is the agreed standard from review iter-1
 - `chatId.chatId.long` — `chatId` in the bot is `ChatId` type from ktgbotapi; `.chatId` returns `RawChatId`, `.long` gets the Long value
 
 **Step 4: Commit fixes if needed**
@@ -724,10 +751,11 @@ git commit -m "fix: resolve build issues for timezone support (FA-18)"
 | — | `docker/liquibase/migration/master_frigate_analyzer.xml` | Include new migration |
 | telegram | `entity/TelegramUserEntity.kt` | + `olsonCode: String?` field |
 | telegram | `repository/TelegramUserRepository.kt` | + `findByChatId`, `updateOlsonCode` |
-| telegram | `service/TelegramUserService.kt` | + `getUserZone` (fallback UTC), `updateTimezone` (validation + affected rows), `getAuthorizedUsersWithZones` → `List<UserZoneInfo>` |
+| telegram | `dto/UserZoneInfo.kt` | Create: `data class UserZoneInfo(val chatId: Long, val zone: ZoneId)` |
+| telegram | `service/TelegramUserService.kt` | + `getUserZone` (fallback UTC, warn if user null), `updateTimezone` (validation + affected rows), `getAuthorizedUsersWithZones` → `List<UserZoneInfo>` |
 | telegram | `service/impl/TelegramUserServiceImpl.kt` | Implement 3 methods with validation, try/catch fallback, affected rows check |
 | service | `repository/RecordingEntityRepository.kt` | Replace 2 queries with Instant-based |
 | telegram | `service/VideoExportService.kt` | Signatures: `LocalDate/LocalTime` → `Instant` |
 | core | `service/VideoExportServiceImpl.kt` | Signatures + repo calls updated |
-| telegram | `bot/FrigateAnalyzerBot.kt` | + `/timezone` command, update `/export` |
+| telegram | `bot/FrigateAnalyzerBot.kt` | + `/timezone` command (with /cancel in manual input), update `/export` (DST guard, callback messageId binding) |
 | telegram | `service/impl/TelegramNotificationServiceImpl.kt` | Per-user timezone, remove hardcoded MSK |

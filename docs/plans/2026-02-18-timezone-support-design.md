@@ -69,7 +69,7 @@ Column is nullable. Default handling is in code: `ZoneId.of(entity.olsonCode ?: 
 | Liquibase migration (new file) | — | `ALTER TABLE telegram_users ADD COLUMN olson_code VARCHAR(50)` |
 | `TelegramUserEntity` | telegram | + field `olsonCode: String?` |
 | `TelegramUserRepository` | telegram | + method to update `olsonCode` |
-| `UserZoneInfo` (new DTO) | telegram | `data class UserZoneInfo(val chatId: Long, val zone: ZoneId)` |
+| `UserZoneInfo` (new DTO) | telegram (dto package) | `data class UserZoneInfo(val chatId: Long, val zone: ZoneId)` — separate file in `telegram/dto/` |
 | `TelegramUserService` | telegram | + `getUserZone(chatId): ZoneId` (with try/catch fallback to UTC), `updateTimezone(chatId, olsonCode)` (with validation + affected rows check), `getAuthorizedUsersWithZones(): List<UserZoneInfo>` |
 | `RecordingEntityRepository` | service | Rewrite 2 queries: `(LocalDate, LocalTime, LocalTime)` → `(Instant, Instant)` |
 | `VideoExportService` (interface) | telegram | Method signatures → `(Instant, Instant, ...)` |
@@ -94,6 +94,8 @@ User selects date:
 User inputs time range (in their TZ)
   → startInstant = LocalDateTime.of(date, startTime).atZone(userZone).toInstant()
   → endInstant   = LocalDateTime.of(date, endTime).atZone(userZone).toInstant()
+  → DST guard: validate Duration.between(startInstant, endInstant) ≤ 5 min after conversion
+    (DST transitions can cause local 5 min to become != 5 min UTC)
   → videoExportService.findCamerasWithRecordings(startInstant, endInstant)
   → videoExportService.exportVideo(startInstant, endInstant, camId)
 ```
@@ -141,6 +143,8 @@ Detection event
 
 8 CIS timezone buttons + "Ввести вручную" + "Отмена". Implementation uses waiter pattern (same as `/export`).
 
+Callback filter binding: all `waitDataCallbackQuery()` filters must be bound to the `messageId` of the sent keyboard message (not just `chatId` + prefix). This prevents catching callbacks from stale keyboards in the same chat. Applies to both `/timezone` and `/export`.
+
 Predefined zones:
 - `Europe/Kaliningrad` (UTC+2)
 - `Europe/Moscow` (UTC+3)
@@ -152,8 +156,9 @@ Predefined zones:
 - `Asia/Vladivostok` (UTC+10)
 
 Manual input validation:
-1. Reject offset-based IDs (without `/`): `GMT+3`, `UTC+03:00` etc. — these lose DST handling. Only accept region-based Olson IDs (e.g. `Europe/Moscow`, `Asia/Tokyo`).
-2. `ZoneId.of(input)` — catch `DateTimeException` (parent of `ZoneRulesException`) for both invalid format and unknown region IDs.
+1. Handle `/cancel` input before validation — abort and send "Отменено."
+2. Reject offset-based IDs (without `/`): `GMT+3`, `UTC+03:00` etc. — these lose DST handling. Only accept region-based Olson IDs (e.g. `Europe/Moscow`, `Asia/Tokyo`).
+3. `ZoneId.of(input)` — catch `DateTimeException` (parent of `ZoneRulesException`) for both invalid format and unknown region IDs.
 
 ## Error Handling
 
@@ -162,5 +167,7 @@ Manual input validation:
 | Invalid Olson ID (manual input) | "Неизвестный часовой пояс. Попробуйте снова или выберите из списка." (catch `DateTimeException`) |
 | Offset-based zone (manual input, no `/` in ID) | "Пожалуйста, используйте формат Continent/City (например: Europe/Moscow)." |
 | Invalid `olson_code` in DB | Fallback to UTC + log warning (in `getUserZone` and `getAuthorizedUsersWithZones`) |
+| Non-existent user in `getUserZone` | Fallback to UTC + log warning (`findByChatId` returns null) |
+| /cancel during manual timezone input | "Отменено." |
 | /timezone canceled | "Отменено." |
 | No recordings in Instant range | "Записей за указанный период не найдено." (same as before) |
