@@ -47,11 +47,15 @@ import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.time.Clock
+import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
+import java.time.zone.ZoneRulesException
 
 private val logger = KotlinLogging.logger {}
 
@@ -77,6 +81,7 @@ class FrigateAnalyzerBot(
                 BotCommand("start", "Начать работу с ботом"),
                 BotCommand("help", "Помощь"),
                 BotCommand("export", "Выгрузить видео"),
+                BotCommand("timezone", "Часовой пояс"),
             )
 
         private val OWNER_COMMANDS =
@@ -132,6 +137,10 @@ class FrigateAnalyzerBot(
 
                         onCommand("export") { message ->
                             handleExport(message)
+                        }
+
+                        onCommand("timezone") { message ->
+                            handleTimezone(message)
                         }
 
                         onContentMessage { message ->
@@ -229,6 +238,7 @@ class FrigateAnalyzerBot(
                 appendLine("/start - Активация подписки")
                 appendLine("/help - Список команд")
                 appendLine("/export - Выгрузить видео с камеры")
+                appendLine("/timezone - Настроить часовой пояс")
 
                 if (role == UserRole.OWNER) {
                     appendLine()
@@ -336,6 +346,82 @@ class FrigateAnalyzerBot(
     }
 
     @Suppress("LongMethod")
+    private suspend fun BehaviourContext.handleTimezone(message: CommonMessage<TextContent>) {
+        val role = authorizationFilter.getRole(message)
+        if (role == null) {
+            bot.reply(message, authorizationFilter.getUnauthorizedMessage())
+            return
+        }
+
+        val chatId = message.chat.id
+        val currentZone = userService.getUserZone(chatId.chatId.long)
+
+        val tzKeyboard =
+            InlineKeyboardMarkup(
+                keyboard =
+                    matrix {
+                        row {
+                            +CallbackDataInlineKeyboardButton("Калининград (UTC+2)", "tz:Europe/Kaliningrad")
+                            +CallbackDataInlineKeyboardButton("Москва (UTC+3)", "tz:Europe/Moscow")
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton("Екатеринбург (UTC+5)", "tz:Asia/Yekaterinburg")
+                            +CallbackDataInlineKeyboardButton("Омск (UTC+6)", "tz:Asia/Omsk")
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton("Красноярск (UTC+7)", "tz:Asia/Krasnoyarsk")
+                            +CallbackDataInlineKeyboardButton("Иркутск (UTC+8)", "tz:Asia/Irkutsk")
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton("Якутск (UTC+9)", "tz:Asia/Yakutsk")
+                            +CallbackDataInlineKeyboardButton("Владивосток (UTC+10)", "tz:Asia/Vladivostok")
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton("Ввести вручную", "tz:manual")
+                            +CallbackDataInlineKeyboardButton("Отмена", "tz:cancel")
+                        }
+                    },
+            )
+
+        sendTextMessage(chatId, "Ваш текущий часовой пояс: $currentZone\nВыберите часовой пояс:", replyMarkup = tzKeyboard)
+
+        val callback =
+            waitDataCallbackQuery()
+                .filter { it.data.startsWith("tz:") && (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId }
+                .first()
+        answer(callback)
+
+        when {
+            callback.data == "tz:cancel" -> {
+                sendTextMessage(chatId, "Отменено.")
+            }
+            callback.data == "tz:manual" -> {
+                sendTextMessage(chatId, "Введите Olson ID часового пояса (например: Europe/Moscow, Asia/Tokyo):")
+                val inputMsg =
+                    waitTextMessage()
+                        .filter { it.chat.id == chatId }
+                        .first()
+                val input = inputMsg.content.text.trim()
+                try {
+                    val zone = ZoneId.of(input)
+                    userService.updateTimezone(chatId.chatId.long, zone.id)
+                    val offset = zone.rules.getOffset(Instant.now())
+                    sendTextMessage(chatId, "Часовой пояс сохранён: ${zone.id} (UTC$offset)")
+                } catch (e: ZoneRulesException) {
+                    sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова или выберите из списка.")
+                }
+            }
+            else -> {
+                val olsonCode = callback.data.removePrefix("tz:")
+                val zone = ZoneId.of(olsonCode)
+                userService.updateTimezone(chatId.chatId.long, olsonCode)
+                val offset = zone.rules.getOffset(Instant.now())
+                sendTextMessage(chatId, "Часовой пояс сохранён: $olsonCode (UTC$offset)")
+            }
+        }
+    }
+
+    @Suppress("LongMethod")
     private suspend fun BehaviourContext.handleExport(message: CommonMessage<TextContent>) {
         val role = authorizationFilter.getRole(message)
         if (role == null) {
@@ -344,6 +430,7 @@ class FrigateAnalyzerBot(
         }
 
         val chatId = message.chat.id
+        val userZone = userService.getUserZone(chatId.chatId.long)
 
         var userNotified = false
 
@@ -416,7 +503,7 @@ class FrigateAnalyzerBot(
                     }
 
                 // Step 2: Time range input
-                sendTextMessage(chatId, "Введите диапазон времени (например: 09:15-09:20, макс. 5 минут) или /cancel:")
+                sendTextMessage(chatId, "Введите диапазон времени (например: 9:15-9:20, макс. 5 минут)\nВремя в вашем часовом поясе: $userZone\nИли /cancel:")
                 val timeMsg =
                     waitTextMessage()
                         .filter { it.chat.id == chatId }
@@ -447,8 +534,12 @@ class FrigateAnalyzerBot(
                     return@withTimeoutOrNull null
                 }
 
+                // Convert to Instant using user's timezone
+                val startInstant = LocalDateTime.of(date, startTime).atZone(userZone).toInstant()
+                val endInstant = LocalDateTime.of(date, endTime).atZone(userZone).toInstant()
+
                 // Step 3: Camera selection
-                val cameras = videoExportService.findCamerasWithRecordings(date, startTime, endTime)
+                val cameras = videoExportService.findCamerasWithRecordings(startInstant, endInstant)
                 if (cameras.isEmpty()) {
                     sendTextMessage(chatId, "Записей за $date $startTime-$endTime не найдено.")
                     userNotified = true
@@ -490,7 +581,7 @@ class FrigateAnalyzerBot(
                 }
 
                 val camId = camCallback.data.removePrefix("export:cam:")
-                Triple(date, startTime to endTime, camId)
+                Triple(startInstant, endInstant, camId)
             }
 
         if (dialogResult == null) {
@@ -500,24 +591,24 @@ class FrigateAnalyzerBot(
             return
         }
 
-        val (date, timePair, camId) = dialogResult
-        val (startTime, endTime) = timePair
+        val (startInstant, endInstant, camId) = dialogResult
 
         // Step 4: Export video (separate timeout from dialog)
         sendTextMessage(chatId, "Обработка видео, подождите...")
         try {
             val videoPath =
                 withTimeoutOrNull(EXPORT_PROCESSING_TIMEOUT_MS) {
-                    videoExportService.exportVideo(date, startTime, endTime, camId)
+                    videoExportService.exportVideo(startInstant, endInstant, camId)
                 } ?: run {
                     sendTextMessage(chatId, "Обработка видео заняла слишком много времени. Попробуйте меньший диапазон.")
                     return
                 }
 
             try {
-                val fileName =
-                    "export_${camId}_${date}_$startTime-$endTime.mp4"
-                        .replace(":", "-")
+                val localDate = startInstant.atZone(userZone).toLocalDate()
+                val localStart = startInstant.atZone(userZone).toLocalTime()
+                val localEnd = endInstant.atZone(userZone).toLocalTime()
+                val fileName = "export_${camId}_${localDate}_${localStart}-${localEnd}.mp4".replace(":", "-")
                 sendVideo(
                     chatId,
                     videoPath.toFile().readBytes().asMultipartFile(fileName),
