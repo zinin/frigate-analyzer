@@ -3,7 +3,6 @@ package ru.zinin.frigate.analyzer.telegram.service.impl
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Service
-import ru.zinin.frigate.analyzer.common.config.ClockConfig
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
@@ -11,6 +10,7 @@ import ru.zinin.frigate.analyzer.telegram.queue.NotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -32,15 +32,14 @@ class TelegramNotificationServiceImpl(
             return
         }
 
-        val chatIds = userService.getAllActiveChatIds()
-        if (chatIds.isEmpty()) {
+        val usersWithZones = userService.getAuthorizedUsersWithZones()
+        if (usersWithZones.isEmpty()) {
             logger.debug { "No active subscribers found, skipping notification" }
             return
         }
 
-        val message = formatRecordingMessage(recording)
-
-        chatIds.forEach { chatId ->
+        usersWithZones.forEach { (chatId, zone) ->
+            val message = formatRecordingMessage(recording, zone)
             val task =
                 NotificationTask(
                     uuidGeneratorHelper.generateV1(),
@@ -51,10 +50,10 @@ class TelegramNotificationServiceImpl(
             notificationQueue.enqueue(task)
         }
 
-        logger.debug { "Enqueued notification for ${chatIds.size} subscribers" }
+        logger.debug { "Enqueued notification for ${usersWithZones.size} subscribers" }
     }
 
-    private fun formatRecordingMessage(recording: RecordingDto): String {
+    private fun formatRecordingMessage(recording: RecordingDto, zone: ZoneId): String {
         val fileName = recording.filePath.substringAfterLast("/")
         val camId = recording.camId
         val detectionsCount = recording.detectionsCount
@@ -64,17 +63,17 @@ class TelegramNotificationServiceImpl(
         val formatter =
             DateTimeFormatter
                 .ofLocalizedDateTime(FormatStyle.LONG)
-                .withLocale(ClockConfig.LOCALE_RU)
+                .withLocale(java.util.Locale.of("ru"))
 
         val timestampFormatted =
             recording.processTimestamp
-                ?.atZone(ClockConfig.MOSCOW_ZONE_ID)
+                ?.atZone(zone)
                 ?.format(formatter)
                 ?: "N/A"
 
         val recordTimestampFormatted =
             recording.recordTimestamp
-                .atZone(ClockConfig.MOSCOW_ZONE_ID)
+                .atZone(zone)
                 .format(formatter)
 
         return buildString {
