@@ -389,8 +389,12 @@ class FrigateAnalyzerBot(
 
         val callback =
             waitDataCallbackQuery()
-                .filter { it.data.startsWith("tz:") && (it as? MessageDataCallbackQuery)?.message?.messageId == tzSentMessage.messageId }
-                .first()
+                .filter {
+                    it.data.startsWith("tz:") &&
+                        (it as? MessageDataCallbackQuery)?.message?.let { msg ->
+                            msg.messageId == tzSentMessage.messageId && msg.chat.id == chatId
+                        } == true
+                }.first()
         answer(callback)
 
         when {
@@ -415,7 +419,10 @@ class FrigateAnalyzerBot(
                 }
                 try {
                     val zone = ZoneId.of(input)
-                    userService.updateTimezone(chatId.chatId.long, zone.id)
+                    if (!userService.updateTimezone(chatId.chatId.long, zone.id)) {
+                        sendTextMessage(chatId, "Ошибка сохранения часового пояса.")
+                        return
+                    }
                     val offset = zone.rules.getOffset(Instant.now())
                     sendTextMessage(chatId, "Часовой пояс сохранён: ${zone.id} (UTC$offset)")
                 } catch (e: DateTimeException) {
@@ -425,10 +432,17 @@ class FrigateAnalyzerBot(
 
             else -> {
                 val olsonCode = callback.data.removePrefix("tz:")
-                val zone = ZoneId.of(olsonCode)
-                userService.updateTimezone(chatId.chatId.long, olsonCode)
-                val offset = zone.rules.getOffset(Instant.now())
-                sendTextMessage(chatId, "Часовой пояс сохранён: $olsonCode (UTC$offset)")
+                try {
+                    val zone = ZoneId.of(olsonCode)
+                    if (!userService.updateTimezone(chatId.chatId.long, olsonCode)) {
+                        sendTextMessage(chatId, "Ошибка сохранения часового пояса.")
+                        return
+                    }
+                    val offset = zone.rules.getOffset(Instant.now())
+                    sendTextMessage(chatId, "Часовой пояс сохранён: $olsonCode (UTC$offset)")
+                } catch (e: DateTimeException) {
+                    sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова.")
+                }
             }
         }
     }
@@ -470,7 +484,9 @@ class FrigateAnalyzerBot(
                     waitDataCallbackQuery()
                         .filter {
                             it.data.startsWith("export:") &&
-                                (it as? MessageDataCallbackQuery)?.message?.messageId == dateSentMessage.messageId
+                                (it as? MessageDataCallbackQuery)?.message?.let { msg ->
+                                    msg.messageId == dateSentMessage.messageId && msg.chat.id == chatId
+                                } == true
                         }.first()
                 answer(dateCallback)
 
@@ -561,7 +577,7 @@ class FrigateAnalyzerBot(
 
                 // DST guard: validate duration after timezone conversion
                 val actualDuration = Duration.between(startInstant, endInstant)
-                if (actualDuration.toMinutes() > MAX_EXPORT_DURATION_MINUTES) {
+                if (actualDuration.isNegative || actualDuration.isZero || actualDuration.toMinutes() > MAX_EXPORT_DURATION_MINUTES) {
                     sendTextMessage(
                         chatId,
                         "Диапазон после конвертации в UTC превышает 5 минут " +
@@ -603,7 +619,9 @@ class FrigateAnalyzerBot(
                     waitDataCallbackQuery()
                         .filter {
                             (it.data.startsWith("export:cam:") || it.data == "export:cancel") &&
-                                (it as? MessageDataCallbackQuery)?.message?.messageId == camSentMessage.messageId
+                                (it as? MessageDataCallbackQuery)?.message?.let { msg ->
+                                    msg.messageId == camSentMessage.messageId && msg.chat.id == chatId
+                                } == true
                         }.first()
                 answer(camCallback)
 
@@ -644,7 +662,7 @@ class FrigateAnalyzerBot(
                 val fileName = "export_${camId}_${localDate}_$localStart-$localEnd.mp4".replace(":", "-")
                 sendVideo(
                     chatId,
-                    videoPath.toFile().readBytes().asMultipartFile(fileName),
+                    videoPath.toFile().asMultipartFile().copy(filename = fileName),
                 )
             } finally {
                 try {

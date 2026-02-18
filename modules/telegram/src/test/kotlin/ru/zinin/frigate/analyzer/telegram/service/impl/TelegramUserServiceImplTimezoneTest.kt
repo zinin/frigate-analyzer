@@ -102,7 +102,19 @@ class TelegramUserServiceImplTimezoneTest {
         runTest {
             coEvery { repository.updateOlsonCode(123L, "Europe/Moscow") } returns 1L
 
-            service.updateTimezone(123L, "Europe/Moscow")
+            val result = service.updateTimezone(123L, "Europe/Moscow")
+
+            assertEquals(true, result)
+        }
+
+    @Test
+    fun `updateTimezone returns false when no rows updated`() =
+        runTest {
+            coEvery { repository.updateOlsonCode(123L, "Europe/Moscow") } returns 0L
+
+            val result = service.updateTimezone(123L, "Europe/Moscow")
+
+            assertEquals(false, result)
         }
 
     @Test

@@ -13,6 +13,7 @@ import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import java.util.Locale
 
 private val logger = KotlinLogging.logger {}
 
@@ -66,7 +67,7 @@ class TelegramNotificationServiceImpl(
         val formatter =
             DateTimeFormatter
                 .ofLocalizedDateTime(FormatStyle.LONG)
-                .withLocale(java.util.Locale.of("ru"))
+                .withLocale(Locale.of("ru"))
 
         val timestampFormatted =
             recording.processTimestamp

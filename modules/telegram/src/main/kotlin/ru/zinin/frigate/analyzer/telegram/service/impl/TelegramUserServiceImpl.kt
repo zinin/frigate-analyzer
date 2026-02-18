@@ -7,14 +7,14 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.entity.TelegramUserEntity
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.repository.TelegramUserRepository
-import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
-import java.time.Instant
 import java.time.DateTimeException
+import java.time.Instant
 import java.time.ZoneId
 
 private val logger = KotlinLogging.logger {}
@@ -122,15 +122,16 @@ class TelegramUserServiceImpl(
     override suspend fun updateTimezone(
         chatId: Long,
         olsonCode: String,
-    ) {
+    ): Boolean {
         require(olsonCode.contains('/')) { "Offset-based zone IDs are not allowed: $olsonCode" }
         ZoneId.of(olsonCode) // throws DateTimeException if invalid
         val updated = repository.updateOlsonCode(chatId, olsonCode)
         if (updated == 0L) {
             logger.warn { "updateTimezone: no rows updated for chatId=$chatId" }
-        } else {
-            logger.info { "Updated timezone for chatId=$chatId to $olsonCode" }
+            return false
         }
+        logger.info { "Updated timezone for chatId=$chatId to $olsonCode" }
+        return true
     }
 
     @Transactional(readOnly = true)
