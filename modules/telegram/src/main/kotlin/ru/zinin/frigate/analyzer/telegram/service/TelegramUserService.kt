@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.telegram.service
 
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import java.time.ZoneId
 
 interface TelegramUserService {
     suspend fun findByUsername(username: String): TelegramUserDto?
@@ -22,4 +23,10 @@ interface TelegramUserService {
     suspend fun getAllUsers(): List<TelegramUserDto>
 
     suspend fun getAllActiveChatIds(): List<Long>
+
+    suspend fun getUserZone(chatId: Long): ZoneId
+
+    suspend fun updateTimezone(chatId: Long, olsonCode: String)
+
+    suspend fun getAuthorizedUsersWithZones(): List<Pair<Long, ZoneId>>
 }

@@ -13,6 +13,7 @@ import ru.zinin.frigate.analyzer.telegram.repository.TelegramUserRepository
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
 import java.time.Instant
+import java.time.ZoneId
 
 private val logger = KotlinLogging.logger {}
 
@@ -98,6 +99,24 @@ class TelegramUserServiceImpl(
 
     @Transactional(readOnly = true)
     override suspend fun getAllActiveChatIds(): List<Long> = repository.findAllActiveChatIds()
+
+    @Transactional(readOnly = true)
+    override suspend fun getUserZone(chatId: Long): ZoneId {
+        val olsonCode = repository.findByChatId(chatId)?.olsonCode
+        return ZoneId.of(olsonCode ?: "UTC")
+    }
+
+    @Transactional
+    override suspend fun updateTimezone(chatId: Long, olsonCode: String) {
+        repository.updateOlsonCode(chatId, olsonCode)
+        logger.info { "Updated timezone for chatId=$chatId to $olsonCode" }
+    }
+
+    @Transactional(readOnly = true)
+    override suspend fun getAuthorizedUsersWithZones(): List<Pair<Long, ZoneId>> =
+        repository.findAllByStatus(UserStatus.ACTIVE.name)
+            .filter { it.chatId != null }
+            .map { user -> user.chatId!! to ZoneId.of(user.olsonCode ?: "UTC") }
 
     private fun TelegramUserEntity.toDto(): TelegramUserDto =
         TelegramUserDto(
