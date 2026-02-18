@@ -10,9 +10,11 @@ import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.entity.TelegramUserEntity
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.repository.TelegramUserRepository
+import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
 import java.time.Instant
+import java.time.DateTimeException
 import java.time.ZoneId
 
 private val logger = KotlinLogging.logger {}
@@ -102,8 +104,18 @@ class TelegramUserServiceImpl(
 
     @Transactional(readOnly = true)
     override suspend fun getUserZone(chatId: Long): ZoneId {
-        val olsonCode = repository.findByChatId(chatId)?.olsonCode
-        return ZoneId.of(olsonCode ?: "UTC")
+        val user = repository.findByChatId(chatId)
+        if (user == null) {
+            logger.warn { "User with chatId=$chatId not found, falling back to UTC" }
+            return ZoneId.of("UTC")
+        }
+        val olsonCode = user.olsonCode
+        return try {
+            ZoneId.of(olsonCode ?: "UTC")
+        } catch (e: DateTimeException) {
+            logger.warn { "Invalid olson_code='$olsonCode' for chatId=$chatId, falling back to UTC" }
+            ZoneId.of("UTC")
+        }
     }
 
     @Transactional
@@ -111,16 +123,31 @@ class TelegramUserServiceImpl(
         chatId: Long,
         olsonCode: String,
     ) {
-        repository.updateOlsonCode(chatId, olsonCode)
-        logger.info { "Updated timezone for chatId=$chatId to $olsonCode" }
+        require(olsonCode.contains('/')) { "Offset-based zone IDs are not allowed: $olsonCode" }
+        ZoneId.of(olsonCode) // throws DateTimeException if invalid
+        val updated = repository.updateOlsonCode(chatId, olsonCode)
+        if (updated == 0L) {
+            logger.warn { "updateTimezone: no rows updated for chatId=$chatId" }
+        } else {
+            logger.info { "Updated timezone for chatId=$chatId to $olsonCode" }
+        }
     }
 
     @Transactional(readOnly = true)
-    override suspend fun getAuthorizedUsersWithZones(): List<Pair<Long, ZoneId>> =
+    override suspend fun getAuthorizedUsersWithZones(): List<UserZoneInfo> =
         repository
             .findAllByStatus(UserStatus.ACTIVE.name)
             .filter { it.chatId != null }
-            .map { user -> user.chatId!! to ZoneId.of(user.olsonCode ?: "UTC") }
+            .map { user ->
+                val zone =
+                    try {
+                        ZoneId.of(user.olsonCode ?: "UTC")
+                    } catch (e: DateTimeException) {
+                        logger.warn { "Invalid olson_code='${user.olsonCode}' for chatId=${user.chatId}, falling back to UTC" }
+                        ZoneId.of("UTC")
+                    }
+                UserZoneInfo(user.chatId!!, zone)
+            }
 
     private fun TelegramUserEntity.toDto(): TelegramUserDto =
         TelegramUserDto(

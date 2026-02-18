@@ -38,12 +38,12 @@ class TelegramNotificationServiceImpl(
             return
         }
 
-        usersWithZones.forEach { (chatId, zone) ->
-            val message = formatRecordingMessage(recording, zone)
+        usersWithZones.forEach { userZone ->
+            val message = formatRecordingMessage(recording, userZone.zone)
             val task =
                 NotificationTask(
                     uuidGeneratorHelper.generateV1(),
-                    chatId,
+                    userZone.chatId,
                     message,
                     visualizedFrames,
                 )

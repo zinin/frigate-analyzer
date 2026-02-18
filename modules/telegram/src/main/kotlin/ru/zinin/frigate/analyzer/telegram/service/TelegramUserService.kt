@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.telegram.service
 
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import java.time.ZoneId
 
 interface TelegramUserService {
@@ -31,5 +32,5 @@ interface TelegramUserService {
         olsonCode: String,
     )
 
-    suspend fun getAuthorizedUsersWithZones(): List<Pair<Long, ZoneId>>
+    suspend fun getAuthorizedUsersWithZones(): List<UserZoneInfo>
 }

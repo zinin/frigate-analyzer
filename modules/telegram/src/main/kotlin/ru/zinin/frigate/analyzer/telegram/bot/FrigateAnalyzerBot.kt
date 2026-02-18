@@ -47,6 +47,7 @@ import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -55,7 +56,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
-import java.time.zone.ZoneRulesException
+import java.time.DateTimeException
 
 private val logger = KotlinLogging.logger {}
 
@@ -383,11 +384,11 @@ class FrigateAnalyzerBot(
                     },
             )
 
-        sendTextMessage(chatId, "Ваш текущий часовой пояс: $currentZone\nВыберите часовой пояс:", replyMarkup = tzKeyboard)
+        val tzSentMessage = sendTextMessage(chatId, "Ваш текущий часовой пояс: $currentZone\nВыберите часовой пояс:", replyMarkup = tzKeyboard)
 
         val callback =
             waitDataCallbackQuery()
-                .filter { it.data.startsWith("tz:") && (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId }
+                .filter { it.data.startsWith("tz:") && (it as? MessageDataCallbackQuery)?.message?.messageId == tzSentMessage.messageId }
                 .first()
         answer(callback)
 
@@ -403,12 +404,20 @@ class FrigateAnalyzerBot(
                         .filter { it.chat.id == chatId }
                         .first()
                 val input = inputMsg.content.text.trim()
+                if (input == "/cancel") {
+                    sendTextMessage(chatId, "Отменено.")
+                    return
+                }
+                if (!input.contains('/')) {
+                    sendTextMessage(chatId, "Пожалуйста, используйте формат Continent/City (например: Europe/Moscow).")
+                    return
+                }
                 try {
                     val zone = ZoneId.of(input)
                     userService.updateTimezone(chatId.chatId.long, zone.id)
                     val offset = zone.rules.getOffset(Instant.now())
                     sendTextMessage(chatId, "Часовой пояс сохранён: ${zone.id} (UTC$offset)")
-                } catch (e: ZoneRulesException) {
+                } catch (e: DateTimeException) {
                     sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова или выберите из списка.")
                 }
             }
@@ -454,11 +463,11 @@ class FrigateAnalyzerBot(
                             },
                     )
 
-                sendTextMessage(chatId, "Выберите дату:", replyMarkup = dateKeyboard)
+                val dateSentMessage = sendTextMessage(chatId, "Выберите дату:", replyMarkup = dateKeyboard)
 
                 val dateCallback =
                     waitDataCallbackQuery()
-                        .filter { it.data.startsWith("export:") && (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId }
+                        .filter { it.data.startsWith("export:") && (it as? MessageDataCallbackQuery)?.message?.messageId == dateSentMessage.messageId }
                         .first()
                 answer(dateCallback)
 
@@ -471,11 +480,11 @@ class FrigateAnalyzerBot(
                 val date: LocalDate =
                     when (dateCallback.data) {
                         "export:today" -> {
-                            LocalDate.now(clock)
+                            Instant.now(clock).atZone(userZone).toLocalDate()
                         }
 
                         "export:yesterday" -> {
-                            LocalDate.now(clock).minusDays(1)
+                            Instant.now(clock).atZone(userZone).toLocalDate().minusDays(1)
                         }
 
                         "export:custom" -> {
@@ -543,6 +552,18 @@ class FrigateAnalyzerBot(
                 val startInstant = LocalDateTime.of(date, startTime).atZone(userZone).toInstant()
                 val endInstant = LocalDateTime.of(date, endTime).atZone(userZone).toInstant()
 
+                // DST guard: validate duration after timezone conversion
+                val actualDuration = Duration.between(startInstant, endInstant)
+                if (actualDuration.toMinutes() > MAX_EXPORT_DURATION_MINUTES) {
+                    sendTextMessage(
+                        chatId,
+                        "Диапазон после конвертации в UTC превышает 5 минут " +
+                            "(возможно из-за перехода на летнее/зимнее время). Попробуйте другой диапазон.",
+                    )
+                    userNotified = true
+                    return@withTimeoutOrNull null
+                }
+
                 // Step 3: Camera selection
                 val cameras = videoExportService.findCamerasWithRecordings(startInstant, endInstant)
                 if (cameras.isEmpty()) {
@@ -569,13 +590,13 @@ class FrigateAnalyzerBot(
                             },
                     )
 
-                sendTextMessage(chatId, "Выберите камеру:", replyMarkup = cameraKeyboard)
+                val camSentMessage = sendTextMessage(chatId, "Выберите камеру:", replyMarkup = cameraKeyboard)
 
                 val camCallback =
                     waitDataCallbackQuery()
                         .filter {
                             (it.data.startsWith("export:cam:") || it.data == "export:cancel") &&
-                                (it as? MessageDataCallbackQuery)?.message?.chat?.id == chatId
+                                (it as? MessageDataCallbackQuery)?.message?.messageId == camSentMessage.messageId
                         }.first()
                 answer(camCallback)
 

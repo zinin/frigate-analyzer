@@ -98,6 +98,7 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         SELECT *
         FROM recordings
         WHERE cam_id = :camId
+          -- 10s buffer: Frigate segments start at record_timestamp, content may extend before it
           AND record_timestamp >= :startInstant - INTERVAL '10 seconds'
           AND record_timestamp <= :endInstant
           AND file_path IS NOT NULL
@@ -114,6 +115,7 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         """
         SELECT cam_id, COUNT(*) as recordings_count
         FROM recordings
+        -- 10s buffer: Frigate segments start at record_timestamp, content may extend before it
         WHERE record_timestamp >= :startInstant - INTERVAL '10 seconds'
           AND record_timestamp <= :endInstant
           AND file_path IS NOT NULL
