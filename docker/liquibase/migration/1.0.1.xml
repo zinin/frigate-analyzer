@@ -2,10 +2,11 @@
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-5.0.xsd">
-    <preConditions>
-        <dbms type="postgresql"/>
-    </preConditions>
-
-    <include file="1.0.0.xml" relativeToChangelogFile="true"/>
-    <include file="1.0.1.xml" relativeToChangelogFile="true"/>
+    <changeSet author="zinin" id="20260218-01-add-timezone-to-users">
+        <comment>Add olson_code timezone field to telegram_users</comment>
+        <sql>
+            ALTER TABLE telegram_users
+              ADD COLUMN olson_code VARCHAR(50);
+        </sql>
+    </changeSet>
 </databaseChangeLog>
