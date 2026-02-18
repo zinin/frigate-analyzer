@@ -47,6 +47,7 @@ import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.time.Clock
+import java.time.DateTimeException
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -56,7 +57,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
-import java.time.DateTimeException
 
 private val logger = KotlinLogging.logger {}
 
@@ -384,7 +384,8 @@ class FrigateAnalyzerBot(
                     },
             )
 
-        val tzSentMessage = sendTextMessage(chatId, "Ваш текущий часовой пояс: $currentZone\nВыберите часовой пояс:", replyMarkup = tzKeyboard)
+        val tzSentMessage =
+            sendTextMessage(chatId, "Ваш текущий часовой пояс: $currentZone\nВыберите часовой пояс:", replyMarkup = tzKeyboard)
 
         val callback =
             waitDataCallbackQuery()
@@ -467,8 +468,10 @@ class FrigateAnalyzerBot(
 
                 val dateCallback =
                     waitDataCallbackQuery()
-                        .filter { it.data.startsWith("export:") && (it as? MessageDataCallbackQuery)?.message?.messageId == dateSentMessage.messageId }
-                        .first()
+                        .filter {
+                            it.data.startsWith("export:") &&
+                                (it as? MessageDataCallbackQuery)?.message?.messageId == dateSentMessage.messageId
+                        }.first()
                 answer(dateCallback)
 
                 if (dateCallback.data == "export:cancel") {
@@ -484,7 +487,11 @@ class FrigateAnalyzerBot(
                         }
 
                         "export:yesterday" -> {
-                            Instant.now(clock).atZone(userZone).toLocalDate().minusDays(1)
+                            Instant
+                                .now(clock)
+                                .atZone(userZone)
+                                .toLocalDate()
+                                .minusDays(1)
                         }
 
                         "export:custom" -> {
