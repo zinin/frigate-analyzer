@@ -9,8 +9,6 @@ import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.model.dto.CameraStatisticsDto
 import ru.zinin.frigate.analyzer.model.persistent.RecordingEntity
 import java.time.Instant
-import java.time.LocalDate
-import java.time.LocalTime
 import java.util.UUID
 
 @Repository
@@ -100,27 +98,24 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         SELECT *
         FROM recordings
         WHERE cam_id = :camId
-          AND record_date = :recordDate
-          AND record_time >= :startTime - INTERVAL '10 seconds'
-          AND record_time <= :endTime
+          AND record_timestamp >= :startInstant - INTERVAL '10 seconds'
+          AND record_timestamp <= :endInstant
           AND file_path IS NOT NULL
-        ORDER BY record_time ASC
+        ORDER BY record_timestamp ASC
         """,
     )
-    suspend fun findByCamIdAndDateAndTimeRange(
+    suspend fun findByCamIdAndInstantRange(
         @Param("camId") camId: String,
-        @Param("recordDate") recordDate: LocalDate,
-        @Param("startTime") startTime: LocalTime,
-        @Param("endTime") endTime: LocalTime,
+        @Param("startInstant") startInstant: Instant,
+        @Param("endInstant") endInstant: Instant,
     ): List<RecordingEntity>
 
     @Query(
         """
         SELECT cam_id, COUNT(*) as recordings_count
         FROM recordings
-        WHERE record_date = :recordDate
-          AND record_time >= :startTime - INTERVAL '10 seconds'
-          AND record_time <= :endTime
+        WHERE record_timestamp >= :startInstant - INTERVAL '10 seconds'
+          AND record_timestamp <= :endInstant
           AND file_path IS NOT NULL
           AND cam_id IS NOT NULL
         GROUP BY cam_id
@@ -128,9 +123,8 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         """,
     )
     suspend fun findCamerasWithRecordings(
-        @Param("recordDate") recordDate: LocalDate,
-        @Param("startTime") startTime: LocalTime,
-        @Param("endTime") endTime: LocalTime,
+        @Param("startInstant") startInstant: Instant,
+        @Param("endInstant") endInstant: Instant,
     ): List<CameraRecordingCountDto>
 
     @Query(
