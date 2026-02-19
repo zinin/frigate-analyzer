@@ -26,7 +26,24 @@ class TelegramAutoConfiguration {
 
     @Bean
     @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
-    fun telegramBot(properties: TelegramProperties): TelegramBot = telegramBot(properties.botToken)
+    fun telegramBot(properties: TelegramProperties): TelegramBot {
+        val proxyConfig = properties.proxy?.takeIf { it.host.isNotBlank() }
+
+        if (proxyConfig != null) {
+            logger.info { "Telegram bot using SOCKS5 proxy: ${proxyConfig.host}:${proxyConfig.port}" }
+        }
+
+        return telegramBot(properties.botToken) {
+            engine {
+                if (proxyConfig != null) {
+                    proxy = java.net.Proxy(
+                        java.net.Proxy.Type.SOCKS,
+                        java.net.InetSocketAddress(proxyConfig.host, proxyConfig.port),
+                    )
+                }
+            }
+        }
+    }
 
     private fun suppressLongPollingTimeoutErrors() {
         DefaultKTgBotAPIKSLog =
