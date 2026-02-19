@@ -4,11 +4,16 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.springframework.stereotype.Service
+import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
+import ru.zinin.frigate.analyzer.core.config.properties.DetectionFilterProperties
 import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
 import ru.zinin.frigate.analyzer.core.helper.VideoMergeHelper
 import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
+import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
+import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress.Stage
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -20,6 +25,9 @@ class VideoExportServiceImpl(
     private val recordingRepository: RecordingEntityRepository,
     private val videoMergeHelper: VideoMergeHelper,
     private val tempFileHelper: TempFileHelper,
+    private val videoVisualizationService: VideoVisualizationService,
+    private val detectProperties: DetectProperties,
+    private val detectionFilterProperties: DetectionFilterProperties,
 ) : VideoExportService {
     override suspend fun findCamerasWithRecordings(
         startInstant: Instant,
@@ -30,7 +38,11 @@ class VideoExportServiceImpl(
         startInstant: Instant,
         endInstant: Instant,
         camId: String,
+        mode: ExportMode,
+        onProgress: suspend (VideoExportProgress) -> Unit,
     ): Path {
+        onProgress(VideoExportProgress(Stage.PREPARING))
+
         val recordings = recordingRepository.findByCamIdAndInstantRange(camId, startInstant, endInstant)
 
         if (recordings.isEmpty()) {
@@ -54,11 +66,14 @@ class VideoExportServiceImpl(
 
         logger.info { "Exporting ${existingFiles.size} recordings for camId=$camId, range=$startInstant-$endInstant" }
 
+        onProgress(VideoExportProgress(Stage.MERGING))
+
         var mergedFile = videoMergeHelper.mergeVideos(existingFiles)
 
         try {
             val fileSize = withContext(Dispatchers.IO) { Files.size(mergedFile) }
             if (fileSize > VideoMergeHelper.COMPRESS_THRESHOLD_BYTES) {
+                onProgress(VideoExportProgress(Stage.COMPRESSING))
                 logger.info { "Merged file is ${fileSize / 1024 / 1024}MB, compressing..." }
                 val compressedFile = videoMergeHelper.compressVideo(mergedFile)
                 tempFileHelper.deleteIfExists(mergedFile)
@@ -73,9 +88,43 @@ class VideoExportServiceImpl(
                 }
             }
 
+            if (mode == ExportMode.ANNOTATED) {
+                return annotate(mergedFile, onProgress)
+            }
+
             return mergedFile
         } catch (e: Exception) {
             tempFileHelper.deleteIfExists(mergedFile)
+            throw e
+        }
+    }
+
+    private suspend fun annotate(
+        originalPath: Path,
+        onProgress: suspend (VideoExportProgress) -> Unit,
+    ): Path {
+        onProgress(VideoExportProgress(Stage.ANNOTATING, percent = 0))
+
+        val allowedClassesCsv =
+            detectionFilterProperties.allowedClasses
+                .filter { it.isNotBlank() }
+                .joinToString(",")
+                .ifEmpty { null }
+
+        try {
+            val annotatedPath =
+                videoVisualizationService.annotateVideo(
+                    videoPath = originalPath,
+                    classes = allowedClassesCsv,
+                    model = detectProperties.goodModel,
+                    onProgress = { status ->
+                        onProgress(VideoExportProgress(Stage.ANNOTATING, percent = status.progress))
+                    },
+                )
+            tempFileHelper.deleteIfExists(originalPath)
+            return annotatedPath
+        } catch (e: Exception) {
+            tempFileHelper.deleteIfExists(originalPath)
             throw e
         }
     }
