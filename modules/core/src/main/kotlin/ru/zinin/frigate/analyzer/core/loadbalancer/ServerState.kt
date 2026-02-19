@@ -13,6 +13,7 @@ data class ServerState(
     val processingFrameRequestsCount: AtomicInteger = AtomicInteger(0),
     val processingFrameExtractionRequestsCount: AtomicInteger = AtomicInteger(0),
     val processingVisualizeRequestsCount: AtomicInteger = AtomicInteger(0),
+    val processingVideoVisualizeRequestsCount: AtomicInteger = AtomicInteger(0),
 ) {
     fun canAcceptRequest(requestType: RequestType): Boolean = alive && getCurrentCount(requestType) < getMaxCount(requestType)
 
@@ -21,6 +22,7 @@ data class ServerState(
             RequestType.FRAME -> processingFrameRequestsCount.get()
             RequestType.FRAME_EXTRACTION -> processingFrameExtractionRequestsCount.get()
             RequestType.VISUALIZE -> processingVisualizeRequestsCount.get()
+            RequestType.VIDEO_VISUALIZE -> processingVideoVisualizeRequestsCount.get()
         }
 
     private fun getMaxCount(type: RequestType): Int =
@@ -28,6 +30,7 @@ data class ServerState(
             RequestType.FRAME -> properties.frameRequests.simultaneousCount
             RequestType.FRAME_EXTRACTION -> properties.framesExtractRequests.simultaneousCount
             RequestType.VISUALIZE -> properties.visualizeRequests.simultaneousCount
+            RequestType.VIDEO_VISUALIZE -> properties.videoVisualizeRequests.simultaneousCount
         }
 }
 
@@ -36,6 +39,7 @@ fun ServerState.getCounter(type: RequestType): AtomicInteger =
         RequestType.FRAME -> processingFrameRequestsCount
         RequestType.FRAME_EXTRACTION -> processingFrameExtractionRequestsCount
         RequestType.VISUALIZE -> processingVisualizeRequestsCount
+        RequestType.VIDEO_VISUALIZE -> processingVideoVisualizeRequestsCount
     }
 
 fun ServerState.getRequestConfig(type: RequestType): RequestConfig =
@@ -43,4 +47,5 @@ fun ServerState.getRequestConfig(type: RequestType): RequestConfig =
         RequestType.FRAME -> properties.frameRequests
         RequestType.FRAME_EXTRACTION -> properties.framesExtractRequests
         RequestType.VISUALIZE -> properties.visualizeRequests
+        RequestType.VIDEO_VISUALIZE -> properties.videoVisualizeRequests
     }

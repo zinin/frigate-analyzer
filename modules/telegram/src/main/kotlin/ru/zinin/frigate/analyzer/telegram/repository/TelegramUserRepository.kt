@@ -49,4 +49,13 @@ interface TelegramUserRepository : CoroutineCrudRepository<TelegramUserEntity, U
     ): Long
 
     suspend fun deleteByUsername(username: String): Long
+
+    suspend fun findByChatId(chatId: Long): TelegramUserEntity?
+
+    @Modifying
+    @Query("UPDATE telegram_users SET olson_code = :olsonCode WHERE chat_id = :chatId")
+    suspend fun updateOlsonCode(
+        @Param("chatId") chatId: Long,
+        @Param("olsonCode") olsonCode: String,
+    ): Long
 }

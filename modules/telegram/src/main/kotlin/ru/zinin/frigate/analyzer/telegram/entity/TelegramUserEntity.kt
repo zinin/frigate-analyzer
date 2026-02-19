@@ -28,6 +28,8 @@ data class TelegramUserEntity(
     var creationTimestamp: Instant?,
     @Column("activation_timestamp")
     var activationTimestamp: Instant?,
+    @Column("olson_code")
+    var olsonCode: String? = null,
 ) : Persistable<UUID> {
     override fun getId(): UUID? = id
 

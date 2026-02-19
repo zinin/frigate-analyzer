@@ -67,6 +67,9 @@ application:
       visualize-requests:
         simultaneous-count: 4
         priority: 1
+      video-visualize-requests:
+        simultaneous-count: 1
+        priority: 1
   detect:
     retry-delay: 500ms
     frame-timeout: 60s
@@ -89,6 +92,14 @@ application:
       show-labels: true
       show-conf: true
       quality: 90
+    video-visualize:
+      timeout: 15m
+      poll-interval: 3s
+      max-det: 100
+      detect-every:
+      line-width: 2
+      show-labels: true
+      show-conf: true
   pipeline:
     frame:
       channel-buffer-size: 500

@@ -26,6 +26,7 @@ data class DetectServerStatistics(
     val frameRequests: ServerLoad,
     val frameExtractionRequests: ServerLoad,
     val visualizeRequests: ServerLoad,
+    val videoVisualizeRequests: ServerLoad,
 )
 
 data class ServerLoad(

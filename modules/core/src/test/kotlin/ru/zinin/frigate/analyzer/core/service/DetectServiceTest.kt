@@ -5,6 +5,7 @@ import mockwebserver3.MockWebServer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import org.springframework.http.codec.json.JacksonJsonDecoder
 import org.springframework.http.codec.json.JacksonJsonEncoder
 import org.springframework.web.reactive.function.client.ExchangeStrategies
@@ -13,16 +14,20 @@ import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectServerProperties
 import ru.zinin.frigate.analyzer.core.config.properties.RequestConfig
+import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerRegistry
+import ru.zinin.frigate.analyzer.core.loadbalancer.RequestType
 import ru.zinin.frigate.analyzer.core.loadbalancer.ServerHealthMonitor
 import ru.zinin.frigate.analyzer.core.loadbalancer.ServerSelectionStrategy
 import ru.zinin.frigate.analyzer.core.testsupport.ConfigurableDetectServiceDispatcher
 import ru.zinin.frigate.analyzer.core.testsupport.DetectServiceDispatcher
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.response.JobStatus
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
 import tools.jackson.databind.json.JsonMapper
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Clock
 import java.time.Duration
@@ -34,6 +39,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class DetectServiceTest {
+    @TempDir
+    lateinit var tempDir: Path
+
     private lateinit var mockWebServer: MockWebServer
     private lateinit var detectService: DetectService
     private lateinit var registry: DetectServerRegistry
@@ -58,6 +66,7 @@ class DetectServiceTest {
                 frameRequests = RequestConfig(simultaneousCount = 1, priority = 0),
                 framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 0),
                 visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
+                videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
             )
         registry.register("test", serverProps)
         registry.getServer("test")!!.alive = true
@@ -72,7 +81,9 @@ class DetectServiceTest {
                 ServerHealthMonitor(registry, webClient, clock, detectProperties),
             )
 
-        detectService = DetectService(webClient, loadBalancer, detectProperties)
+        val tempFileHelper = TempFileHelper(applicationProperties(serverProps), Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
+        tempFileHelper.init()
+        detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper)
     }
 
     @AfterEach
@@ -168,6 +179,73 @@ class DetectServiceTest {
             assertTrue(request.url.query!!.contains("quality=90"))
         }
 
+    @Test
+    fun `submitVideoVisualize returns job response for given server`() =
+        runBlocking {
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
+
+            val testVideoPath = Files.createTempFile(tempDir, "test-video-", ".mp4")
+            Files.write(testVideoPath, byteArrayOf(1, 2, 3))
+
+            val jobResponse =
+                detectService.submitVideoVisualize(
+                    acquired = acquired,
+                    videoPath = testVideoPath,
+                )
+
+            assertEquals("test-job-123", jobResponse.jobId)
+            assertEquals(JobStatus.QUEUED, jobResponse.status)
+
+            val request = mockWebServer.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/detect/video/visualize", request.url.encodedPath)
+            assertTrue(request.url.query!!.contains("conf=0.6"))
+            assertTrue(request.url.query!!.contains("imgsz=2016"))
+
+            // Cleanup: release manually (submitVideoVisualize does NOT release)
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
+            Files.deleteIfExists(testVideoPath)
+        }
+
+    @Test
+    fun `getJobStatus returns job status from specific server`() =
+        runBlocking {
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
+
+            val status = detectService.getJobStatus(acquired, "test-job-123")
+
+            assertEquals("test-job-123", status.jobId)
+            assertEquals(JobStatus.COMPLETED, status.status)
+            assertEquals(100, status.progress)
+            assertNotNull(status.stats)
+            assertEquals(300, status.stats!!.totalFrames)
+
+            // Cleanup
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
+        }
+
+    @Test
+    fun `downloadJobResult streams video to temp file`() =
+        runBlocking {
+            val acquired = loadBalancer.acquireServer(RequestType.VIDEO_VISUALIZE)
+
+            val videoPath = detectService.downloadJobResult(acquired, "test-job-123")
+
+            // Verify file exists and has content
+            assertTrue(Files.exists(videoPath))
+            val videoBytes = Files.readAllBytes(videoPath)
+            assertTrue(videoBytes.isNotEmpty())
+            // fakeVideoBytes from dispatcher: ftyp MP4 header
+            assertEquals(0x66.toByte(), videoBytes[4]) // 'f'
+            assertEquals(0x74.toByte(), videoBytes[5]) // 't'
+            assertEquals(0x79.toByte(), videoBytes[6]) // 'y'
+            assertEquals(0x70.toByte(), videoBytes[7]) // 'p'
+
+            // Cleanup
+            Files.deleteIfExists(videoPath)
+            loadBalancer.releaseServer(acquired.id, RequestType.VIDEO_VISUALIZE)
+        }
+
     // ==================== Timeout Tests ====================
 
     @Test
@@ -236,6 +314,7 @@ class DetectServiceTest {
                     frameRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                     framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                     visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
+                    videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                 )
             registry.register("secondary", secondaryProps)
             registry.getServer("secondary")!!.alive = true
@@ -265,6 +344,7 @@ class DetectServiceTest {
                     frameRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                     framesExtractRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                     visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
+                    videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                 )
             registry.register("secondary", secondaryProps)
             val secondaryServer = registry.getServer("secondary")!!
@@ -334,12 +414,11 @@ class DetectServiceTest {
     }
 
     private fun applicationProperties(serverProps: DetectServerProperties): ApplicationProperties {
-        val dummyPath = Path.of(".")
         val dummyDuration = Duration.ofSeconds(1)
 
         return ApplicationProperties(
-            tempFolder = dummyPath,
-            ffmpegPath = dummyPath,
+            tempFolder = tempDir,
+            ffmpegPath = Path.of("/usr/bin/ffmpeg"),
             connectionTimeout = dummyDuration,
             readTimeout = dummyDuration,
             writeTimeout = dummyDuration,

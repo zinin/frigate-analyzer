@@ -4,4 +4,5 @@ enum class RequestType {
     FRAME,
     FRAME_EXTRACTION,
     VISUALIZE,
+    VIDEO_VISUALIZE,
 }

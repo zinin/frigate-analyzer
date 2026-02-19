@@ -5,6 +5,7 @@ import org.springframework.data.r2dbc.repository.Query
 import org.springframework.data.repository.kotlin.CoroutineCrudRepository
 import org.springframework.data.repository.query.Param
 import org.springframework.stereotype.Repository
+import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.model.dto.CameraStatisticsDto
 import ru.zinin.frigate.analyzer.model.persistent.RecordingEntity
 import java.time.Instant
@@ -91,6 +92,42 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         """,
     )
     suspend fun getStatisticsByCameras(): List<CameraStatisticsDto>
+
+    @Query(
+        """
+        SELECT *
+        FROM recordings
+        WHERE cam_id = :camId
+          -- 10s buffer: Frigate segments start at record_timestamp, content may extend before it
+          AND record_timestamp >= :startInstant - INTERVAL '10 seconds'
+          AND record_timestamp <= :endInstant
+          AND file_path IS NOT NULL
+        ORDER BY record_timestamp ASC
+        """,
+    )
+    suspend fun findByCamIdAndInstantRange(
+        @Param("camId") camId: String,
+        @Param("startInstant") startInstant: Instant,
+        @Param("endInstant") endInstant: Instant,
+    ): List<RecordingEntity>
+
+    @Query(
+        """
+        SELECT cam_id, COUNT(*) as recordings_count
+        FROM recordings
+        -- 10s buffer: Frigate segments start at record_timestamp, content may extend before it
+        WHERE record_timestamp >= :startInstant - INTERVAL '10 seconds'
+          AND record_timestamp <= :endInstant
+          AND file_path IS NOT NULL
+          AND cam_id IS NOT NULL
+        GROUP BY cam_id
+        ORDER BY cam_id
+        """,
+    )
+    suspend fun findCamerasWithRecordings(
+        @Param("startInstant") startInstant: Instant,
+        @Param("endInstant") endInstant: Instant,
+    ): List<CameraRecordingCountDto>
 
     @Query(
         """

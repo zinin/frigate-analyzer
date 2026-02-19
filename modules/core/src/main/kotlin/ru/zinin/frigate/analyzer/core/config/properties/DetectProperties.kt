@@ -27,6 +27,8 @@ data class DetectProperties(
     val frameExtraction: FrameExtractionConfig = FrameExtractionConfig(),
     @field:Valid
     val visualize: VisualizeConfig = VisualizeConfig(),
+    @field:Valid
+    val videoVisualize: VideoVisualizeConfig = VideoVisualizeConfig(),
 )
 
 data class FrameExtractionConfig(
@@ -52,4 +54,17 @@ data class VisualizeConfig(
     @field:Min(1)
     @field:Max(100)
     val quality: Int = 90,
+)
+
+data class VideoVisualizeConfig(
+    val timeout: Duration = Duration.ofMinutes(15),
+    val pollInterval: Duration = Duration.ofSeconds(3),
+    @field:Min(1)
+    val maxDet: Int = 100,
+    @field:Min(1)
+    val detectEvery: Int? = null,
+    @field:Min(1)
+    val lineWidth: Int = 2,
+    val showLabels: Boolean = true,
+    val showConf: Boolean = true,
 )

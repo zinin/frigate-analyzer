@@ -5,22 +5,32 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.reactor.awaitSingle
+import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.coroutines.withTimeout
 import org.springframework.core.io.ByteArrayResource
+import org.springframework.core.io.FileSystemResource
+import org.springframework.core.io.buffer.DataBuffer
+import org.springframework.core.io.buffer.DataBufferUtils
 import org.springframework.http.MediaType
 import org.springframework.http.client.MultipartBodyBuilder
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.bodyToFlux
 import org.springframework.web.reactive.function.client.bodyToMono
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
+import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
+import ru.zinin.frigate.analyzer.core.loadbalancer.AcquiredServer
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
 import ru.zinin.frigate.analyzer.core.loadbalancer.RequestType
 import ru.zinin.frigate.analyzer.model.exception.DetectServerUnavailableException
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.FrameExtractionResponse
+import ru.zinin.frigate.analyzer.model.response.JobCreatedResponse
+import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 
 private val logger = KotlinLogging.logger {}
 
@@ -29,6 +39,7 @@ class DetectService(
     private val webClient: WebClient,
     private val detectServerLoadBalancer: DetectServerLoadBalancer,
     private val detectProperties: DetectProperties,
+    private val tempFileHelper: TempFileHelper,
 ) {
     /**
      * Выполняет детекцию с автоматическим retry при любых ошибках.
@@ -260,6 +271,118 @@ class DetectService(
         } finally {
             detectServerLoadBalancer.releaseServer(acquired.id, RequestType.VISUALIZE)
         }
+    }
+
+    /**
+     * Отправляет видео на аннотацию на конкретный сервер.
+     * НЕ управляет слотами — caller отвечает за acquire/release.
+     */
+    suspend fun submitVideoVisualize(
+        acquired: AcquiredServer,
+        videoPath: Path,
+        conf: Double = detectProperties.defaultConfidence,
+        imgSize: Int = detectProperties.defaultImgSize,
+        maxDet: Int = detectProperties.videoVisualize.maxDet,
+        detectEvery: Int? = detectProperties.videoVisualize.detectEvery,
+        classes: String? = null,
+        lineWidth: Int = detectProperties.videoVisualize.lineWidth,
+        showLabels: Boolean = detectProperties.videoVisualize.showLabels,
+        showConf: Boolean = detectProperties.videoVisualize.showConf,
+        model: String = detectProperties.defaultModel,
+    ): JobCreatedResponse {
+        val filename = videoPath.fileName.toString()
+        val fileResource = FileSystemResource(videoPath)
+        val multipartData =
+            MultipartBodyBuilder()
+                .apply {
+                    part("file", fileResource)
+                        .contentType(MediaType.parseMediaType("video/mp4"))
+                        .filename(filename)
+                }.build()
+
+        return webClient
+            .post()
+            .uri { uriBuilder ->
+                uriBuilder
+                    .scheme(acquired.schema)
+                    .host(acquired.host)
+                    .port(acquired.port)
+                    .path("/detect/video/visualize")
+                    .queryParam("conf", conf)
+                    .queryParam("imgsz", imgSize)
+                    .queryParam("max_det", maxDet)
+                    .apply {
+                        detectEvery?.let { queryParam("detect_every", it) }
+                        classes?.let { queryParam("classes", it) }
+                    }.queryParam("line_width", lineWidth)
+                    .queryParam("show_labels", showLabels)
+                    .queryParam("show_conf", showConf)
+                    .queryParam("model", model)
+                    .build()
+            }.body(BodyInserters.fromMultipartData(multipartData))
+            .retrieve()
+            .bodyToMono<JobCreatedResponse>()
+            .awaitSingle()
+    }
+
+    /**
+     * Опрашивает статус job на конкретном сервере.
+     * Не использует load balancer — обращается напрямую к серверу, на котором запущен job.
+     */
+    suspend fun getJobStatus(
+        acquired: AcquiredServer,
+        jobId: String,
+    ): JobStatusResponse =
+        webClient
+            .get()
+            .uri { uriBuilder ->
+                uriBuilder
+                    .scheme(acquired.schema)
+                    .host(acquired.host)
+                    .port(acquired.port)
+                    .path("/jobs/{jobId}")
+                    .build(jobId)
+            }.retrieve()
+            .bodyToMono<JobStatusResponse>()
+            .awaitSingle()
+
+    /**
+     * Скачивает результат аннотированного видео с конкретного сервера.
+     * Использует streaming запись во временный файл для избежания OOM.
+     * Не использует load balancer — обращается напрямую к серверу, на котором завершился job.
+     *
+     * @return Path к временному файлу с видео. Caller отвечает за удаление.
+     */
+    suspend fun downloadJobResult(
+        acquired: AcquiredServer,
+        jobId: String,
+    ): Path {
+        val tempFile = tempFileHelper.createTempFile("video-annotated-", ".mp4")
+
+        try {
+            val flux =
+                webClient
+                    .get()
+                    .uri { uriBuilder ->
+                        uriBuilder
+                            .scheme(acquired.schema)
+                            .host(acquired.host)
+                            .port(acquired.port)
+                            .path("/jobs/{jobId}/download")
+                            .build(jobId)
+                    }.retrieve()
+                    .bodyToFlux<DataBuffer>()
+
+            DataBufferUtils
+                .write(flux, tempFile, StandardOpenOption.WRITE)
+                .then()
+                .awaitSingleOrNull()
+        } catch (e: Exception) {
+            tempFileHelper.deleteIfExists(tempFile)
+            throw e
+        }
+
+        return tempFile
     }
 
     /**
