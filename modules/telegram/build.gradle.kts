@@ -16,6 +16,7 @@ dependencies {
 
     // Telegram Bot API
     implementation("dev.inmo:tgbotapi:${property("ktgbotapiVersion")}")
+    implementation("io.ktor:ktor-client-okhttp:${property("ktorVersion")}")
 
     // Logging
     implementation("io.github.oshai:kotlin-logging-jvm:${property("kotlinLoggingVersion")}")

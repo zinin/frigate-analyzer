@@ -69,8 +69,15 @@ AuthorizationFilter returns UserRole (OWNER, USER) or null for unauthorized.
 | `TELEGRAM_OWNER` | - | Owner username (without @) |
 | `TELEGRAM_QUEUE_CAPACITY` | 100 | Notification queue size |
 | `TELEGRAM_UNAUTHORIZED_MESSAGE` | (Russian text) | Message for unauthorized users |
+| `TELEGRAM_SEND_VIDEO_TIMEOUT` | 3m | Timeout for sending video |
+| `TELEGRAM_PROXY_HOST` | (empty) | SOCKS5 proxy host. Empty = no proxy |
+| `TELEGRAM_PROXY_PORT` | 1080 | SOCKS5 proxy port |
 
 Disable for development: `java -Dapplication.telegram.enabled=false ...`
+
+## Known Issues
+
+- **Long polling timeout ERROR logs** — see [telegram-timeout-bug.md](telegram-timeout-bug.md) for details and workaround
 
 ## ktgbotapi Waiter API (v30.0.2)
 
