@@ -4,6 +4,7 @@ import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.extensions.api.answers.answer
 import dev.inmo.tgbotapi.extensions.api.bot.getMe
 import dev.inmo.tgbotapi.extensions.api.bot.setMyCommands
+import dev.inmo.tgbotapi.extensions.api.edit.text.editMessageText
 import dev.inmo.tgbotapi.extensions.api.send.media.sendVideo
 import dev.inmo.tgbotapi.extensions.api.send.reply
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
@@ -46,6 +47,9 @@ import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
+import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
+import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress.Stage
 import java.time.Clock
 import java.time.DateTimeException
 import java.time.Duration
@@ -59,6 +63,45 @@ import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
 
 private val logger = KotlinLogging.logger {}
+
+private data class ExportDialogResult(
+    val startInstant: Instant,
+    val endInstant: Instant,
+    val camId: String,
+    val mode: ExportMode,
+)
+
+private fun renderProgress(
+    stage: Stage,
+    percent: Int? = null,
+    mode: ExportMode = ExportMode.ORIGINAL,
+    compressing: Boolean = false,
+): String {
+    val stages =
+        buildList {
+            add(Stage.PREPARING to "Подготовка")
+            add(Stage.MERGING to "Склейка видео")
+            if (compressing) add(Stage.COMPRESSING to "Сжатие видео")
+            if (mode == ExportMode.ANNOTATED) add(Stage.ANNOTATING to "Аннотация видео")
+            add(Stage.SENDING to "Отправка")
+            add(Stage.DONE to "Готово")
+        }
+
+    val currentIndex = stages.indexOfFirst { it.first == stage }
+
+    return buildString {
+        for ((index, pair) in stages.withIndex()) {
+            val (s, label) = pair
+            when {
+                s == stage && s == Stage.DONE -> appendLine("\u2705 $label")
+                s == stage && s == Stage.ANNOTATING && percent != null -> appendLine("\uD83D\uDD04 $label: $percent%")
+                s == stage -> appendLine("\uD83D\uDD04 $label...")
+                currentIndex >= 0 && index < currentIndex -> appendLine("\u2705 $label")
+                else -> appendLine("\u2B1C $label")
+            }
+        }
+    }.trimEnd()
+}
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
@@ -632,7 +675,47 @@ class FrigateAnalyzerBot(
                 }
 
                 val camId = camCallback.data.removePrefix("export:cam:")
-                Triple(startInstant, endInstant, camId)
+
+                // Step 4: Mode selection
+                val modeKeyboard =
+                    InlineKeyboardMarkup(
+                        keyboard =
+                            matrix {
+                                row {
+                                    +CallbackDataInlineKeyboardButton("Оригинал", "export:mode:original")
+                                    +CallbackDataInlineKeyboardButton("С объектами", "export:mode:annotated")
+                                }
+                                row {
+                                    +CallbackDataInlineKeyboardButton("Отмена", "export:cancel")
+                                }
+                            },
+                    )
+
+                val modeSentMessage = sendTextMessage(chatId, "Выберите режим экспорта:", replyMarkup = modeKeyboard)
+
+                val modeCallback =
+                    waitDataCallbackQuery()
+                        .filter {
+                            (it.data.startsWith("export:mode:") || it.data == "export:cancel") &&
+                                (it as? MessageDataCallbackQuery)?.message?.let { msg ->
+                                    msg.messageId == modeSentMessage.messageId && msg.chat.id == chatId
+                                } == true
+                        }.first()
+                answer(modeCallback)
+
+                if (modeCallback.data == "export:cancel") {
+                    sendTextMessage(chatId, "Экспорт отменён.")
+                    userNotified = true
+                    return@withTimeoutOrNull null
+                }
+
+                val mode =
+                    when (modeCallback.data) {
+                        "export:mode:annotated" -> ExportMode.ANNOTATED
+                        else -> ExportMode.ORIGINAL
+                    }
+
+                ExportDialogResult(startInstant, endInstant, camId, mode)
             }
 
         if (dialogResult == null) {
@@ -642,20 +725,58 @@ class FrigateAnalyzerBot(
             return
         }
 
-        val (startInstant, endInstant, camId) = dialogResult
+        val (startInstant, endInstant, camId, mode) = dialogResult
 
-        // Step 4: Export video (separate timeout from dialog)
-        sendTextMessage(chatId, "Обработка видео, подождите...")
+        // Step 5: Export video with progress (separate timeout from dialog)
+        val statusMessage = sendTextMessage(chatId, renderProgress(Stage.PREPARING, mode = mode))
+
+        var lastRenderedStage: Stage? = null
+        var lastRenderedPercent: Int? = null
+        var hadCompressing = false
+
+        val onProgress: suspend (VideoExportProgress) -> Unit = { progress ->
+            if (progress.stage == Stage.COMPRESSING) hadCompressing = true
+
+            val shouldUpdate =
+                when {
+                    progress.stage != lastRenderedStage -> true
+                    progress.stage == Stage.ANNOTATING && progress.percent != null -> {
+                        val lastPct = lastRenderedPercent ?: -1
+                        (progress.percent - lastPct) >= 5
+                    }
+                    else -> false
+                }
+
+            if (shouldUpdate) {
+                lastRenderedStage = progress.stage
+                lastRenderedPercent = progress.percent
+                try {
+                    editMessageText(
+                        statusMessage,
+                        renderProgress(progress.stage, progress.percent, mode, hadCompressing),
+                    )
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to update export progress message" }
+                }
+            }
+        }
+
         try {
             val videoPath =
                 withTimeoutOrNull(EXPORT_PROCESSING_TIMEOUT_MS) {
-                    videoExportService.exportVideo(startInstant, endInstant, camId)
+                    videoExportService.exportVideo(startInstant, endInstant, camId, mode, onProgress)
                 } ?: run {
                     sendTextMessage(chatId, "Обработка видео заняла слишком много времени. Попробуйте меньший диапазон.")
                     return
                 }
 
             try {
+                try {
+                    editMessageText(statusMessage, renderProgress(Stage.SENDING, mode = mode, compressing = hadCompressing))
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to update export progress message" }
+                }
+
                 val localDate = startInstant.atZone(userZone).toLocalDate()
                 val localStart = startInstant.atZone(userZone).toLocalTime()
                 val localEnd = endInstant.atZone(userZone).toLocalTime()
@@ -664,6 +785,12 @@ class FrigateAnalyzerBot(
                     chatId,
                     videoPath.toFile().asMultipartFile().copy(filename = fileName),
                 )
+
+                try {
+                    editMessageText(statusMessage, renderProgress(Stage.DONE, mode = mode, compressing = hadCompressing))
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to update export progress message" }
+                }
             } finally {
                 try {
                     videoExportService.cleanupExportFile(videoPath)
@@ -673,7 +800,13 @@ class FrigateAnalyzerBot(
             }
         } catch (e: Exception) {
             logger.error(e) { "Video export failed" }
-            sendTextMessage(chatId, "Ошибка экспорта видео. Попробуйте меньший диапазон или другую камеру.")
+            val errorText =
+                if (mode == ExportMode.ANNOTATED) {
+                    "Ошибка экспорта видео с объектами. Попробуйте обычный режим или другие параметры."
+                } else {
+                    "Ошибка экспорта видео. Попробуйте меньший диапазон или другую камеру."
+                }
+            sendTextMessage(chatId, errorText)
         }
     }
 
