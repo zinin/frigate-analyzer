@@ -1,0 +1,41 @@
+# Log4j2 configuration for Docker deployment
+# Copy this file to log4j2.yaml to enable file logging with rotation.
+# Mount via docker-compose volume: ./log4j2.yaml:/application/config/log4j2.yaml:ro
+#
+# Environment variables:
+#   LOG_LEVEL     - root logger level (default: info)
+#   APP_LOG_LEVEL - ru.zinin package level (default: info)
+Configuration:
+  status: warn
+  shutdownHook: disable
+
+  Appenders:
+    Console:
+      name: Console
+      target: SYSTEM_OUT
+      PatternLayout:
+        pattern: "%d{ISO8601} %5p [%t] %c{1.} :%L - %m%n"
+
+    RollingFile:
+      name: FileAppender
+      fileName: /application/logs/frigate-analyzer.log
+      filePattern: /application/logs/frigate-analyzer-%i.log.gz
+      append: true
+      PatternLayout:
+        pattern: "%d{ISO8601} %5p [%t] %c{1.} :%L - %m%n"
+      Policies:
+        SizeBasedTriggeringPolicy:
+          size: 50MB
+      DefaultRolloverStrategy:
+        max: 10
+
+  Loggers:
+    Root:
+      level: ${env:LOG_LEVEL:-info}
+      AppenderRef:
+        - ref: Console
+        - ref: FileAppender
+
+    Logger:
+      - name: ru.zinin
+        level: ${env:APP_LOG_LEVEL:-info}

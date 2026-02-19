@@ -13,7 +13,7 @@ WORKDIR /application
 RUN apk add --no-cache ffmpeg curl
 
 # Создание временных директорий и non-root user
-RUN mkdir -p /tmp/frigate-analyzer && \
+RUN mkdir -p /tmp/frigate-analyzer /application/logs /application/config && \
     addgroup -g 1000 appgroup && \
     adduser -u 1000 -G appgroup -D appuser && \
     chown -R appuser:appgroup /application /tmp/frigate-analyzer
@@ -30,10 +30,12 @@ RUN java --enable-native-access=ALL-UNNAMED \
          -Dspring.context.exit=onRefresh \
          -jar application.jar || true
 
-RUN chown -R appuser:appgroup /application
+COPY docker-entrypoint.sh /application/docker-entrypoint.sh
+RUN chmod +x /application/docker-entrypoint.sh && \
+    chown -R appuser:appgroup /application
 
 USER appuser
 
 EXPOSE 8080
 
-ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-XX:MaxRAMPercentage=75.0", "-XX:AOTCache=application.aot", "-jar", "application.jar"]
+ENTRYPOINT ["/application/docker-entrypoint.sh"]
