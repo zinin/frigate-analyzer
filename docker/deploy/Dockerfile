@@ -30,7 +30,7 @@ RUN java --enable-native-access=ALL-UNNAMED \
          -Dspring.context.exit=onRefresh \
          -jar application.jar || true
 
-COPY docker-entrypoint.sh /application/docker-entrypoint.sh
+COPY docker/deploy/docker-entrypoint.sh /application/docker-entrypoint.sh
 RUN chmod +x /application/docker-entrypoint.sh && \
     chown -R appuser:appgroup /application
 
