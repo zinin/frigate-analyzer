@@ -14,6 +14,7 @@ import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectionFilterProperties
 import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
 import ru.zinin.frigate.analyzer.core.helper.VideoMergeHelper
+import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import ru.zinin.frigate.analyzer.model.persistent.RecordingEntity
 import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
@@ -326,5 +327,201 @@ class VideoExportServiceImplTest {
             assertEquals("GPU out of memory", exception.message)
             // The merged file should be cleaned up (called from annotate catch + outer catch)
             coVerify(atLeast = 1) { tempFileHelper.deleteIfExists(mergedFile) }
+        }
+
+    @Test
+    fun `annotated mode with empty allowedClasses passes null for classes`() =
+        runTest {
+            val emptyClassesService =
+                VideoExportServiceImpl(
+                    recordingRepository = recordingRepository,
+                    videoMergeHelper = videoMergeHelper,
+                    tempFileHelper = tempFileHelper,
+                    videoVisualizationService = videoVisualizationService,
+                    detectProperties = detectProperties,
+                    detectionFilterProperties = DetectionFilterProperties(allowedClasses = emptyList()),
+                )
+
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+            val annotatedFile = createTempFile("annotated.mp4")
+
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+            coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
+            coEvery {
+                videoVisualizationService.annotateVideo(
+                    videoPath = mergedFile,
+                    classes = null,
+                    model = "yolo26x.pt",
+                    onProgress = any(),
+                )
+            } returns annotatedFile
+
+            val result =
+                emptyClassesService.exportVideo(
+                    startInstant = start,
+                    endInstant = end,
+                    camId = camId,
+                    mode = ExportMode.ANNOTATED,
+                )
+
+            assertEquals(annotatedFile, result)
+            coVerify {
+                videoVisualizationService.annotateVideo(
+                    videoPath = mergedFile,
+                    classes = null,
+                    model = "yolo26x.pt",
+                    onProgress = any(),
+                )
+            }
+        }
+
+    @Test
+    fun `annotated mode with blank allowedClasses entries filters them out`() =
+        runTest {
+            val blankEntriesService =
+                VideoExportServiceImpl(
+                    recordingRepository = recordingRepository,
+                    videoMergeHelper = videoMergeHelper,
+                    tempFileHelper = tempFileHelper,
+                    videoVisualizationService = videoVisualizationService,
+                    detectProperties = detectProperties,
+                    detectionFilterProperties = DetectionFilterProperties(allowedClasses = listOf("person", "", "  ", "car")),
+                )
+
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+            val annotatedFile = createTempFile("annotated.mp4")
+
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+            coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
+            coEvery {
+                videoVisualizationService.annotateVideo(
+                    videoPath = mergedFile,
+                    classes = "person,car",
+                    model = "yolo26x.pt",
+                    onProgress = any(),
+                )
+            } returns annotatedFile
+
+            val result =
+                blankEntriesService.exportVideo(
+                    startInstant = start,
+                    endInstant = end,
+                    camId = camId,
+                    mode = ExportMode.ANNOTATED,
+                )
+
+            assertEquals(annotatedFile, result)
+            coVerify {
+                videoVisualizationService.annotateVideo(
+                    videoPath = mergedFile,
+                    classes = "person,car",
+                    model = "yolo26x.pt",
+                    onProgress = any(),
+                )
+            }
+        }
+
+    @Test
+    fun `export original does not call VideoVisualizationService`() =
+        runTest {
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+
+            service.exportVideo(
+                startInstant = start,
+                endInstant = end,
+                camId = camId,
+                mode = ExportMode.ORIGINAL,
+            )
+
+            coVerify(exactly = 0) {
+                videoVisualizationService.annotateVideo(
+                    videoPath = any(),
+                    classes = any(),
+                    model = any(),
+                    onProgress = any(),
+                )
+            }
+        }
+
+    @Test
+    fun `annotated mode cleanup on timeout exception`() =
+        runTest {
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+            coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
+            coEvery {
+                videoVisualizationService.annotateVideo(
+                    videoPath = mergedFile,
+                    classes = "person,car",
+                    model = "yolo26x.pt",
+                    onProgress = any(),
+                )
+            } throws DetectTimeoutException("Detection timed out after 300s")
+
+            val exception =
+                assertThrows<DetectTimeoutException> {
+                    service.exportVideo(
+                        startInstant = start,
+                        endInstant = end,
+                        camId = camId,
+                        mode = ExportMode.ANNOTATED,
+                    )
+                }
+
+            assertTrue(exception.message!!.contains("timed out"))
+            coVerify(atLeast = 1) { tempFileHelper.deleteIfExists(mergedFile) }
+        }
+
+    @Test
+    fun `export original with compress still too large throws and cleans up`() =
+        runTest {
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged-large.mp4")
+            val compressedFile = createTempFile("compressed-large.mp4")
+
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+            coEvery { videoMergeHelper.compressVideo(mergedFile) } returns compressedFile
+            coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
+            coEvery { tempFileHelper.deleteIfExists(compressedFile) } returns true
+
+            mockkStatic(Files::class)
+            try {
+                every { Files.exists(any<Path>()) } returns true
+                every { Files.size(mergedFile) } returns VideoMergeHelper.COMPRESS_THRESHOLD_BYTES + 1
+                every { Files.size(compressedFile) } returns VideoMergeHelper.MAX_FILE_SIZE_BYTES + 1
+
+                val exception =
+                    assertThrows<IllegalStateException> {
+                        service.exportVideo(
+                            startInstant = start,
+                            endInstant = end,
+                            camId = camId,
+                            mode = ExportMode.ORIGINAL,
+                        )
+                    }
+
+                assertTrue(exception.message!!.contains("too large"))
+                coVerify { tempFileHelper.deleteIfExists(mergedFile) }
+                coVerify { tempFileHelper.deleteIfExists(compressedFile) }
+            } finally {
+                unmockkStatic(Files::class)
+            }
         }
 }
