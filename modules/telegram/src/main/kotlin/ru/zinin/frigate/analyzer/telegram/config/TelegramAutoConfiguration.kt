@@ -36,10 +36,11 @@ class TelegramAutoConfiguration {
         return telegramBot(properties.botToken) {
             engine {
                 if (proxyConfig != null) {
-                    proxy = java.net.Proxy(
-                        java.net.Proxy.Type.SOCKS,
-                        java.net.InetSocketAddress(proxyConfig.host, proxyConfig.port),
-                    )
+                    proxy =
+                        java.net.Proxy(
+                            java.net.Proxy.Type.SOCKS,
+                            java.net.InetSocketAddress(proxyConfig.host, proxyConfig.port),
+                        )
                 }
             }
         }
