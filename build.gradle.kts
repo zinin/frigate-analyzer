@@ -1,7 +1,7 @@
 plugins {
     kotlin("jvm") version "2.3.10"
     kotlin("plugin.spring") version "2.3.10"
-    id("org.springframework.boot") version "4.0.2" apply false
+    id("org.springframework.boot") version "4.0.3" apply false
     id("io.spring.dependency-management") version "1.1.7" apply false
     id("maven-publish")
     id("org.jlleitschuh.gradle.ktlint") version "14.0.1"
@@ -119,7 +119,7 @@ subprojects {
     }
 }
 
-extra["kotlinLoggingVersion"] = "7.0.14"
+extra["kotlinLoggingVersion"] = "8.0.01"
 extra["postgresqlVersion"] = "42.7.10"
 extra["mapstructVersion"] = "1.6.3"
 extra["mapstructSpringExtensionsVersion"] = "2.0.0"
