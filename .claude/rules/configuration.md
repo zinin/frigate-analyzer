@@ -112,4 +112,14 @@ Settings under `application.records-watcher` in `application.yaml`.
 
 ## Telegram
 
-See `.claude/rules/telegram.md` for Telegram-specific settings.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TELEGRAM_ENABLED` | true | Enable/disable bot |
+| `TELEGRAM_BOT_TOKEN` | - | Bot token |
+| `TELEGRAM_OWNER` | - | Owner username (without @) |
+| `TELEGRAM_QUEUE_CAPACITY` | 100 | Notification queue size |
+| `TELEGRAM_SEND_VIDEO_TIMEOUT` | 3m | Timeout for sending video |
+| `TELEGRAM_PROXY_HOST` | (empty) | SOCKS5 proxy host. Empty = no proxy |
+| `TELEGRAM_PROXY_PORT` | 1080 | SOCKS5 proxy port |
+
+See `.claude/rules/telegram.md` for full Telegram module details.
