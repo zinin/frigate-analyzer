@@ -739,12 +739,18 @@ class FrigateAnalyzerBot(
 
             val shouldUpdate =
                 when {
-                    progress.stage != lastRenderedStage -> true
+                    progress.stage != lastRenderedStage -> {
+                        true
+                    }
+
                     progress.stage == Stage.ANNOTATING && progress.percent != null -> {
                         val lastPct = lastRenderedPercent ?: -1
                         (progress.percent - lastPct) >= 5
                     }
-                    else -> false
+
+                    else -> {
+                        false
+                    }
                 }
 
             if (shouldUpdate) {
