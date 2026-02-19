@@ -12,3 +12,4 @@ build/
 docs/
 docker/
 !docker/deploy/Dockerfile
+!docker/deploy/docker-entrypoint.sh
