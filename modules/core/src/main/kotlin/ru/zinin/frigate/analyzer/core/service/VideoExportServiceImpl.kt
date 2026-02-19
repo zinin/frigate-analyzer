@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.core.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import org.springframework.stereotype.Service
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
@@ -94,7 +95,7 @@ class VideoExportServiceImpl(
 
             return mergedFile
         } catch (e: Exception) {
-            tempFileHelper.deleteIfExists(mergedFile)
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(mergedFile) }
             throw e
         }
     }
@@ -124,7 +125,7 @@ class VideoExportServiceImpl(
             tempFileHelper.deleteIfExists(originalPath)
             return annotatedPath
         } catch (e: Exception) {
-            tempFileHelper.deleteIfExists(originalPath)
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
             throw e
         }
     }

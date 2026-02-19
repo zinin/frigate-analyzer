@@ -117,7 +117,8 @@ class FrigateAnalyzerBot(
 
     companion object {
         private const val EXPORT_DIALOG_TIMEOUT_MS = 600_000L
-        private const val EXPORT_PROCESSING_TIMEOUT_MS = 300_000L
+        private const val EXPORT_ORIGINAL_TIMEOUT_MS = 300_000L
+        private const val EXPORT_ANNOTATED_TIMEOUT_MS = 1_200_000L
         private const val MAX_EXPORT_DURATION_MINUTES = 5L
 
         private val DEFAULT_COMMANDS =
@@ -768,8 +769,10 @@ class FrigateAnalyzerBot(
         }
 
         try {
+            val processingTimeout =
+                if (mode == ExportMode.ANNOTATED) EXPORT_ANNOTATED_TIMEOUT_MS else EXPORT_ORIGINAL_TIMEOUT_MS
             val videoPath =
-                withTimeoutOrNull(EXPORT_PROCESSING_TIMEOUT_MS) {
+                withTimeoutOrNull(processingTimeout) {
                     videoExportService.exportVideo(startInstant, endInstant, camId, mode, onProgress)
                 } ?: run {
                     sendTextMessage(chatId, "Обработка видео заняла слишком много времени. Попробуйте меньший диапазон.")
