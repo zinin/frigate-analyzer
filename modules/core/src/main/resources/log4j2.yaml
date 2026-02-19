@@ -9,20 +9,12 @@ Configuration:
       PatternLayout:
         pattern: "%d{ISO8601} %5p [%t] %c{1.} :%L - %m%n"
 
-#    File:
-#      name: FileAppender
-#      fileName: app.log
-#      append: true
-#      PatternLayout:
-#        pattern: "%d{ISO8601} %5p [%t] %c{1.} :%L - %m%n"
-
   Loggers:
     Root:
-      level: info
+      level: ${env:LOG_LEVEL:-info}
       AppenderRef:
         - ref: Console
-#        - ref: FileAppender
 
     Logger:
       - name: ru.zinin
-        level: debug
+        level: ${env:APP_LOG_LEVEL:-info}
