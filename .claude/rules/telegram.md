@@ -72,6 +72,10 @@ AuthorizationFilter returns UserRole (OWNER, USER) or null for unauthorized.
 
 Disable for development: `java -Dapplication.telegram.enabled=false ...`
 
+## Known Issues
+
+- **Long polling timeout ERROR logs** — see [telegram-timeout-bug.md](telegram-timeout-bug.md) for details and workaround
+
 ## ktgbotapi Waiter API (v30.0.2)
 
 Source: https://github.com/InsanusMokrassar/ktgbotapi
