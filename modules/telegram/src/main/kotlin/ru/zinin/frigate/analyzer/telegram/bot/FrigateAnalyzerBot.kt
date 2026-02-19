@@ -4,6 +4,7 @@ import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.extensions.api.answers.answer
 import dev.inmo.tgbotapi.extensions.api.bot.getMe
 import dev.inmo.tgbotapi.extensions.api.bot.setMyCommands
+import dev.inmo.tgbotapi.extensions.api.edit.reply_markup.editMessageReplyMarkup
 import dev.inmo.tgbotapi.extensions.api.edit.text.editMessageText
 import dev.inmo.tgbotapi.extensions.api.send.media.sendVideo
 import dev.inmo.tgbotapi.extensions.api.send.reply
@@ -533,6 +534,10 @@ class FrigateAnalyzerBot(
                                 } == true
                         }.first()
                 answer(dateCallback)
+                try {
+                    editMessageReplyMarkup(dateSentMessage, replyMarkup = null)
+                } catch (_: Exception) {
+                }
 
                 if (dateCallback.data == "export:cancel") {
                     sendTextMessage(chatId, "Экспорт отменён.")
@@ -668,6 +673,10 @@ class FrigateAnalyzerBot(
                                 } == true
                         }.first()
                 answer(camCallback)
+                try {
+                    editMessageReplyMarkup(camSentMessage, replyMarkup = null)
+                } catch (_: Exception) {
+                }
 
                 if (camCallback.data == "export:cancel") {
                     sendTextMessage(chatId, "Экспорт отменён.")
@@ -703,6 +712,10 @@ class FrigateAnalyzerBot(
                                 } == true
                         }.first()
                 answer(modeCallback)
+                try {
+                    editMessageReplyMarkup(modeSentMessage, replyMarkup = null)
+                } catch (_: Exception) {
+                }
 
                 if (modeCallback.data == "export:cancel") {
                     sendTextMessage(chatId, "Экспорт отменён.")

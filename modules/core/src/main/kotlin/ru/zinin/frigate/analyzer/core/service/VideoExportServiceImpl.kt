@@ -42,6 +42,7 @@ class VideoExportServiceImpl(
         mode: ExportMode,
         onProgress: suspend (VideoExportProgress) -> Unit,
     ): Path {
+        logger.debug { "exportVideo started: camId=$camId, mode=$mode, range=$startInstant..$endInstant" }
         onProgress(VideoExportProgress(Stage.PREPARING))
 
         val recordings = recordingRepository.findByCamIdAndInstantRange(camId, startInstant, endInstant)
@@ -65,7 +66,7 @@ class VideoExportServiceImpl(
             throw IllegalStateException("All recording files are missing from disk")
         }
 
-        logger.info { "Exporting ${existingFiles.size} recordings for camId=$camId, range=$startInstant-$endInstant" }
+        logger.info { "Exporting ${existingFiles.size}/${recordings.size} recordings for camId=$camId, range=$startInstant-$endInstant" }
 
         onProgress(VideoExportProgress(Stage.MERGING))
 
@@ -73,6 +74,7 @@ class VideoExportServiceImpl(
 
         try {
             val fileSize = withContext(Dispatchers.IO) { Files.size(mergedFile) }
+            logger.debug { "Merge complete: $mergedFile, size=${fileSize}B" }
             if (fileSize > VideoMergeHelper.COMPRESS_THRESHOLD_BYTES) {
                 onProgress(VideoExportProgress(Stage.COMPRESSING))
                 logger.info { "Merged file is ${fileSize / 1024 / 1024}MB, compressing..." }
@@ -81,6 +83,7 @@ class VideoExportServiceImpl(
                 mergedFile = compressedFile
 
                 val compressedSize = withContext(Dispatchers.IO) { Files.size(mergedFile) }
+                logger.debug { "Compression complete: $mergedFile, size=${compressedSize}B" }
                 if (compressedSize > VideoMergeHelper.MAX_FILE_SIZE_BYTES) {
                     tempFileHelper.deleteIfExists(mergedFile)
                     throw IllegalStateException(
@@ -95,6 +98,7 @@ class VideoExportServiceImpl(
 
             return mergedFile
         } catch (e: Exception) {
+            logger.debug(e) { "Export failed, cleaning up: $mergedFile" }
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(mergedFile) }
             throw e
         }
@@ -112,6 +116,7 @@ class VideoExportServiceImpl(
                 .joinToString(",")
                 .ifEmpty { null }
 
+        logger.debug { "Starting annotation: model=${detectProperties.goodModel}, classes=$allowedClassesCsv" }
         try {
             val annotatedPath =
                 videoVisualizationService.annotateVideo(
@@ -122,15 +127,19 @@ class VideoExportServiceImpl(
                         onProgress(VideoExportProgress(Stage.ANNOTATING, percent = status.progress))
                     },
                 )
+            logger.debug { "Annotation complete: $annotatedPath" }
             tempFileHelper.deleteIfExists(originalPath)
+            logger.debug { "Deleted intermediate file: $originalPath" }
             return annotatedPath
         } catch (e: Exception) {
+            logger.debug(e) { "Annotation failed, cleaning up: $originalPath" }
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
             throw e
         }
     }
 
     override suspend fun cleanupExportFile(path: Path) {
+        logger.debug { "Cleanup export file: $path" }
         tempFileHelper.deleteIfExists(path)
     }
 }

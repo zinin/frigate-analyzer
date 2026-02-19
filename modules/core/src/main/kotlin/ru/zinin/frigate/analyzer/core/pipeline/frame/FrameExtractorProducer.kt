@@ -45,7 +45,7 @@ class FrameExtractorProducer(
                 val hasWork = processNextBatch(channel)
 
                 if (!hasWork) {
-                    logger.debug { "No unprocessed recordings, waiting ${producerConfig.idleDelay}..." }
+                    logger.trace { "No unprocessed recordings, waiting ${producerConfig.idleDelay}..." }
                     delay(producerConfig.idleDelay.toMillis())
                 }
             } catch (e: CancellationException) {
