@@ -42,7 +42,7 @@ class WebClientConfiguration(
 //            .wiretap(true)
             .secure { sslContextSpec: SslContextSpec -> sslContextSpec.sslContext(sslContext) }
             .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, applicationProperties.connectionTimeout.toMillis().toInt())
-            .responseTimeout(applicationProperties.responseTimeout)
+//            .responseTimeout(applicationProperties.responseTimeout)
             .doOnConnected { conn ->
                 conn
                     .addHandlerLast(
