@@ -6,6 +6,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.validation.annotation.Validated
 import java.time.Duration
 
+data class ProxyProperties(
+    val host: String = "",
+    val port: Int = 1080,
+)
+
 @ConfigurationProperties(prefix = "application.telegram")
 @Validated
 data class TelegramProperties(
@@ -18,4 +23,5 @@ data class TelegramProperties(
     @field:Min(1)
     val queueCapacity: Int = 100,
     val sendVideoTimeout: Duration = Duration.ofMinutes(3),
+    val proxy: ProxyProperties? = null,
 )
