@@ -21,9 +21,14 @@ services:
     volumes:
       - ${FRIGATE_RECORDS_FOLDER:-/mnt/data/frigate/recordings}:/mnt/data/frigate/recordings:ro
       - ./application-docker.yaml:/application/config/application-docker.yaml:ro
+      - ./logs:/application/logs
+      # Uncomment to override log4j2 config (copy log4j2.yaml.example to log4j2.yaml first):
+      # - ./log4j2.yaml:/application/config/log4j2.yaml:ro
     environment:
       - SPRING_PROFILES_ACTIVE=docker
       - FRIGATE_RECORDS_FOLDER=/mnt/data/frigate/recordings
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-info}
     ports:
       - "${HOST_PORT:-8080}:8080"
     healthcheck:
