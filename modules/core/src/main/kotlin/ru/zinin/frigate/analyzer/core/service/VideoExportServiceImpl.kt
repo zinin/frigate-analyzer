@@ -124,6 +124,7 @@ class VideoExportServiceImpl(
                     classes = allowedClassesCsv,
                     model = detectProperties.goodModel,
                     onProgress = { status ->
+                        logger.debug { "Annotation progress: ${status.progress}%" }
                         onProgress(VideoExportProgress(Stage.ANNOTATING, percent = status.progress))
                     },
                 )
