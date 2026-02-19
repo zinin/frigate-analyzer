@@ -60,6 +60,60 @@ class VideoExportServiceImplTest {
         return path
     }
 
+    private data class AnnotateCall(val videoPath: Path, val classes: String?, val model: String)
+
+    private var lastAnnotateCall: AnnotateCall? = null
+
+    private fun stubAnnotateVideo(returns: Path) {
+        coEvery {
+            videoVisualizationService.annotateVideo(
+                videoPath = any(),
+                conf = any(),
+                imgSize = any(),
+                maxDet = any(),
+                detectEvery = any(),
+                classes = any(),
+                lineWidth = any(),
+                showLabels = any(),
+                showConf = any(),
+                model = any(),
+                onProgress = any(),
+            )
+        } coAnswers {
+            lastAnnotateCall = AnnotateCall(firstArg(), arg(5), arg(9))
+            returns
+        }
+    }
+
+    private fun stubAnnotateVideoThrows(exception: Exception) {
+        coEvery {
+            videoVisualizationService.annotateVideo(
+                videoPath = any(),
+                conf = any(),
+                imgSize = any(),
+                maxDet = any(),
+                detectEvery = any(),
+                classes = any(),
+                lineWidth = any(),
+                showLabels = any(),
+                showConf = any(),
+                model = any(),
+                onProgress = any(),
+            )
+        } throws exception
+    }
+
+    private fun assertAnnotateCalledWith(
+        videoPath: Path,
+        classes: String?,
+        model: String,
+    ) {
+        val call = lastAnnotateCall ?: error("annotateVideo was never called")
+        assertEquals(videoPath, call.videoPath, "videoPath mismatch")
+        assertEquals(classes, call.classes, "classes mismatch")
+        assertEquals(model, call.model, "model mismatch")
+    }
+
     private fun recording(filePath: String?) =
         RecordingEntity(
             id = UUID.randomUUID(),
@@ -195,14 +249,7 @@ class VideoExportServiceImplTest {
                 listOf(recording(recordingFile.toString()))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
             coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
-            coEvery {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = "person,car",
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            } returns annotatedFile
+            stubAnnotateVideo(annotatedFile)
 
             val result =
                 service.exportVideo(
@@ -213,14 +260,7 @@ class VideoExportServiceImplTest {
                 )
 
             assertEquals(annotatedFile, result)
-            coVerify {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = "person,car",
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            }
+            assertAnnotateCalledWith(mergedFile, "person,car", "yolo26x.pt")
         }
 
     @Test
@@ -236,9 +276,16 @@ class VideoExportServiceImplTest {
             coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
             coEvery {
                 videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = "person,car",
-                    model = "yolo26x.pt",
+                    videoPath = any(),
+                    conf = any(),
+                    imgSize = any(),
+                    maxDet = any(),
+                    detectEvery = any(),
+                    classes = any(),
+                    lineWidth = any(),
+                    showLabels = any(),
+                    showConf = any(),
+                    model = any(),
                     onProgress = any(),
                 )
             } coAnswers {
@@ -276,14 +323,7 @@ class VideoExportServiceImplTest {
                 listOf(recording(recordingFile.toString()))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
             coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
-            coEvery {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = "person,car",
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            } returns annotatedFile
+            stubAnnotateVideo(annotatedFile)
 
             service.exportVideo(
                 startInstant = start,
@@ -305,14 +345,7 @@ class VideoExportServiceImplTest {
                 listOf(recording(recordingFile.toString()))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
             coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
-            coEvery {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = "person,car",
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            } throws RuntimeException("GPU out of memory")
+            stubAnnotateVideoThrows(RuntimeException("GPU out of memory"))
 
             val exception =
                 assertThrows<RuntimeException> {
@@ -350,14 +383,7 @@ class VideoExportServiceImplTest {
                 listOf(recording(recordingFile.toString()))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
             coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
-            coEvery {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = null,
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            } returns annotatedFile
+            stubAnnotateVideo(annotatedFile)
 
             val result =
                 emptyClassesService.exportVideo(
@@ -368,14 +394,7 @@ class VideoExportServiceImplTest {
                 )
 
             assertEquals(annotatedFile, result)
-            coVerify {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = null,
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            }
+            assertAnnotateCalledWith(mergedFile, null, "yolo26x.pt")
         }
 
     @Test
@@ -399,14 +418,7 @@ class VideoExportServiceImplTest {
                 listOf(recording(recordingFile.toString()))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
             coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
-            coEvery {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = "person,car",
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            } returns annotatedFile
+            stubAnnotateVideo(annotatedFile)
 
             val result =
                 blankEntriesService.exportVideo(
@@ -417,14 +429,7 @@ class VideoExportServiceImplTest {
                 )
 
             assertEquals(annotatedFile, result)
-            coVerify {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = "person,car",
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            }
+            assertAnnotateCalledWith(mergedFile, "person,car", "yolo26x.pt")
         }
 
     @Test
@@ -447,7 +452,14 @@ class VideoExportServiceImplTest {
             coVerify(exactly = 0) {
                 videoVisualizationService.annotateVideo(
                     videoPath = any(),
+                    conf = any(),
+                    imgSize = any(),
+                    maxDet = any(),
+                    detectEvery = any(),
                     classes = any(),
+                    lineWidth = any(),
+                    showLabels = any(),
+                    showConf = any(),
                     model = any(),
                     onProgress = any(),
                 )
@@ -464,14 +476,7 @@ class VideoExportServiceImplTest {
                 listOf(recording(recordingFile.toString()))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
             coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
-            coEvery {
-                videoVisualizationService.annotateVideo(
-                    videoPath = mergedFile,
-                    classes = "person,car",
-                    model = "yolo26x.pt",
-                    onProgress = any(),
-                )
-            } throws DetectTimeoutException("Detection timed out after 300s")
+            stubAnnotateVideoThrows(DetectTimeoutException("Detection timed out after 300s"))
 
             val exception =
                 assertThrows<DetectTimeoutException> {
