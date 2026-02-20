@@ -39,11 +39,6 @@ class AuthorizationFilter(
         }
     }
 
-    fun isOwner(message: CommonMessage<MessageContent>): Boolean {
-        val username = extractUsername(message) ?: return false
-        return username == properties.owner
-    }
-
     fun extractUsername(message: CommonMessage<MessageContent>): String? {
         val privateMessage = message as? PrivateContentMessage<*> ?: return null
         return privateMessage.user.username?.withoutAt
