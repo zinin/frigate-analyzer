@@ -41,7 +41,10 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.boot.info.BuildProperties
+import org.springframework.boot.info.GitProperties
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
@@ -115,6 +118,8 @@ class FrigateAnalyzerBot(
     private val properties: TelegramProperties,
     private val videoExportService: VideoExportService,
     private val clock: Clock,
+    private val buildProperties: ObjectProvider<BuildProperties>,
+    private val gitProperties: ObjectProvider<GitProperties>,
 ) {
     private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val activeExports: MutableSet<Long> = ConcurrentHashMap.newKeySet()
@@ -131,6 +136,7 @@ class FrigateAnalyzerBot(
                 BotCommand("help", "Помощь"),
                 BotCommand("export", "Выгрузить видео"),
                 BotCommand("timezone", "Часовой пояс"),
+                BotCommand("version", "Версия приложения"),
             )
 
         private val OWNER_COMMANDS =
@@ -190,6 +196,10 @@ class FrigateAnalyzerBot(
 
                         onCommand("timezone") { message ->
                             handleTimezone(message)
+                        }
+
+                        onCommand("version") { message ->
+                            handleVersion(message)
                         }
 
                         onContentMessage { message ->
@@ -392,6 +402,34 @@ class FrigateAnalyzerBot(
             }
 
         bot.reply(message, text)
+    }
+
+    private suspend fun handleVersion(message: CommonMessage<TextContent>) {
+        val role = authorizationFilter.getRole(message)
+        if (role == null) {
+            bot.reply(message, authorizationFilter.getUnauthorizedMessage())
+            return
+        }
+
+        val sb = java.lang.StringBuilder()
+        val git = gitProperties.ifAvailable
+        val build = buildProperties.ifAvailable
+
+        if (git != null) {
+            sb.append("Git version: ").append(git.commitId).append("\n")
+            sb.append("Git commit time: ").append(git.commitTime).append("\n")
+        } else {
+            sb.append("Git info not available\n")
+        }
+
+        if (build != null) {
+            sb.append("Build version: ").append(build.version).append("\n")
+            sb.append("Build time: ").append(build.time).append("\n")
+        } else {
+            sb.append("Build info not available\n")
+        }
+
+        bot.reply(message, sb.toString())
     }
 
     @Suppress("LongMethod")
