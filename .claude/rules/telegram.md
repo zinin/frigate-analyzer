@@ -20,7 +20,9 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| FrigateAnalyzerBot | `telegram/bot/` | Main bot, long polling, commands |
+| FrigateAnalyzerBot | `telegram/bot/` | Thin orchestrator: lifecycle, routing, auth, command menus |
+| CommandHandler + handlers | `telegram/bot/handler/` | Command-per-class architecture for bot commands |
+| ExportDialogRunner / ExportExecutor / ActiveExportTracker | `telegram/bot/handler/export/` | `/export` dialog, execution, concurrency guard |
 | TelegramUserService | `telegram/service/` | Manages users (invite, activate, remove) |
 | TelegramNotificationService | `telegram/service/` | Notification interface |
 | TelegramNotificationServiceImpl | `telegram/service/impl/` | Active notification implementation |
@@ -52,10 +54,19 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 |---------|--------|-------------|
 | /start | All | Activate subscription |
 | /help | USER, OWNER | List commands |
+| /export | USER, OWNER | Export camera video |
+| /timezone | USER, OWNER | Configure timezone |
 | /version | USER, OWNER | Show application version |
 | /adduser | OWNER | Invite user |
 | /removeuser | OWNER | Remove user |
 | /users | OWNER | List all users |
+
+## Bot Architecture
+
+- `FrigateAnalyzerBot` registers commands dynamically from `List<CommandHandler>`.
+- Command ordering is controlled by handler metadata (`order`, then command name as tie-breaker).
+- Authorization is centralized in bot router via `AuthorizationFilter.getRole()` and `requiredRole`.
+- Owner menu registration uses `OwnerActivatedEvent` + `@EventListener` bridge with coroutine launch.
 
 ## Authorization
 
