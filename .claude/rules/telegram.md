@@ -52,6 +52,7 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 |---------|--------|-------------|
 | /start | All | Activate subscription |
 | /help | USER, OWNER | List commands |
+| /version | USER, OWNER | Show application version |
 | /adduser | OWNER | Invite user |
 | /removeuser | OWNER | Remove user |
 | /users | OWNER | List all users |

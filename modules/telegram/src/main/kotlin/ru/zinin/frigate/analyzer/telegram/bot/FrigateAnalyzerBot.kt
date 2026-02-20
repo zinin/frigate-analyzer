@@ -298,6 +298,7 @@ class FrigateAnalyzerBot(
                 appendLine("/help - Список команд")
                 appendLine("/export - Выгрузить видео с камеры")
                 appendLine("/timezone - Настроить часовой пояс")
+                appendLine("/version - Версия приложения")
 
                 if (role == UserRole.OWNER) {
                     appendLine()
@@ -411,25 +412,26 @@ class FrigateAnalyzerBot(
             return
         }
 
-        val sb = java.lang.StringBuilder()
         val git = gitProperties.ifAvailable
         val build = buildProperties.ifAvailable
 
-        if (git != null) {
-            sb.append("Git version: ").append(git.commitId).append("\n")
-            sb.append("Git commit time: ").append(git.commitTime).append("\n")
-        } else {
-            sb.append("Git info not available\n")
-        }
+        val text =
+            buildString {
+                if (git != null) {
+                    appendLine("Git version: ${git.commitId}")
+                    appendLine("Git commit time: ${git.commitTime}")
+                } else {
+                    appendLine("Git info not available")
+                }
+                if (build != null) {
+                    appendLine("Build version: ${build.version}")
+                    appendLine("Build time: ${build.time}")
+                } else {
+                    appendLine("Build info not available")
+                }
+            }.trimEnd()
 
-        if (build != null) {
-            sb.append("Build version: ").append(build.version).append("\n")
-            sb.append("Build time: ").append(build.time).append("\n")
-        } else {
-            sb.append("Build info not available\n")
-        }
-
-        bot.reply(message, sb.toString())
+        bot.reply(message, text)
     }
 
     @Suppress("LongMethod")
