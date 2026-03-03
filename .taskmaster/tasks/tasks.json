@@ -497,7 +497,7 @@
         "id": 6,
         "title": "Создать QuickExportHandler для обработки callback query",
         "description": "Создать новый компонент QuickExportHandler для обработки нажатий кнопки быстрого экспорта с callback data `qe:{recordingId}`.",
-        "status": "in-progress",
+        "status": "done",
         "priority": "high",
         "dependencies": [
           5
@@ -559,19 +559,25 @@
             "id": 4,
             "title": "Добавить обработку ошибок и сообщения пользователю",
             "description": "Реализовать полную обработку исключений с информативными сообщениями пользователю для разных типов ошибок (not found, missing files, общие ошибки) и корректную обработку CancellationException.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1,
               2,
               3
             ],
             "details": "1. Обернуть основную логику в try-catch блок\n2. Обработать CancellationException отдельно через throw e (не глотать корутинные отмены)\n3. Для других исключений логировать logger.error(e) { \"Quick export failed for recording $recordingId\" }\n4. Определить тип ошибки по e.message: contains(\"not found\") → 'Запись не найдена.', contains(\"missing\") → 'Файлы записи недоступны.', иначе → 'Ошибка экспорта. Попробуйте позже.'\n5. Отправить соответствующее сообщение через bot.sendTextMessage(chatId, errorMsg)\n6. В конце catch блока вызвать restoreButton для восстановления кнопки\n7. В начале метода handle сразу вызвать bot.answer(callback) для снятия индикатора загрузки в Telegram",
-            "testStrategy": "Unit-тест: exportByRecordingId выбрасывает IllegalArgumentException с 'not found' → проверить сообщение 'Запись не найдена.' и восстановление кнопки. Unit-тест: выбрасывается CancellationException → проверить что исключение пробрасывается дальше."
+            "testStrategy": "Unit-тест: exportByRecordingId выбрасывает IllegalArgumentException с 'not found' → проверить сообщение 'Запись не найдена.' и восстановление кнопки. Unit-тест: выбрасывается CancellationException → проверить что исключение пробрасывается дальше.",
+            "metadata": {
+              "startRev": "12b26e03e777410140c3654332de71aa9677583c",
+              "endRev": "ca5ccce2e3109f0158f21a3378c0b01bbb81bdd3",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T23:54:33.845Z"
+            }
           }
         ],
         "metadata": {
           "startRev": "dd55511102d5016bdd8a63e7cb15832acf9073bc",
-          "endRev": "f71b7042117e4fdc7fa25d3408394f92548e1be4"
+          "endRev": "ca5ccce2e3109f0158f21a3378c0b01bbb81bdd3"
         }
       },
       {
