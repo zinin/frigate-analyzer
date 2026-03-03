@@ -110,7 +110,7 @@
         "id": 2,
         "title": "Обновить TelegramNotificationServiceImpl для передачи recordingId",
         "description": "Изменить TelegramNotificationServiceImpl.sendRecordingNotification для передачи recording.id в NotificationTask.",
-        "status": "pending",
+        "status": "in-progress",
         "priority": "high",
         "dependencies": [
           1
@@ -122,10 +122,16 @@
             "id": 1,
             "title": "Проверить наличие поля recordingId в NotificationTask",
             "description": "Убедиться, что Задача 1 выполнена и поле recordingId существует в data class NotificationTask.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/NotificationTask.kt` и проверить наличие поля `val recordingId: UUID`. Без этого поля текущая задача не может быть выполнена. Если поле отсутствует — сначала выполнить Задачу 1.",
-            "testStrategy": "Визуальная проверка наличия поля recordingId: UUID в data class NotificationTask."
+            "testStrategy": "Визуальная проверка наличия поля recordingId: UUID в data class NotificationTask.",
+            "metadata": {
+              "startRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88",
+              "endRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:43:14.656Z"
+            }
           },
           {
             "id": 2,
@@ -170,7 +176,11 @@
             "details": "В тестовом классе для TelegramNotificationServiceImpl:\n1. Замокать TelegramUserService, TelegramNotificationQueue, UUIDGeneratorHelper\n2. Создать тестовый RecordingDto с известным id (например UUID.randomUUID())\n3. Вызвать sendRecordingNotification\n4. Захватить NotificationTask переданный в notificationQueue.enqueue\n5. Проверить что task.recordingId == recording.id\n\nИспользовать ArgumentCaptor или verify с capture для проверки аргументов.",
             "testStrategy": "Unit-тест с моками: проверить что recordingId в NotificationTask соответствует id из RecordingDto."
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88",
+          "endRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88"
+        }
       },
       {
         "id": 3,
