@@ -452,12 +452,18 @@
             "id": 4,
             "title": "Написать unit-тесты для exportByRecordingId",
             "description": "Создать тесты для проверки корректной работы метода и обработки ошибок (запись не найдена, отсутствует camId, отсутствует recordTimestamp)",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               3
             ],
             "details": "Создать тестовый класс VideoExportServiceImplTest (если не существует) или добавить тесты в существующий. Тестовые сценарии: 1) Успешный экспорт - замокать findById с валидной записью, проверить вызов exportVideo с вычисленным диапазоном. 2) Recording not found - findById возвращает null, ожидать IllegalArgumentException. 3) camId is null - запись без camId, ожидать IllegalStateException. 4) recordTimestamp is null - запись без recordTimestamp, ожидать IllegalStateException. Использовать MockK или Mockito для моков, TestCoroutineDispatcher для coroutines.",
-            "testStrategy": "Все тесты должны проходить. Проверить покрытие всех веток через code coverage."
+            "testStrategy": "Все тесты должны проходить. Проверить покрытие всех веток через code coverage.",
+            "metadata": {
+              "startRev": "a0647c1ef950d5358fb473af3413e699a36d3ff2",
+              "endRev": "a0647c1ef950d5358fb473af3413e699a36d3ff2",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T21:58:33.229Z"
+            }
           },
           {
             "id": 5,
@@ -473,7 +479,7 @@
         ],
         "metadata": {
           "startRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e",
-          "endRev": "cd69825b788b089fa424b7036b5bec449540026d"
+          "endRev": "a0647c1ef950d5358fb473af3413e699a36d3ff2"
         }
       },
       {
