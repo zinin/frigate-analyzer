@@ -30,12 +30,18 @@
             "id": 2,
             "title": "Обновить создание NotificationTask в TelegramNotificationServiceImpl",
             "description": "Передать recording.id в конструктор NotificationTask при создании уведомления.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt`. В методе sendRecordingNotification (строки 44-50) добавить recordingId в конструктор NotificationTask:\n```kotlin\nval task =\n    NotificationTask(\n        uuidGeneratorHelper.generateV1(),\n        userZone.chatId,\n        message,\n        visualizedFrames,\n        recording.id,\n    )\n```\nПараметр `recording` имеет тип RecordingDto и уже содержит поле `id: UUID`.",
-            "testStrategy": "Проверить компиляцию модуля telegram: `./gradlew :telegram:compileKotlin`. Компиляция должна пройти успешно."
+            "testStrategy": "Проверить компиляцию модуля telegram: `./gradlew :telegram:compileKotlin`. Компиляция должна пройти успешно.",
+            "metadata": {
+              "startRev": "9ddbd4de667c791617fec19f891a22e3a45505df",
+              "endRev": "840fa310cd3817b341e9e4810fd6b2430028c2df",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:26:14.438Z"
+            }
           },
           {
             "id": 3,
@@ -74,7 +80,7 @@
         ],
         "metadata": {
           "startRev": "ea887337c2de3004d0253b6f317b55e3d2fe84fc",
-          "endRev": "b695cdd36cc60a4e2969038a96d2829b82f5cfe6"
+          "endRev": "840fa310cd3817b341e9e4810fd6b2430028c2df"
         }
       },
       {
