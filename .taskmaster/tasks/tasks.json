@@ -137,11 +137,17 @@
             "id": 2,
             "title": "Найти метод sendRecordingNotification",
             "description": "Локализовать точное место создания NotificationTask в методе sendRecordingNotification.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
-            "details": "В файле `TelegramNotificationServiceImpl.kt` (строки 44-50) найти создание NotificationTask через позиционные аргументы. Текущий код:\n```kotlin\nval task =\n    NotificationTask(\n        uuidGeneratorHelper.generateV1(),\n        userZone.chatId,\n        message,\n        visualizedFrames,\n    )\n```\nЗапомнить порядок аргументов для правильного добавления recordingId."
+            "details": "В файле `TelegramNotificationServiceImpl.kt` (строки 44-50) найти создание NotificationTask через позиционные аргументы. Текущий код:\n```kotlin\nval task =\n    NotificationTask(\n        uuidGeneratorHelper.generateV1(),\n        userZone.chatId,\n        message,\n        visualizedFrames,\n    )\n```\nЗапомнить порядок аргументов для правильного добавления recordingId.",
+            "metadata": {
+              "startRev": "81b0913c47d31a2f440251c5165bcc5a042d76b9",
+              "endRev": "81b0913c47d31a2f440251c5165bcc5a042d76b9",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:43:38.359Z"
+            }
           },
           {
             "id": 3,
@@ -179,7 +185,7 @@
         ],
         "metadata": {
           "startRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88",
-          "endRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88"
+          "endRev": "81b0913c47d31a2f440251c5165bcc5a042d76b9"
         }
       },
       {
