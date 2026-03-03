@@ -30,7 +30,7 @@ interface VideoExportService {
      * @param duration one-side duration (default 1 minute, total range is 2 minutes)
      * @param onProgress progress callback
      * @return path to the exported video file
-     * @throws IllegalArgumentException if the recording is not found
+     * @throws IllegalArgumentException if the recording is not found or duration is negative
      * @throws IllegalStateException if the recording has no camId or recordTimestamp
      */
     suspend fun exportByRecordingId(

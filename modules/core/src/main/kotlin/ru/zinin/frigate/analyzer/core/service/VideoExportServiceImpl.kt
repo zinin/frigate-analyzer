@@ -146,6 +146,8 @@ class VideoExportServiceImpl(
         duration: Duration,
         onProgress: suspend (VideoExportProgress) -> Unit,
     ): Path {
+        require(!duration.isNegative) { "duration must be non-negative" }
+
         logger.debug { "exportByRecordingId started: recordingId=$recordingId, duration=$duration" }
 
         val recording =

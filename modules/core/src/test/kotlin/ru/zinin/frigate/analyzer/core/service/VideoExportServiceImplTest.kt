@@ -61,6 +61,9 @@ class VideoExportServiceImplTest {
     private val start: Instant = Instant.parse("2026-02-19T10:00:00Z")
     private val end: Instant = Instant.parse("2026-02-19T11:00:00Z")
     private val camId = "front"
+    private val recordingId: UUID = UUID.randomUUID()
+    private val recordTimestamp: Instant = Instant.parse("2026-02-19T10:30:00Z")
+    private val exportDuration: Duration = Duration.ofMinutes(1)
 
     private fun createTempFile(name: String): Path {
         val path = tempDir.resolve(name)
@@ -143,6 +146,45 @@ class VideoExportServiceImplTest {
             analyzeTime = null,
             analyzedFramesCount = null,
         )
+
+    private fun recordingWithTimestamp(
+        id: UUID = recordingId,
+        camId: String? = "front",
+        recordTimestamp: Instant? = this.recordTimestamp,
+    ) = RecordingEntity(
+        id = id,
+        creationTimestamp = null,
+        filePath = null,
+        fileCreationTimestamp = null,
+        camId = camId,
+        recordDate = null,
+        recordTime = null,
+        recordTimestamp = recordTimestamp,
+        startProcessingTimestamp = null,
+        processTimestamp = null,
+        processAttempts = null,
+        detectionsCount = null,
+        analyzeTime = null,
+        analyzedFramesCount = null,
+    )
+
+    private fun stubExportByRecordingIdHappyPath(
+        recording: RecordingEntity,
+        duration: Duration = exportDuration,
+    ): Path {
+        val recordingFile = createTempFile("recording1.mp4")
+        val mergedFile = createTempFile("merged.mp4")
+
+        val expectedStart = recordTimestamp.minus(duration)
+        val expectedEnd = recordTimestamp.plus(duration)
+
+        coEvery { recordingRepository.findById(recordingId) } returns recording
+        coEvery { recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd) } returns
+            listOf(recording(recordingFile.toString()))
+        coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+
+        return mergedFile
+    }
 
     @Test
     fun `export original emits PREPARING MERGING and returns merged path`() =
@@ -489,53 +531,19 @@ class VideoExportServiceImplTest {
 
     // --- exportByRecordingId tests ---
 
-    private val recordingId: UUID = UUID.randomUUID()
-    private val recordTimestamp: Instant = Instant.parse("2026-02-19T10:30:00Z")
-    private val exportDuration: Duration = Duration.ofMinutes(1)
-
-    private fun recordingWithTimestamp(
-        id: UUID = recordingId,
-        camId: String? = "front",
-        recordTimestamp: Instant? = this.recordTimestamp,
-    ) = RecordingEntity(
-        id = id,
-        creationTimestamp = null,
-        filePath = null,
-        fileCreationTimestamp = null,
-        camId = camId,
-        recordDate = null,
-        recordTime = null,
-        recordTimestamp = recordTimestamp,
-        startProcessingTimestamp = null,
-        processTimestamp = null,
-        processAttempts = null,
-        detectionsCount = null,
-        analyzeTime = null,
-        analyzedFramesCount = null,
-    )
-
     @Test
-    fun `exportByRecordingId calls exportVideo with correct range and ORIGINAL mode`() =
+    fun `exportByRecordingId calls exportVideo with correct range and no annotation`() =
         runTest {
             val recording = recordingWithTimestamp()
-            val recordingFile = createTempFile("recording1.mp4")
-            val mergedFile = createTempFile("merged.mp4")
+            val mergedFile = stubExportByRecordingIdHappyPath(recording)
 
             val expectedStart = recordTimestamp.minus(exportDuration)
             val expectedEnd = recordTimestamp.plus(exportDuration)
-
-            coEvery { recordingRepository.findById(recordingId) } returns recording
-            coEvery { recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd) } returns
-                listOf(recording(recordingFile.toString()))
-            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
-
-            val progress = mutableListOf<VideoExportProgress>()
 
             val result =
                 service.exportByRecordingId(
                     recordingId = recordingId,
                     duration = exportDuration,
-                    onProgress = { progress.add(it) },
                 )
 
             assertEquals(mergedFile, result)
@@ -605,20 +613,28 @@ class VideoExportServiceImplTest {
         }
 
     @Test
+    fun `exportByRecordingId throws IllegalArgumentException when duration is negative`() =
+        runTest {
+            val exception =
+                assertThrows<IllegalArgumentException> {
+                    service.exportByRecordingId(
+                        recordingId = recordingId,
+                        duration = Duration.ofMinutes(-1),
+                    )
+                }
+
+            assertTrue(exception.message!!.contains("duration must be non-negative"))
+        }
+
+    @Test
     fun `exportByRecordingId computes correct time range with custom duration`() =
         runTest {
             val customDuration = Duration.ofMinutes(5)
             val recording = recordingWithTimestamp()
-            val recordingFile = createTempFile("recording1.mp4")
-            val mergedFile = createTempFile("merged.mp4")
+            val mergedFile = stubExportByRecordingIdHappyPath(recording, duration = customDuration)
 
             val expectedStart = recordTimestamp.minus(customDuration)
             val expectedEnd = recordTimestamp.plus(customDuration)
-
-            coEvery { recordingRepository.findById(recordingId) } returns recording
-            coEvery { recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd) } returns
-                listOf(recording(recordingFile.toString()))
-            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
 
             val result =
                 service.exportByRecordingId(
@@ -636,16 +652,7 @@ class VideoExportServiceImplTest {
     fun `exportByRecordingId propagates progress from exportVideo`() =
         runTest {
             val recording = recordingWithTimestamp()
-            val recordingFile = createTempFile("recording1.mp4")
-            val mergedFile = createTempFile("merged.mp4")
-
-            val expectedStart = recordTimestamp.minus(exportDuration)
-            val expectedEnd = recordTimestamp.plus(exportDuration)
-
-            coEvery { recordingRepository.findById(recordingId) } returns recording
-            coEvery { recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd) } returns
-                listOf(recording(recordingFile.toString()))
-            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+            stubExportByRecordingIdHappyPath(recording)
 
             val progress = mutableListOf<VideoExportProgress>()
 
