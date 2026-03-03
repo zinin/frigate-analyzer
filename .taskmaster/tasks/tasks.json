@@ -391,7 +391,7 @@
         "id": 5,
         "title": "Реализовать exportByRecordingId в VideoExportServiceImpl",
         "description": "Реализовать метод exportByRecordingId в VideoExportServiceImpl: найти запись в БД, вычислить диапазон, вызвать существующий exportVideo.",
-        "status": "rework",
+        "status": "closed",
         "priority": "high",
         "dependencies": [
           4
@@ -489,8 +489,8 @@
           "reviewRound": 2,
           "reviewRoundsTotal": 2,
           "reviewContext": false,
-          "reviewPhaseComplete": false,
-          "reworkAttempts": 0
+          "reviewPhaseComplete": true,
+          "reworkAttempts": 1
         }
       },
       {
