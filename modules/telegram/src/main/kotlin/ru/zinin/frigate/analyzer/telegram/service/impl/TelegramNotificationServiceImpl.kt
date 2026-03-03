@@ -47,6 +47,7 @@ class TelegramNotificationServiceImpl(
                     userZone.chatId,
                     message,
                     visualizedFrames,
+                    recording.id,
                 )
             notificationQueue.enqueue(task)
         }
