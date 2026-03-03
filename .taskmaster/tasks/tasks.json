@@ -215,7 +215,7 @@
         "id": 3,
         "title": "Добавить inline-клавиатуру в TelegramNotificationSender",
         "description": "Расширить TelegramNotificationSender для добавления inline-кнопки \"📹 Экспорт видео\" к уведомлениям.",
-        "status": "in-progress",
+        "status": "done",
         "priority": "high",
         "dependencies": [
           1
@@ -259,17 +259,23 @@
             "id": 3,
             "title": "Модифицировать ветку медиагруппы для отправки кнопки отдельным сообщением",
             "description": "Обновить ветку else (медиагруппа) для отправки отдельного текстового сообщения с inline-кнопкой после отправки всех медиагрупп.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "1. В ветке else (строки 54-67) после цикла forEachIndexed добавить отправку отдельного сообщения:\n```kotlin\nelse -> {\n    frames.chunked(MAX_MEDIA_GROUP_SIZE).forEachIndexed { chunkIndex, chunk ->\n        RetryHelper.retryIndefinitely(\"Send media group\", task.chatId) {\n            val mediaGroup = chunk.mapIndexed { index, frame ->\n                TelegramMediaPhoto(\n                    file = frame.visualizedBytes.asMultipartFile(\"frame_${frame.frameIndex}.jpg\"),\n                    text = if (chunkIndex == 0 && index == 0) message else null,\n                )\n            }\n            @Suppress(\"OPT_IN_USAGE\")\n            bot.sendMediaGroup(chatIdObj, mediaGroup)\n        }\n    }\n    // Отправить отдельное сообщение с кнопкой экспорта после медиагруппы\n    RetryHelper.retryIndefinitely(\"Send export button\", task.chatId) {\n        bot.sendTextMessage(\n            chatId = chatIdObj,\n            text = \"👆 Нажмите для быстрого экспорта видео\",\n            replyMarkup = createExportKeyboard(task.recordingId)\n        )\n    }\n}\n```\n2. Отдельное сообщение необходимо, т.к. Telegram API не поддерживает inline-кнопки для медиагрупп.",
-            "testStrategy": "Интеграционный тест: отправить уведомление с более чем 1 кадром (медиагруппа). Убедиться что после медиагруппы приходит отдельное сообщение '👆 Нажмите для быстрого экспорта видео' с inline-кнопкой."
+            "testStrategy": "Интеграционный тест: отправить уведомление с более чем 1 кадром (медиагруппа). Убедиться что после медиагруппы приходит отдельное сообщение '👆 Нажмите для быстрого экспорта видео' с inline-кнопкой.",
+            "metadata": {
+              "startRev": "e6af2f5a8fa100cb66ed931f00771730dc8179b6",
+              "endRev": "23db9300757efabb6c1850d02a94ddbcf45f3b74",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T20:29:47.562Z"
+            }
           }
         ],
         "metadata": {
           "startRev": "f2e0d3a74d099c452f2742e1b917b7f52eacc893",
-          "endRev": "3703dccc06dfcbb420bd4f92aef25e557f2b09ee"
+          "endRev": "23db9300757efabb6c1850d02a94ddbcf45f3b74"
         }
       },
       {
