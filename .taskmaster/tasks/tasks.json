@@ -5,7 +5,7 @@
         "id": 1,
         "title": "Расширить NotificationTask полем recordingId",
         "description": "Добавить поле recordingId: UUID в data class NotificationTask для формирования callback data кнопки экспорта.",
-        "status": "rework",
+        "status": "closed",
         "priority": "high",
         "dependencies": [],
         "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/NotificationTask.kt`\n2. Добавить поле `val recordingId: UUID` в data class NotificationTask:\n```kotlin\ndata class NotificationTask(\n    val id: UUID,\n    val chatId: Long,\n    val message: String,\n    val visualizedFrames: List<VisualizedFrameData>,\n    val recordingId: UUID, // НОВОЕ ПОЛЕ\n    val createdAt: Instant = Instant.now(),\n)\n```\n3. Поле recordingId нужно для формирования callback data `qe:{recordingId}` в inline-кнопке экспорта.",
@@ -102,8 +102,8 @@
           "reviewRound": 2,
           "reviewRoundsTotal": 2,
           "reviewContext": false,
-          "reviewPhaseComplete": false,
-          "reworkAttempts": 0
+          "reviewPhaseComplete": true,
+          "reworkAttempts": 1
         }
       },
       {
