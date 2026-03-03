@@ -391,7 +391,7 @@
         "id": 5,
         "title": "Реализовать exportByRecordingId в VideoExportServiceImpl",
         "description": "Реализовать метод exportByRecordingId в VideoExportServiceImpl: найти запись в БД, вычислить диапазон, вызвать существующий exportVideo.",
-        "status": "in-progress",
+        "status": "done",
         "priority": "high",
         "dependencies": [
           4
@@ -469,17 +469,23 @@
             "id": 5,
             "title": "Проверить интеграцию и запустить полную сборку",
             "description": "Выполнить полную сборку проекта для проверки корректности интеграции нового метода со всеми модулями",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               4
             ],
             "details": "Выполнить ./gradlew build для полной сборки с тестами. При ошибках ktlint выполнить ./gradlew ktlintFormat и повторить сборку. Убедиться, что все существующие тесты проходят и новый код не ломает существующую функциональность. Проверить, что метод доступен из модуля telegram (где находится интерфейс VideoExportService).",
-            "testStrategy": "Сборка должна завершиться успешно (BUILD SUCCESSFUL). Все тесты должны пройти. Отсутствие ошибок компиляции во всех модулях."
+            "testStrategy": "Сборка должна завершиться успешно (BUILD SUCCESSFUL). Все тесты должны пройти. Отсутствие ошибок компиляции во всех модулях.",
+            "metadata": {
+              "startRev": "347f1c994ea37861ffa250eb9d4a5d8c1b09f684",
+              "endRev": "347f1c994ea37861ffa250eb9d4a5d8c1b09f684",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T22:01:48.914Z"
+            }
           }
         ],
         "metadata": {
           "startRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e",
-          "endRev": "a0647c1ef950d5358fb473af3413e699a36d3ff2"
+          "endRev": "347f1c994ea37861ffa250eb9d4a5d8c1b09f684"
         }
       },
       {
