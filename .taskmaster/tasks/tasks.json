@@ -346,12 +346,18 @@
             "id": 4,
             "title": "Добавить сигнатуру метода exportByRecordingId в интерфейс",
             "description": "Добавить объявление suspend fun exportByRecordingId с параметрами и значениями по умолчанию",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               3
             ],
             "details": "В интерфейс VideoExportService после метода cleanupExportFile добавить сигнатуру: `suspend fun exportByRecordingId(recordingId: UUID, duration: Duration = Duration.ofMinutes(1), onProgress: suspend (VideoExportProgress) -> Unit = {}): Path`. Параметр duration имеет значение по умолчанию 1 минута, onProgress — пустой колбэк.",
-            "testStrategy": "Проверить компиляцию интерфейса и убедиться что VideoExportServiceImpl требует реализации метода"
+            "testStrategy": "Проверить компиляцию интерфейса и убедиться что VideoExportServiceImpl требует реализации метода",
+            "metadata": {
+              "startRev": "a14d0e8b3d39dafe5d5d5144e9b26f7ef5bc1f0f",
+              "endRev": "a14d0e8b3d39dafe5d5d5144e9b26f7ef5bc1f0f",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T21:23:43.769Z"
+            }
           },
           {
             "id": 5,
@@ -367,7 +373,7 @@
         ],
         "metadata": {
           "startRev": "1e00db93537d65b9e79d969b30ca69ab9f547b34",
-          "endRev": "abb4ea4fdb1729ffd7754805c7589d93c4a462bf"
+          "endRev": "a14d0e8b3d39dafe5d5d5144e9b26f7ef5bc1f0f"
         }
       },
       {
