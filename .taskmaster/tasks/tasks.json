@@ -110,7 +110,7 @@
         "id": 2,
         "title": "Обновить TelegramNotificationServiceImpl для передачи recordingId",
         "description": "Изменить TelegramNotificationServiceImpl.sendRecordingNotification для передачи recording.id в NotificationTask.",
-        "status": "review",
+        "status": "rework",
         "priority": "high",
         "dependencies": [
           1
