@@ -31,7 +31,7 @@ interface VideoExportService {
      * @param onProgress progress callback
      * @return path to the exported video file
      * @throws IllegalArgumentException if the recording is not found
-     * @throws IllegalStateException if the recording files are missing from disk
+     * @throws IllegalStateException if the recording has no camId or recordTimestamp
      */
     suspend fun exportByRecordingId(
         recordingId: UUID,

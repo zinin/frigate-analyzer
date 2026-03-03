@@ -543,6 +543,21 @@ class VideoExportServiceImplTest {
             coVerify {
                 recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd)
             }
+            coVerify(exactly = 0) {
+                videoVisualizationService.annotateVideo(
+                    videoPath = any(),
+                    conf = any(),
+                    imgSize = any(),
+                    maxDet = any(),
+                    detectEvery = any(),
+                    classes = any(),
+                    lineWidth = any(),
+                    showLabels = any(),
+                    showConf = any(),
+                    model = any(),
+                    onProgress = any(),
+                )
+            }
         }
 
     @Test

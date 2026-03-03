@@ -163,7 +163,7 @@ class VideoExportServiceImpl(
         val startInstant = recordTimestamp.minus(duration)
         val endInstant = recordTimestamp.plus(duration)
 
-        logger.info { "Quick export for recording $recordingId: camId=$camId, range=$startInstant..$endInstant" }
+        logger.debug { "Quick export for recording $recordingId: camId=$camId, range=$startInstant..$endInstant" }
 
         return exportVideo(
             startInstant = startInstant,
