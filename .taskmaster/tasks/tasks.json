@@ -391,7 +391,7 @@
         "id": 5,
         "title": "Реализовать exportByRecordingId в VideoExportServiceImpl",
         "description": "Реализовать метод exportByRecordingId в VideoExportServiceImpl: найти запись в БД, вычислить диапазон, вызвать существующий exportVideo.",
-        "status": "pending",
+        "status": "in-progress",
         "priority": "high",
         "dependencies": [
           4
@@ -403,10 +403,16 @@
             "id": 1,
             "title": "Добавить метод exportByRecordingId в интерфейс VideoExportService",
             "description": "Расширить интерфейс VideoExportService новым методом exportByRecordingId с параметрами recordingId: UUID, duration: Duration и onProgress callback",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Открыть файл modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/VideoExportService.kt. Добавить импорты java.time.Duration и java.util.UUID. Добавить сигнатуру метода: suspend fun exportByRecordingId(recordingId: UUID, duration: Duration = Duration.ofMinutes(1), onProgress: suspend (VideoExportProgress) -> Unit = {}): Path. Метод должен иметь значение по умолчанию для duration (1 минута) для удобства вызова.",
-            "testStrategy": "Компиляция интерфейса должна пройти успешно. VideoExportServiceImpl должен показать ошибку компиляции из-за отсутствующей реализации нового метода."
+            "testStrategy": "Компиляция интерфейса должна пройти успешно. VideoExportServiceImpl должен показать ошибку компиляции из-за отсутствующей реализации нового метода.",
+            "metadata": {
+              "startRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e",
+              "endRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T21:42:43.948Z"
+            }
           },
           {
             "id": 2,
@@ -452,7 +458,11 @@
             "details": "Выполнить ./gradlew build для полной сборки с тестами. При ошибках ktlint выполнить ./gradlew ktlintFormat и повторить сборку. Убедиться, что все существующие тесты проходят и новый код не ломает существующую функциональность. Проверить, что метод доступен из модуля telegram (где находится интерфейс VideoExportService).",
             "testStrategy": "Сборка должна завершиться успешно (BUILD SUCCESSFUL). Все тесты должны пройти. Отсутствие ошибок компиляции во всех модулях."
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e",
+          "endRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e"
+        }
       },
       {
         "id": 6,
