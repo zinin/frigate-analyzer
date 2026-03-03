@@ -287,7 +287,7 @@
         "id": 4,
         "title": "Добавить метод exportByRecordingId в VideoExportService",
         "description": "Добавить новый метод в интерфейс VideoExportService для быстрого экспорта по recordingId с фиксированным диапазоном ±1 мин.",
-        "status": "pending",
+        "status": "in-progress",
         "priority": "high",
         "dependencies": [],
         "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/VideoExportService.kt`\n2. Добавить новый метод:\n```kotlin\nimport java.time.Duration\nimport java.util.UUID\n\ninterface VideoExportService {\n    // ... существующие методы ...\n\n    /**\n     * Экспортирует видео по ID записи с диапазоном ±duration от recordTimestamp.\n     * @param recordingId UUID записи из БД\n     * @param duration длительность в одну сторону (по умолчанию 1 минута, итого 2 мин)\n     * @param onProgress колбэк прогресса\n     * @return путь к экспортированному видео\n     * @throws IllegalArgumentException если запись не найдена\n     * @throws IllegalStateException если файлы записи отсутствуют\n     */\n    suspend fun exportByRecordingId(\n        recordingId: UUID,\n        duration: Duration = Duration.ofMinutes(1),\n        onProgress: suspend (VideoExportProgress) -> Unit = {},\n    ): Path\n}\n```",
@@ -297,10 +297,16 @@
             "id": 1,
             "title": "Добавить импорт java.time.Duration в VideoExportService",
             "description": "Добавить необходимый импорт Duration для параметра нового метода",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "В файле VideoExportService.kt добавить строку `import java.time.Duration` в секцию импортов. Импорт UUID уже есть через использование CameraRecordingCountDto, но Duration отсутствует и необходим для параметра duration нового метода.",
-            "testStrategy": "Проверить компиляцию файла после добавления импорта"
+            "testStrategy": "Проверить компиляцию файла после добавления импорта",
+            "metadata": {
+              "startRev": "1e00db93537d65b9e79d969b30ca69ab9f547b34",
+              "endRev": "b2aaf497ff8cbdb7dadce56c473a5c3f454742af",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T20:54:35.169Z"
+            }
           },
           {
             "id": 2,
@@ -346,7 +352,11 @@
             "details": "Выполнить `./gradlew :modules-telegram:compileKotlin` для проверки синтаксической корректности изменений в интерфейсе. Ожидается ошибка компиляции в VideoExportServiceImpl из-за отсутствующей реализации нового метода — это подтвердит корректность добавления сигнатуры.",
             "testStrategy": "Компиляция должна завершиться с ошибкой об отсутствующей реализации exportByRecordingId в VideoExportServiceImpl"
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "1e00db93537d65b9e79d969b30ca69ab9f547b34",
+          "endRev": "b2aaf497ff8cbdb7dadce56c473a5c3f454742af"
+        }
       },
       {
         "id": 5,
