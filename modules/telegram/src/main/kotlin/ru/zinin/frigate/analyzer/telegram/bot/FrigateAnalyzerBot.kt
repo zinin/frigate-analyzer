@@ -13,6 +13,7 @@ import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeChat
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeDefault
+import dev.inmo.tgbotapi.types.message.content.TextContent
 import io.github.oshai.kotlinlogging.KotlinLogging
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
@@ -91,7 +92,7 @@ class FrigateAnalyzerBot(
 
     private suspend fun BehaviourContext.registerRoutes() {
         sortedHandlers.forEach { handler ->
-            onCommand(handler.command) { message ->
+            onCommand(handler.command, requireOnlyCommandInMessage = false) { message ->
                 val role: UserRole? =
                     if (handler.requiredRole != null) {
                         val resolvedRole = authorizationFilter.getRole(message)
@@ -125,12 +126,16 @@ class FrigateAnalyzerBot(
         }
 
         onContentMessage { message ->
+            val textContent = message.content as? TextContent
+            if (textContent?.text?.startsWith("/") == true) {
+                return@onContentMessage
+            }
+
             val role = authorizationFilter.getRole(message)
             if (role == null) {
                 reply(message, authorizationFilter.getUnauthorizedMessage())
                 return@onContentMessage
             }
-            // Ignore non-command messages for now
         }
     }
 
