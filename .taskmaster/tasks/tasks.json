@@ -242,12 +242,18 @@
             "id": 2,
             "title": "Модифицировать ветки empty и single frame для добавления replyMarkup",
             "description": "Обновить ветку frames.isEmpty() и frames.size == 1 в методе send() для добавления параметра replyMarkup с inline-клавиатурой.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "1. В ветке frames.isEmpty() (строка 36-38) добавить replyMarkup:\n```kotlin\nbot.sendTextMessage(\n    chatId = chatIdObj,\n    text = message,\n    replyMarkup = createExportKeyboard(task.recordingId)\n)\n```\n2. В ветке frames.size == 1 (строки 44-50) добавить replyMarkup в SendPhoto:\n```kotlin\nbot.execute(\n    SendPhoto(\n        chatId = chatIdObj,\n        photo = frame.visualizedBytes.asMultipartFile(\"frame_${frame.frameIndex}.jpg\"),\n        text = message,\n        replyMarkup = createExportKeyboard(task.recordingId),\n    ),\n)\n```\n3. task.recordingId должен быть доступен после выполнения задачи 1 родительского уровня (NotificationTask с recordingId).",
-            "testStrategy": "Интеграционный тест: отправить уведомление с 0 кадрами и с 1 кадром. Убедиться что в обоих случаях под сообщением появляется inline-кнопка '📹 Экспорт видео' с корректным callback data."
+            "testStrategy": "Интеграционный тест: отправить уведомление с 0 кадрами и с 1 кадром. Убедиться что в обоих случаях под сообщением появляется inline-кнопка '📹 Экспорт видео' с корректным callback data.",
+            "metadata": {
+              "startRev": "4b2023bd4795e3aeed6ccbcf8199b9709fd8fd10",
+              "endRev": "3703dccc06dfcbb420bd4f92aef25e557f2b09ee",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T20:23:09.478Z"
+            }
           },
           {
             "id": 3,
@@ -263,7 +269,7 @@
         ],
         "metadata": {
           "startRev": "f2e0d3a74d099c452f2742e1b917b7f52eacc893",
-          "endRev": "41c04216d05719549ce17342240c0d60cd5c93ad"
+          "endRev": "3703dccc06dfcbb420bd4f92aef25e557f2b09ee"
         }
       },
       {
