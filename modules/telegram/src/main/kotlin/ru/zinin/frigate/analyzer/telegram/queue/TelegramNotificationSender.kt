@@ -75,6 +75,13 @@ class TelegramNotificationSender(
                         bot.sendMediaGroup(chatIdObj, mediaGroup)
                     }
                 }
+                RetryHelper.retryIndefinitely("Send export button", task.chatId) {
+                    bot.sendTextMessage(
+                        chatId = chatIdObj,
+                        text = "👆 Нажмите для быстрого экспорта видео",
+                        replyMarkup = createExportKeyboard(task.recordingId),
+                    )
+                }
             }
         }
     }

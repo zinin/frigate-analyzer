@@ -101,4 +101,32 @@ class TelegramNotificationSenderTest {
             assertIs<InlineKeyboardMarkup>(replyMarkup)
             assertExportKeyboard(replyMarkup)
         }
+
+    @Test
+    fun `send with multiple frames sends export button after media group`() =
+        runTest {
+            val frames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
+                    VisualizedFrameData(frameIndex = 1, visualizedBytes = byteArrayOf(4, 5, 6), detectionsCount = 2),
+                )
+            val task = createTask(frames = frames)
+
+            val capturedRequests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+
+            sender.send(task)
+
+            // Should have 2 execute calls: 1 for media group + 1 for export button text message
+            assertEquals(2, capturedRequests.size, "Should have 2 execute() calls")
+
+            // The last request should be SendTextMessage with export keyboard
+            val exportRequest = capturedRequests.last()
+            assertIs<SendTextMessage>(exportRequest)
+            assertEquals("👆 Нажмите для быстрого экспорта видео", exportRequest.text)
+            val replyMarkup = exportRequest.replyMarkup
+            assertNotNull(replyMarkup, "Export button message should have replyMarkup")
+            assertIs<InlineKeyboardMarkup>(replyMarkup)
+            assertExportKeyboard(replyMarkup)
+        }
 }
