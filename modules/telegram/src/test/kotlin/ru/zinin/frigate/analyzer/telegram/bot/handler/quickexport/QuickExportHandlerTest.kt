@@ -2,8 +2,20 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport
 
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.requests.abstracts.Request
+import dev.inmo.tgbotapi.requests.edit.reply_markup.EditChatMessageReplyMarkup
+import dev.inmo.tgbotapi.types.CallbackQueryId
+import dev.inmo.tgbotapi.types.ChatId
+import dev.inmo.tgbotapi.types.RawChatId
+import dev.inmo.tgbotapi.types.Username
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
+import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
+import dev.inmo.tgbotapi.types.chat.CommonUser
+import dev.inmo.tgbotapi.types.chat.PrivateChatImpl
+import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
+import dev.inmo.tgbotapi.types.message.content.MessageContent
 import dev.inmo.tgbotapi.types.queries.callback.DataCallbackQuery
+import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
+import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
@@ -13,12 +25,14 @@ import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import java.nio.file.Files
 import java.time.Duration
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class QuickExportHandlerTest {
     @Nested
@@ -169,6 +183,40 @@ class QuickExportHandlerTest {
             )
         private val handler = QuickExportHandler(bot, videoExportService, authorizationFilter, properties)
 
+        private val recordingId = UUID.randomUUID()
+
+        /**
+         * Creates a real [MessageDataCallbackQuery] with real data class instances
+         * and only interface mocks (ContentMessage).
+         *
+         * Uses real PrivateChatImpl to avoid MockK issues with tgbotapi inline class
+         * hierarchies (BusinessChatImpl ClassCastException on getId).
+         */
+        private fun createMessageCallback(): MessageDataCallbackQuery {
+            val realChat =
+                PrivateChatImpl(
+                    id = ChatId(RawChatId(12345L)),
+                    firstName = "TestChat",
+                )
+            val mockMessage =
+                mockk<ContentMessage<MessageContent>>(relaxed = true) {
+                    every { chat } returns realChat
+                }
+            val user =
+                CommonUser(
+                    id = ChatId(RawChatId(1L)),
+                    firstName = "Test",
+                    username = Username("@testuser"),
+                )
+            return MessageDataCallbackQuery(
+                id = CallbackQueryId("test-callback-id"),
+                from = user,
+                chatInstance = "test-instance",
+                message = mockMessage,
+                data = "${QuickExportHandler.CALLBACK_PREFIX}$recordingId",
+            )
+        }
+
         @Test
         fun `handle with non-MessageDataCallbackQuery returns early`() =
             runTest {
@@ -183,6 +231,104 @@ class QuickExportHandlerTest {
                 // No interaction with bot or services (early return since cast to MessageDataCallbackQuery fails)
                 coVerify(exactly = 0) { bot.execute(any<Request<*>>()) }
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+            }
+
+        @Test
+        fun `handle switches button to processing then restores after export`() =
+            runTest {
+                val callback = createMessageCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery { videoExportService.exportByRecordingId(recordingId) } returns tempFile
+                coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
+
+                try {
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                // Find all EditChatMessageReplyMarkup requests
+                val editRequests = capturedRequests.filterIsInstance<EditChatMessageReplyMarkup>()
+                assertTrue(editRequests.size >= 2, "Expected at least 2 editMessageReplyMarkup calls, got ${editRequests.size}")
+
+                // First edit: processing keyboard with "⚙️ Экспорт..."
+                val processingMarkup = editRequests[0].replyMarkup
+                assertNotNull(processingMarkup, "Processing keyboard must not be null")
+                assertIs<InlineKeyboardMarkup>(processingMarkup)
+                val processingButton = processingMarkup.keyboard[0][0]
+                assertIs<CallbackDataInlineKeyboardButton>(processingButton)
+                assertEquals("⚙️ Экспорт...", processingButton.text)
+                assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", processingButton.callbackData)
+
+                // Last edit: restored export keyboard with "📹 Экспорт видео"
+                val restoreMarkup = editRequests.last().replyMarkup
+                assertNotNull(restoreMarkup, "Restored keyboard must not be null")
+                assertIs<InlineKeyboardMarkup>(restoreMarkup)
+                val exportButton = restoreMarkup.keyboard[0][0]
+                assertIs<CallbackDataInlineKeyboardButton>(exportButton)
+                assertEquals("📹 Экспорт видео", exportButton.text)
+                assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", exportButton.callbackData)
+            }
+
+        @Test
+        fun `handle continues processing when editMessageReplyMarkup throws`() =
+            runTest {
+                val callback = createMessageCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                coEvery { bot.execute(any<Request<*>>()) } coAnswers {
+                    val request = firstArg<Request<*>>()
+                    if (request is EditChatMessageReplyMarkup) {
+                        throw RuntimeException("Telegram API error")
+                    }
+                    mockk(relaxed = true)
+                }
+                coEvery { videoExportService.exportByRecordingId(recordingId) } returns tempFile
+                coEvery { videoExportService.cleanupExportFile(any()) } returns Unit
+
+                try {
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                // Despite editMessageReplyMarkup failing, export was still called
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+            }
+
+        @Test
+        fun `handle restores button after export error`() =
+            runTest {
+                val callback = createMessageCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery { videoExportService.exportByRecordingId(recordingId) } throws
+                    IllegalArgumentException("Recording not found")
+
+                handler.handle(callback)
+
+                // Find all EditChatMessageReplyMarkup requests
+                val editRequests = capturedRequests.filterIsInstance<EditChatMessageReplyMarkup>()
+                assertTrue(editRequests.size >= 2, "Expected at least 2 editMessageReplyMarkup calls, got ${editRequests.size}")
+
+                // First edit: processing keyboard
+                val processingMarkup = editRequests[0].replyMarkup
+                assertNotNull(processingMarkup)
+                assertIs<InlineKeyboardMarkup>(processingMarkup)
+                assertEquals("⚙️ Экспорт...", (processingMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text)
+
+                // Last edit: restored export keyboard
+                val restoreMarkup = editRequests.last().replyMarkup
+                assertNotNull(restoreMarkup)
+                assertIs<InlineKeyboardMarkup>(restoreMarkup)
+                assertEquals(
+                    "📹 Экспорт видео",
+                    (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
+                )
             }
     }
 }
