@@ -73,8 +73,3 @@ Detailed docs in `.claude/rules/` with conditional loading via `paths:` frontmat
 | configuration.md | All environment variables | `**/application.yaml` |
 | database.md | Schema, migrations | `**/liquibase/**`, `**/repository/**`, `**/entity/**`, `**/persistent/**` |
 
-## Jira
-
-Project tracker: https://jira.zinin.ru/ (project key: **FA**)
-Available via MCP `mcp-atlassian` — use `jira_search`, `jira_get_issue`, `jira_create_issue` etc. with `project_key: "FV"`.
-When creating issues, assign them to user **azinin**.

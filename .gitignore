@@ -50,6 +50,7 @@ docker/deploy/logs/
 
 ### MCP configuration (contains API keys) ###
 .mcp.json
+opencode.json
 
 ### Git worktrees ###
 .worktrees/
