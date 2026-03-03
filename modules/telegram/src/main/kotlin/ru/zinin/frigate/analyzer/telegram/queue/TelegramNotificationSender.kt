@@ -7,11 +7,16 @@ import dev.inmo.tgbotapi.requests.abstracts.asMultipartFile
 import dev.inmo.tgbotapi.requests.send.media.SendPhoto
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
+import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
+import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
+import dev.inmo.tgbotapi.utils.matrix
+import dev.inmo.tgbotapi.utils.row
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.helper.RetryHelper
+import java.util.UUID
 
 private val logger = KotlinLogging.logger {}
 
@@ -81,4 +86,13 @@ class TelegramNotificationSender(
         logger.warn { "Truncating caption from $length to $maxLength characters to satisfy Telegram limits" }
         return substring(0, maxLength)
     }
+
+    private fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =
+        InlineKeyboardMarkup(
+            keyboard = matrix {
+                row {
+                    +CallbackDataInlineKeyboardButton("📹 Экспорт видео", "qe:$recordingId")
+                }
+            },
+        )
 }
