@@ -17,7 +17,9 @@ import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress.Stage
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import java.time.Instant
+import java.util.UUID
 
 private val logger = KotlinLogging.logger {}
 
@@ -137,6 +139,36 @@ class VideoExportServiceImpl(
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
             throw e
         }
+    }
+
+    override suspend fun exportByRecordingId(
+        recordingId: UUID,
+        duration: Duration,
+        onProgress: suspend (VideoExportProgress) -> Unit,
+    ): Path {
+        logger.debug { "exportByRecordingId started: recordingId=$recordingId, duration=$duration" }
+
+        val recording =
+            recordingRepository.findById(recordingId)
+                ?: throw IllegalArgumentException("Recording not found: $recordingId")
+
+        val camId =
+            recording.camId
+                ?: throw IllegalStateException("Recording $recordingId has no camId")
+
+        val recordTimestamp =
+            recording.recordTimestamp
+                ?: throw IllegalStateException("Recording $recordingId has no recordTimestamp")
+
+        val startInstant = recordTimestamp.minus(duration)
+        val endInstant = recordTimestamp.plus(duration)
+
+        return exportVideo(
+            startInstant = startInstant,
+            endInstant = endInstant,
+            camId = camId,
+            onProgress = onProgress,
+        )
     }
 
     override suspend fun cleanupExportFile(path: Path) {
