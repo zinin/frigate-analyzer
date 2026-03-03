@@ -170,12 +170,18 @@
             "id": 4,
             "title": "Проверить компиляцию проекта",
             "description": "Убедиться, что проект компилируется без ошибок после внесённых изменений.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               3
             ],
             "details": "Запустить `./gradlew build -x test` для проверки компиляции всего проекта. Убедиться, что нет ошибок несоответствия типов или отсутствующих аргументов в вызовах конструктора NotificationTask.",
-            "testStrategy": "Успешная компиляция без ошибок (exit code 0)."
+            "testStrategy": "Успешная компиляция без ошибок (exit code 0).",
+            "metadata": {
+              "startRev": "8f946afb53172fed6b4722ae53c4d726d26977ad",
+              "endRev": "8f946afb53172fed6b4722ae53c4d726d26977ad",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:45:23.026Z"
+            }
           },
           {
             "id": 5,
@@ -191,7 +197,7 @@
         ],
         "metadata": {
           "startRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88",
-          "endRev": "bfb13ecfdb547a1f5ef34647d6d096b146a5108c"
+          "endRev": "8f946afb53172fed6b4722ae53c4d726d26977ad"
         }
       },
       {
