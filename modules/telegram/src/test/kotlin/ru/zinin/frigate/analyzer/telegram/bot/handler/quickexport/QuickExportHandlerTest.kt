@@ -3,6 +3,7 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.requests.abstracts.Request
 import dev.inmo.tgbotapi.requests.edit.reply_markup.EditChatMessageReplyMarkup
+import dev.inmo.tgbotapi.requests.send.SendTextMessage
 import dev.inmo.tgbotapi.types.CallbackQueryId
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
@@ -19,6 +20,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -328,6 +330,133 @@ class QuickExportHandlerTest {
                 assertEquals(
                     "📹 Экспорт видео",
                     (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
+                )
+            }
+
+        @Test
+        fun `handle calls exportByRecordingId and cleanupExportFile on successful export`() =
+            runTest {
+                val callback = createMessageCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                } returns tempFile
+                coEvery { videoExportService.cleanupExportFile(any()) } returns Unit
+
+                try {
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                // Verify exportByRecordingId was called with the correct recordingId
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+
+                // Verify cleanupExportFile was called with the exported file path
+                coVerify { videoExportService.cleanupExportFile(tempFile) }
+            }
+
+        @Test
+        fun `handle sends timeout message when export exceeds timeout`() =
+            runTest {
+                val callback = createMessageCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                } coAnswers {
+                    delay(400_000) // 400 seconds exceeds the 300-second (5 min) timeout
+                    error("Should not reach here")
+                }
+
+                handler.handle(callback)
+
+                // Verify timeout message was sent
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains("Экспорт занял слишком много времени") },
+                    "Expected timeout message, but got text requests: ${sendTextRequests.map { it.text }}",
+                )
+
+                // Verify button was restored after timeout
+                val editRequests = capturedRequests.filterIsInstance<EditChatMessageReplyMarkup>()
+                assertTrue(editRequests.size >= 2, "Expected at least 2 edit calls (processing + restore)")
+
+                val restoreMarkup = editRequests.last().replyMarkup
+                assertNotNull(restoreMarkup)
+                assertIs<InlineKeyboardMarkup>(restoreMarkup)
+                assertEquals(
+                    "📹 Экспорт видео",
+                    (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
+                )
+
+                // Verify cleanupExportFile was NOT called (videoPath is null on timeout)
+                coVerify(exactly = 0) { videoExportService.cleanupExportFile(any()) }
+            }
+
+        @Test
+        fun `handle sends error message for not found recording`() =
+            runTest {
+                val callback = createMessageCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                } throws IllegalArgumentException("Recording not found")
+
+                handler.handle(callback)
+
+                // Verify "not found" error message
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains("Запись не найдена") },
+                    "Expected 'not found' error message, but got: ${sendTextRequests.map { it.text }}",
+                )
+            }
+
+        @Test
+        fun `handle sends error message for missing files`() =
+            runTest {
+                val callback = createMessageCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                } throws IllegalStateException("Recording files are missing")
+
+                handler.handle(callback)
+
+                // Verify "missing files" error message
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains("Файлы записи недоступны") },
+                    "Expected 'missing files' error message, but got: ${sendTextRequests.map { it.text }}",
+                )
+            }
+
+        @Test
+        fun `handle sends generic error message for unexpected exceptions`() =
+            runTest {
+                val callback = createMessageCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                } throws RuntimeException("Unexpected error")
+
+                handler.handle(callback)
+
+                // Verify generic error message
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains("Ошибка экспорта") },
+                    "Expected generic error message, but got: ${sendTextRequests.map { it.text }}",
                 )
             }
     }
