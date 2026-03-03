@@ -435,12 +435,18 @@
             "id": 3,
             "title": "Реализовать метод exportByRecordingId в VideoExportServiceImpl",
             "description": "Реализовать логику метода: получение записи из репозитория, валидация полей, вычисление временного диапазона и вызов существующего exportVideo",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               2
             ],
             "details": "Реализовать override suspend fun exportByRecordingId(...): 1) Логировать входные параметры через logger.debug. 2) Вызвать recordingRepository.findById(recordingId), при null выбросить IllegalArgumentException(\"Recording not found: $recordingId\"). 3) Проверить camId: если null, выбросить IllegalStateException(\"Recording $recordingId has no camId\"). 4) Проверить recordTimestamp: если null, выбросить IllegalStateException(\"Recording $recordingId has no recordTimestamp\"). 5) Вычислить startInstant = recordTimestamp.minus(duration), endInstant = recordTimestamp.plus(duration). 6) Логировать диапазон через logger.info. 7) Вернуть результат вызова exportVideo(startInstant, endInstant, camId, ExportMode.ORIGINAL, onProgress).",
-            "testStrategy": "Unit-тест: замокать recordingRepository.findById, проверить что exportVideo вызывается с правильными параметрами (диапазон ±duration от recordTimestamp, mode=ORIGINAL)."
+            "testStrategy": "Unit-тест: замокать recordingRepository.findById, проверить что exportVideo вызывается с правильными параметрами (диапазон ±duration от recordTimestamp, mode=ORIGINAL).",
+            "metadata": {
+              "startRev": "72a0ab00667f96cc8c304b46f714d7ff96b09a6b",
+              "endRev": "cd69825b788b089fa424b7036b5bec449540026d",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T21:51:47.041Z"
+            }
           },
           {
             "id": 4,
@@ -467,7 +473,7 @@
         ],
         "metadata": {
           "startRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e",
-          "endRev": "37f02165dba2ae3b44f19aca914942f954e0f8ba"
+          "endRev": "cd69825b788b089fa424b7036b5bec449540026d"
         }
       },
       {
