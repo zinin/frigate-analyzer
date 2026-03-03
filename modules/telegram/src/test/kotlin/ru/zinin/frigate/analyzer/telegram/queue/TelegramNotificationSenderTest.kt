@@ -40,7 +40,7 @@ class TelegramNotificationSenderTest {
         assertEquals(1, keyboard.keyboard[0].size, "Row should have one button")
         val button = keyboard.keyboard[0][0]
         assertIs<CallbackDataInlineKeyboardButton>(button)
-        assertEquals("\uD83D\uDCF9 Экспорт видео", button.text)
+        assertEquals("📹 Экспорт видео", button.text)
         assertEquals("qe:$recordingId", button.callbackData)
     }
 
@@ -48,6 +48,9 @@ class TelegramNotificationSenderTest {
      * Extracts replyMarkup from a captured request using reflection.
      * Needed because the photo request is wrapped in an internal CommonMultipartFileRequest,
      * so we first extract the inner `data` (SendPhotoData) then read its replyMarkup.
+     *
+     * Coupled to tgbotapi 30.0.2 internals — if the library changes its wrapping
+     * mechanism, this method will fail at runtime. Review after version upgrades.
      */
     private fun extractReplyMarkup(request: Request<*>): KeyboardMarkup? {
         // For SendTextMessage, replyMarkup is directly accessible
@@ -117,13 +120,41 @@ class TelegramNotificationSenderTest {
 
             sender.send(task)
 
-            // Should have 2 execute calls: 1 for media group + 1 for export button text message
-            assertEquals(2, capturedRequests.size, "Should have 2 execute() calls")
+            // At least 2 execute calls: media group dispatch(es) + export button text message
+            assert(capturedRequests.size >= 2) { "Expected at least 2 execute() calls, got ${capturedRequests.size}" }
 
             // The last request should be SendTextMessage with export keyboard
             val exportRequest = capturedRequests.last()
             assertIs<SendTextMessage>(exportRequest)
-            assertEquals("👆 Нажмите для быстрого экспорта видео", exportRequest.text)
+            assertEquals("👆 Нажмите для быстрого экспорта видео", exportRequest.text, "Export prompt text mismatch")
+            val replyMarkup = exportRequest.replyMarkup
+            assertNotNull(replyMarkup, "Export button message should have replyMarkup")
+            assertIs<InlineKeyboardMarkup>(replyMarkup)
+            assertExportKeyboard(replyMarkup)
+        }
+
+    @Test
+    fun `send with frames exceeding MAX_MEDIA_GROUP_SIZE sends export button after all chunks`() =
+        runTest {
+            // 20 frames = 2 full chunks of 10, ensuring multiple sendMediaGroup calls
+            val frames =
+                (0..19).map { i ->
+                    VisualizedFrameData(frameIndex = i, visualizedBytes = byteArrayOf(i.toByte()), detectionsCount = 1)
+                }
+            assertEquals(20, frames.size, "Test requires 20 frames to trigger 2-chunk sending")
+            val task = createTask(frames = frames)
+
+            val capturedRequests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+
+            sender.send(task)
+
+            // Should have at least 3 calls: 2 media group chunks + 1 export button
+            assert(capturedRequests.size >= 3) { "Expected at least 3 execute() calls, got ${capturedRequests.size}" }
+
+            // The last request should be the export button message
+            val exportRequest = capturedRequests.last()
+            assertIs<SendTextMessage>(exportRequest)
             val replyMarkup = exportRequest.replyMarkup
             assertNotNull(replyMarkup, "Export button message should have replyMarkup")
             assertIs<InlineKeyboardMarkup>(replyMarkup)

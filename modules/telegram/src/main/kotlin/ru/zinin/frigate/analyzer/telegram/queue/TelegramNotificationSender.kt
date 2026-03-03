@@ -78,7 +78,7 @@ class TelegramNotificationSender(
                 RetryHelper.retryIndefinitely("Send export button", task.chatId) {
                     bot.sendTextMessage(
                         chatId = chatIdObj,
-                        text = "👆 Нажмите для быстрого экспорта видео",
+                        text = EXPORT_PROMPT_TEXT,
                         replyMarkup = createExportKeyboard(task.recordingId),
                     )
                 }
@@ -89,6 +89,9 @@ class TelegramNotificationSender(
     companion object {
         private const val MAX_MEDIA_GROUP_SIZE = 10
         private const val MAX_CAPTION_LENGTH = 1024
+        private const val EXPORT_BUTTON_TEXT = "📹 Экспорт видео"
+        private const val EXPORT_PROMPT_TEXT = "👆 Нажмите для быстрого экспорта видео"
+        private const val CALLBACK_PREFIX = "qe:"
     }
 
     private fun String.toCaption(maxLength: Int): String {
@@ -103,7 +106,7 @@ class TelegramNotificationSender(
         InlineKeyboardMarkup(
             keyboard = matrix {
                 row {
-                    +CallbackDataInlineKeyboardButton("📹 Экспорт видео", "qe:$recordingId")
+                    +CallbackDataInlineKeyboardButton(EXPORT_BUTTON_TEXT, "$CALLBACK_PREFIX$recordingId")
                 }
             },
         )
