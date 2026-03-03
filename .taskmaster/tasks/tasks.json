@@ -524,12 +524,18 @@
             "id": 2,
             "title": "Реализовать логику смены кнопки на 'Экспорт...' и восстановления",
             "description": "Добавить методы для создания InlineKeyboardMarkup (кнопки экспорта и кнопки 'в процессе') и логику изменения кнопки через editMessageReplyMarkup с последующим восстановлением.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "1. В companion object создать функцию createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup - кнопка '📹 Экспорт видео' с callback data qe:{recordingId}\n2. Создать функцию createProcessingKeyboard(recordingId: UUID): InlineKeyboardMarkup - кнопка '⚙️ Экспорт...' с тем же callback data\n3. Использовать matrix { row { +CallbackDataInlineKeyboardButton(...) } } для формирования клавиатуры\n4. В начале handle вызвать bot.editMessageReplyMarkup(message, replyMarkup = createProcessingKeyboard(recordingId))\n5. Создать private suspend fun restoreButton(message: ContentMessage<*>?, recordingId: UUID) для восстановления кнопки\n6. Обернуть editMessageReplyMarkup в try-catch с логированием warn при ошибке",
-            "testStrategy": "Unit-тест: замокать bot.editMessageReplyMarkup, вызвать handle → проверить что сначала вызывается createProcessingKeyboard, затем createExportKeyboard. Тест на ошибку: editMessageReplyMarkup выбрасывает исключение → проверить что обработка продолжается."
+            "testStrategy": "Unit-тест: замокать bot.editMessageReplyMarkup, вызвать handle → проверить что сначала вызывается createProcessingKeyboard, затем createExportKeyboard. Тест на ошибку: editMessageReplyMarkup выбрасывает исключение → проверить что обработка продолжается.",
+            "metadata": {
+              "startRev": "55c2062de9e3197e8503c99775f403a79f9f0c87",
+              "endRev": "ea0df53b7bc4775a6ec22eae4fa44b67a9844529",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T23:29:10.105Z"
+            }
           },
           {
             "id": 3,
@@ -559,7 +565,7 @@
         ],
         "metadata": {
           "startRev": "dd55511102d5016bdd8a63e7cb15832acf9073bc",
-          "endRev": "c8967dddf0382bd1c4926f122d27a52453ebe1e0"
+          "endRev": "ea0df53b7bc4775a6ec22eae4fa44b67a9844529"
         }
       },
       {
