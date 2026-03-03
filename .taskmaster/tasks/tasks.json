@@ -5,131 +5,140 @@
         "id": 1,
         "title": "Расширить NotificationTask полем recordingId",
         "description": "Добавить поле recordingId: UUID в data class NotificationTask для формирования callback data кнопки экспорта.",
-        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/NotificationTask.kt`\n2. Добавить поле `val recordingId: UUID` в data class NotificationTask:\n```kotlin\ndata class NotificationTask(\n    val id: UUID,\n    val chatId: Long,\n    val message: String,\n    val visualizedFrames: List<VisualizedFrameData>,\n    val recordingId: UUID, // НОВОЕ ПОЛЕ\n    val createdAt: Instant = Instant.now(),\n)\n```\n3. Поле recordingId нужно для формирования callback data `qe:{recordingId}` в inline-кнопке экспорта.",
-        "testStrategy": "1. Убедиться, что проект компилируется после изменения.\n2. Все вызовы конструктора NotificationTask должны быть обновлены (проверить ошибки компиляции).\n3. Unit-тест: создать NotificationTask с recordingId и проверить, что поле доступно.",
+        "status": "in-progress",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/NotificationTask.kt`\n2. Добавить поле `val recordingId: UUID` в data class NotificationTask:\n```kotlin\ndata class NotificationTask(\n    val id: UUID,\n    val chatId: Long,\n    val message: String,\n    val visualizedFrames: List<VisualizedFrameData>,\n    val recordingId: UUID, // НОВОЕ ПОЛЕ\n    val createdAt: Instant = Instant.now(),\n)\n```\n3. Поле recordingId нужно для формирования callback data `qe:{recordingId}` в inline-кнопке экспорта.",
+        "testStrategy": "1. Убедиться, что проект компилируется после изменения.\n2. Все вызовы конструктора NotificationTask должны быть обновлены (проверить ошибки компиляции).\n3. Unit-тест: создать NotificationTask с recordingId и проверить, что поле доступно.",
         "subtasks": [
           {
             "id": 1,
             "title": "Добавить поле recordingId в data class NotificationTask",
             "description": "Расширить NotificationTask новым обязательным полем val recordingId: UUID для хранения идентификатора записи.",
+            "status": "done",
             "dependencies": [],
             "details": "Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/NotificationTask.kt`. Добавить поле `val recordingId: UUID` после `visualizedFrames` и перед `createdAt`. Импорт UUID уже присутствует. Результат:\n```kotlin\ndata class NotificationTask(\n    val id: UUID,\n    val chatId: Long,\n    val message: String,\n    val visualizedFrames: List<VisualizedFrameData>,\n    val recordingId: UUID,\n    val createdAt: Instant = Instant.now(),\n)\n```",
-            "status": "pending",
-            "testStrategy": "Проверить компиляцию модуля telegram: `./gradlew :telegram:compileKotlin`. Ожидается ошибка в TelegramNotificationServiceImpl из-за отсутствия recordingId в конструкторе."
+            "testStrategy": "Проверить компиляцию модуля telegram: `./gradlew :telegram:compileKotlin`. Ожидается ошибка в TelegramNotificationServiceImpl из-за отсутствия recordingId в конструкторе.",
+            "metadata": {
+              "startRev": "ea887337c2de3004d0253b6f317b55e3d2fe84fc",
+              "endRev": "b695cdd36cc60a4e2969038a96d2829b82f5cfe6",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:23:01.420Z"
+            }
           },
           {
             "id": 2,
             "title": "Обновить создание NotificationTask в TelegramNotificationServiceImpl",
             "description": "Передать recording.id в конструктор NotificationTask при создании уведомления.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt`. В методе sendRecordingNotification (строки 44-50) добавить recordingId в конструктор NotificationTask:\n```kotlin\nval task =\n    NotificationTask(\n        uuidGeneratorHelper.generateV1(),\n        userZone.chatId,\n        message,\n        visualizedFrames,\n        recording.id,\n    )\n```\nПараметр `recording` имеет тип RecordingDto и уже содержит поле `id: UUID`.",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию модуля telegram: `./gradlew :telegram:compileKotlin`. Компиляция должна пройти успешно."
           },
           {
             "id": 3,
             "title": "Проверить другие места использования NotificationTask",
             "description": "Убедиться, что нет других мест создания NotificationTask, которые требуют обновления.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "Выполнить поиск по проекту: `grep -r 'NotificationTask(' modules/`. Проанализировать все найденные вызовы конструктора. На данный момент единственное место создания — TelegramNotificationServiceImpl.sendRecordingNotification. TelegramNotificationSender и TelegramNotificationQueue только читают поля task, поэтому изменения не требуются.",
-            "status": "pending",
             "testStrategy": "Grep-поиск по проекту для подтверждения отсутствия других мест создания NotificationTask."
           },
           {
             "id": 4,
             "title": "Запустить компиляцию всего проекта",
             "description": "Убедиться, что все модули компилируются после добавления нового поля.",
+            "status": "pending",
             "dependencies": [
               2,
               3
             ],
             "details": "Запустить полную компиляцию проекта: `./gradlew build -x test`. Это проверит:\n1. Корректность синтаксиса data class\n2. Передачу всех обязательных параметров в конструктор\n3. Отсутствие побочных эффектов в зависимых модулях (core зависит от telegram)\n\nПри ошибках ktlint запустить `./gradlew ktlintFormat` и повторить сборку.",
-            "status": "pending",
             "testStrategy": "Успешное завершение `./gradlew build -x test` без ошибок компиляции."
           },
           {
             "id": 5,
             "title": "Запустить тесты и убедиться в отсутствии регрессий",
             "description": "Выполнить все тесты проекта для проверки, что добавление поля не сломало существующую функциональность.",
+            "status": "pending",
             "dependencies": [
               4
             ],
             "details": "Запустить полный набор тестов: `./gradlew test`. Особое внимание обратить на тесты модуля telegram, если они существуют. Если тесты создают NotificationTask напрямую, они должны быть обновлены для передачи recordingId (использовать любой UUID, например UUID.randomUUID()).",
-            "status": "pending",
             "testStrategy": "Все тесты должны пройти успешно. При необходимости обновить тесты, создающие NotificationTask напрямую."
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "ea887337c2de3004d0253b6f317b55e3d2fe84fc",
+          "endRev": "b695cdd36cc60a4e2969038a96d2829b82f5cfe6"
+        }
       },
       {
         "id": 2,
         "title": "Обновить TelegramNotificationServiceImpl для передачи recordingId",
         "description": "Изменить TelegramNotificationServiceImpl.sendRecordingNotification для передачи recording.id в NotificationTask.",
-        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt`\n2. В методе sendRecordingNotification обновить создание NotificationTask:\n```kotlin\nval task = NotificationTask(\n    id = uuidGeneratorHelper.generateV1(),\n    chatId = userZone.chatId,\n    message = message,\n    visualizedFrames = visualizedFrames,\n    recordingId = recording.id, // НОВОЕ: передаём ID записи\n)\n```\n3. Параметр recording уже имеет тип RecordingDto с полем id: UUID.",
-        "testStrategy": "1. Проверить компиляцию проекта.\n2. Unit-тест: замокать зависимости и проверить, что NotificationTask создаётся с правильным recordingId из RecordingDto.",
+        "status": "pending",
         "priority": "high",
         "dependencies": [
           1
         ],
-        "status": "pending",
+        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt`\n2. В методе sendRecordingNotification обновить создание NotificationTask:\n```kotlin\nval task = NotificationTask(\n    id = uuidGeneratorHelper.generateV1(),\n    chatId = userZone.chatId,\n    message = message,\n    visualizedFrames = visualizedFrames,\n    recordingId = recording.id, // НОВОЕ: передаём ID записи\n)\n```\n3. Параметр recording уже имеет тип RecordingDto с полем id: UUID.",
+        "testStrategy": "1. Проверить компиляцию проекта.\n2. Unit-тест: замокать зависимости и проверить, что NotificationTask создаётся с правильным recordingId из RecordingDto.",
         "subtasks": [
           {
             "id": 1,
             "title": "Проверить наличие поля recordingId в NotificationTask",
             "description": "Убедиться, что Задача 1 выполнена и поле recordingId существует в data class NotificationTask.",
+            "status": "pending",
             "dependencies": [],
             "details": "Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/NotificationTask.kt` и проверить наличие поля `val recordingId: UUID`. Без этого поля текущая задача не может быть выполнена. Если поле отсутствует — сначала выполнить Задачу 1.",
-            "status": "pending",
             "testStrategy": "Визуальная проверка наличия поля recordingId: UUID в data class NotificationTask."
           },
           {
             "id": 2,
             "title": "Найти метод sendRecordingNotification",
             "description": "Локализовать точное место создания NotificationTask в методе sendRecordingNotification.",
+            "status": "pending",
             "dependencies": [
               1
             ],
-            "details": "В файле `TelegramNotificationServiceImpl.kt` (строки 44-50) найти создание NotificationTask через позиционные аргументы. Текущий код:\n```kotlin\nval task =\n    NotificationTask(\n        uuidGeneratorHelper.generateV1(),\n        userZone.chatId,\n        message,\n        visualizedFrames,\n    )\n```\nЗапомнить порядок аргументов для правильного добавления recordingId.",
-            "status": "pending",
-            "testStrategy": null
+            "details": "В файле `TelegramNotificationServiceImpl.kt` (строки 44-50) найти создание NotificationTask через позиционные аргументы. Текущий код:\n```kotlin\nval task =\n    NotificationTask(\n        uuidGeneratorHelper.generateV1(),\n        userZone.chatId,\n        message,\n        visualizedFrames,\n    )\n```\nЗапомнить порядок аргументов для правильного добавления recordingId."
           },
           {
             "id": 3,
             "title": "Добавить recording.id в создание NotificationTask",
             "description": "Изменить вызов конструктора NotificationTask, добавив recording.id после visualizedFrames.",
+            "status": "pending",
             "dependencies": [
               2
             ],
             "details": "Обновить создание NotificationTask в методе sendRecordingNotification (строки 44-50) — добавить `recording.id` как пятый аргумент:\n```kotlin\nval task =\n    NotificationTask(\n        uuidGeneratorHelper.generateV1(),\n        userZone.chatId,\n        message,\n        visualizedFrames,\n        recording.id, // НОВОЕ: передаём ID записи для Quick Export\n    )\n```\nПараметр `recording` имеет тип `RecordingDto` с полем `id: UUID` (строка 9 RecordingDto.kt).",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию модуля telegram: `./gradlew :modules-telegram:compileKotlin`"
           },
           {
             "id": 4,
             "title": "Проверить компиляцию проекта",
             "description": "Убедиться, что проект компилируется без ошибок после внесённых изменений.",
+            "status": "pending",
             "dependencies": [
               3
             ],
             "details": "Запустить `./gradlew build -x test` для проверки компиляции всего проекта. Убедиться, что нет ошибок несоответствия типов или отсутствующих аргументов в вызовах конструктора NotificationTask.",
-            "status": "pending",
             "testStrategy": "Успешная компиляция без ошибок (exit code 0)."
           },
           {
             "id": 5,
             "title": "Написать unit-тест для проверки передачи recordingId",
             "description": "Создать тест, проверяющий что NotificationTask создаётся с правильным recordingId из RecordingDto.",
+            "status": "pending",
             "dependencies": [
               4
             ],
             "details": "В тестовом классе для TelegramNotificationServiceImpl:\n1. Замокать TelegramUserService, TelegramNotificationQueue, UUIDGeneratorHelper\n2. Создать тестовый RecordingDto с известным id (например UUID.randomUUID())\n3. Вызвать sendRecordingNotification\n4. Захватить NotificationTask переданный в notificationQueue.enqueue\n5. Проверить что task.recordingId == recording.id\n\nИспользовать ArgumentCaptor или verify с capture для проверки аргументов.",
-            "status": "pending",
             "testStrategy": "Unit-тест с моками: проверить что recordingId в NotificationTask соответствует id из RecordingDto."
           }
         ]
@@ -138,43 +147,43 @@
         "id": 3,
         "title": "Добавить inline-клавиатуру в TelegramNotificationSender",
         "description": "Расширить TelegramNotificationSender для добавления inline-кнопки \"📹 Экспорт видео\" к уведомлениям.",
-        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/TelegramNotificationSender.kt`\n2. Добавить импорты:\n```kotlin\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup\nimport dev.inmo.tgbotapi.utils.matrix\nimport dev.inmo.tgbotapi.utils.row\n```\n3. Создать приватный метод для формирования клавиатуры:\n```kotlin\nprivate fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =\n    InlineKeyboardMarkup(\n        keyboard = matrix {\n            row {\n                +CallbackDataInlineKeyboardButton(\"📹 Экспорт видео\", \"qe:$recordingId\")\n            }\n        }\n    )\n```\n4. В методе send() обновить все три ветки:\n   - **frames.isEmpty()**: добавить replyMarkup к sendTextMessage:\n     ```kotlin\n     bot.sendTextMessage(\n         chatId = chatIdObj,\n         text = message,\n         replyMarkup = createExportKeyboard(task.recordingId)\n     )\n     ```\n   - **frames.size == 1**: добавить replyMarkup к SendPhoto:\n     ```kotlin\n     SendPhoto(\n         chatId = chatIdObj,\n         photo = frame.visualizedBytes.asMultipartFile(...),\n         text = message,\n         replyMarkup = createExportKeyboard(task.recordingId)\n     )\n     ```\n   - **else (медиагруппа)**: после отправки медиагруппы отправить отдельное сообщение с кнопкой:\n     ```kotlin\n     // После цикла отправки медиагрупп:\n     RetryHelper.retryIndefinitely(\"Send export button\", task.chatId) {\n         bot.sendTextMessage(\n             chatId = chatIdObj,\n             text = \"👆 Нажмите для быстрого экспорта видео\",\n             replyMarkup = createExportKeyboard(task.recordingId)\n         )\n     }\n     ```",
-        "testStrategy": "1. Проверить компиляцию.\n2. Интеграционный тест: отправить уведомление с 0, 1 и >1 кадрами, убедиться что inline-кнопка присутствует.\n3. Проверить формат callback data: должен быть `qe:{UUID}`.",
+        "status": "pending",
         "priority": "high",
         "dependencies": [
           1
         ],
-        "status": "pending",
+        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/TelegramNotificationSender.kt`\n2. Добавить импорты:\n```kotlin\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup\nimport dev.inmo.tgbotapi.utils.matrix\nimport dev.inmo.tgbotapi.utils.row\n```\n3. Создать приватный метод для формирования клавиатуры:\n```kotlin\nprivate fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =\n    InlineKeyboardMarkup(\n        keyboard = matrix {\n            row {\n                +CallbackDataInlineKeyboardButton(\"📹 Экспорт видео\", \"qe:$recordingId\")\n            }\n        }\n    )\n```\n4. В методе send() обновить все три ветки:\n   - **frames.isEmpty()**: добавить replyMarkup к sendTextMessage:\n     ```kotlin\n     bot.sendTextMessage(\n         chatId = chatIdObj,\n         text = message,\n         replyMarkup = createExportKeyboard(task.recordingId)\n     )\n     ```\n   - **frames.size == 1**: добавить replyMarkup к SendPhoto:\n     ```kotlin\n     SendPhoto(\n         chatId = chatIdObj,\n         photo = frame.visualizedBytes.asMultipartFile(...),\n         text = message,\n         replyMarkup = createExportKeyboard(task.recordingId)\n     )\n     ```\n   - **else (медиагруппа)**: после отправки медиагруппы отправить отдельное сообщение с кнопкой:\n     ```kotlin\n     // После цикла отправки медиагрупп:\n     RetryHelper.retryIndefinitely(\"Send export button\", task.chatId) {\n         bot.sendTextMessage(\n             chatId = chatIdObj,\n             text = \"👆 Нажмите для быстрого экспорта видео\",\n             replyMarkup = createExportKeyboard(task.recordingId)\n         )\n     }\n     ```",
+        "testStrategy": "1. Проверить компиляцию.\n2. Интеграционный тест: отправить уведомление с 0, 1 и >1 кадрами, убедиться что inline-кнопка присутствует.\n3. Проверить формат callback data: должен быть `qe:{UUID}`.",
         "subtasks": [
           {
             "id": 1,
             "title": "Добавить импорты и создать метод createExportKeyboard",
             "description": "Добавить необходимые импорты для InlineKeyboard и создать приватный метод createExportKeyboard(recordingId: UUID) для формирования inline-клавиатуры с кнопкой экспорта.",
+            "status": "pending",
             "dependencies": [],
             "details": "1. Добавить импорты в начало файла после существующих:\n```kotlin\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup\nimport dev.inmo.tgbotapi.utils.matrix\nimport dev.inmo.tgbotapi.utils.row\nimport java.util.UUID\n```\n2. Создать приватный метод после метода toCaption():\n```kotlin\nprivate fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =\n    InlineKeyboardMarkup(\n        keyboard = matrix {\n            row {\n                +CallbackDataInlineKeyboardButton(\"📹 Экспорт видео\", \"qe:$recordingId\")\n            }\n        }\n    )\n```\n3. Callback data формат: `qe:{UUID}` для обработки QuickExportHandler.",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию проекта. Убедиться что метод createExportKeyboard возвращает корректный InlineKeyboardMarkup с кнопкой и callback data в формате qe:{uuid}."
           },
           {
             "id": 2,
             "title": "Модифицировать ветки empty и single frame для добавления replyMarkup",
             "description": "Обновить ветку frames.isEmpty() и frames.size == 1 в методе send() для добавления параметра replyMarkup с inline-клавиатурой.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "1. В ветке frames.isEmpty() (строка 36-38) добавить replyMarkup:\n```kotlin\nbot.sendTextMessage(\n    chatId = chatIdObj,\n    text = message,\n    replyMarkup = createExportKeyboard(task.recordingId)\n)\n```\n2. В ветке frames.size == 1 (строки 44-50) добавить replyMarkup в SendPhoto:\n```kotlin\nbot.execute(\n    SendPhoto(\n        chatId = chatIdObj,\n        photo = frame.visualizedBytes.asMultipartFile(\"frame_${frame.frameIndex}.jpg\"),\n        text = message,\n        replyMarkup = createExportKeyboard(task.recordingId),\n    ),\n)\n```\n3. task.recordingId должен быть доступен после выполнения задачи 1 родительского уровня (NotificationTask с recordingId).",
-            "status": "pending",
             "testStrategy": "Интеграционный тест: отправить уведомление с 0 кадрами и с 1 кадром. Убедиться что в обоих случаях под сообщением появляется inline-кнопка '📹 Экспорт видео' с корректным callback data."
           },
           {
             "id": 3,
             "title": "Модифицировать ветку медиагруппы для отправки кнопки отдельным сообщением",
             "description": "Обновить ветку else (медиагруппа) для отправки отдельного текстового сообщения с inline-кнопкой после отправки всех медиагрупп.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "1. В ветке else (строки 54-67) после цикла forEachIndexed добавить отправку отдельного сообщения:\n```kotlin\nelse -> {\n    frames.chunked(MAX_MEDIA_GROUP_SIZE).forEachIndexed { chunkIndex, chunk ->\n        RetryHelper.retryIndefinitely(\"Send media group\", task.chatId) {\n            val mediaGroup = chunk.mapIndexed { index, frame ->\n                TelegramMediaPhoto(\n                    file = frame.visualizedBytes.asMultipartFile(\"frame_${frame.frameIndex}.jpg\"),\n                    text = if (chunkIndex == 0 && index == 0) message else null,\n                )\n            }\n            @Suppress(\"OPT_IN_USAGE\")\n            bot.sendMediaGroup(chatIdObj, mediaGroup)\n        }\n    }\n    // Отправить отдельное сообщение с кнопкой экспорта после медиагруппы\n    RetryHelper.retryIndefinitely(\"Send export button\", task.chatId) {\n        bot.sendTextMessage(\n            chatId = chatIdObj,\n            text = \"👆 Нажмите для быстрого экспорта видео\",\n            replyMarkup = createExportKeyboard(task.recordingId)\n        )\n    }\n}\n```\n2. Отдельное сообщение необходимо, т.к. Telegram API не поддерживает inline-кнопки для медиагрупп.",
-            "status": "pending",
             "testStrategy": "Интеграционный тест: отправить уведомление с более чем 1 кадром (медиагруппа). Убедиться что после медиагруппы приходит отдельное сообщение '👆 Нажмите для быстрого экспорта видео' с inline-кнопкой."
           }
         ]
@@ -183,63 +192,63 @@
         "id": 4,
         "title": "Добавить метод exportByRecordingId в VideoExportService",
         "description": "Добавить новый метод в интерфейс VideoExportService для быстрого экспорта по recordingId с фиксированным диапазоном ±1 мин.",
-        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/VideoExportService.kt`\n2. Добавить новый метод:\n```kotlin\nimport java.time.Duration\nimport java.util.UUID\n\ninterface VideoExportService {\n    // ... существующие методы ...\n\n    /**\n     * Экспортирует видео по ID записи с диапазоном ±duration от recordTimestamp.\n     * @param recordingId UUID записи из БД\n     * @param duration длительность в одну сторону (по умолчанию 1 минута, итого 2 мин)\n     * @param onProgress колбэк прогресса\n     * @return путь к экспортированному видео\n     * @throws IllegalArgumentException если запись не найдена\n     * @throws IllegalStateException если файлы записи отсутствуют\n     */\n    suspend fun exportByRecordingId(\n        recordingId: UUID,\n        duration: Duration = Duration.ofMinutes(1),\n        onProgress: suspend (VideoExportProgress) -> Unit = {},\n    ): Path\n}\n```",
-        "testStrategy": "1. Проверить компиляцию интерфейса.\n2. Убедиться, что VideoExportServiceImpl требует реализации нового метода (ошибка компиляции).",
+        "status": "pending",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/VideoExportService.kt`\n2. Добавить новый метод:\n```kotlin\nimport java.time.Duration\nimport java.util.UUID\n\ninterface VideoExportService {\n    // ... существующие методы ...\n\n    /**\n     * Экспортирует видео по ID записи с диапазоном ±duration от recordTimestamp.\n     * @param recordingId UUID записи из БД\n     * @param duration длительность в одну сторону (по умолчанию 1 минута, итого 2 мин)\n     * @param onProgress колбэк прогресса\n     * @return путь к экспортированному видео\n     * @throws IllegalArgumentException если запись не найдена\n     * @throws IllegalStateException если файлы записи отсутствуют\n     */\n    suspend fun exportByRecordingId(\n        recordingId: UUID,\n        duration: Duration = Duration.ofMinutes(1),\n        onProgress: suspend (VideoExportProgress) -> Unit = {},\n    ): Path\n}\n```",
+        "testStrategy": "1. Проверить компиляцию интерфейса.\n2. Убедиться, что VideoExportServiceImpl требует реализации нового метода (ошибка компиляции).",
         "subtasks": [
           {
             "id": 1,
             "title": "Добавить импорт java.time.Duration в VideoExportService",
             "description": "Добавить необходимый импорт Duration для параметра нового метода",
+            "status": "pending",
             "dependencies": [],
             "details": "В файле VideoExportService.kt добавить строку `import java.time.Duration` в секцию импортов. Импорт UUID уже есть через использование CameraRecordingCountDto, но Duration отсутствует и необходим для параметра duration нового метода.",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию файла после добавления импорта"
           },
           {
             "id": 2,
             "title": "Добавить импорт java.util.UUID в VideoExportService",
             "description": "Добавить импорт UUID для типа параметра recordingId",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "В файле VideoExportService.kt добавить строку `import java.util.UUID` в секцию импортов. Этот тип необходим для параметра recordingId нового метода exportByRecordingId.",
-            "status": "pending",
             "testStrategy": "Проверить что импорт добавлен корректно и файл компилируется"
           },
           {
             "id": 3,
             "title": "Добавить KDoc документацию для нового метода",
             "description": "Написать KDoc комментарий с описанием метода, параметров и исключений",
+            "status": "pending",
             "dependencies": [
               2
             ],
             "details": "Добавить KDoc перед сигнатурой метода с описанием: назначение метода (экспорт видео по ID записи с диапазоном ±duration), описание параметров (@param recordingId, @param duration, @param onProgress), возвращаемое значение (@return путь к файлу) и исключения (@throws IllegalArgumentException если запись не найдена, @throws IllegalStateException если файлы записи отсутствуют).",
-            "status": "pending",
             "testStrategy": "Визуальная проверка корректности KDoc синтаксиса"
           },
           {
             "id": 4,
             "title": "Добавить сигнатуру метода exportByRecordingId в интерфейс",
             "description": "Добавить объявление suspend fun exportByRecordingId с параметрами и значениями по умолчанию",
+            "status": "pending",
             "dependencies": [
               3
             ],
             "details": "В интерфейс VideoExportService после метода cleanupExportFile добавить сигнатуру: `suspend fun exportByRecordingId(recordingId: UUID, duration: Duration = Duration.ofMinutes(1), onProgress: suspend (VideoExportProgress) -> Unit = {}): Path`. Параметр duration имеет значение по умолчанию 1 минута, onProgress — пустой колбэк.",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию интерфейса и убедиться что VideoExportServiceImpl требует реализации метода"
           },
           {
             "id": 5,
             "title": "Проверить компиляцию модуля telegram",
             "description": "Запустить компиляцию модуля для валидации изменений в интерфейсе",
+            "status": "pending",
             "dependencies": [
               4
             ],
             "details": "Выполнить `./gradlew :modules-telegram:compileKotlin` для проверки синтаксической корректности изменений в интерфейсе. Ожидается ошибка компиляции в VideoExportServiceImpl из-за отсутствующей реализации нового метода — это подтвердит корректность добавления сигнатуры.",
-            "status": "pending",
             "testStrategy": "Компиляция должна завершиться с ошибкой об отсутствующей реализации exportByRecordingId в VideoExportServiceImpl"
           }
         ]
@@ -248,65 +257,65 @@
         "id": 5,
         "title": "Реализовать exportByRecordingId в VideoExportServiceImpl",
         "description": "Реализовать метод exportByRecordingId в VideoExportServiceImpl: найти запись в БД, вычислить диапазон, вызвать существующий exportVideo.",
-        "details": "1. Открыть файл `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/VideoExportServiceImpl.kt`\n2. Добавить импорты:\n```kotlin\nimport java.time.Duration\nimport java.util.UUID\n```\n3. Реализовать метод:\n```kotlin\noverride suspend fun exportByRecordingId(\n    recordingId: UUID,\n    duration: Duration,\n    onProgress: suspend (VideoExportProgress) -> Unit,\n): Path {\n    logger.debug { \"exportByRecordingId: recordingId=$recordingId, duration=$duration\" }\n    \n    val recording = recordingRepository.findById(recordingId)\n        ?: throw IllegalArgumentException(\"Recording not found: $recordingId\")\n    \n    val camId = recording.camId\n        ?: throw IllegalStateException(\"Recording $recordingId has no camId\")\n    \n    val recordTimestamp = recording.recordTimestamp\n        ?: throw IllegalStateException(\"Recording $recordingId has no recordTimestamp\")\n    \n    val startInstant = recordTimestamp.minus(duration)\n    val endInstant = recordTimestamp.plus(duration)\n    \n    logger.info { \"Quick export for recording $recordingId: camId=$camId, range=$startInstant..$endInstant\" }\n    \n    return exportVideo(\n        startInstant = startInstant,\n        endInstant = endInstant,\n        camId = camId,\n        mode = ExportMode.ORIGINAL,\n        onProgress = onProgress,\n    )\n}\n```\n4. Метод использует существующий exportVideo с mode=ORIGINAL (без аннотаций).",
-        "testStrategy": "1. Unit-тест: замокать recordingRepository, вызвать exportByRecordingId, проверить что:\n   - findById вызван с правильным recordingId\n   - exportVideo вызван с вычисленным диапазоном ±1 мин от recordTimestamp\n   - mode = ORIGINAL\n2. Тест на ошибку: вернуть null из findById, убедиться что выбрасывается IllegalArgumentException.\n3. Тест на отсутствие camId: проверить IllegalStateException.",
+        "status": "pending",
         "priority": "high",
         "dependencies": [
           4
         ],
-        "status": "pending",
+        "details": "1. Открыть файл `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/VideoExportServiceImpl.kt`\n2. Добавить импорты:\n```kotlin\nimport java.time.Duration\nimport java.util.UUID\n```\n3. Реализовать метод:\n```kotlin\noverride suspend fun exportByRecordingId(\n    recordingId: UUID,\n    duration: Duration,\n    onProgress: suspend (VideoExportProgress) -> Unit,\n): Path {\n    logger.debug { \"exportByRecordingId: recordingId=$recordingId, duration=$duration\" }\n    \n    val recording = recordingRepository.findById(recordingId)\n        ?: throw IllegalArgumentException(\"Recording not found: $recordingId\")\n    \n    val camId = recording.camId\n        ?: throw IllegalStateException(\"Recording $recordingId has no camId\")\n    \n    val recordTimestamp = recording.recordTimestamp\n        ?: throw IllegalStateException(\"Recording $recordingId has no recordTimestamp\")\n    \n    val startInstant = recordTimestamp.minus(duration)\n    val endInstant = recordTimestamp.plus(duration)\n    \n    logger.info { \"Quick export for recording $recordingId: camId=$camId, range=$startInstant..$endInstant\" }\n    \n    return exportVideo(\n        startInstant = startInstant,\n        endInstant = endInstant,\n        camId = camId,\n        mode = ExportMode.ORIGINAL,\n        onProgress = onProgress,\n    )\n}\n```\n4. Метод использует существующий exportVideo с mode=ORIGINAL (без аннотаций).",
+        "testStrategy": "1. Unit-тест: замокать recordingRepository, вызвать exportByRecordingId, проверить что:\n   - findById вызван с правильным recordingId\n   - exportVideo вызван с вычисленным диапазоном ±1 мин от recordTimestamp\n   - mode = ORIGINAL\n2. Тест на ошибку: вернуть null из findById, убедиться что выбрасывается IllegalArgumentException.\n3. Тест на отсутствие camId: проверить IllegalStateException.",
         "subtasks": [
           {
             "id": 1,
             "title": "Добавить метод exportByRecordingId в интерфейс VideoExportService",
             "description": "Расширить интерфейс VideoExportService новым методом exportByRecordingId с параметрами recordingId: UUID, duration: Duration и onProgress callback",
+            "status": "pending",
             "dependencies": [],
             "details": "Открыть файл modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/VideoExportService.kt. Добавить импорты java.time.Duration и java.util.UUID. Добавить сигнатуру метода: suspend fun exportByRecordingId(recordingId: UUID, duration: Duration = Duration.ofMinutes(1), onProgress: suspend (VideoExportProgress) -> Unit = {}): Path. Метод должен иметь значение по умолчанию для duration (1 минута) для удобства вызова.",
-            "status": "pending",
             "testStrategy": "Компиляция интерфейса должна пройти успешно. VideoExportServiceImpl должен показать ошибку компиляции из-за отсутствующей реализации нового метода."
           },
           {
             "id": 2,
             "title": "Добавить необходимые импорты в VideoExportServiceImpl",
             "description": "Добавить импорты java.time.Duration и java.util.UUID в файл реализации VideoExportServiceImpl.kt",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "Открыть файл modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/VideoExportServiceImpl.kt. В секцию импортов добавить: import java.time.Duration и import java.util.UUID. UUID уже может быть импортирован транзитивно, но явный импорт обеспечит стабильность кода.",
-            "status": "pending",
             "testStrategy": "Файл должен компилироваться без ошибок после добавления импортов."
           },
           {
             "id": 3,
             "title": "Реализовать метод exportByRecordingId в VideoExportServiceImpl",
             "description": "Реализовать логику метода: получение записи из репозитория, валидация полей, вычисление временного диапазона и вызов существующего exportVideo",
+            "status": "pending",
             "dependencies": [
               2
             ],
             "details": "Реализовать override suspend fun exportByRecordingId(...): 1) Логировать входные параметры через logger.debug. 2) Вызвать recordingRepository.findById(recordingId), при null выбросить IllegalArgumentException(\"Recording not found: $recordingId\"). 3) Проверить camId: если null, выбросить IllegalStateException(\"Recording $recordingId has no camId\"). 4) Проверить recordTimestamp: если null, выбросить IllegalStateException(\"Recording $recordingId has no recordTimestamp\"). 5) Вычислить startInstant = recordTimestamp.minus(duration), endInstant = recordTimestamp.plus(duration). 6) Логировать диапазон через logger.info. 7) Вернуть результат вызова exportVideo(startInstant, endInstant, camId, ExportMode.ORIGINAL, onProgress).",
-            "status": "pending",
             "testStrategy": "Unit-тест: замокать recordingRepository.findById, проверить что exportVideo вызывается с правильными параметрами (диапазон ±duration от recordTimestamp, mode=ORIGINAL)."
           },
           {
             "id": 4,
             "title": "Написать unit-тесты для exportByRecordingId",
             "description": "Создать тесты для проверки корректной работы метода и обработки ошибок (запись не найдена, отсутствует camId, отсутствует recordTimestamp)",
+            "status": "pending",
             "dependencies": [
               3
             ],
             "details": "Создать тестовый класс VideoExportServiceImplTest (если не существует) или добавить тесты в существующий. Тестовые сценарии: 1) Успешный экспорт - замокать findById с валидной записью, проверить вызов exportVideo с вычисленным диапазоном. 2) Recording not found - findById возвращает null, ожидать IllegalArgumentException. 3) camId is null - запись без camId, ожидать IllegalStateException. 4) recordTimestamp is null - запись без recordTimestamp, ожидать IllegalStateException. Использовать MockK или Mockito для моков, TestCoroutineDispatcher для coroutines.",
-            "status": "pending",
             "testStrategy": "Все тесты должны проходить. Проверить покрытие всех веток через code coverage."
           },
           {
             "id": 5,
             "title": "Проверить интеграцию и запустить полную сборку",
             "description": "Выполнить полную сборку проекта для проверки корректности интеграции нового метода со всеми модулями",
+            "status": "pending",
             "dependencies": [
               4
             ],
             "details": "Выполнить ./gradlew build для полной сборки с тестами. При ошибках ktlint выполнить ./gradlew ktlintFormat и повторить сборку. Убедиться, что все существующие тесты проходят и новый код не ломает существующую функциональность. Проверить, что метод доступен из модуля telegram (где находится интерфейс VideoExportService).",
-            "status": "pending",
             "testStrategy": "Сборка должна завершиться успешно (BUILD SUCCESSFUL). Все тесты должны пройти. Отсутствие ошибок компиляции во всех модулях."
           }
         ]
@@ -315,57 +324,57 @@
         "id": 6,
         "title": "Создать QuickExportHandler для обработки callback query",
         "description": "Создать новый компонент QuickExportHandler для обработки нажатий кнопки быстрого экспорта с callback data `qe:{recordingId}`.",
-        "details": "1. Создать файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandler.kt`\n2. Реализовать класс:\n```kotlin\npackage ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport\n\nimport dev.inmo.tgbotapi.bot.TelegramBot\nimport dev.inmo.tgbotapi.extensions.api.answers.answer\nimport dev.inmo.tgbotapi.extensions.api.edit.reply_markup.editMessageReplyMarkup\nimport dev.inmo.tgbotapi.extensions.api.send.media.sendVideo\nimport dev.inmo.tgbotapi.extensions.api.send.sendTextMessage\nimport dev.inmo.tgbotapi.requests.abstracts.asMultipartFile\nimport dev.inmo.tgbotapi.types.ChatId\nimport dev.inmo.tgbotapi.types.RawChatId\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup\nimport dev.inmo.tgbotapi.types.message.abstracts.ContentMessage\nimport dev.inmo.tgbotapi.types.queries.callback.DataCallbackQuery\nimport dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery\nimport dev.inmo.tgbotapi.utils.matrix\nimport dev.inmo.tgbotapi.utils.row\nimport io.github.oshai.kotlinlogging.KotlinLogging\nimport kotlinx.coroutines.CancellationException\nimport kotlinx.coroutines.withTimeoutOrNull\nimport org.springframework.boot.autoconfigure.condition.ConditionalOnProperty\nimport org.springframework.stereotype.Component\nimport ru.zinin.frigate.analyzer.telegram.config.TelegramProperties\nimport ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter\nimport ru.zinin.frigate.analyzer.telegram.service.VideoExportService\nimport java.util.UUID\n\nprivate val logger = KotlinLogging.logger {}\n\n@Component\n@ConditionalOnProperty(prefix = \"application.telegram\", name = [\"enabled\"], havingValue = \"true\")\nclass QuickExportHandler(\n    private val bot: TelegramBot,\n    private val videoExportService: VideoExportService,\n    private val authorizationFilter: AuthorizationFilter,\n    private val properties: TelegramProperties,\n) {\n    suspend fun handle(callback: DataCallbackQuery) {\n        val messageCallback = callback as? MessageDataCallbackQuery\n        val message = messageCallback?.message\n        val chatId = message?.chat?.id ?: return\n        \n        // Парсим recordingId из callback data\n        val recordingIdStr = callback.data.removePrefix(CALLBACK_PREFIX)\n        val recordingId = try {\n            UUID.fromString(recordingIdStr)\n        } catch (e: IllegalArgumentException) {\n            logger.warn { \"Invalid recordingId in callback: $recordingIdStr\" }\n            bot.answer(callback, \"Ошибка: неверный формат данных\")\n            return\n        }\n        \n        // Проверяем авторизацию через username\n        val user = callback.user\n        val username = user.username?.withoutAt\n        if (username == null) {\n            bot.answer(callback, authorizationFilter.getUnauthorizedMessage())\n            return\n        }\n        \n        // Answer callback сразу (чтобы убрать индикатор загрузки)\n        bot.answer(callback)\n        \n        // Меняем кнопку на \"Экспорт...\"\n        try {\n            bot.editMessageReplyMarkup(\n                message,\n                replyMarkup = createProcessingKeyboard(recordingId)\n            )\n        } catch (e: Exception) {\n            logger.warn(e) { \"Failed to update button to processing state\" }\n        }\n        \n        try {\n            val videoPath = withTimeoutOrNull(QUICK_EXPORT_TIMEOUT_MS) {\n                videoExportService.exportByRecordingId(recordingId)\n            }\n            \n            if (videoPath == null) {\n                bot.sendTextMessage(chatId, \"Экспорт занял слишком много времени. Попробуйте позже.\")\n                restoreButton(message, recordingId)\n                return\n            }\n            \n            try {\n                val sent = withTimeoutOrNull(properties.sendVideoTimeout.toMillis()) {\n                    bot.sendVideo(\n                        chatId,\n                        videoPath.toFile().asMultipartFile().copy(filename = \"quick_export_$recordingId.mp4\")\n                    )\n                }\n                \n                if (sent == null) {\n                    bot.sendTextMessage(chatId, \"Не удалось отправить видео: превышено время ожидания.\")\n                }\n            } finally {\n                try {\n                    videoExportService.cleanupExportFile(videoPath)\n                } catch (e: Exception) {\n                    logger.warn(e) { \"Failed to cleanup: $videoPath\" }\n                }\n            }\n            \n            // Восстанавливаем кнопку\n            restoreButton(message, recordingId)\n            \n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            logger.error(e) { \"Quick export failed for recording $recordingId\" }\n            val errorMsg = when {\n                e.message?.contains(\"not found\") == true -> \"Запись не найдена.\"\n                e.message?.contains(\"missing\") == true -> \"Файлы записи недоступны.\"\n                else -> \"Ошибка экспорта. Попробуйте позже.\"\n            }\n            bot.sendTextMessage(chatId, errorMsg)\n            restoreButton(message, recordingId)\n        }\n    }\n    \n    private suspend fun restoreButton(message: ContentMessage<*>?, recordingId: UUID) {\n        if (message == null) return\n        try {\n            bot.editMessageReplyMarkup(\n                message,\n                replyMarkup = createExportKeyboard(recordingId)\n            )\n        } catch (e: Exception) {\n            logger.warn(e) { \"Failed to restore button\" }\n        }\n    }\n    \n    companion object {\n        const val CALLBACK_PREFIX = \"qe:\"\n        private const val QUICK_EXPORT_TIMEOUT_MS = 300_000L // 5 минут\n        \n        fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =\n            InlineKeyboardMarkup(\n                keyboard = matrix {\n                    row {\n                        +CallbackDataInlineKeyboardButton(\"📹 Экспорт видео\", \"$CALLBACK_PREFIX$recordingId\")\n                    }\n                }\n            )\n        \n        fun createProcessingKeyboard(recordingId: UUID): InlineKeyboardMarkup =\n            InlineKeyboardMarkup(\n                keyboard = matrix {\n                    row {\n                        +CallbackDataInlineKeyboardButton(\"⚙️ Экспорт...\", \"$CALLBACK_PREFIX$recordingId\")\n                    }\n                }\n            )\n    }\n}\n```",
-        "testStrategy": "1. Unit-тест: замокать все зависимости, вызвать handle с валидным callback, проверить:\n   - Кнопка меняется на \"Экспорт...\"\n   - Вызывается exportByRecordingId\n   - Видео отправляется через sendVideo\n   - Кнопка восстанавливается\n2. Тест на ошибку: exportByRecordingId выбрасывает исключение → отправляется сообщение об ошибке.\n3. Тест на невалидный UUID в callback data → ответ callback с ошибкой.",
+        "status": "pending",
         "priority": "high",
         "dependencies": [
           5
         ],
-        "status": "pending",
+        "details": "1. Создать файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandler.kt`\n2. Реализовать класс:\n```kotlin\npackage ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport\n\nimport dev.inmo.tgbotapi.bot.TelegramBot\nimport dev.inmo.tgbotapi.extensions.api.answers.answer\nimport dev.inmo.tgbotapi.extensions.api.edit.reply_markup.editMessageReplyMarkup\nimport dev.inmo.tgbotapi.extensions.api.send.media.sendVideo\nimport dev.inmo.tgbotapi.extensions.api.send.sendTextMessage\nimport dev.inmo.tgbotapi.requests.abstracts.asMultipartFile\nimport dev.inmo.tgbotapi.types.ChatId\nimport dev.inmo.tgbotapi.types.RawChatId\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup\nimport dev.inmo.tgbotapi.types.message.abstracts.ContentMessage\nimport dev.inmo.tgbotapi.types.queries.callback.DataCallbackQuery\nimport dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery\nimport dev.inmo.tgbotapi.utils.matrix\nimport dev.inmo.tgbotapi.utils.row\nimport io.github.oshai.kotlinlogging.KotlinLogging\nimport kotlinx.coroutines.CancellationException\nimport kotlinx.coroutines.withTimeoutOrNull\nimport org.springframework.boot.autoconfigure.condition.ConditionalOnProperty\nimport org.springframework.stereotype.Component\nimport ru.zinin.frigate.analyzer.telegram.config.TelegramProperties\nimport ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter\nimport ru.zinin.frigate.analyzer.telegram.service.VideoExportService\nimport java.util.UUID\n\nprivate val logger = KotlinLogging.logger {}\n\n@Component\n@ConditionalOnProperty(prefix = \"application.telegram\", name = [\"enabled\"], havingValue = \"true\")\nclass QuickExportHandler(\n    private val bot: TelegramBot,\n    private val videoExportService: VideoExportService,\n    private val authorizationFilter: AuthorizationFilter,\n    private val properties: TelegramProperties,\n) {\n    suspend fun handle(callback: DataCallbackQuery) {\n        val messageCallback = callback as? MessageDataCallbackQuery\n        val message = messageCallback?.message\n        val chatId = message?.chat?.id ?: return\n        \n        // Парсим recordingId из callback data\n        val recordingIdStr = callback.data.removePrefix(CALLBACK_PREFIX)\n        val recordingId = try {\n            UUID.fromString(recordingIdStr)\n        } catch (e: IllegalArgumentException) {\n            logger.warn { \"Invalid recordingId in callback: $recordingIdStr\" }\n            bot.answer(callback, \"Ошибка: неверный формат данных\")\n            return\n        }\n        \n        // Проверяем авторизацию через username\n        val user = callback.user\n        val username = user.username?.withoutAt\n        if (username == null) {\n            bot.answer(callback, authorizationFilter.getUnauthorizedMessage())\n            return\n        }\n        \n        // Answer callback сразу (чтобы убрать индикатор загрузки)\n        bot.answer(callback)\n        \n        // Меняем кнопку на \"Экспорт...\"\n        try {\n            bot.editMessageReplyMarkup(\n                message,\n                replyMarkup = createProcessingKeyboard(recordingId)\n            )\n        } catch (e: Exception) {\n            logger.warn(e) { \"Failed to update button to processing state\" }\n        }\n        \n        try {\n            val videoPath = withTimeoutOrNull(QUICK_EXPORT_TIMEOUT_MS) {\n                videoExportService.exportByRecordingId(recordingId)\n            }\n            \n            if (videoPath == null) {\n                bot.sendTextMessage(chatId, \"Экспорт занял слишком много времени. Попробуйте позже.\")\n                restoreButton(message, recordingId)\n                return\n            }\n            \n            try {\n                val sent = withTimeoutOrNull(properties.sendVideoTimeout.toMillis()) {\n                    bot.sendVideo(\n                        chatId,\n                        videoPath.toFile().asMultipartFile().copy(filename = \"quick_export_$recordingId.mp4\")\n                    )\n                }\n                \n                if (sent == null) {\n                    bot.sendTextMessage(chatId, \"Не удалось отправить видео: превышено время ожидания.\")\n                }\n            } finally {\n                try {\n                    videoExportService.cleanupExportFile(videoPath)\n                } catch (e: Exception) {\n                    logger.warn(e) { \"Failed to cleanup: $videoPath\" }\n                }\n            }\n            \n            // Восстанавливаем кнопку\n            restoreButton(message, recordingId)\n            \n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            logger.error(e) { \"Quick export failed for recording $recordingId\" }\n            val errorMsg = when {\n                e.message?.contains(\"not found\") == true -> \"Запись не найдена.\"\n                e.message?.contains(\"missing\") == true -> \"Файлы записи недоступны.\"\n                else -> \"Ошибка экспорта. Попробуйте позже.\"\n            }\n            bot.sendTextMessage(chatId, errorMsg)\n            restoreButton(message, recordingId)\n        }\n    }\n    \n    private suspend fun restoreButton(message: ContentMessage<*>?, recordingId: UUID) {\n        if (message == null) return\n        try {\n            bot.editMessageReplyMarkup(\n                message,\n                replyMarkup = createExportKeyboard(recordingId)\n            )\n        } catch (e: Exception) {\n            logger.warn(e) { \"Failed to restore button\" }\n        }\n    }\n    \n    companion object {\n        const val CALLBACK_PREFIX = \"qe:\"\n        private const val QUICK_EXPORT_TIMEOUT_MS = 300_000L // 5 минут\n        \n        fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =\n            InlineKeyboardMarkup(\n                keyboard = matrix {\n                    row {\n                        +CallbackDataInlineKeyboardButton(\"📹 Экспорт видео\", \"$CALLBACK_PREFIX$recordingId\")\n                    }\n                }\n            )\n        \n        fun createProcessingKeyboard(recordingId: UUID): InlineKeyboardMarkup =\n            InlineKeyboardMarkup(\n                keyboard = matrix {\n                    row {\n                        +CallbackDataInlineKeyboardButton(\"⚙️ Экспорт...\", \"$CALLBACK_PREFIX$recordingId\")\n                    }\n                }\n            )\n    }\n}\n```",
+        "testStrategy": "1. Unit-тест: замокать все зависимости, вызвать handle с валидным callback, проверить:\n   - Кнопка меняется на \"Экспорт...\"\n   - Вызывается exportByRecordingId\n   - Видео отправляется через sendVideo\n   - Кнопка восстанавливается\n2. Тест на ошибку: exportByRecordingId выбрасывает исключение → отправляется сообщение об ошибке.\n3. Тест на невалидный UUID в callback data → ответ callback с ошибкой.",
         "subtasks": [
           {
             "id": 1,
             "title": "Создать базовый класс QuickExportHandler с зависимостями и парсингом callback data",
             "description": "Создать файл QuickExportHandler.kt с базовой структурой класса, инъекцией зависимостей (TelegramBot, VideoExportService, AuthorizationFilter, TelegramProperties) и логикой парсинга recordingId из callback data с префиксом 'qe:'.",
+            "status": "pending",
             "dependencies": [],
             "details": "1. Создать директорию `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/`\n2. Создать файл QuickExportHandler.kt с аннотациями @Component и @ConditionalOnProperty\n3. Добавить зависимости в конструктор: TelegramBot, VideoExportService, AuthorizationFilter, TelegramProperties\n4. Реализовать companion object с константой CALLBACK_PREFIX = \"qe:\"\n5. Создать метод handle(callback: DataCallbackQuery) с извлечением MessageDataCallbackQuery\n6. Реализовать парсинг recordingId через UUID.fromString(callback.data.removePrefix(CALLBACK_PREFIX))\n7. Добавить обработку IllegalArgumentException при парсинге UUID с ответом через bot.answer(callback, \"Ошибка: неверный формат данных\")\n8. Добавить проверку авторизации через authorizationFilter (по аналогии с другими обработчиками)",
-            "status": "pending",
             "testStrategy": "Unit-тест: вызвать handle с callback data 'qe:invalid-uuid' → проверить что bot.answer вызван с сообщением об ошибке. Unit-тест: вызвать handle с валидным UUID → проверить что парсинг успешен."
           },
           {
             "id": 2,
             "title": "Реализовать логику смены кнопки на 'Экспорт...' и восстановления",
             "description": "Добавить методы для создания InlineKeyboardMarkup (кнопки экспорта и кнопки 'в процессе') и логику изменения кнопки через editMessageReplyMarkup с последующим восстановлением.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "1. В companion object создать функцию createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup - кнопка '📹 Экспорт видео' с callback data qe:{recordingId}\n2. Создать функцию createProcessingKeyboard(recordingId: UUID): InlineKeyboardMarkup - кнопка '⚙️ Экспорт...' с тем же callback data\n3. Использовать matrix { row { +CallbackDataInlineKeyboardButton(...) } } для формирования клавиатуры\n4. В начале handle вызвать bot.editMessageReplyMarkup(message, replyMarkup = createProcessingKeyboard(recordingId))\n5. Создать private suspend fun restoreButton(message: ContentMessage<*>?, recordingId: UUID) для восстановления кнопки\n6. Обернуть editMessageReplyMarkup в try-catch с логированием warn при ошибке",
-            "status": "pending",
             "testStrategy": "Unit-тест: замокать bot.editMessageReplyMarkup, вызвать handle → проверить что сначала вызывается createProcessingKeyboard, затем createExportKeyboard. Тест на ошибку: editMessageReplyMarkup выбрасывает исключение → проверить что обработка продолжается."
           },
           {
             "id": 3,
             "title": "Реализовать вызов exportByRecordingId с таймаутом и отправку видео",
             "description": "Интегрировать вызов videoExportService.exportByRecordingId в withTimeoutOrNull, отправить видео через bot.sendVideo и реализовать очистку файла через cleanupExportFile.",
+            "status": "pending",
             "dependencies": [
               1,
               2
             ],
             "details": "1. Добавить константу QUICK_EXPORT_TIMEOUT_MS = 300_000L (5 минут) в companion object\n2. После смены кнопки вызвать: val videoPath = withTimeoutOrNull(QUICK_EXPORT_TIMEOUT_MS) { videoExportService.exportByRecordingId(recordingId) }\n3. При videoPath == null отправить сообщение 'Экспорт занял слишком много времени. Попробуйте позже.' и вызвать restoreButton\n4. Отправить видео: val sent = withTimeoutOrNull(properties.sendVideoTimeout.toMillis()) { bot.sendVideo(chatId, videoPath.toFile().asMultipartFile().copy(filename = \"quick_export_$recordingId.mp4\")) }\n5. При sent == null отправить сообщение о превышении времени ожидания\n6. В finally блоке вызвать videoExportService.cleanupExportFile(videoPath) с try-catch\n7. После успешной отправки вызвать restoreButton для возврата кнопки",
-            "status": "pending",
             "testStrategy": "Unit-тест: замокать videoExportService.exportByRecordingId возвращающий Path, проверить что sendVideo вызван и cleanupExportFile вызван. Тест timeout: exportByRecordingId 'зависает' → проверить что отправлено сообщение о timeout."
           },
           {
             "id": 4,
             "title": "Добавить обработку ошибок и сообщения пользователю",
             "description": "Реализовать полную обработку исключений с информативными сообщениями пользователю для разных типов ошибок (not found, missing files, общие ошибки) и корректную обработку CancellationException.",
+            "status": "pending",
             "dependencies": [
               1,
               2,
               3
             ],
             "details": "1. Обернуть основную логику в try-catch блок\n2. Обработать CancellationException отдельно через throw e (не глотать корутинные отмены)\n3. Для других исключений логировать logger.error(e) { \"Quick export failed for recording $recordingId\" }\n4. Определить тип ошибки по e.message: contains(\"not found\") → 'Запись не найдена.', contains(\"missing\") → 'Файлы записи недоступны.', иначе → 'Ошибка экспорта. Попробуйте позже.'\n5. Отправить соответствующее сообщение через bot.sendTextMessage(chatId, errorMsg)\n6. В конце catch блока вызвать restoreButton для восстановления кнопки\n7. В начале метода handle сразу вызвать bot.answer(callback) для снятия индикатора загрузки в Telegram",
-            "status": "pending",
             "testStrategy": "Unit-тест: exportByRecordingId выбрасывает IllegalArgumentException с 'not found' → проверить сообщение 'Запись не найдена.' и восстановление кнопки. Unit-тест: выбрасывается CancellationException → проверить что исключение пробрасывается дальше."
           }
         ]
@@ -374,67 +383,67 @@
         "id": 7,
         "title": "Обновить TelegramNotificationSender использовать QuickExportHandler.createExportKeyboard",
         "description": "Рефакторинг: использовать статический метод QuickExportHandler.createExportKeyboard вместо дублирования кода.",
-        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/TelegramNotificationSender.kt`\n2. Добавить импорт:\n```kotlin\nimport ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler\n```\n3. Удалить приватный метод createExportKeyboard (если был создан в задаче 3).\n4. Заменить все вызовы createExportKeyboard на QuickExportHandler.createExportKeyboard:\n```kotlin\nreplyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId)\n```\n5. Это обеспечивает единый источник истины для формата кнопки и callback data.",
-        "testStrategy": "1. Проверить компиляцию.\n2. Существующие тесты из задачи 3 должны проходить без изменений.",
+        "status": "pending",
         "priority": "medium",
         "dependencies": [
           3,
           6
         ],
-        "status": "pending",
+        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/TelegramNotificationSender.kt`\n2. Добавить импорт:\n```kotlin\nimport ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler\n```\n3. Удалить приватный метод createExportKeyboard (если был создан в задаче 3).\n4. Заменить все вызовы createExportKeyboard на QuickExportHandler.createExportKeyboard:\n```kotlin\nreplyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId)\n```\n5. Это обеспечивает единый источник истины для формата кнопки и callback data.",
+        "testStrategy": "1. Проверить компиляцию.\n2. Существующие тесты из задачи 3 должны проходить без изменений.",
         "subtasks": [
           {
             "id": 1,
             "title": "Добавить импорт QuickExportHandler в TelegramNotificationSender",
             "description": "Добавить необходимый импорт класса QuickExportHandler для использования статического метода createExportKeyboard.",
+            "status": "pending",
             "dependencies": [],
             "details": "В файле TelegramNotificationSender.kt добавить строку импорта:\n```kotlin\nimport ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler\n```\nРасположить импорт в алфавитном порядке среди других импортов пакета ru.zinin.frigate.analyzer.",
-            "status": "pending",
             "testStrategy": "Проверить, что файл компилируется без ошибок после добавления импорта. Импорт должен быть разрешён IDE/компилятором (зависит от завершения задачи 6)."
           },
           {
             "id": 2,
             "title": "Добавить импорты для InlineKeyboardMarkup из tgbotapi",
             "description": "Добавить импорты классов tgbotapi для работы с inline-клавиатурами, если они ещё не добавлены задачей 3.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "Добавить импорты для использования replyMarkup в SendPhoto и sendMediaGroup:\n```kotlin\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup\n```\nЭти импорты необходимы для передачи результата QuickExportHandler.createExportKeyboard в параметр replyMarkup.",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию. Импорты должны быть валидными и использоваться в коде."
           },
           {
             "id": 3,
             "title": "Удалить локальный метод createExportKeyboard (если существует)",
             "description": "Проверить наличие и удалить приватный метод createExportKeyboard, созданный в рамках задачи 3, для устранения дублирования кода.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "После выполнения задачи 3 в TelegramNotificationSender может быть добавлен приватный метод:\n```kotlin\nprivate fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup\n```\nЕго необходимо полностью удалить, так как эта логика будет централизована в QuickExportHandler.createExportKeyboard.",
-            "status": "pending",
             "testStrategy": "Убедиться, что метод createExportKeyboard отсутствует в классе TelegramNotificationSender после рефакторинга."
           },
           {
             "id": 4,
             "title": "Заменить вызовы createExportKeyboard на QuickExportHandler.createExportKeyboard",
             "description": "Обновить все места вызова createExportKeyboard для использования статического метода из QuickExportHandler.",
+            "status": "pending",
             "dependencies": [
               2,
               3
             ],
             "details": "Найти все места в TelegramNotificationSender.send(), где используется createExportKeyboard, и заменить на:\n```kotlin\nreplyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId)\n```\nЭто должно быть в трёх местах:\n1. sendTextMessage — добавить параметр replyMarkup\n2. SendPhoto — добавить параметр replyMarkup\n3. sendMediaGroup (первый чанк) — добавить replyMarkup к первому элементу или отдельным сообщением\n\nПримечание: task.recordingId должен быть добавлен в NotificationTask (задача 1-2).",
-            "status": "pending",
             "testStrategy": "1. Проверить компиляцию проекта.\n2. Проверить, что все три ветки when используют QuickExportHandler.createExportKeyboard.\n3. Существующие тесты должны проходить без изменений."
           },
           {
             "id": 5,
             "title": "Проверить единообразие формата callback data",
             "description": "Убедиться, что после рефакторинга формат callback data остаётся единым: qe:{UUID}.",
+            "status": "pending",
             "dependencies": [
               4
             ],
             "details": "Провести ревью кода:\n1. Убедиться, что QuickExportHandler.createExportKeyboard формирует callback data в формате \"qe:{recordingId}\"\n2. Проверить, что TelegramNotificationSender теперь использует только этот единый источник истины\n3. Убедиться, что нигде в TelegramNotificationSender не осталось захардкоженных строк с префиксом \"qe:\"\n4. Запустить ./gradlew build для финальной проверки",
-            "status": "pending",
             "testStrategy": "1. Запустить ./gradlew :modules:telegram:test для проверки тестов модуля.\n2. Интеграционный тест: отправить уведомление и проверить формат callback data кнопки.\n3. Код-ревью: поиск по \"qe:\" должен показывать только QuickExportHandler."
           }
         ]
@@ -443,63 +452,63 @@
         "id": 8,
         "title": "Зарегистрировать QuickExportHandler в FrigateAnalyzerBot",
         "description": "Добавить глобальный обработчик onDataCallbackQuery в FrigateAnalyzerBot для делегирования callback с префиксом qe: в QuickExportHandler.",
-        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt`\n2. Добавить зависимость QuickExportHandler в конструктор:\n```kotlin\n@Component\n@ConditionalOnProperty(prefix = \"application.telegram\", name = [\"enabled\"], havingValue = \"true\")\nclass FrigateAnalyzerBot(\n    private val bot: TelegramBot,\n    private val authorizationFilter: AuthorizationFilter,\n    private val userService: TelegramUserService,\n    private val properties: TelegramProperties,\n    private val handlers: List<CommandHandler>,\n    private val quickExportHandler: QuickExportHandler, // НОВОЕ\n) {\n```\n3. Добавить импорт:\n```kotlin\nimport dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onDataCallbackQuery\nimport ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler\n```\n4. В методе registerRoutes() добавить обработчик callback query:\n```kotlin\nprivate suspend fun BehaviourContext.registerRoutes() {\n    // ... существующие команды ...\n    \n    // Обработчик быстрого экспорта\n    onDataCallbackQuery(\n        initialFilter = { it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX) }\n    ) { callback ->\n        try {\n            quickExportHandler.handle(callback)\n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            logger.error(e) { \"Error handling quick export callback\" }\n        }\n    }\n    \n    // ... onContentMessage ...\n}\n```\n5. Обработчик использует initialFilter для фильтрации только callback с префиксом `qe:`.",
-        "testStrategy": "1. Проверить компиляцию.\n2. Интеграционный тест: отправить callback query с data=\"qe:{valid-uuid}\", убедиться что вызывается QuickExportHandler.handle.\n3. Тест: callback с другим префиксом (например \"tz:\") не должен вызывать QuickExportHandler.",
+        "status": "pending",
         "priority": "high",
         "dependencies": [
           6
         ],
-        "status": "pending",
+        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt`\n2. Добавить зависимость QuickExportHandler в конструктор:\n```kotlin\n@Component\n@ConditionalOnProperty(prefix = \"application.telegram\", name = [\"enabled\"], havingValue = \"true\")\nclass FrigateAnalyzerBot(\n    private val bot: TelegramBot,\n    private val authorizationFilter: AuthorizationFilter,\n    private val userService: TelegramUserService,\n    private val properties: TelegramProperties,\n    private val handlers: List<CommandHandler>,\n    private val quickExportHandler: QuickExportHandler, // НОВОЕ\n) {\n```\n3. Добавить импорт:\n```kotlin\nimport dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onDataCallbackQuery\nimport ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler\n```\n4. В методе registerRoutes() добавить обработчик callback query:\n```kotlin\nprivate suspend fun BehaviourContext.registerRoutes() {\n    // ... существующие команды ...\n    \n    // Обработчик быстрого экспорта\n    onDataCallbackQuery(\n        initialFilter = { it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX) }\n    ) { callback ->\n        try {\n            quickExportHandler.handle(callback)\n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            logger.error(e) { \"Error handling quick export callback\" }\n        }\n    }\n    \n    // ... onContentMessage ...\n}\n```\n5. Обработчик использует initialFilter для фильтрации только callback с префиксом `qe:`.",
+        "testStrategy": "1. Проверить компиляцию.\n2. Интеграционный тест: отправить callback query с data=\"qe:{valid-uuid}\", убедиться что вызывается QuickExportHandler.handle.\n3. Тест: callback с другим префиксом (например \"tz:\") не должен вызывать QuickExportHandler.",
         "subtasks": [
           {
             "id": 1,
             "title": "Добавить импорт onDataCallbackQuery в FrigateAnalyzerBot",
             "description": "Добавить импорт функции onDataCallbackQuery из пакета triggers_handling для обработки callback query.",
+            "status": "pending",
             "dependencies": [],
             "details": "Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt` и добавить импорт рядом с существующими импортами из triggers_handling:\n```kotlin\nimport dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onDataCallbackQuery\n```\nДобавить после строки 10 (после импорта onContentMessage).",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию проекта - файл должен корректно импортировать функцию без ошибок."
           },
           {
             "id": 2,
             "title": "Добавить импорт QuickExportHandler в FrigateAnalyzerBot",
             "description": "Добавить импорт класса QuickExportHandler для использования в качестве зависимости.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "Добавить импорт класса QuickExportHandler в секцию импортов FrigateAnalyzerBot.kt:\n```kotlin\nimport ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler\n```\nРазместить в алфавитном порядке среди других импортов из пакета ru.zinin.frigate.analyzer.telegram.",
-            "status": "pending",
             "testStrategy": "Компиляция пройдёт после создания класса QuickExportHandler (зависимость от Task 6)."
           },
           {
             "id": 3,
             "title": "Добавить QuickExportHandler в конструктор FrigateAnalyzerBot",
             "description": "Внедрить QuickExportHandler как зависимость через конструктор бота для обработки callback query.",
+            "status": "pending",
             "dependencies": [
               2
             ],
             "details": "Обновить конструктор класса FrigateAnalyzerBot, добавив новый параметр:\n```kotlin\n@Component\n@ConditionalOnProperty(prefix = \"application.telegram\", name = [\"enabled\"], havingValue = \"true\")\nclass FrigateAnalyzerBot(\n    private val bot: TelegramBot,\n    private val authorizationFilter: AuthorizationFilter,\n    private val userService: TelegramUserService,\n    private val properties: TelegramProperties,\n    private val handlers: List<CommandHandler>,\n    private val quickExportHandler: QuickExportHandler,\n) {\n```\nSpring автоматически внедрит бин QuickExportHandler при запуске приложения.",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию. При запуске приложения Spring должен корректно создать бин FrigateAnalyzerBot с внедрённым QuickExportHandler."
           },
           {
             "id": 4,
             "title": "Реализовать обработчик onDataCallbackQuery в registerRoutes()",
             "description": "Добавить глобальный обработчик callback query с фильтрацией по префиксу qe: и делегированием в QuickExportHandler.",
+            "status": "pending",
             "dependencies": [
               3
             ],
             "details": "В методе registerRoutes() добавить обработчик callback query после цикла регистрации команд и перед onContentMessage:\n```kotlin\nprivate suspend fun BehaviourContext.registerRoutes() {\n    sortedHandlers.forEach { handler ->\n        // ... существующий код для onCommand ...\n    }\n\n    // Обработчик быстрого экспорта\n    onDataCallbackQuery(\n        initialFilter = { it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX) }\n    ) { callback ->\n        try {\n            quickExportHandler.handle(callback)\n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            logger.error(e) { \"Error handling quick export callback\" }\n        }\n    }\n\n    onContentMessage { message ->\n        // ... существующий код ...\n    }\n}\n```\ninitialFilter обеспечивает, что обрабатываются только callback с данными, начинающимися с \"qe:\".",
-            "status": "pending",
             "testStrategy": "1. Проверить компиляцию.\n2. Интеграционный тест: callback с data=\"qe:{uuid}\" должен вызвать quickExportHandler.handle().\n3. Callback с другим префиксом (например \"tz:\") не должен срабатывать."
           },
           {
             "id": 5,
             "title": "Убедиться в наличии константы CALLBACK_PREFIX в QuickExportHandler",
             "description": "Проверить что QuickExportHandler экспортирует константу CALLBACK_PREFIX со значением \"qe:\" для использования в фильтре.",
+            "status": "pending",
             "dependencies": [],
             "details": "QuickExportHandler должен содержать companion object с константой:\n```kotlin\nclass QuickExportHandler(...) {\n    companion object {\n        const val CALLBACK_PREFIX = \"qe:\"\n    }\n    \n    suspend fun handle(callback: DataCallbackQuery) {\n        // ... реализация ...\n    }\n}\n```\nЭта константа используется в FrigateAnalyzerBot для фильтрации callback query по префиксу. Если константа отсутствует в Task 6, необходимо добавить её.",
-            "status": "pending",
             "testStrategy": "Проверить что QuickExportHandler.CALLBACK_PREFIX доступна и имеет значение \"qe:\". Убедиться что код компилируется."
           }
         ]
@@ -508,66 +517,66 @@
         "id": 9,
         "title": "Добавить проверку авторизации в QuickExportHandler",
         "description": "Улучшить проверку авторизации в QuickExportHandler через TelegramUserService для соответствия требованиям безопасности.",
-        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandler.kt`\n2. Добавить зависимость от TelegramUserService и TelegramProperties:\n```kotlin\nclass QuickExportHandler(\n    private val bot: TelegramBot,\n    private val videoExportService: VideoExportService,\n    private val userService: TelegramUserService, // ДОБАВИТЬ\n    private val properties: TelegramProperties, // УЖЕ ЕСТЬ\n) {\n```\n3. Обновить проверку авторизации в методе handle:\n```kotlin\n// Проверяем авторизацию\nval user = callback.user\nval username = user.username?.withoutAt\nif (username == null) {\n    bot.answer(callback, \"Пожалуйста, установите username в настройках Telegram.\")\n    return\n}\n\n// Проверяем: владелец или активный пользователь\nval isOwner = username == properties.owner\nval isActiveUser = userService.findActiveByUsername(username) != null\n\nif (!isOwner && !isActiveUser) {\n    bot.answer(callback, authorizationFilter.getUnauthorizedMessage())\n    return\n}\n```\n4. Это соответствует логике AuthorizationFilter.getRole(), но адаптировано для callback query.",
-        "testStrategy": "1. Unit-тест: callback от владельца (properties.owner) → экспорт выполняется.\n2. Unit-тест: callback от активного пользователя (findActiveByUsername возвращает не null) → экспорт выполняется.\n3. Unit-тест: callback от неавторизованного пользователя → answer с unauthorized message, экспорт не вызывается.\n4. Unit-тест: callback от пользователя без username → ответ с просьбой установить username.",
+        "status": "pending",
         "priority": "high",
         "dependencies": [
           6
         ],
-        "status": "pending",
+        "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandler.kt`\n2. Добавить зависимость от TelegramUserService и TelegramProperties:\n```kotlin\nclass QuickExportHandler(\n    private val bot: TelegramBot,\n    private val videoExportService: VideoExportService,\n    private val userService: TelegramUserService, // ДОБАВИТЬ\n    private val properties: TelegramProperties, // УЖЕ ЕСТЬ\n) {\n```\n3. Обновить проверку авторизации в методе handle:\n```kotlin\n// Проверяем авторизацию\nval user = callback.user\nval username = user.username?.withoutAt\nif (username == null) {\n    bot.answer(callback, \"Пожалуйста, установите username в настройках Telegram.\")\n    return\n}\n\n// Проверяем: владелец или активный пользователь\nval isOwner = username == properties.owner\nval isActiveUser = userService.findActiveByUsername(username) != null\n\nif (!isOwner && !isActiveUser) {\n    bot.answer(callback, authorizationFilter.getUnauthorizedMessage())\n    return\n}\n```\n4. Это соответствует логике AuthorizationFilter.getRole(), но адаптировано для callback query.",
+        "testStrategy": "1. Unit-тест: callback от владельца (properties.owner) → экспорт выполняется.\n2. Unit-тест: callback от активного пользователя (findActiveByUsername возвращает не null) → экспорт выполняется.\n3. Unit-тест: callback от неавторизованного пользователя → answer с unauthorized message, экспорт не вызывается.\n4. Unit-тест: callback от пользователя без username → ответ с просьбой установить username.",
         "subtasks": [
           {
             "id": 1,
             "title": "Добавить зависимость TelegramUserService в конструктор QuickExportHandler",
             "description": "Добавить параметр userService типа TelegramUserService в конструктор класса QuickExportHandler для проверки активных пользователей.",
+            "status": "pending",
             "dependencies": [],
             "details": "В конструкторе QuickExportHandler добавить параметр `private val userService: TelegramUserService`. Импортировать `ru.zinin.frigate.analyzer.telegram.service.TelegramUserService`. TelegramProperties уже должен быть добавлен в Task 6. Spring автоматически внедрит зависимость через конструктор.",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию. Убедиться, что Spring корректно создаёт bean QuickExportHandler с внедрённым TelegramUserService."
           },
           {
             "id": 2,
             "title": "Извлечь username из callback.user в методе handle",
             "description": "Добавить код для извлечения username из объекта user в callback query с проверкой на null и отображением сообщения об ошибке.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "В начале метода handle добавить:\n```kotlin\nval user = callback.user\nval username = user.username?.withoutAt\nif (username == null) {\n    bot.answer(callback, \"Пожалуйста, установите username в настройках Telegram.\")\n    return\n}\n```\nИспользовать `withoutAt` для удаления символа @ из username, аналогично AuthorizationFilter.extractUsername().",
-            "status": "pending",
             "testStrategy": "Unit-тест: callback от пользователя без username → возвращается сообщение 'Пожалуйста, установите username', экспорт не выполняется."
           },
           {
             "id": 3,
             "title": "Реализовать проверку owner через properties.owner",
             "description": "Добавить проверку, является ли username владельцем бота через сравнение с properties.owner.",
+            "status": "pending",
             "dependencies": [
               2
             ],
             "details": "Добавить проверку владельца:\n```kotlin\nval isOwner = username == properties.owner\n```\nЭто соответствует логике в AuthorizationFilter.getRole() (строка 25): `username == properties.owner`. Владелец всегда имеет доступ к экспорту.",
-            "status": "pending",
             "testStrategy": "Unit-тест: callback от владельца (properties.owner) → isOwner=true, экспорт выполняется без проверки через userService."
           },
           {
             "id": 4,
             "title": "Реализовать проверку активного пользователя через userService",
             "description": "Добавить асинхронную проверку, является ли пользователь активным через вызов userService.findActiveByUsername().",
+            "status": "pending",
             "dependencies": [
               2
             ],
             "details": "Добавить проверку активного пользователя:\n```kotlin\nval isActiveUser = userService.findActiveByUsername(username) != null\n```\nЭто соответствует логике в AuthorizationFilter.getRole() (строка 30). Метод suspend, поэтому вызывается в корутине. Возвращает TelegramUserDto или null.",
-            "status": "pending",
             "testStrategy": "Unit-тест: callback от активного пользователя (findActiveByUsername возвращает не null) → isActiveUser=true, экспорт выполняется."
           },
           {
             "id": 5,
             "title": "Добавить блокировку неавторизованных пользователей",
             "description": "Объединить проверки и заблокировать доступ для пользователей, которые не являются ни владельцем, ни активным пользователем.",
+            "status": "pending",
             "dependencies": [
               3,
               4
             ],
             "details": "Добавить финальную проверку авторизации:\n```kotlin\nif (!isOwner && !isActiveUser) {\n    bot.answer(callback, properties.unauthorizedMessage)\n    return\n}\n```\nИспользовать properties.unauthorizedMessage (по умолчанию 'Доступ запрещен...') вместо authorizationFilter.getUnauthorizedMessage(), так как AuthorizationFilter не является зависимостью QuickExportHandler. Альтернативно можно добавить AuthorizationFilter как зависимость.",
-            "status": "pending",
             "testStrategy": "Unit-тест: callback от неавторизованного пользователя (не owner, findActiveByUsername возвращает null) → answer с unauthorizedMessage, экспорт не вызывается. Проверить логирование попытки неавторизованного доступа."
           }
         ]
@@ -576,55 +585,55 @@
         "id": 10,
         "title": "Написать интеграционные тесты для Quick Export",
         "description": "Создать интеграционные тесты для проверки полного flow быстрого экспорта: от нажатия кнопки до получения видео.",
-        "details": "1. Создать файл `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandlerTest.kt`\n2. Написать тесты:\n```kotlin\npackage ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport\n\nimport io.mockk.*\nimport kotlinx.coroutines.test.runTest\nimport org.junit.jupiter.api.BeforeEach\nimport org.junit.jupiter.api.Test\nimport java.nio.file.Path\nimport java.util.UUID\n// ... остальные импорты\n\nclass QuickExportHandlerTest {\n    private lateinit var bot: TelegramBot\n    private lateinit var videoExportService: VideoExportService\n    private lateinit var userService: TelegramUserService\n    private lateinit var properties: TelegramProperties\n    private lateinit var handler: QuickExportHandler\n    \n    @BeforeEach\n    fun setup() {\n        bot = mockk(relaxed = true)\n        videoExportService = mockk()\n        userService = mockk()\n        properties = mockk {\n            every { owner } returns \"testowner\"\n            every { unauthorizedMessage } returns \"Unauthorized\"\n            every { sendVideoTimeout } returns java.time.Duration.ofMinutes(3)\n        }\n        handler = QuickExportHandler(bot, videoExportService, userService, properties)\n    }\n    \n    @Test\n    fun `should export video for authorized user`() = runTest {\n        // given\n        val recordingId = UUID.randomUUID()\n        val callback = createMockCallback(\"qe:$recordingId\", \"testuser\")\n        val videoPath = Path.of(\"/tmp/test.mp4\")\n        \n        coEvery { userService.findActiveByUsername(\"testuser\") } returns mockk()\n        coEvery { videoExportService.exportByRecordingId(recordingId, any(), any()) } returns videoPath\n        coEvery { videoExportService.cleanupExportFile(videoPath) } just Runs\n        \n        // when\n        handler.handle(callback)\n        \n        // then\n        coVerify { bot.answer(callback) }\n        coVerify { videoExportService.exportByRecordingId(recordingId, any(), any()) }\n        coVerify { bot.sendVideo(any(), any()) }\n        coVerify { videoExportService.cleanupExportFile(videoPath) }\n    }\n    \n    @Test\n    fun `should reject unauthorized user`() = runTest {\n        // given\n        val callback = createMockCallback(\"qe:${UUID.randomUUID()}\", \"unknownuser\")\n        coEvery { userService.findActiveByUsername(\"unknownuser\") } returns null\n        \n        // when\n        handler.handle(callback)\n        \n        // then\n        coVerify { bot.answer(callback, \"Unauthorized\") }\n        coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }\n    }\n    \n    @Test\n    fun `should handle export error gracefully`() = runTest {\n        // given\n        val recordingId = UUID.randomUUID()\n        val callback = createMockCallback(\"qe:$recordingId\", \"testowner\")\n        \n        coEvery { videoExportService.exportByRecordingId(recordingId, any(), any()) } throws\n            IllegalArgumentException(\"Recording not found\")\n        \n        // when\n        handler.handle(callback)\n        \n        // then\n        coVerify { bot.sendTextMessage(any(), match { it.contains(\"не найдена\") }) }\n    }\n    \n    private fun createMockCallback(data: String, username: String): MessageDataCallbackQuery {\n        // Создать мок callback с нужными данными\n        return mockk {\n            every { this@mockk.data } returns data\n            every { user } returns mockk {\n                every { this@mockk.username } returns mockk {\n                    every { withoutAt } returns username\n                }\n            }\n            every { message } returns mockk {\n                every { chat } returns mockk {\n                    every { id } returns mockk()\n                }\n            }\n        }\n    }\n}\n```",
-        "testStrategy": "1. Запустить тесты: `./gradlew :frigate-analyzer-telegram:test --tests QuickExportHandlerTest`\n2. Все тесты должны проходить.\n3. Проверить покрытие основных сценариев: успешный экспорт, неавторизованный пользователь, ошибка экспорта.",
+        "status": "pending",
         "priority": "medium",
         "dependencies": [
           8,
           9
         ],
-        "status": "pending",
+        "details": "1. Создать файл `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandlerTest.kt`\n2. Написать тесты:\n```kotlin\npackage ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport\n\nimport io.mockk.*\nimport kotlinx.coroutines.test.runTest\nimport org.junit.jupiter.api.BeforeEach\nimport org.junit.jupiter.api.Test\nimport java.nio.file.Path\nimport java.util.UUID\n// ... остальные импорты\n\nclass QuickExportHandlerTest {\n    private lateinit var bot: TelegramBot\n    private lateinit var videoExportService: VideoExportService\n    private lateinit var userService: TelegramUserService\n    private lateinit var properties: TelegramProperties\n    private lateinit var handler: QuickExportHandler\n    \n    @BeforeEach\n    fun setup() {\n        bot = mockk(relaxed = true)\n        videoExportService = mockk()\n        userService = mockk()\n        properties = mockk {\n            every { owner } returns \"testowner\"\n            every { unauthorizedMessage } returns \"Unauthorized\"\n            every { sendVideoTimeout } returns java.time.Duration.ofMinutes(3)\n        }\n        handler = QuickExportHandler(bot, videoExportService, userService, properties)\n    }\n    \n    @Test\n    fun `should export video for authorized user`() = runTest {\n        // given\n        val recordingId = UUID.randomUUID()\n        val callback = createMockCallback(\"qe:$recordingId\", \"testuser\")\n        val videoPath = Path.of(\"/tmp/test.mp4\")\n        \n        coEvery { userService.findActiveByUsername(\"testuser\") } returns mockk()\n        coEvery { videoExportService.exportByRecordingId(recordingId, any(), any()) } returns videoPath\n        coEvery { videoExportService.cleanupExportFile(videoPath) } just Runs\n        \n        // when\n        handler.handle(callback)\n        \n        // then\n        coVerify { bot.answer(callback) }\n        coVerify { videoExportService.exportByRecordingId(recordingId, any(), any()) }\n        coVerify { bot.sendVideo(any(), any()) }\n        coVerify { videoExportService.cleanupExportFile(videoPath) }\n    }\n    \n    @Test\n    fun `should reject unauthorized user`() = runTest {\n        // given\n        val callback = createMockCallback(\"qe:${UUID.randomUUID()}\", \"unknownuser\")\n        coEvery { userService.findActiveByUsername(\"unknownuser\") } returns null\n        \n        // when\n        handler.handle(callback)\n        \n        // then\n        coVerify { bot.answer(callback, \"Unauthorized\") }\n        coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }\n    }\n    \n    @Test\n    fun `should handle export error gracefully`() = runTest {\n        // given\n        val recordingId = UUID.randomUUID()\n        val callback = createMockCallback(\"qe:$recordingId\", \"testowner\")\n        \n        coEvery { videoExportService.exportByRecordingId(recordingId, any(), any()) } throws\n            IllegalArgumentException(\"Recording not found\")\n        \n        // when\n        handler.handle(callback)\n        \n        // then\n        coVerify { bot.sendTextMessage(any(), match { it.contains(\"не найдена\") }) }\n    }\n    \n    private fun createMockCallback(data: String, username: String): MessageDataCallbackQuery {\n        // Создать мок callback с нужными данными\n        return mockk {\n            every { this@mockk.data } returns data\n            every { user } returns mockk {\n                every { this@mockk.username } returns mockk {\n                    every { withoutAt } returns username\n                }\n            }\n            every { message } returns mockk {\n                every { chat } returns mockk {\n                    every { id } returns mockk()\n                }\n            }\n        }\n    }\n}\n```",
+        "testStrategy": "1. Запустить тесты: `./gradlew :frigate-analyzer-telegram:test --tests QuickExportHandlerTest`\n2. Все тесты должны проходить.\n3. Проверить покрытие основных сценариев: успешный экспорт, неавторизованный пользователь, ошибка экспорта.",
         "subtasks": [
           {
             "id": 1,
             "title": "Настроить TestBase с MockK для QuickExportHandler",
             "description": "Создать файл теста QuickExportHandlerTest.kt с базовой структурой, всеми необходимыми импортами и моками зависимостей (TelegramBot, VideoExportService, TelegramUserService, TelegramProperties).",
+            "status": "pending",
             "dependencies": [],
             "details": "1. Создать файл `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandlerTest.kt`\n2. Добавить импорты: io.mockk.*, kotlinx.coroutines.test.runTest, org.junit.jupiter.api.*, kotlin.test.*\n3. Создать приватные моки:\n   - `bot = mockk<TelegramBot>(relaxed = true)` - relaxed для методов без возврата\n   - `videoExportService = mockk<VideoExportService>()`\n   - `userService = mockk<TelegramUserService>()`\n   - `properties = mockk<TelegramProperties>()`\n4. Настроить properties в @BeforeEach:\n   - `every { properties.owner } returns \"testowner\"`\n   - `every { properties.unauthorizedMessage } returns \"Unauthorized\"`\n   - `every { properties.sendVideoTimeout } returns Duration.ofMinutes(3)`\n5. Создать хелпер-метод createMockCallback(data: String, username: String): MessageDataCallbackQuery с nested моками для user, username.withoutAt, message, chat, id",
-            "status": "pending",
             "testStrategy": "Проверить компиляцию тестового класса без тестов: `./gradlew :frigate-analyzer-telegram:compileTestKotlin`"
           },
           {
             "id": 2,
             "title": "Написать тест успешного экспорта для авторизованного пользователя",
             "description": "Написать тест `should export video for authorized user`, проверяющий полный happy-path: авторизация, экспорт видео, отправка, cleanup.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "1. Создать тест `should export video for authorized user`() = runTest { ... }\n2. Подготовить данные:\n   - val recordingId = UUID.randomUUID()\n   - val callback = createMockCallback(\"qe:$recordingId\", \"testuser\")\n   - val videoPath = Path.of(\"/tmp/test.mp4\")\n3. Настроить моки с coEvery:\n   - coEvery { userService.findActiveByUsername(\"testuser\") } returns mockk()\n   - coEvery { videoExportService.exportByRecordingId(recordingId, any(), any()) } returns videoPath\n   - coEvery { videoExportService.cleanupExportFile(videoPath) } just Runs\n4. Вызвать handler.handle(callback)\n5. Проверить с coVerify:\n   - bot.answer(callback) - подтверждение нажатия\n   - videoExportService.exportByRecordingId(recordingId, any(), any())\n   - bot.sendVideo(any(), any()) - отправка видео\n   - videoExportService.cleanupExportFile(videoPath) - очистка",
-            "status": "pending",
             "testStrategy": "Запустить тест: `./gradlew :frigate-analyzer-telegram:test --tests 'QuickExportHandlerTest.should export video for authorized user'`"
           },
           {
             "id": 3,
             "title": "Написать тест отклонения неавторизованного пользователя",
             "description": "Написать тест `should reject unauthorized user`, проверяющий что неавторизованный пользователь получает сообщение об ошибке и экспорт не вызывается.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "1. Создать тест `should reject unauthorized user`() = runTest { ... }\n2. Подготовить данные:\n   - val callback = createMockCallback(\"qe:${UUID.randomUUID()}\", \"unknownuser\")\n3. Настроить мок:\n   - coEvery { userService.findActiveByUsername(\"unknownuser\") } returns null\n4. Вызвать handler.handle(callback)\n5. Проверить с coVerify:\n   - bot.answer(callback, \"Unauthorized\") - ответ с сообщением об ошибке\n   - coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) } - экспорт НЕ вызван\n   - coVerify(exactly = 0) { bot.sendVideo(any(), any()) } - видео НЕ отправлено",
-            "status": "pending",
             "testStrategy": "Запустить тест: `./gradlew :frigate-analyzer-telegram:test --tests 'QuickExportHandlerTest.should reject unauthorized user'`"
           },
           {
             "id": 4,
             "title": "Написать тест обработки ошибки экспорта",
             "description": "Написать тест `should handle export error gracefully`, проверяющий корректную обработку исключения при экспорте с отправкой пользователю понятного сообщения об ошибке.",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "1. Создать тест `should handle export error gracefully`() = runTest { ... }\n2. Подготовить данные:\n   - val recordingId = UUID.randomUUID()\n   - val callback = createMockCallback(\"qe:$recordingId\", \"testowner\") - использовать owner для упрощения авторизации\n3. Настроить моки:\n   - Авторизация для owner (либо через userService, либо проверка что owner всегда авторизован)\n   - coEvery { videoExportService.exportByRecordingId(recordingId, any(), any()) } throws IllegalArgumentException(\"Recording not found\")\n4. Вызвать handler.handle(callback)\n5. Проверить с coVerify:\n   - bot.sendTextMessage(any(), match { it.contains(\"не найдена\") || it.contains(\"error\") }) - сообщение об ошибке\n   - coVerify(exactly = 0) { bot.sendVideo(any(), any()) } - видео НЕ отправлено\n   - coVerify(exactly = 0) { videoExportService.cleanupExportFile(any()) } - cleanup НЕ вызван (нечего чистить)",
-            "status": "pending",
             "testStrategy": "Запустить все тесты: `./gradlew :frigate-analyzer-telegram:test --tests QuickExportHandlerTest`. Все 3 теста должны проходить."
           }
         ]
@@ -633,75 +642,75 @@
         "id": 11,
         "title": "Обновить документацию CLAUDE.md",
         "description": "Добавить документацию о Quick Export в .claude/rules/telegram.md.",
-        "details": "1. Открыть файл `.claude/rules/telegram.md`\n2. Добавить раздел о Quick Export после раздела Bot Commands:\n\n```markdown\n## Quick Export (Быстрый экспорт)\n\nИнлайн-кнопка на уведомлениях для мгновенного экспорта видео.\n\n| Компонент | Расположение | Назначение |\n|-----------|--------------|------------|\n| QuickExportHandler | `telegram/bot/handler/quickexport/` | Обработка callback query `qe:{recordingId}` |\n| NotificationTask.recordingId | `telegram/queue/` | ID записи для формирования callback data |\n\n### Как работает\n\n1. При отправке уведомления (TelegramNotificationSender) добавляется inline-кнопка \"📹 Экспорт видео\"\n2. Callback data формат: `qe:{UUID}` (например `qe:550e8400-e29b-41d4-a716-446655440000`)\n3. При нажатии кнопки:\n   - Кнопка меняется на \"⚙️ Экспорт...\"\n   - Вызывается `VideoExportService.exportByRecordingId(recordingId)`\n   - Экспортируется ±1 мин от recordTimestamp в режиме ORIGINAL\n   - Видео отправляется в чат\n   - Кнопка восстанавливается\n\n### Авторизация\n\nТолько владелец и активные пользователи могут использовать быстрый экспорт.\n```",
-        "testStrategy": "1. Проверить форматирование markdown.\n2. Убедиться что документация соответствует реализации.",
+        "status": "pending",
         "priority": "low",
         "dependencies": [
           10
         ],
-        "status": "pending",
+        "details": "1. Открыть файл `.claude/rules/telegram.md`\n2. Добавить раздел о Quick Export после раздела Bot Commands:\n\n```markdown\n## Quick Export (Быстрый экспорт)\n\nИнлайн-кнопка на уведомлениях для мгновенного экспорта видео.\n\n| Компонент | Расположение | Назначение |\n|-----------|--------------|------------|\n| QuickExportHandler | `telegram/bot/handler/quickexport/` | Обработка callback query `qe:{recordingId}` |\n| NotificationTask.recordingId | `telegram/queue/` | ID записи для формирования callback data |\n\n### Как работает\n\n1. При отправке уведомления (TelegramNotificationSender) добавляется inline-кнопка \"📹 Экспорт видео\"\n2. Callback data формат: `qe:{UUID}` (например `qe:550e8400-e29b-41d4-a716-446655440000`)\n3. При нажатии кнопки:\n   - Кнопка меняется на \"⚙️ Экспорт...\"\n   - Вызывается `VideoExportService.exportByRecordingId(recordingId)`\n   - Экспортируется ±1 мин от recordTimestamp в режиме ORIGINAL\n   - Видео отправляется в чат\n   - Кнопка восстанавливается\n\n### Авторизация\n\nТолько владелец и активные пользователи могут использовать быстрый экспорт.\n```",
+        "testStrategy": "1. Проверить форматирование markdown.\n2. Убедиться что документация соответствует реализации.",
         "subtasks": [
           {
             "id": 1,
             "title": "Прочитать текущее содержимое telegram.md",
             "description": "Открыть и изучить структуру файла .claude/rules/telegram.md для определения места вставки нового раздела",
+            "status": "pending",
             "dependencies": [],
             "details": "Файл telegram.md содержит документацию о Telegram-боте. Новый раздел Quick Export должен быть добавлен после раздела Bot Commands (после строки 63). Необходимо убедиться в корректности позиции вставки.",
-            "status": "pending",
             "testStrategy": "Визуальная проверка структуры документа и поиск раздела Bot Commands"
           },
           {
             "id": 2,
             "title": "Добавить раздел Quick Export в telegram.md",
             "description": "Вставить markdown-раздел с описанием компонентов Quick Export после раздела Bot Commands",
+            "status": "pending",
             "dependencies": [
               1
             ],
             "details": "Добавить раздел '## Quick Export (Быстрый экспорт)' с таблицей компонентов (QuickExportHandler, NotificationTask.recordingId), описанием работы (шаги 1-4: кнопка на уведомлении, callback data формат qe:{UUID}, обработка нажатия, восстановление кнопки) и информацией об авторизации.",
-            "status": "pending",
             "testStrategy": "Проверить корректность markdown-форматирования: таблицы, списки, заголовки"
           },
           {
             "id": 3,
             "title": "Проверить форматирование markdown",
             "description": "Убедиться что добавленный раздел корректно отформатирован и соответствует стилю остального документа",
+            "status": "pending",
             "dependencies": [
               2
             ],
             "details": "Проверить: таблицы имеют правильные разделители |, нумерованные списки корректны, код в бэктиках (`qe:{UUID}`), заголовки соответствуют уровню (##). Стиль должен соответствовать существующим разделам документа.",
-            "status": "pending",
             "testStrategy": "Визуальный осмотр markdown-синтаксиса, проверка рендеринга"
           },
           {
             "id": 4,
             "title": "Верифицировать соответствие документации реализации",
             "description": "Сверить описание в документации с фактической реализацией компонентов Quick Export",
+            "status": "pending",
             "dependencies": [
               2
             ],
             "details": "Проверить что: путь QuickExportHandler соответствует реальному (`telegram/bot/handler/quickexport/`), формат callback data (`qe:{recordingId}`) соответствует коду, описание flow (кнопка → экспорт → отправка) соответствует реализации в QuickExportHandler.",
-            "status": "pending",
             "testStrategy": "Сравнить документацию с исходным кодом QuickExportHandler и TelegramNotificationSender"
           },
           {
             "id": 5,
             "title": "Закоммитить изменения в telegram.md",
             "description": "Добавить изменённый файл в git и создать коммит с описанием добавления документации Quick Export",
+            "status": "pending",
             "dependencies": [
               3,
               4
             ],
             "details": "Выполнить `git add .claude/rules/telegram.md` и создать коммит с сообщением о добавлении документации Quick Export. Убедиться что изменения попали в текущую ветку 11-quick-export-button.",
-            "status": "pending",
             "testStrategy": "Проверить git status и git log для подтверждения коммита"
           }
         ]
       }
     ],
     "metadata": {
+      "description": "Tasks for master context",
       "created": "2026-03-03T18:54:14.416Z",
-      "updated": "2026-03-03T18:54:14.416Z",
-      "description": "Tasks for master context"
+      "updated": "2026-03-03T18:54:14.416Z"
     }
   }
 }
