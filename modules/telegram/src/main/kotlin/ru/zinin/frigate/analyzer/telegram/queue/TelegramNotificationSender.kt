@@ -91,7 +91,7 @@ class TelegramNotificationSender(
         private const val MAX_CAPTION_LENGTH = 1024
         private const val EXPORT_BUTTON_TEXT = "📹 Экспорт видео"
         private const val EXPORT_PROMPT_TEXT = "👆 Нажмите для быстрого экспорта видео"
-        private const val CALLBACK_PREFIX = "qe:"
+        internal const val CALLBACK_PREFIX = "qe:"
     }
 
     private fun String.toCaption(maxLength: Int): String {
@@ -104,10 +104,11 @@ class TelegramNotificationSender(
 
     private fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =
         InlineKeyboardMarkup(
-            keyboard = matrix {
-                row {
-                    +CallbackDataInlineKeyboardButton(EXPORT_BUTTON_TEXT, "$CALLBACK_PREFIX$recordingId")
-                }
-            },
+            keyboard =
+                matrix {
+                    row {
+                        +CallbackDataInlineKeyboardButton(EXPORT_BUTTON_TEXT, "$CALLBACK_PREFIX$recordingId")
+                    }
+                },
         )
 }

@@ -19,6 +19,7 @@ import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class TelegramNotificationSenderTest {
     private val bot = mockk<TelegramBot>()
@@ -41,7 +42,7 @@ class TelegramNotificationSenderTest {
         val button = keyboard.keyboard[0][0]
         assertIs<CallbackDataInlineKeyboardButton>(button)
         assertEquals("📹 Экспорт видео", button.text)
-        assertEquals("qe:$recordingId", button.callbackData)
+        assertEquals("${TelegramNotificationSender.CALLBACK_PREFIX}$recordingId", button.callbackData)
     }
 
     /**
@@ -58,14 +59,24 @@ class TelegramNotificationSenderTest {
             return request.replyMarkup
         }
         // For multipart wrappers (e.g. CommonMultipartFileRequest), extract inner data via reflection
-        val dataMethod =
-            request::class.java.methods.find { it.name == "getData" }
-                ?: error("Request ${request::class} does not have getData() method")
-        val innerData = dataMethod.invoke(request)
-        val replyMarkupMethod =
-            innerData!!::class.java.methods.find { it.name == "getReplyMarkup" }
-                ?: error("Inner data ${innerData::class} does not have getReplyMarkup() method")
-        return replyMarkupMethod.invoke(innerData) as? KeyboardMarkup
+        try {
+            val dataMethod =
+                request::class.java.methods.find { it.name == "getData" }
+                    ?: error("Request ${request::class} does not have getData() method")
+            val innerData =
+                dataMethod.invoke(request)
+                    ?: error("getData() returned null for ${request::class}")
+            val replyMarkupMethod =
+                innerData::class.java.methods.find { it.name == "getReplyMarkup" }
+                    ?: error("Inner data ${innerData::class} does not have getReplyMarkup() method")
+            return replyMarkupMethod.invoke(innerData) as? KeyboardMarkup
+        } catch (e: Exception) {
+            throw AssertionError(
+                "Failed to extract replyMarkup via reflection from ${request::class}. " +
+                    "This is likely caused by a tgbotapi version change — review extractReplyMarkup().",
+                e,
+            )
+        }
     }
 
     @Test
@@ -121,7 +132,7 @@ class TelegramNotificationSenderTest {
             sender.send(task)
 
             // At least 2 execute calls: media group dispatch(es) + export button text message
-            assert(capturedRequests.size >= 2) { "Expected at least 2 execute() calls, got ${capturedRequests.size}" }
+            assertTrue(capturedRequests.size >= 2, "Expected at least 2 execute() calls, got ${capturedRequests.size}")
 
             // The last request should be SendTextMessage with export keyboard
             val exportRequest = capturedRequests.last()
@@ -150,7 +161,7 @@ class TelegramNotificationSenderTest {
             sender.send(task)
 
             // Should have at least 3 calls: 2 media group chunks + 1 export button
-            assert(capturedRequests.size >= 3) { "Expected at least 3 execute() calls, got ${capturedRequests.size}" }
+            assertTrue(capturedRequests.size >= 3, "Expected at least 3 execute() calls, got ${capturedRequests.size}")
 
             // The last request should be the export button message
             val exportRequest = capturedRequests.last()
