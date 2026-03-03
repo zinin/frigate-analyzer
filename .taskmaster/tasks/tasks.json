@@ -153,12 +153,18 @@
             "id": 3,
             "title": "Добавить recording.id в создание NotificationTask",
             "description": "Изменить вызов конструктора NotificationTask, добавив recording.id после visualizedFrames.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               2
             ],
             "details": "Обновить создание NotificationTask в методе sendRecordingNotification (строки 44-50) — добавить `recording.id` как пятый аргумент:\n```kotlin\nval task =\n    NotificationTask(\n        uuidGeneratorHelper.generateV1(),\n        userZone.chatId,\n        message,\n        visualizedFrames,\n        recording.id, // НОВОЕ: передаём ID записи для Quick Export\n    )\n```\nПараметр `recording` имеет тип `RecordingDto` с полем `id: UUID` (строка 9 RecordingDto.kt).",
-            "testStrategy": "Проверить компиляцию модуля telegram: `./gradlew :modules-telegram:compileKotlin`"
+            "testStrategy": "Проверить компиляцию модуля telegram: `./gradlew :modules-telegram:compileKotlin`",
+            "metadata": {
+              "startRev": "bfb13ecfdb547a1f5ef34647d6d096b146a5108c",
+              "endRev": "bfb13ecfdb547a1f5ef34647d6d096b146a5108c",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:44:23.677Z"
+            }
           },
           {
             "id": 4,
@@ -185,7 +191,7 @@
         ],
         "metadata": {
           "startRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88",
-          "endRev": "81b0913c47d31a2f440251c5165bcc5a042d76b9"
+          "endRev": "bfb13ecfdb547a1f5ef34647d6d096b146a5108c"
         }
       },
       {
