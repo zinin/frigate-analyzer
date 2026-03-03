@@ -215,7 +215,7 @@
         "id": 3,
         "title": "Добавить inline-клавиатуру в TelegramNotificationSender",
         "description": "Расширить TelegramNotificationSender для добавления inline-кнопки \"📹 Экспорт видео\" к уведомлениям.",
-        "status": "rework",
+        "status": "review",
         "priority": "high",
         "dependencies": [
           1
@@ -276,10 +276,11 @@
         "metadata": {
           "startRev": "f2e0d3a74d099c452f2742e1b917b7f52eacc893",
           "endRev": "23db9300757efabb6c1850d02a94ddbcf45f3b74",
-          "reviewRound": 1,
+          "reviewRound": 2,
           "reviewRoundsTotal": 2,
           "reviewContext": false,
-          "reviewPhaseComplete": false
+          "reviewPhaseComplete": false,
+          "reworkAttempts": 0
         }
       },
       {
