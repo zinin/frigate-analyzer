@@ -260,3 +260,10 @@ Module dependencies: `core` → `telegram` → `service` → `model` → `common
 - **MapStruct** (entity mapping)
 - **ktgbotapi** (Telegram bot)
 - **Java 25** with AOT cache for fast startup
+
+## License
+
+Copyright (C) 2026 Alexander Zinin <mail@zinin.ru>
+
+Licensed under the GNU Affero General Public License v3.0 or later
+(AGPL-3.0-or-later). See `LICENSE`.
