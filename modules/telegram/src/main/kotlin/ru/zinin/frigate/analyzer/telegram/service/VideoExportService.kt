@@ -25,13 +25,13 @@ interface VideoExportService {
     suspend fun cleanupExportFile(path: Path)
 
     /**
-     * Экспортирует видео по ID записи с диапазоном ±duration от recordTimestamp.
-     * @param recordingId UUID записи из БД
-     * @param duration длительность в одну сторону (по умолчанию 1 минута, итого 2 мин)
-     * @param onProgress колбэк прогресса
-     * @return путь к экспортированному видео
-     * @throws IllegalArgumentException если запись не найдена
-     * @throws IllegalStateException если файлы записи отсутствуют
+     * Exports video by recording ID within ±[duration] range from recordTimestamp.
+     * @param recordingId recording UUID from the database
+     * @param duration one-side duration (default 1 minute, total range is 2 minutes)
+     * @param onProgress progress callback
+     * @return path to the exported video file
+     * @throws IllegalArgumentException if the recording is not found
+     * @throws IllegalStateException if the recording files are missing from disk
      */
     suspend fun exportByRecordingId(
         recordingId: UUID,
