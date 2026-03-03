@@ -110,7 +110,7 @@
         "id": 2,
         "title": "Обновить TelegramNotificationServiceImpl для передачи recordingId",
         "description": "Изменить TelegramNotificationServiceImpl.sendRecordingNotification для передачи recording.id в NotificationTask.",
-        "status": "in-progress",
+        "status": "done",
         "priority": "high",
         "dependencies": [
           1
@@ -187,17 +187,23 @@
             "id": 5,
             "title": "Написать unit-тест для проверки передачи recordingId",
             "description": "Создать тест, проверяющий что NotificationTask создаётся с правильным recordingId из RecordingDto.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               4
             ],
             "details": "В тестовом классе для TelegramNotificationServiceImpl:\n1. Замокать TelegramUserService, TelegramNotificationQueue, UUIDGeneratorHelper\n2. Создать тестовый RecordingDto с известным id (например UUID.randomUUID())\n3. Вызвать sendRecordingNotification\n4. Захватить NotificationTask переданный в notificationQueue.enqueue\n5. Проверить что task.recordingId == recording.id\n\nИспользовать ArgumentCaptor или verify с capture для проверки аргументов.",
-            "testStrategy": "Unit-тест с моками: проверить что recordingId в NotificationTask соответствует id из RecordingDto."
+            "testStrategy": "Unit-тест с моками: проверить что recordingId в NotificationTask соответствует id из RecordingDto.",
+            "metadata": {
+              "startRev": "eb135b4b85c13bf36f34a156b66dece8f77e0ae2",
+              "endRev": "eb135b4b85c13bf36f34a156b66dece8f77e0ae2",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:48:20.180Z"
+            }
           }
         ],
         "metadata": {
           "startRev": "9e22356a37f4cc4d3fe0debffa239a8cb8551f88",
-          "endRev": "8f946afb53172fed6b4722ae53c4d726d26977ad"
+          "endRev": "eb135b4b85c13bf36f34a156b66dece8f77e0ae2"
         }
       },
       {
