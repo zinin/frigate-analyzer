@@ -329,12 +329,17 @@
             "id": 3,
             "title": "Добавить KDoc документацию для нового метода",
             "description": "Написать KDoc комментарий с описанием метода, параметров и исключений",
-            "status": "pending",
+            "status": "in-progress",
             "dependencies": [
               2
             ],
             "details": "Добавить KDoc перед сигнатурой метода с описанием: назначение метода (экспорт видео по ID записи с диапазоном ±duration), описание параметров (@param recordingId, @param duration, @param onProgress), возвращаемое значение (@return путь к файлу) и исключения (@throws IllegalArgumentException если запись не найдена, @throws IllegalStateException если файлы записи отсутствуют).",
-            "testStrategy": "Визуальная проверка корректности KDoc синтаксиса"
+            "testStrategy": "Визуальная проверка корректности KDoc синтаксиса",
+            "metadata": {
+              "startRev": "27269c67302bad62a1225f3dfd72b60c0518813b",
+              "endRev": "27269c67302bad62a1225f3dfd72b60c0518813b",
+              "runAttempts": 1
+            }
           },
           {
             "id": 4,
