@@ -215,7 +215,7 @@
         "id": 3,
         "title": "Добавить inline-клавиатуру в TelegramNotificationSender",
         "description": "Расширить TelegramNotificationSender для добавления inline-кнопки \"📹 Экспорт видео\" к уведомлениям.",
-        "status": "pending",
+        "status": "in-progress",
         "priority": "high",
         "dependencies": [
           1
@@ -227,10 +227,16 @@
             "id": 1,
             "title": "Добавить импорты и создать метод createExportKeyboard",
             "description": "Добавить необходимые импорты для InlineKeyboard и создать приватный метод createExportKeyboard(recordingId: UUID) для формирования inline-клавиатуры с кнопкой экспорта.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "1. Добавить импорты в начало файла после существующих:\n```kotlin\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup\nimport dev.inmo.tgbotapi.utils.matrix\nimport dev.inmo.tgbotapi.utils.row\nimport java.util.UUID\n```\n2. Создать приватный метод после метода toCaption():\n```kotlin\nprivate fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =\n    InlineKeyboardMarkup(\n        keyboard = matrix {\n            row {\n                +CallbackDataInlineKeyboardButton(\"📹 Экспорт видео\", \"qe:$recordingId\")\n            }\n        }\n    )\n```\n3. Callback data формат: `qe:{UUID}` для обработки QuickExportHandler.",
-            "testStrategy": "Проверить компиляцию проекта. Убедиться что метод createExportKeyboard возвращает корректный InlineKeyboardMarkup с кнопкой и callback data в формате qe:{uuid}."
+            "testStrategy": "Проверить компиляцию проекта. Убедиться что метод createExportKeyboard возвращает корректный InlineKeyboardMarkup с кнопкой и callback data в формате qe:{uuid}.",
+            "metadata": {
+              "startRev": "f2e0d3a74d099c452f2742e1b917b7f52eacc893",
+              "endRev": "41c04216d05719549ce17342240c0d60cd5c93ad",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T20:09:42.508Z"
+            }
           },
           {
             "id": 2,
@@ -254,7 +260,11 @@
             "details": "1. В ветке else (строки 54-67) после цикла forEachIndexed добавить отправку отдельного сообщения:\n```kotlin\nelse -> {\n    frames.chunked(MAX_MEDIA_GROUP_SIZE).forEachIndexed { chunkIndex, chunk ->\n        RetryHelper.retryIndefinitely(\"Send media group\", task.chatId) {\n            val mediaGroup = chunk.mapIndexed { index, frame ->\n                TelegramMediaPhoto(\n                    file = frame.visualizedBytes.asMultipartFile(\"frame_${frame.frameIndex}.jpg\"),\n                    text = if (chunkIndex == 0 && index == 0) message else null,\n                )\n            }\n            @Suppress(\"OPT_IN_USAGE\")\n            bot.sendMediaGroup(chatIdObj, mediaGroup)\n        }\n    }\n    // Отправить отдельное сообщение с кнопкой экспорта после медиагруппы\n    RetryHelper.retryIndefinitely(\"Send export button\", task.chatId) {\n        bot.sendTextMessage(\n            chatId = chatIdObj,\n            text = \"👆 Нажмите для быстрого экспорта видео\",\n            replyMarkup = createExportKeyboard(task.recordingId)\n        )\n    }\n}\n```\n2. Отдельное сообщение необходимо, т.к. Telegram API не поддерживает inline-кнопки для медиагрупп.",
             "testStrategy": "Интеграционный тест: отправить уведомление с более чем 1 кадром (медиагруппа). Убедиться что после медиагруппы приходит отдельное сообщение '👆 Нажмите для быстрого экспорта видео' с inline-кнопкой."
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "f2e0d3a74d099c452f2742e1b917b7f52eacc893",
+          "endRev": "41c04216d05719549ce17342240c0d60cd5c93ad"
+        }
       },
       {
         "id": 4,
