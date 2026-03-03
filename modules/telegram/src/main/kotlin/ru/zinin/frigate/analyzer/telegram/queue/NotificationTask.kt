@@ -9,5 +9,6 @@ data class NotificationTask(
     val chatId: Long,
     val message: String,
     val visualizedFrames: List<VisualizedFrameData>,
+    val recordingId: UUID,
     val createdAt: Instant = Instant.now(),
 )
