@@ -4,33 +4,20 @@ Automated video recording analysis for [Frigate NVR](https://frigate.video/) sec
 
 ## How It Works
 
-```
-            Frigate NVR Recordings (.mp4)
-                           │
-                           ▼
-               ┌───────────────────────┐
-               │     File Watcher      │
-               │  Detects new videos   │
-               └───────────┬───────────┘
-                           ▼
-┌──────────────────────────────────────────────────────┐
-│                Processing Pipeline                   │
-│                                                      │
-│  ┌────────────────┐           ┌───────────────────┐  │
-│  │ Producers (6x) │           │ Consumers (auto)  │  │
-│  │                │  Channel  │                   │  │
-│  │ Extract key    │──────────▶│ Detect objects    │  │
-│  │ frames from    │           │ Filter by class   │  │
-│  │ video files    │           │ Re-check accuracy │  │
-│  └────────────────┘           └─────────┬─────────┘  │
-│                                         │            │
-└─────────────────────────────────────────┼────────────┘
-                                          ▼
-                              ┌───────────────────────┐
-                              │ Save to PostgreSQL    │
-                              │ Visualize top frames  │
-                              │ Send via Telegram bot │
-                              └───────────────────────┘
+```mermaid
+graph TD
+    A["Frigate NVR Recordings (.mp4)"] --> B["File Watcher<br/>Detects new videos"]
+
+    B --> C
+
+    subgraph C ["Processing Pipeline"]
+        direction LR
+        P["<b>Producers (6x)</b><br/>Extract key<br/>frames from<br/>video files"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect objects<br/>Filter by class<br/>Re-check accuracy"]
+    end
+
+    C --> D["Save to PostgreSQL"]
+    D --> E["Visualize top frames"]
+    E --> F["Send via Telegram bot"]
 ```
 
 Frame extraction, object detection, and video annotation are performed by an external [vision-api-server](https://github.com/zinin/vision-api-server) — a Python service wrapping Ultralytics YOLO models.
