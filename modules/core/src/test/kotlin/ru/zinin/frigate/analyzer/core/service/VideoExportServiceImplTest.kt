@@ -23,6 +23,7 @@ import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress.Stage
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertEquals
@@ -485,6 +486,166 @@ class VideoExportServiceImplTest {
             assertTrue(exception.message!!.contains("timed out"))
             coVerify(atLeast = 1) { tempFileHelper.deleteIfExists(mergedFile) }
         }
+
+    // --- exportByRecordingId tests ---
+
+    private val recordingId: UUID = UUID.randomUUID()
+    private val recordTimestamp: Instant = Instant.parse("2026-02-19T10:30:00Z")
+    private val exportDuration: Duration = Duration.ofMinutes(1)
+
+    private fun recordingWithTimestamp(
+        id: UUID = recordingId,
+        camId: String? = "front",
+        recordTimestamp: Instant? = this.recordTimestamp,
+    ) = RecordingEntity(
+        id = id,
+        creationTimestamp = null,
+        filePath = null,
+        fileCreationTimestamp = null,
+        camId = camId,
+        recordDate = null,
+        recordTime = null,
+        recordTimestamp = recordTimestamp,
+        startProcessingTimestamp = null,
+        processTimestamp = null,
+        processAttempts = null,
+        detectionsCount = null,
+        analyzeTime = null,
+        analyzedFramesCount = null,
+    )
+
+    @Test
+    fun `exportByRecordingId calls exportVideo with correct range and ORIGINAL mode`() =
+        runTest {
+            val recording = recordingWithTimestamp()
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+
+            val expectedStart = recordTimestamp.minus(exportDuration)
+            val expectedEnd = recordTimestamp.plus(exportDuration)
+
+            coEvery { recordingRepository.findById(recordingId) } returns recording
+            coEvery { recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+
+            val progress = mutableListOf<VideoExportProgress>()
+
+            val result =
+                service.exportByRecordingId(
+                    recordingId = recordingId,
+                    duration = exportDuration,
+                    onProgress = { progress.add(it) },
+                )
+
+            assertEquals(mergedFile, result)
+            coVerify { recordingRepository.findById(recordingId) }
+            coVerify {
+                recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd)
+            }
+        }
+
+    @Test
+    fun `exportByRecordingId throws IllegalArgumentException when recording not found`() =
+        runTest {
+            coEvery { recordingRepository.findById(recordingId) } returns null
+
+            val exception =
+                assertThrows<IllegalArgumentException> {
+                    service.exportByRecordingId(recordingId = recordingId, duration = exportDuration)
+                }
+
+            assertTrue(exception.message!!.contains("Recording not found"))
+            assertTrue(exception.message!!.contains(recordingId.toString()))
+        }
+
+    @Test
+    fun `exportByRecordingId throws IllegalStateException when camId is null`() =
+        runTest {
+            val recording = recordingWithTimestamp(camId = null)
+            coEvery { recordingRepository.findById(recordingId) } returns recording
+
+            val exception =
+                assertThrows<IllegalStateException> {
+                    service.exportByRecordingId(recordingId = recordingId, duration = exportDuration)
+                }
+
+            assertTrue(exception.message!!.contains("has no camId"))
+            assertTrue(exception.message!!.contains(recordingId.toString()))
+        }
+
+    @Test
+    fun `exportByRecordingId throws IllegalStateException when recordTimestamp is null`() =
+        runTest {
+            val recording = recordingWithTimestamp(recordTimestamp = null)
+            coEvery { recordingRepository.findById(recordingId) } returns recording
+
+            val exception =
+                assertThrows<IllegalStateException> {
+                    service.exportByRecordingId(recordingId = recordingId, duration = exportDuration)
+                }
+
+            assertTrue(exception.message!!.contains("has no recordTimestamp"))
+            assertTrue(exception.message!!.contains(recordingId.toString()))
+        }
+
+    @Test
+    fun `exportByRecordingId computes correct time range with custom duration`() =
+        runTest {
+            val customDuration = Duration.ofMinutes(5)
+            val recording = recordingWithTimestamp()
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+
+            val expectedStart = recordTimestamp.minus(customDuration)
+            val expectedEnd = recordTimestamp.plus(customDuration)
+
+            coEvery { recordingRepository.findById(recordingId) } returns recording
+            coEvery { recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+
+            val result =
+                service.exportByRecordingId(
+                    recordingId = recordingId,
+                    duration = customDuration,
+                )
+
+            assertEquals(mergedFile, result)
+            coVerify {
+                recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd)
+            }
+        }
+
+    @Test
+    fun `exportByRecordingId propagates progress from exportVideo`() =
+        runTest {
+            val recording = recordingWithTimestamp()
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+
+            val expectedStart = recordTimestamp.minus(exportDuration)
+            val expectedEnd = recordTimestamp.plus(exportDuration)
+
+            coEvery { recordingRepository.findById(recordingId) } returns recording
+            coEvery { recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+
+            val progress = mutableListOf<VideoExportProgress>()
+
+            service.exportByRecordingId(
+                recordingId = recordingId,
+                duration = exportDuration,
+                onProgress = { progress.add(it) },
+            )
+
+            assertTrue(progress.size >= 2)
+            assertEquals(Stage.PREPARING, progress[0].stage)
+            assertEquals(Stage.MERGING, progress[1].stage)
+        }
+
+    // --- end exportByRecordingId tests ---
 
     @Test
     fun `export original with compress still too large throws and cleans up`() =
