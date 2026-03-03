@@ -39,7 +39,11 @@ class TelegramNotificationSender(
         when {
             frames.isEmpty() -> {
                 RetryHelper.retryIndefinitely("Send text message", task.chatId) {
-                    bot.sendTextMessage(chatId = chatIdObj, text = message)
+                    bot.sendTextMessage(
+                        chatId = chatIdObj,
+                        text = message,
+                        replyMarkup = createExportKeyboard(task.recordingId),
+                    )
                 }
             }
 
@@ -51,6 +55,7 @@ class TelegramNotificationSender(
                             chatId = chatIdObj,
                             photo = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
                             text = message,
+                            replyMarkup = createExportKeyboard(task.recordingId),
                         ),
                     )
                 }
