@@ -541,13 +541,19 @@
             "id": 3,
             "title": "Реализовать вызов exportByRecordingId с таймаутом и отправку видео",
             "description": "Интегрировать вызов videoExportService.exportByRecordingId в withTimeoutOrNull, отправить видео через bot.sendVideo и реализовать очистку файла через cleanupExportFile.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1,
               2
             ],
             "details": "1. Добавить константу QUICK_EXPORT_TIMEOUT_MS = 300_000L (5 минут) в companion object\n2. После смены кнопки вызвать: val videoPath = withTimeoutOrNull(QUICK_EXPORT_TIMEOUT_MS) { videoExportService.exportByRecordingId(recordingId) }\n3. При videoPath == null отправить сообщение 'Экспорт занял слишком много времени. Попробуйте позже.' и вызвать restoreButton\n4. Отправить видео: val sent = withTimeoutOrNull(properties.sendVideoTimeout.toMillis()) { bot.sendVideo(chatId, videoPath.toFile().asMultipartFile().copy(filename = \"quick_export_$recordingId.mp4\")) }\n5. При sent == null отправить сообщение о превышении времени ожидания\n6. В finally блоке вызвать videoExportService.cleanupExportFile(videoPath) с try-catch\n7. После успешной отправки вызвать restoreButton для возврата кнопки",
-            "testStrategy": "Unit-тест: замокать videoExportService.exportByRecordingId возвращающий Path, проверить что sendVideo вызван и cleanupExportFile вызван. Тест timeout: exportByRecordingId 'зависает' → проверить что отправлено сообщение о timeout."
+            "testStrategy": "Unit-тест: замокать videoExportService.exportByRecordingId возвращающий Path, проверить что sendVideo вызван и cleanupExportFile вызван. Тест timeout: exportByRecordingId 'зависает' → проверить что отправлено сообщение о timeout.",
+            "metadata": {
+              "startRev": "8cedaa9f63dac1ec427c6d0b91416c7d3ea5206d",
+              "endRev": "f71b7042117e4fdc7fa25d3408394f92548e1be4",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T23:49:04.675Z"
+            }
           },
           {
             "id": 4,
@@ -565,7 +571,7 @@
         ],
         "metadata": {
           "startRev": "dd55511102d5016bdd8a63e7cb15832acf9073bc",
-          "endRev": "ea0df53b7bc4775a6ec22eae4fa44b67a9844529"
+          "endRev": "f71b7042117e4fdc7fa25d3408394f92548e1be4"
         }
       },
       {
