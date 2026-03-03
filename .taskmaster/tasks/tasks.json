@@ -329,7 +329,7 @@
             "id": 3,
             "title": "Добавить KDoc документацию для нового метода",
             "description": "Написать KDoc комментарий с описанием метода, параметров и исключений",
-            "status": "in-progress",
+            "status": "done",
             "dependencies": [
               2
             ],
@@ -337,8 +337,9 @@
             "testStrategy": "Визуальная проверка корректности KDoc синтаксиса",
             "metadata": {
               "startRev": "27269c67302bad62a1225f3dfd72b60c0518813b",
-              "endRev": "27269c67302bad62a1225f3dfd72b60c0518813b",
-              "runAttempts": 1
+              "endRev": "abb4ea4fdb1729ffd7754805c7589d93c4a462bf",
+              "runAttempts": 2,
+              "executedAt": "2026-03-03T20:58:29.994Z"
             }
           },
           {
@@ -366,7 +367,7 @@
         ],
         "metadata": {
           "startRev": "1e00db93537d65b9e79d969b30ca69ab9f547b34",
-          "endRev": "f001e0df980e1a869c4701a4721511a421367e6e"
+          "endRev": "abb4ea4fdb1729ffd7754805c7589d93c4a462bf"
         }
       },
       {
