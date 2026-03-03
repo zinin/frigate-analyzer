@@ -5,7 +5,7 @@
         "id": 1,
         "title": "Расширить NotificationTask полем recordingId",
         "description": "Добавить поле recordingId: UUID в data class NotificationTask для формирования callback data кнопки экспорта.",
-        "status": "in-progress",
+        "status": "done",
         "priority": "high",
         "dependencies": [],
         "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/NotificationTask.kt`\n2. Добавить поле `val recordingId: UUID` в data class NotificationTask:\n```kotlin\ndata class NotificationTask(\n    val id: UUID,\n    val chatId: Long,\n    val message: String,\n    val visualizedFrames: List<VisualizedFrameData>,\n    val recordingId: UUID, // НОВОЕ ПОЛЕ\n    val createdAt: Instant = Instant.now(),\n)\n```\n3. Поле recordingId нужно для формирования callback data `qe:{recordingId}` в inline-кнопке экспорта.",
@@ -82,17 +82,23 @@
             "id": 5,
             "title": "Запустить тесты и убедиться в отсутствии регрессий",
             "description": "Выполнить все тесты проекта для проверки, что добавление поля не сломало существующую функциональность.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               4
             ],
             "details": "Запустить полный набор тестов: `./gradlew test`. Особое внимание обратить на тесты модуля telegram, если они существуют. Если тесты создают NotificationTask напрямую, они должны быть обновлены для передачи recordingId (использовать любой UUID, например UUID.randomUUID()).",
-            "testStrategy": "Все тесты должны пройти успешно. При необходимости обновить тесты, создающие NotificationTask напрямую."
+            "testStrategy": "Все тесты должны пройти успешно. При необходимости обновить тесты, создающие NotificationTask напрямую.",
+            "metadata": {
+              "startRev": "e13586b91b1fd486775653ae0640692640caf7a8",
+              "endRev": "e13586b91b1fd486775653ae0640692640caf7a8",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:33:10.473Z"
+            }
           }
         ],
         "metadata": {
           "startRev": "ea887337c2de3004d0253b6f317b55e3d2fe84fc",
-          "endRev": "9452c2b82119f330a55ee79e7df98044f270fc86"
+          "endRev": "e13586b91b1fd486775653ae0640692640caf7a8"
         }
       },
       {
