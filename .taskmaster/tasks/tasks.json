@@ -418,12 +418,18 @@
             "id": 2,
             "title": "Добавить необходимые импорты в VideoExportServiceImpl",
             "description": "Добавить импорты java.time.Duration и java.util.UUID в файл реализации VideoExportServiceImpl.kt",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "Открыть файл modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/VideoExportServiceImpl.kt. В секцию импортов добавить: import java.time.Duration и import java.util.UUID. UUID уже может быть импортирован транзитивно, но явный импорт обеспечит стабильность кода.",
-            "testStrategy": "Файл должен компилироваться без ошибок после добавления импортов."
+            "testStrategy": "Файл должен компилироваться без ошибок после добавления импортов.",
+            "metadata": {
+              "startRev": "37f02165dba2ae3b44f19aca914942f954e0f8ba",
+              "endRev": "37f02165dba2ae3b44f19aca914942f954e0f8ba",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T21:47:06.028Z"
+            }
           },
           {
             "id": 3,
@@ -461,7 +467,7 @@
         ],
         "metadata": {
           "startRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e",
-          "endRev": "99eb04aafd1e5c3f61764c0ed7c812d959f5175e"
+          "endRev": "37f02165dba2ae3b44f19aca914942f954e0f8ba"
         }
       },
       {
