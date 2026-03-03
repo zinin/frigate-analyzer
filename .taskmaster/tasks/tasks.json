@@ -47,12 +47,18 @@
             "id": 3,
             "title": "Проверить другие места использования NotificationTask",
             "description": "Убедиться, что нет других мест создания NotificationTask, которые требуют обновления.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "Выполнить поиск по проекту: `grep -r 'NotificationTask(' modules/`. Проанализировать все найденные вызовы конструктора. На данный момент единственное место создания — TelegramNotificationServiceImpl.sendRecordingNotification. TelegramNotificationSender и TelegramNotificationQueue только читают поля task, поэтому изменения не требуются.",
-            "testStrategy": "Grep-поиск по проекту для подтверждения отсутствия других мест создания NotificationTask."
+            "testStrategy": "Grep-поиск по проекту для подтверждения отсутствия других мест создания NotificationTask.",
+            "metadata": {
+              "startRev": "87cb5b2ae97447a1898d2f5eb60aa256ed0ecd45",
+              "endRev": "87cb5b2ae97447a1898d2f5eb60aa256ed0ecd45",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:27:02.125Z"
+            }
           },
           {
             "id": 4,
@@ -80,7 +86,7 @@
         ],
         "metadata": {
           "startRev": "ea887337c2de3004d0253b6f317b55e3d2fe84fc",
-          "endRev": "840fa310cd3817b341e9e4810fd6b2430028c2df"
+          "endRev": "87cb5b2ae97447a1898d2f5eb60aa256ed0ecd45"
         }
       },
       {
