@@ -312,12 +312,18 @@
             "id": 2,
             "title": "Добавить импорт java.util.UUID в VideoExportService",
             "description": "Добавить импорт UUID для типа параметра recordingId",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "В файле VideoExportService.kt добавить строку `import java.util.UUID` в секцию импортов. Этот тип необходим для параметра recordingId нового метода exportByRecordingId.",
-            "testStrategy": "Проверить что импорт добавлен корректно и файл компилируется"
+            "testStrategy": "Проверить что импорт добавлен корректно и файл компилируется",
+            "metadata": {
+              "startRev": "f001e0df980e1a869c4701a4721511a421367e6e",
+              "endRev": "f001e0df980e1a869c4701a4721511a421367e6e",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T20:54:56.087Z"
+            }
           },
           {
             "id": 3,
@@ -355,7 +361,7 @@
         ],
         "metadata": {
           "startRev": "1e00db93537d65b9e79d969b30ca69ab9f547b34",
-          "endRev": "b2aaf497ff8cbdb7dadce56c473a5c3f454742af"
+          "endRev": "f001e0df980e1a869c4701a4721511a421367e6e"
         }
       },
       {
