@@ -30,7 +30,9 @@ import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.nio.file.Files
 import java.time.Duration
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -457,6 +459,57 @@ class QuickExportHandlerTest {
                 assertTrue(
                     sendTextRequests.any { it.text.contains("Ошибка экспорта") },
                     "Expected generic error message, but got: ${sendTextRequests.map { it.text }}",
+                )
+            }
+
+        @Test
+        fun `handle propagates CancellationException without catching`() =
+            runTest {
+                val callback = createMessageCallback()
+
+                coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                } throws CancellationException("Coroutine was cancelled")
+
+                assertFailsWith<CancellationException> {
+                    handler.handle(callback)
+                }
+
+                // Verify button was NOT restored (CancellationException propagates immediately)
+                coVerify(exactly = 0) { videoExportService.cleanupExportFile(any()) }
+            }
+
+        @Test
+        fun `handle sends not found message and restores button for not found recording`() =
+            runTest {
+                val callback = createMessageCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                } throws IllegalArgumentException("Recording not found")
+
+                handler.handle(callback)
+
+                // Verify "not found" error message was sent
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains("Запись не найдена") },
+                    "Expected 'not found' error message, but got: ${sendTextRequests.map { it.text }}",
+                )
+
+                // Verify button was restored after error
+                val editRequests = capturedRequests.filterIsInstance<EditChatMessageReplyMarkup>()
+                assertTrue(editRequests.size >= 2, "Expected at least 2 edit calls (processing + restore)")
+
+                val restoreMarkup = editRequests.last().replyMarkup
+                assertNotNull(restoreMarkup)
+                assertIs<InlineKeyboardMarkup>(restoreMarkup)
+                assertEquals(
+                    "📹 Экспорт видео",
+                    (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
                 )
             }
     }
