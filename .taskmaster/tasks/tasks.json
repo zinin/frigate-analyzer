@@ -64,13 +64,19 @@
             "id": 4,
             "title": "Запустить компиляцию всего проекта",
             "description": "Убедиться, что все модули компилируются после добавления нового поля.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               2,
               3
             ],
             "details": "Запустить полную компиляцию проекта: `./gradlew build -x test`. Это проверит:\n1. Корректность синтаксиса data class\n2. Передачу всех обязательных параметров в конструктор\n3. Отсутствие побочных эффектов в зависимых модулях (core зависит от telegram)\n\nПри ошибках ktlint запустить `./gradlew ktlintFormat` и повторить сборку.",
-            "testStrategy": "Успешное завершение `./gradlew build -x test` без ошибок компиляции."
+            "testStrategy": "Успешное завершение `./gradlew build -x test` без ошибок компиляции.",
+            "metadata": {
+              "startRev": "9452c2b82119f330a55ee79e7df98044f270fc86",
+              "endRev": "9452c2b82119f330a55ee79e7df98044f270fc86",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T19:28:21.590Z"
+            }
           },
           {
             "id": 5,
@@ -86,7 +92,7 @@
         ],
         "metadata": {
           "startRev": "ea887337c2de3004d0253b6f317b55e3d2fe84fc",
-          "endRev": "87cb5b2ae97447a1898d2f5eb60aa256ed0ecd45"
+          "endRev": "9452c2b82119f330a55ee79e7df98044f270fc86"
         }
       },
       {
