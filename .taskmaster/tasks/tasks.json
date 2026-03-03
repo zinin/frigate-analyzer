@@ -287,7 +287,7 @@
         "id": 4,
         "title": "Добавить метод exportByRecordingId в VideoExportService",
         "description": "Добавить новый метод в интерфейс VideoExportService для быстрого экспорта по recordingId с фиксированным диапазоном ±1 мин.",
-        "status": "rework",
+        "status": "review",
         "priority": "high",
         "dependencies": [],
         "details": "1. Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/VideoExportService.kt`\n2. Добавить новый метод:\n```kotlin\nimport java.time.Duration\nimport java.util.UUID\n\ninterface VideoExportService {\n    // ... существующие методы ...\n\n    /**\n     * Экспортирует видео по ID записи с диапазоном ±duration от recordTimestamp.\n     * @param recordingId UUID записи из БД\n     * @param duration длительность в одну сторону (по умолчанию 1 минута, итого 2 мин)\n     * @param onProgress колбэк прогресса\n     * @return путь к экспортированному видео\n     * @throws IllegalArgumentException если запись не найдена\n     * @throws IllegalStateException если файлы записи отсутствуют\n     */\n    suspend fun exportByRecordingId(\n        recordingId: UUID,\n        duration: Duration = Duration.ofMinutes(1),\n        onProgress: suspend (VideoExportProgress) -> Unit = {},\n    ): Path\n}\n```",
@@ -380,10 +380,11 @@
         "metadata": {
           "startRev": "1e00db93537d65b9e79d969b30ca69ab9f547b34",
           "endRev": "1d3d3b73a12c9c8e1d82d86c313c6bba75f46443",
-          "reviewRound": 1,
+          "reviewRound": 2,
           "reviewRoundsTotal": 2,
           "reviewContext": false,
-          "reviewPhaseComplete": false
+          "reviewPhaseComplete": false,
+          "reworkAttempts": 0
         }
       },
       {
