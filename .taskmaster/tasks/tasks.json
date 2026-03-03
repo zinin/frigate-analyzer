@@ -497,7 +497,7 @@
         "id": 6,
         "title": "Создать QuickExportHandler для обработки callback query",
         "description": "Создать новый компонент QuickExportHandler для обработки нажатий кнопки быстрого экспорта с callback data `qe:{recordingId}`.",
-        "status": "pending",
+        "status": "in-progress",
         "priority": "high",
         "dependencies": [
           5
@@ -509,10 +509,16 @@
             "id": 1,
             "title": "Создать базовый класс QuickExportHandler с зависимостями и парсингом callback data",
             "description": "Создать файл QuickExportHandler.kt с базовой структурой класса, инъекцией зависимостей (TelegramBot, VideoExportService, AuthorizationFilter, TelegramProperties) и логикой парсинга recordingId из callback data с префиксом 'qe:'.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "1. Создать директорию `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/`\n2. Создать файл QuickExportHandler.kt с аннотациями @Component и @ConditionalOnProperty\n3. Добавить зависимости в конструктор: TelegramBot, VideoExportService, AuthorizationFilter, TelegramProperties\n4. Реализовать companion object с константой CALLBACK_PREFIX = \"qe:\"\n5. Создать метод handle(callback: DataCallbackQuery) с извлечением MessageDataCallbackQuery\n6. Реализовать парсинг recordingId через UUID.fromString(callback.data.removePrefix(CALLBACK_PREFIX))\n7. Добавить обработку IllegalArgumentException при парсинге UUID с ответом через bot.answer(callback, \"Ошибка: неверный формат данных\")\n8. Добавить проверку авторизации через authorizationFilter (по аналогии с другими обработчиками)",
-            "testStrategy": "Unit-тест: вызвать handle с callback data 'qe:invalid-uuid' → проверить что bot.answer вызван с сообщением об ошибке. Unit-тест: вызвать handle с валидным UUID → проверить что парсинг успешен."
+            "testStrategy": "Unit-тест: вызвать handle с callback data 'qe:invalid-uuid' → проверить что bot.answer вызван с сообщением об ошибке. Unit-тест: вызвать handle с валидным UUID → проверить что парсинг успешен.",
+            "metadata": {
+              "startRev": "dd55511102d5016bdd8a63e7cb15832acf9073bc",
+              "endRev": "c8967dddf0382bd1c4926f122d27a52453ebe1e0",
+              "runAttempts": 1,
+              "executedAt": "2026-03-03T22:46:26.603Z"
+            }
           },
           {
             "id": 2,
@@ -550,7 +556,11 @@
             "details": "1. Обернуть основную логику в try-catch блок\n2. Обработать CancellationException отдельно через throw e (не глотать корутинные отмены)\n3. Для других исключений логировать logger.error(e) { \"Quick export failed for recording $recordingId\" }\n4. Определить тип ошибки по e.message: contains(\"not found\") → 'Запись не найдена.', contains(\"missing\") → 'Файлы записи недоступны.', иначе → 'Ошибка экспорта. Попробуйте позже.'\n5. Отправить соответствующее сообщение через bot.sendTextMessage(chatId, errorMsg)\n6. В конце catch блока вызвать restoreButton для восстановления кнопки\n7. В начале метода handle сразу вызвать bot.answer(callback) для снятия индикатора загрузки в Telegram",
             "testStrategy": "Unit-тест: exportByRecordingId выбрасывает IllegalArgumentException с 'not found' → проверить сообщение 'Запись не найдена.' и восстановление кнопки. Unit-тест: выбрасывается CancellationException → проверить что исключение пробрасывается дальше."
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "dd55511102d5016bdd8a63e7cb15832acf9073bc",
+          "endRev": "c8967dddf0382bd1c4926f122d27a52453ebe1e0"
+        }
       },
       {
         "id": 7,
