@@ -19,6 +19,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class TelegramNotificationServiceImplTest {
     private val userService = mockk<TelegramUserService>()
@@ -70,6 +71,7 @@ class TelegramNotificationServiceImplTest {
             assertEquals(taskId, taskSlot.captured.id)
             assertEquals(chatId, taskSlot.captured.chatId)
             assertEquals(visualizedFrames, taskSlot.captured.visualizedFrames)
+            assertTrue(taskSlot.captured.message.contains("camera1"), "message should contain camera ID")
         }
 
     @Test
@@ -105,8 +107,10 @@ class TelegramNotificationServiceImplTest {
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1), detectionsCount = 1),
                 )
             val tasks = mutableListOf<NotificationTask>()
+            val taskId1 = UUID.randomUUID()
+            val taskId2 = UUID.randomUUID()
 
-            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { uuidGeneratorHelper.generateV1() } returnsMany listOf(taskId1, taskId2)
             coEvery { userService.getAuthorizedUsersWithZones() } returns
                 listOf(
                     UserZoneInfo(chatId = 100L, zone = ZoneId.of("Europe/Moscow")),
@@ -120,6 +124,8 @@ class TelegramNotificationServiceImplTest {
             tasks.forEach { task ->
                 assertEquals(recordingId, task.recordingId)
             }
+            assertEquals(taskId1, tasks[0].id)
+            assertEquals(taskId2, tasks[1].id)
             assertEquals(100L, tasks[0].chatId)
             assertEquals(200L, tasks[1].chatId)
         }
