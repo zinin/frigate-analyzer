@@ -5,6 +5,7 @@ import dev.inmo.tgbotapi.requests.abstracts.Request
 import dev.inmo.tgbotapi.requests.answers.AnswerCallbackQuery
 import dev.inmo.tgbotapi.requests.edit.reply_markup.EditChatMessageReplyMarkup
 import dev.inmo.tgbotapi.requests.send.SendTextMessage
+import dev.inmo.tgbotapi.requests.send.media.SendVideoData
 import dev.inmo.tgbotapi.types.CallbackQueryId
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
@@ -287,8 +288,11 @@ class QuickExportHandlerTest {
                 coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
 
                 // 3. Video was sent — tgbotapi's sendVideo() with a multipart file creates an
-                //    internal CommonMultipartFileRequest wrapping SendVideoData. Since the class is
-                //    internal to tgbotapi, we verify by class name rather than filterIsInstance.
+                //    internal CommonMultipartFileRequest wrapping SendVideoData. CommonMultipartFileRequest
+                //    is Kotlin-internal so we verify by class name; SendVideoData is public so we
+                //    verify the inner data via reflection for a stable type check.
+                //    Known fragility: the class name check is tied to tgbotapi internals;
+                //    review after library version upgrades.
                 val videoSendRequests =
                     capturedRequests.filter {
                         it !is AnswerCallbackQuery && it !is EditChatMessageReplyMarkup && it !is SendTextMessage
@@ -302,8 +306,17 @@ class QuickExportHandlerTest {
                 assertTrue(
                     videoSendRequests.any { it::class.simpleName == "CommonMultipartFileRequest" },
                     "Expected CommonMultipartFileRequest (tgbotapi's sendVideo multipart wrapper), " +
-                        "but got: ${videoSendRequests.map { "${it::class.simpleName}" }}",
+                        "but got: ${videoSendRequests.map { it::class.simpleName }}",
                 )
+                // Additionally verify the inner data is SendVideoData via reflection (public type,
+                // stable across tgbotapi versions unlike the wrapper class name).
+                val multipartRequest = videoSendRequests.first { it::class.simpleName == "CommonMultipartFileRequest" }
+                val innerData =
+                    multipartRequest::class.java.methods
+                        .find { it.name == "getData" }
+                        ?.invoke(multipartRequest)
+                assertNotNull(innerData, "CommonMultipartFileRequest.getData() returned null")
+                assertIs<SendVideoData>(innerData, "Expected inner data to be SendVideoData")
 
                 // 4. Exported file was cleaned up
                 coVerify { videoExportService.cleanupExportFile(tempFile) }
@@ -737,12 +750,19 @@ class QuickExportHandlerTest {
                 coVerify(exactly = 0) { videoExportService.cleanupExportFile(any()) }
             }
 
+        /**
+         * Complements [handle sends generic error message for unexpected exceptions] which only
+         * verifies the error message text. This test additionally asserts that no video was sent
+         * and no cleanup was called — ensuring the error path has no side effects.
+         */
         @Test
         fun `handle does not send video or cleanup on generic RuntimeException`() =
             runTest {
                 // given — generic RuntimeException triggers the "Ошибка экспорта" path
                 val callback = createOwnerCallback()
 
+                // Error path throws before reaching sendVideo, so a uniform relaxed mock is safe here
+                // (unlike the happy-path test which needs type-specific coAnswers routing).
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
                 coEvery {
