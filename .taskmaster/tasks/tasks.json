@@ -589,7 +589,7 @@
         "id": 7,
         "title": "Обновить TelegramNotificationSender использовать QuickExportHandler.createExportKeyboard",
         "description": "Рефакторинг: использовать статический метод QuickExportHandler.createExportKeyboard вместо дублирования кода.",
-        "status": "in-progress",
+        "status": "done",
         "priority": "medium",
         "dependencies": [
           3,
@@ -669,17 +669,23 @@
             "id": 5,
             "title": "Проверить единообразие формата callback data",
             "description": "Убедиться, что после рефакторинга формат callback data остаётся единым: qe:{UUID}.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               4
             ],
             "details": "Провести ревью кода:\n1. Убедиться, что QuickExportHandler.createExportKeyboard формирует callback data в формате \"qe:{recordingId}\"\n2. Проверить, что TelegramNotificationSender теперь использует только этот единый источник истины\n3. Убедиться, что нигде в TelegramNotificationSender не осталось захардкоженных строк с префиксом \"qe:\"\n4. Запустить ./gradlew build для финальной проверки",
-            "testStrategy": "1. Запустить ./gradlew :modules:telegram:test для проверки тестов модуля.\n2. Интеграционный тест: отправить уведомление и проверить формат callback data кнопки.\n3. Код-ревью: поиск по \"qe:\" должен показывать только QuickExportHandler."
+            "testStrategy": "1. Запустить ./gradlew :modules:telegram:test для проверки тестов модуля.\n2. Интеграционный тест: отправить уведомление и проверить формат callback data кнопки.\n3. Код-ревью: поиск по \"qe:\" должен показывать только QuickExportHandler.",
+            "metadata": {
+              "startRev": "5bfb0e4c28a69eab3b83c83590523bcd702267d2",
+              "endRev": "5bfb0e4c28a69eab3b83c83590523bcd702267d2",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T02:24:16.551Z"
+            }
           }
         ],
         "metadata": {
           "startRev": "b048d557586156ecf14c254535f228097874921c",
-          "endRev": "2e5c33e2722834875cd7e905818db3c45dadcb45"
+          "endRev": "5bfb0e4c28a69eab3b83c83590523bcd702267d2"
         }
       },
       {
