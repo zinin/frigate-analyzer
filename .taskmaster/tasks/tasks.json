@@ -823,12 +823,18 @@
             "id": 4,
             "title": "Реализовать проверку активного пользователя через userService",
             "description": "Добавить асинхронную проверку, является ли пользователь активным через вызов userService.findActiveByUsername().",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               2
             ],
             "details": "Добавить проверку активного пользователя:\n```kotlin\nval isActiveUser = userService.findActiveByUsername(username) != null\n```\nЭто соответствует логике в AuthorizationFilter.getRole() (строка 30). Метод suspend, поэтому вызывается в корутине. Возвращает TelegramUserDto или null.",
-            "testStrategy": "Unit-тест: callback от активного пользователя (findActiveByUsername возвращает не null) → isActiveUser=true, экспорт выполняется."
+            "testStrategy": "Unit-тест: callback от активного пользователя (findActiveByUsername возвращает не null) → isActiveUser=true, экспорт выполняется.",
+            "metadata": {
+              "startRev": "a34a106f4cc812a9b2c9944e16bfb019b93d81e8",
+              "endRev": "dd16080380443a16dd7bb5bf7201e5aa6d1ad2d0",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T01:31:27.973Z"
+            }
           },
           {
             "id": 5,
@@ -845,7 +851,7 @@
         ],
         "metadata": {
           "startRev": "220f763cca47fc3c2f5a4904e2ef6f94b1cdea2a",
-          "endRev": "6f0036f9eed7a29b1982ef5c82ddf62cc43ce3be"
+          "endRev": "dd16080380443a16dd7bb5bf7201e5aa6d1ad2d0"
         }
       },
       {
