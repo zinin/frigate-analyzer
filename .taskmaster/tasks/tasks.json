@@ -658,7 +658,7 @@
         "id": 8,
         "title": "Зарегистрировать QuickExportHandler в FrigateAnalyzerBot",
         "description": "Добавить глобальный обработчик onDataCallbackQuery в FrigateAnalyzerBot для делегирования callback с префиксом qe: в QuickExportHandler.",
-        "status": "review",
+        "status": "rework",
         "priority": "high",
         "dependencies": [
           6
