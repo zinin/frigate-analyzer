@@ -1,0 +1,25 @@
+### Strengths
+
+- **Proper coroutine cancellation discipline**: `CancellationException` is correctly re-thrown at both the handler and bot levels, `withTimeoutOrNull` is used for non-throwing timeout handling, and `runTest` is used in all test cases. (found by: claude-default-high, opencode-lanit-MiniMax-M2-5, opencode-zai-coding-plan-glm-4-7, opencode-openai-gpt-5-3-codex-xhigh, claude-sonnet-high)
+- **Defensive error handling**: Every bot API call (`editMessageReplyMarkup`, `cleanupExportFile`, `sendVideo`) is wrapped in try-catch to avoid cascading failures. (found by: claude-default-high, opencode-lanit-MiniMax-M2-5, opencode-zai-coding-plan-glm-4-7, opencode-openai-gpt-5-3-codex-xhigh)
+- **Reliable cleanup via `finally` block**: `cleanupExportFile(videoPath)` ensures temp files are deleted even when `sendVideo` throws or times out. (found by: claude-default-high, opencode-zai-coding-plan-glm-4-7, opencode-openai-gpt-5-3-codex-xhigh, claude-sonnet-high)
+- **Button state management**: The processing → restore lifecycle is well-implemented with proper restoration in all code paths (success, timeout, error). `restoreButton` is wrapped in try-catch so a Telegram API failure doesn't mask the real error. (found by: claude-default-high, opencode-lanit-MiniMax-M2-5, opencode-zai-coding-plan-glm-4-7, opencode-openai-gpt-5-3-codex-xhigh)
+- **Two-level timeout protection**: Both the export (5 min) and the Telegram upload (`sendVideoTimeout`) are individually bounded. (found by: opencode-lanit-MiniMax-M2-5, opencode-zai-coding-plan-glm-4-7, claude-sonnet-high)
+- **24 focused, high-quality tests**: Covering parsing, keyboard shape/text/data, authorization, button transitions, timeout, error classification, and `CancellationException` propagation. The request capture pattern (`mutableListOf<Request<*>>()` + `filterIsInstance`) is effective for verifying bot interactions. (found by: claude-default-high, opencode-zai-coding-plan-glm-4-7, opencode-openai-gpt-5-3-codex-xhigh, claude-sonnet-high)
+- **Cross-module CALLBACK_PREFIX contract test**: The assertion `QuickExportHandler.CALLBACK_PREFIX == TelegramNotificationSender.CALLBACK_PREFIX` catches divergence at compile time rather than runtime. (found by: claude-default-high, opencode-lanit-MiniMax-M2-5)
+- **Authorization exceeds the spec**: Line 51 adds `authorizationFilter.getRole(username) == null` beyond what the spec required, properly rejecting users with a Telegram username but no app-level role. (found by: claude-sonnet-high, opencode-lanit-MiniMax-M2-5, opencode-zai-coding-plan-glm-4-7)
+- **`parseRecordingId` extracted to companion object**: Directly testable without a running Spring context; blanket catch of `IllegalArgumentException` is clean. (found by: opencode-lanit-MiniMax-M2-5, claude-sonnet-high)
+- **Consistent with project patterns**: Uses `@ConditionalOnProperty`, `KotlinLogging`, `@Component` — all matching the existing code style. (found by: claude-default-high, opencode-lanit-MiniMax-M2-5)
+- **Clean integration in `FrigateAnalyzerBot`**: `onDataCallbackQuery(initialFilter = { it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX) })` correctly routes by prefix at `FrigateAnalyzerBot.kt:131–141`. (found by: claude-sonnet-high, opencode-zai-coding-plan-glm-4-7)
+- **Real tgbotapi data classes in tests**: Using `PrivateChatImpl`, `CommonUser`, `MessageDataCallbackQuery` directly instead of MockK mocks avoids known incompatibilities with tgbotapi's inline/value class hierarchies. (found by: claude-sonnet-high)
+- **UX well-thought-out**: Callback confirmed immediately, user-friendly messages for timeout/error states. (found by: opencode-openai-gpt-5-3-codex-xhigh)
+
+### Issues
+
+**[IMPORTANT] QuickExportHandler.kt:134,146-154 & TelegramNotificationSender.kt:92,105-113 — CALLBACK_PREFIX and keyboard factory duplicated with no shared source**
+Both `QuickExportHandler` and `TelegramNotificationSender` independently define `CALLBACK_PREFIX = "qe:"`, the button text `"📹 Экспорт видео"`, and identical `createExportKeyboard` methods. Since `TelegramNotificationSender.CALLBACK_PREFIX` was already made `internal` in a prior subtask specifically for reuse, `QuickExportHandler` should import it rather than redeclare. If someone changes the label in one place, the button the handler _restores_ will differ from the button the notification _originally sent_, causing a UI flicker.
+Suggested fix: Use `const val CALLBACK_PREFIX = TelegramNotificationSender.CALLBACK_PREFIX` or direct import. Promote `EXPORT_BUTTON_TEXT` to `internal` and make one of the `createExportKeyboard` implementations the canonical shared factory.
+Found by: claude-default-high, claude-sonnet-high
+
+**[IMPORTANT] QuickExportHandlerTest.kt — No test for the `sendVideo` timeout path (`sent == null`)**
+`QuickExportHandler.kt:90–92` handles the case where `withTimeoutOrNull(properties.sendVideoTimeout)` returns `null` by sending `"Не удалось отправить видео: превышено время ожидания."`. The export-timeout t
