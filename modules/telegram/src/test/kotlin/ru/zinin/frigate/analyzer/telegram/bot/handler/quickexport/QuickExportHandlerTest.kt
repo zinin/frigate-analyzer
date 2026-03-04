@@ -187,13 +187,15 @@ class QuickExportHandlerTest {
         }
 
         /**
-         * Creates a real [MessageDataCallbackQuery] with real data class instances
-         * and only interface mocks (ContentMessage).
+         * Creates a [MessageDataCallbackQuery] with the given [user].
          *
-         * Uses real PrivateChatImpl to avoid MockK issues with tgbotapi inline class
+         * Uses real [PrivateChatImpl] to avoid MockK issues with tgbotapi inline class
          * hierarchies (BusinessChatImpl ClassCastException on getId).
          */
-        private fun createMessageCallback(): MessageDataCallbackQuery {
+        private fun createCallbackWithUser(
+            user: CommonUser,
+            callbackId: String = "test-callback-id",
+        ): MessageDataCallbackQuery {
             val realChat =
                 PrivateChatImpl(
                     id = ChatId(RawChatId(12345L)),
@@ -203,14 +205,8 @@ class QuickExportHandlerTest {
                 mockk<ContentMessage<MessageContent>>(relaxed = true) {
                     every { chat } returns realChat
                 }
-            val user =
-                CommonUser(
-                    id = ChatId(RawChatId(1L)),
-                    firstName = "Test",
-                    username = Username("@testuser"),
-                )
             return MessageDataCallbackQuery(
-                id = CallbackQueryId("test-callback-id"),
+                id = CallbackQueryId(callbackId),
                 from = user,
                 chatInstance = "test-instance",
                 message = mockMessage,
@@ -218,61 +214,39 @@ class QuickExportHandlerTest {
             )
         }
 
-        /**
-         * Creates a [MessageDataCallbackQuery] from the bot owner (properties.owner).
-         */
-        private fun createOwnerCallback(): MessageDataCallbackQuery {
-            val realChat =
-                PrivateChatImpl(
-                    id = ChatId(RawChatId(12345L)),
-                    firstName = "TestChat",
-                )
-            val mockMessage =
-                mockk<ContentMessage<MessageContent>>(relaxed = true) {
-                    every { chat } returns realChat
-                }
-            val user =
-                CommonUser(
-                    id = ChatId(RawChatId(3L)),
-                    firstName = "Owner",
-                    username = Username("@${properties.owner}"),
-                )
-            return MessageDataCallbackQuery(
-                id = CallbackQueryId("test-callback-owner"),
-                from = user,
-                chatInstance = "test-instance",
-                message = mockMessage,
-                data = "${QuickExportHandler.CALLBACK_PREFIX}$recordingId",
+        private fun createMessageCallback() =
+            createCallbackWithUser(
+                user =
+                    CommonUser(
+                        id = ChatId(RawChatId(1L)),
+                        firstName = "Test",
+                        username = Username("@testuser"),
+                    ),
             )
-        }
 
-        /**
-         * Creates a [MessageDataCallbackQuery] with a user that has no username set.
-         */
-        private fun createMessageCallbackWithoutUsername(): MessageDataCallbackQuery {
-            val realChat =
-                PrivateChatImpl(
-                    id = ChatId(RawChatId(12345L)),
-                    firstName = "TestChat",
-                )
-            val mockMessage =
-                mockk<ContentMessage<MessageContent>>(relaxed = true) {
-                    every { chat } returns realChat
-                }
-            val user =
-                CommonUser(
-                    id = ChatId(RawChatId(2L)),
-                    firstName = "NoUsername",
-                    username = null,
-                )
-            return MessageDataCallbackQuery(
-                id = CallbackQueryId("test-callback-no-username"),
-                from = user,
-                chatInstance = "test-instance",
-                message = mockMessage,
-                data = "${QuickExportHandler.CALLBACK_PREFIX}$recordingId",
+        /** Creates a [MessageDataCallbackQuery] from the bot owner (properties.owner). */
+        private fun createOwnerCallback() =
+            createCallbackWithUser(
+                user =
+                    CommonUser(
+                        id = ChatId(RawChatId(3L)),
+                        firstName = "Owner",
+                        username = Username("@${properties.owner}"),
+                    ),
+                callbackId = "test-callback-owner",
             )
-        }
+
+        /** Creates a [MessageDataCallbackQuery] with a user that has no username set. */
+        private fun createMessageCallbackWithoutUsername() =
+            createCallbackWithUser(
+                user =
+                    CommonUser(
+                        id = ChatId(RawChatId(2L)),
+                        firstName = "NoUsername",
+                        username = null,
+                    ),
+                callbackId = "test-callback-no-username",
+            )
 
         @Test
         fun `handle with non-MessageDataCallbackQuery returns early`() =
