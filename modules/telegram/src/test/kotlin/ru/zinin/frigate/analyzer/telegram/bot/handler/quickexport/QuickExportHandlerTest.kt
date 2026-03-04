@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.nio.file.Files
 import java.time.Duration
@@ -171,6 +172,7 @@ class QuickExportHandlerTest {
         private val bot = mockk<TelegramBot>()
         private val videoExportService = mockk<VideoExportService>()
         private val authorizationFilter = mockk<AuthorizationFilter>()
+        private val userService = mockk<TelegramUserService>()
         private val properties =
             TelegramProperties(
                 enabled = true,
@@ -178,7 +180,7 @@ class QuickExportHandlerTest {
                 owner = "testowner",
                 sendVideoTimeout = Duration.ofMinutes(3),
             )
-        private val handler = QuickExportHandler(bot, videoExportService, authorizationFilter, properties)
+        private val handler = QuickExportHandler(bot, videoExportService, authorizationFilter, userService, properties)
 
         private val recordingId = UUID.randomUUID()
 

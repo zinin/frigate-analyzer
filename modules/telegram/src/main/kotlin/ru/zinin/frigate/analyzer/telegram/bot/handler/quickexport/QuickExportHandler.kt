@@ -20,6 +20,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.util.UUID
 
@@ -31,6 +32,7 @@ class QuickExportHandler(
     private val bot: TelegramBot,
     private val videoExportService: VideoExportService,
     private val authorizationFilter: AuthorizationFilter,
+    private val userService: TelegramUserService,
     private val properties: TelegramProperties,
 ) {
     suspend fun handle(callback: DataCallbackQuery) {
