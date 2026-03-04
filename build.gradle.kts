@@ -14,7 +14,7 @@ fun gitVersion(): String {
     fun exec(vararg args: String): String? = try {
         val process = ProcessBuilder(*args)
             .directory(rootDir)
-            .redirectErrorStream(false)
+            .redirectErrorStream(true)
             .start()
         val output = process.inputStream.bufferedReader().readText().trim()
         if (process.waitFor() == 0 && output.isNotEmpty()) output else null
@@ -28,11 +28,10 @@ fun gitVersion(): String {
     // Между тегами: bump patch + SNAPSHOT
     exec("git", "describe", "--tags", "--abbrev=0")
         ?.removePrefix("v")
-        ?.split(".")
-        ?.takeIf { it.size >= 3 }
-        ?.let { parts ->
-            val patch = (parts[2].toIntOrNull() ?: -1) + 1
-            return "${parts[0]}.${parts[1]}.$patch-SNAPSHOT"
+        ?.let { tag -> Regex("""^(\d+)\.(\d+)\.(\d+)$""").matchEntire(tag) }
+        ?.let { match ->
+            val (major, minor, patch) = match.destructured
+            return "$major.$minor.${patch.toInt() + 1}-SNAPSHOT"
         }
 
     return "0.0.1-SNAPSHOT"
