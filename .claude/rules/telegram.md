@@ -65,10 +65,10 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 
 Инлайн-кнопка на уведомлениях для мгновенного экспорта видео.
 
-| Компонент | Расположение | Назначение |
-|-----------|--------------|------------|
-| QuickExportHandler | `telegram/bot/handler/quickexport/` | Обработка callback query `qe:{recordingId}` |
-| NotificationTask.recordingId | `telegram/queue/` | ID записи для формирования callback data |
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| QuickExportHandler | `telegram/bot/handler/quickexport/` | Handles callback query `qe:{recordingId}` |
+| NotificationTask.recordingId | `telegram/queue/` | Recording ID for callback data |
 
 ### Как работает
 
