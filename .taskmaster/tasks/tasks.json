@@ -908,7 +908,7 @@
         "id": 10,
         "title": "Написать интеграционные тесты для Quick Export",
         "description": "Создать интеграционные тесты для проверки полного flow быстрого экспорта: от нажатия кнопки до получения видео.",
-        "status": "review",
+        "status": "rework",
         "priority": "medium",
         "dependencies": [
           8,
