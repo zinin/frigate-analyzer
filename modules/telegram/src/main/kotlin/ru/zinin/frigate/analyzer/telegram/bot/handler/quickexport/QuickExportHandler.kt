@@ -19,7 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
-import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.util.UUID
 
@@ -30,13 +30,17 @@ private val logger = KotlinLogging.logger {}
 class QuickExportHandler(
     private val bot: TelegramBot,
     private val videoExportService: VideoExportService,
-    private val userService: TelegramUserService,
+    private val authorizationFilter: AuthorizationFilter,
     private val properties: TelegramProperties,
 ) {
     suspend fun handle(callback: DataCallbackQuery) {
         val messageCallback = callback as? MessageDataCallbackQuery
         val message = messageCallback?.message
-        val chatId = message?.chat?.id ?: return
+        if (message == null) {
+            bot.answer(callback)
+            return
+        }
+        val chatId = message.chat.id
 
         // Парсим recordingId из callback data
         val recordingId = parseRecordingId(callback.data)
@@ -54,12 +58,8 @@ class QuickExportHandler(
             return
         }
 
-        // Проверяем: владелец или активный пользователь
-        val isOwner = username == properties.owner
-        val isActiveUser = !isOwner && userService.findActiveByUsername(username) != null
-
-        if (!isOwner && !isActiveUser) {
-            logger.warn { "Unauthorized quick export attempt from user: @$username" }
+        // Проверяем авторизацию через общий фильтр
+        if (authorizationFilter.getRole(username) == null) {
             bot.answer(callback, properties.unauthorizedMessage)
             return
         }
@@ -116,9 +116,9 @@ class QuickExportHandler(
         } catch (e: Exception) {
             logger.error(e) { "Quick export failed for recording $recordingId" }
             val errorMsg =
-                when {
-                    e.message?.contains("not found") == true -> "Запись не найдена."
-                    e.message?.contains("missing") == true -> "Файлы записи недоступны."
+                when (e) {
+                    is IllegalArgumentException -> "Запись не найдена."
+                    is IllegalStateException -> "Файлы записи недоступны."
                     else -> "Ошибка экспорта. Попробуйте позже."
                 }
             bot.sendTextMessage(chatId, errorMsg)

@@ -28,7 +28,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
-import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
+import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.nio.file.Files
 import java.time.Duration
@@ -171,7 +172,7 @@ class QuickExportHandlerTest {
     inner class HandleTest {
         private val bot = mockk<TelegramBot>()
         private val videoExportService = mockk<VideoExportService>()
-        private val userService = mockk<TelegramUserService>()
+        private val authorizationFilter = mockk<AuthorizationFilter>()
         private val properties =
             TelegramProperties(
                 enabled = true,
@@ -179,12 +180,12 @@ class QuickExportHandlerTest {
                 owner = "testowner",
                 sendVideoTimeout = Duration.ofMinutes(3),
             )
-        private val handler = QuickExportHandler(bot, videoExportService, userService, properties)
+        private val handler = QuickExportHandler(bot, videoExportService, authorizationFilter, properties)
 
         private val recordingId = UUID.randomUUID()
 
         init {
-            coEvery { userService.findActiveByUsername(any()) } returns mockk()
+            coEvery { authorizationFilter.getRole(any<String>()) } returns UserRole.USER
         }
 
         /**
@@ -341,18 +342,25 @@ class QuickExportHandlerTest {
             }
 
         @Test
-        fun `handle with non-MessageDataCallbackQuery returns early`() =
+        fun `handle with non-MessageDataCallbackQuery answers and returns early`() =
             runTest {
                 val callback =
                     mockk<DataCallbackQuery> {
                         every { data } returns "${QuickExportHandler.CALLBACK_PREFIX}${UUID.randomUUID()}"
                         every { user } returns mockk(relaxed = true)
+                        every { id } returns CallbackQueryId("test-non-message-callback-id")
                     }
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
 
                 handler.handle(callback)
 
-                // No interaction with bot or services (early return since cast to MessageDataCallbackQuery fails)
-                coVerify(exactly = 0) { bot.execute(any<Request<*>>()) }
+                // Callback was answered (to dismiss loading indicator)
+                val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
+                assertTrue(answerRequests.isNotEmpty(), "Expected callback to be answered before early return")
+
+                // No export was attempted
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
             }
 
@@ -374,8 +382,8 @@ class QuickExportHandlerTest {
                 )
                 // Verify no export was attempted
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
-                // Verify userService was never consulted (early return before auth check)
-                coVerify(exactly = 0) { userService.findActiveByUsername(any()) }
+                // Verify authorizationFilter was never consulted (early return before auth check)
+                coVerify(exactly = 0) { authorizationFilter.getRole(any<String>()) }
             }
 
         @Test
@@ -383,7 +391,7 @@ class QuickExportHandlerTest {
             runTest {
                 val callback = createMessageCallback()
 
-                coEvery { userService.findActiveByUsername("testuser") } returns null
+                coEvery { authorizationFilter.getRole("testuser") } returns null
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
 
@@ -409,8 +417,8 @@ class QuickExportHandlerTest {
                         nonAnswerRequests.map { it::class.simpleName },
                 )
 
-                // Verify userService was consulted for authorization check
-                coVerify { userService.findActiveByUsername("testuser") }
+                // Verify authorizationFilter was consulted
+                coVerify { authorizationFilter.getRole("testuser") }
             }
 
         @Test
@@ -419,7 +427,7 @@ class QuickExportHandlerTest {
                 val callback = createOwnerCallback()
                 val tempFile = Files.createTempFile("test-export", ".mp4")
 
-                coEvery { userService.findActiveByUsername(properties.owner) } returns null
+                coEvery { authorizationFilter.getRole(properties.owner) } returns UserRole.OWNER
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
                 coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
@@ -430,7 +438,7 @@ class QuickExportHandlerTest {
                     Files.deleteIfExists(tempFile)
                 }
 
-                // Verify export was called (owner is authorized regardless of userService)
+                // Verify export was called (owner is authorized via authorizationFilter)
                 coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
             }
 
@@ -440,7 +448,7 @@ class QuickExportHandlerTest {
                 val callback = createMessageCallback()
                 val tempFile = Files.createTempFile("test-export", ".mp4")
 
-                coEvery { userService.findActiveByUsername("testuser") } returns mockk()
+                coEvery { authorizationFilter.getRole("testuser") } returns UserRole.USER
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
                 coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
@@ -453,8 +461,8 @@ class QuickExportHandlerTest {
 
                 // Verify export was called (active user is authorized)
                 coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
-                // Verify userService was consulted
-                coVerify { userService.findActiveByUsername("testuser") }
+                // Verify authorizationFilter was consulted
+                coVerify { authorizationFilter.getRole("testuser") }
             }
 
         @Test

@@ -623,7 +623,21 @@ class VideoExportServiceImplTest {
                     )
                 }
 
-            assertTrue(exception.message!!.contains("duration must be non-negative"))
+            assertTrue(exception.message!!.contains("duration must be positive"))
+        }
+
+    @Test
+    fun `exportByRecordingId throws IllegalArgumentException when duration is zero`() =
+        runTest {
+            val exception =
+                assertThrows<IllegalArgumentException> {
+                    service.exportByRecordingId(
+                        recordingId = recordingId,
+                        duration = Duration.ZERO,
+                    )
+                }
+
+            assertTrue(exception.message!!.contains("duration must be positive"))
         }
 
     @Test
