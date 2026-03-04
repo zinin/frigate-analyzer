@@ -497,7 +497,7 @@
         "id": 6,
         "title": "Создать QuickExportHandler для обработки callback query",
         "description": "Создать новый компонент QuickExportHandler для обработки нажатий кнопки быстрого экспорта с callback data `qe:{recordingId}`.",
-        "status": "rework",
+        "status": "review",
         "priority": "high",
         "dependencies": [
           5
@@ -578,10 +578,11 @@
         "metadata": {
           "startRev": "dd55511102d5016bdd8a63e7cb15832acf9073bc",
           "endRev": "ca5ccce2e3109f0158f21a3378c0b01bbb81bdd3",
-          "reviewRound": 1,
+          "reviewRound": 2,
           "reviewRoundsTotal": 2,
           "reviewContext": false,
-          "reviewPhaseComplete": false
+          "reviewPhaseComplete": false,
+          "reworkAttempts": 0
         }
       },
       {
