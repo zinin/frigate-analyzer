@@ -7,16 +7,12 @@ import dev.inmo.tgbotapi.requests.abstracts.asMultipartFile
 import dev.inmo.tgbotapi.requests.send.media.SendPhoto
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
-import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
-import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
-import dev.inmo.tgbotapi.utils.matrix
-import dev.inmo.tgbotapi.utils.row
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.helper.RetryHelper
-import java.util.UUID
 
 private val logger = KotlinLogging.logger {}
 
@@ -42,7 +38,7 @@ class TelegramNotificationSender(
                     bot.sendTextMessage(
                         chatId = chatIdObj,
                         text = message,
-                        replyMarkup = createExportKeyboard(task.recordingId),
+                        replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
                     )
                 }
             }
@@ -55,7 +51,7 @@ class TelegramNotificationSender(
                             chatId = chatIdObj,
                             photo = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
                             text = message,
-                            replyMarkup = createExportKeyboard(task.recordingId),
+                            replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
                         ),
                     )
                 }
@@ -79,7 +75,7 @@ class TelegramNotificationSender(
                     bot.sendTextMessage(
                         chatId = chatIdObj,
                         text = EXPORT_PROMPT_TEXT,
-                        replyMarkup = createExportKeyboard(task.recordingId),
+                        replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
                     )
                 }
             }
@@ -89,9 +85,7 @@ class TelegramNotificationSender(
     companion object {
         private const val MAX_MEDIA_GROUP_SIZE = 10
         private const val MAX_CAPTION_LENGTH = 1024
-        private const val EXPORT_BUTTON_TEXT = "📹 Экспорт видео"
         private const val EXPORT_PROMPT_TEXT = "👆 Нажмите для быстрого экспорта видео"
-        internal const val CALLBACK_PREFIX = "qe:"
     }
 
     private fun String.toCaption(maxLength: Int): String {
@@ -101,14 +95,4 @@ class TelegramNotificationSender(
         logger.warn { "Truncating caption from $length to $maxLength characters to satisfy Telegram limits" }
         return substring(0, maxLength)
     }
-
-    private fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =
-        InlineKeyboardMarkup(
-            keyboard =
-                matrix {
-                    row {
-                        +CallbackDataInlineKeyboardButton(EXPORT_BUTTON_TEXT, "$CALLBACK_PREFIX$recordingId")
-                    }
-                },
-        )
 }

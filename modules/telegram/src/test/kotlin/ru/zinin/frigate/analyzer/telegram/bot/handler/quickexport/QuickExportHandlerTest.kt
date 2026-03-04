@@ -94,14 +94,6 @@ class QuickExportHandlerTest {
         fun `CALLBACK_PREFIX has correct value`() {
             assertEquals("qe:", QuickExportHandler.CALLBACK_PREFIX)
         }
-
-        @Test
-        fun `CALLBACK_PREFIX matches TelegramNotificationSender prefix`() {
-            assertEquals(
-                ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationSender.CALLBACK_PREFIX,
-                QuickExportHandler.CALLBACK_PREFIX,
-            )
-        }
     }
 
     @Nested
@@ -417,6 +409,56 @@ class QuickExportHandlerTest {
 
                 // Verify cleanupExportFile was NOT called (videoPath is null on timeout)
                 coVerify(exactly = 0) { videoExportService.cleanupExportFile(any()) }
+            }
+
+        @Test
+        fun `handle sends timeout message when sendVideo exceeds timeout`() =
+            runTest {
+                val callback = createMessageCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                var videoExportReturned = false
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
+                    val req = firstArg<Request<*>>()
+                    // After export completes, the next non-edit, non-text request is sendVideo — delay it past the timeout
+                    if (videoExportReturned && req !is EditChatMessageReplyMarkup && req !is SendTextMessage) {
+                        delay(Duration.ofMinutes(5).toMillis())
+                    }
+                    mockk(relaxed = true)
+                }
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } coAnswers {
+                    videoExportReturned = true
+                    tempFile
+                }
+                coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
+
+                try {
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                // Verify sendVideo timeout message was sent
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains("Не удалось отправить видео") },
+                    "Expected sendVideo timeout message, but got text requests: ${sendTextRequests.map { it.text }}",
+                )
+
+                // Verify cleanup was still called (in finally block)
+                coVerify { videoExportService.cleanupExportFile(tempFile) }
+
+                // Verify button was restored
+                val editRequests = capturedRequests.filterIsInstance<EditChatMessageReplyMarkup>()
+                assertTrue(editRequests.size >= 2, "Expected at least 2 edit calls (processing + restore)")
+                val restoreMarkup = editRequests.last().replyMarkup
+                assertNotNull(restoreMarkup)
+                assertIs<InlineKeyboardMarkup>(restoreMarkup)
+                assertEquals(
+                    "📹 Экспорт видео",
+                    (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
+                )
             }
 
         @Test

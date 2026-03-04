@@ -15,6 +15,7 @@ import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
+import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -42,7 +43,7 @@ class TelegramNotificationSenderTest {
         val button = keyboard.keyboard[0][0]
         assertIs<CallbackDataInlineKeyboardButton>(button)
         assertEquals("📹 Экспорт видео", button.text)
-        assertEquals("${TelegramNotificationSender.CALLBACK_PREFIX}$recordingId", button.callbackData)
+        assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", button.callbackData)
     }
 
     /**
