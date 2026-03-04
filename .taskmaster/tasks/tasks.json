@@ -589,7 +589,7 @@
         "id": 7,
         "title": "Обновить TelegramNotificationSender использовать QuickExportHandler.createExportKeyboard",
         "description": "Рефакторинг: использовать статический метод QuickExportHandler.createExportKeyboard вместо дублирования кода.",
-        "status": "done",
+        "status": "rework",
         "priority": "medium",
         "dependencies": [
           3,
@@ -685,7 +685,11 @@
         ],
         "metadata": {
           "startRev": "b048d557586156ecf14c254535f228097874921c",
-          "endRev": "5bfb0e4c28a69eab3b83c83590523bcd702267d2"
+          "endRev": "5bfb0e4c28a69eab3b83c83590523bcd702267d2",
+          "reviewRound": 1,
+          "reviewRoundsTotal": 2,
+          "reviewContext": false,
+          "reviewPhaseComplete": false
         }
       },
       {
