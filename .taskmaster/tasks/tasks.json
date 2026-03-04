@@ -617,12 +617,18 @@
             "id": 2,
             "title": "Добавить импорты для InlineKeyboardMarkup из tgbotapi",
             "description": "Добавить импорты классов tgbotapi для работы с inline-клавиатурами, если они ещё не добавлены задачей 3.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "Добавить импорты для использования replyMarkup в SendPhoto и sendMediaGroup:\n```kotlin\nimport dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup\n```\nЭти импорты необходимы для передачи результата QuickExportHandler.createExportKeyboard в параметр replyMarkup.",
-            "testStrategy": "Проверить компиляцию. Импорты должны быть валидными и использоваться в коде."
+            "testStrategy": "Проверить компиляцию. Импорты должны быть валидными и использоваться в коде.",
+            "metadata": {
+              "startRev": "89ebb8a2b9121c3c5a88a09da0389fc995c9df20",
+              "endRev": "89ebb8a2b9121c3c5a88a09da0389fc995c9df20",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T02:16:31.156Z"
+            }
           },
           {
             "id": 3,
@@ -661,7 +667,7 @@
         ],
         "metadata": {
           "startRev": "b048d557586156ecf14c254535f228097874921c",
-          "endRev": "b048d557586156ecf14c254535f228097874921c"
+          "endRev": "89ebb8a2b9121c3c5a88a09da0389fc995c9df20"
         }
       },
       {
