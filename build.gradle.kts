@@ -10,9 +10,39 @@ plugins {
     kotlin("kapt") version "2.3.10" apply false
 }
 
+fun gitVersion(): String {
+    fun exec(vararg args: String): String? = try {
+        val process = ProcessBuilder(*args)
+            .directory(rootDir)
+            .redirectErrorStream(false)
+            .start()
+        val output = process.inputStream.bufferedReader().readText().trim()
+        if (process.waitFor() == 0 && output.isNotEmpty()) output else null
+    } catch (_: Exception) { null }
+
+    // На теге: точная версия тега
+    exec("git", "describe", "--tags", "--exact-match")
+        ?.removePrefix("v")
+        ?.let { return it }
+
+    // Между тегами: bump patch + SNAPSHOT
+    exec("git", "describe", "--tags", "--abbrev=0")
+        ?.removePrefix("v")
+        ?.split(".")
+        ?.takeIf { it.size >= 3 }
+        ?.let { parts ->
+            val patch = (parts[2].toIntOrNull() ?: -1) + 1
+            return "${parts[0]}.${parts[1]}.$patch-SNAPSHOT"
+        }
+
+    return "0.0.1-SNAPSHOT"
+}
+
+val appVersion: String = findProperty("appVersion")?.toString() ?: gitVersion()
+
 allprojects {
     group = "ru.zinin"
-    version = "0.0.1-SNAPSHOT"
+    version = appVersion
 
     repositories {
         mavenCentral()
