@@ -634,12 +634,18 @@
             "id": 3,
             "title": "Удалить локальный метод createExportKeyboard (если существует)",
             "description": "Проверить наличие и удалить приватный метод createExportKeyboard, созданный в рамках задачи 3, для устранения дублирования кода.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "После выполнения задачи 3 в TelegramNotificationSender может быть добавлен приватный метод:\n```kotlin\nprivate fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup\n```\nЕго необходимо полностью удалить, так как эта логика будет централизована в QuickExportHandler.createExportKeyboard.",
-            "testStrategy": "Убедиться, что метод createExportKeyboard отсутствует в классе TelegramNotificationSender после рефакторинга."
+            "testStrategy": "Убедиться, что метод createExportKeyboard отсутствует в классе TelegramNotificationSender после рефакторинга.",
+            "metadata": {
+              "startRev": "b3141b19ce06b28ec18db9eb6a75fc737911135a",
+              "endRev": "b3141b19ce06b28ec18db9eb6a75fc737911135a",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T02:17:10.931Z"
+            }
           },
           {
             "id": 4,
@@ -667,7 +673,7 @@
         ],
         "metadata": {
           "startRev": "b048d557586156ecf14c254535f228097874921c",
-          "endRev": "89ebb8a2b9121c3c5a88a09da0389fc995c9df20"
+          "endRev": "b3141b19ce06b28ec18db9eb6a75fc737911135a"
         }
       },
       {
