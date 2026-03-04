@@ -806,12 +806,18 @@
             "id": 3,
             "title": "Реализовать проверку owner через properties.owner",
             "description": "Добавить проверку, является ли username владельцем бота через сравнение с properties.owner.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               2
             ],
             "details": "Добавить проверку владельца:\n```kotlin\nval isOwner = username == properties.owner\n```\nЭто соответствует логике в AuthorizationFilter.getRole() (строка 25): `username == properties.owner`. Владелец всегда имеет доступ к экспорту.",
-            "testStrategy": "Unit-тест: callback от владельца (properties.owner) → isOwner=true, экспорт выполняется без проверки через userService."
+            "testStrategy": "Unit-тест: callback от владельца (properties.owner) → isOwner=true, экспорт выполняется без проверки через userService.",
+            "metadata": {
+              "startRev": "525341909a948e05d4535118c1911385440066a2",
+              "endRev": "6f0036f9eed7a29b1982ef5c82ddf62cc43ce3be",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T01:25:15.046Z"
+            }
           },
           {
             "id": 4,
@@ -839,7 +845,7 @@
         ],
         "metadata": {
           "startRev": "220f763cca47fc3c2f5a4904e2ef6f94b1cdea2a",
-          "endRev": "e98e50a194372eb46dc92ecc355b145d4e2891b7"
+          "endRev": "6f0036f9eed7a29b1982ef5c82ddf62cc43ce3be"
         }
       },
       {
