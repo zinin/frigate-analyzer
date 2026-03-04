@@ -789,12 +789,18 @@
             "id": 2,
             "title": "Извлечь username из callback.user в методе handle",
             "description": "Добавить код для извлечения username из объекта user в callback query с проверкой на null и отображением сообщения об ошибке.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "В начале метода handle добавить:\n```kotlin\nval user = callback.user\nval username = user.username?.withoutAt\nif (username == null) {\n    bot.answer(callback, \"Пожалуйста, установите username в настройках Telegram.\")\n    return\n}\n```\nИспользовать `withoutAt` для удаления символа @ из username, аналогично AuthorizationFilter.extractUsername().",
-            "testStrategy": "Unit-тест: callback от пользователя без username → возвращается сообщение 'Пожалуйста, установите username', экспорт не выполняется."
+            "testStrategy": "Unit-тест: callback от пользователя без username → возвращается сообщение 'Пожалуйста, установите username', экспорт не выполняется.",
+            "metadata": {
+              "startRev": "2ada35565b1615c66f824b9e87d212777c383566",
+              "endRev": "e98e50a194372eb46dc92ecc355b145d4e2891b7",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T01:19:44.676Z"
+            }
           },
           {
             "id": 3,
@@ -833,7 +839,7 @@
         ],
         "metadata": {
           "startRev": "220f763cca47fc3c2f5a4904e2ef6f94b1cdea2a",
-          "endRev": "eabbb7d056c7bdd06153881bc931b49acf195426"
+          "endRev": "e98e50a194372eb46dc92ecc355b145d4e2891b7"
         }
       },
       {
