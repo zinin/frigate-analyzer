@@ -73,10 +73,10 @@ Inline button on notifications for instant video export.
 
 ### How It Works
 
-1. When sending a notification, `TelegramNotificationSender` adds an inline button "📹 Экспорт видео"
+1. When sending a notification, `TelegramNotificationSender` adds an inline button "📹 Экспорт видео" (Export video)
 2. Callback data format: `qe:{UUID}` (e.g. `qe:550e8400-e29b-41d4-a716-446655440000`)
 3. On button press:
-   - Button changes to "⚙️ Экспорт..."
+   - Button changes to "⚙️ Экспорт..." (Exporting...)
    - Calls `VideoExportService.exportByRecordingId(recordingId)`
    - Exports ±1 min from recordTimestamp in ORIGINAL mode (2 min total)
    - Video is sent to the chat
