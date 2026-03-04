@@ -651,7 +651,7 @@
             "id": 4,
             "title": "Заменить вызовы createExportKeyboard на QuickExportHandler.createExportKeyboard",
             "description": "Обновить все места вызова createExportKeyboard для использования статического метода из QuickExportHandler.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               2,
               3
@@ -660,8 +660,9 @@
             "testStrategy": "1. Проверить компиляцию проекта.\n2. Проверить, что все три ветки when используют QuickExportHandler.createExportKeyboard.\n3. Существующие тесты должны проходить без изменений.",
             "metadata": {
               "startRev": "d15b9f86483a360ad86a3375aee974f24eacc29f",
-              "endRev": "d15b9f86483a360ad86a3375aee974f24eacc29f",
-              "runAttempts": 1
+              "endRev": "2e5c33e2722834875cd7e905818db3c45dadcb45",
+              "runAttempts": 2,
+              "executedAt": "2026-03-04T02:19:40.016Z"
             }
           },
           {
@@ -678,7 +679,7 @@
         ],
         "metadata": {
           "startRev": "b048d557586156ecf14c254535f228097874921c",
-          "endRev": "b3141b19ce06b28ec18db9eb6a75fc737911135a"
+          "endRev": "2e5c33e2722834875cd7e905818db3c45dadcb45"
         }
       },
       {
