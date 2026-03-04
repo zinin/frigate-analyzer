@@ -24,7 +24,9 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
@@ -832,6 +834,79 @@ class QuickExportHandlerTest {
                     "📹 Экспорт видео",
                     (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
                 )
+            }
+
+        @Test
+        fun `handle rejects duplicate export for same recordingId`() =
+            runTest {
+                val callback = createMessageCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
+                    val request = firstArg<Request<*>>()
+                    if (request is AnswerCallbackQuery) true else mockk<ContentMessage<MessageContent>>(relaxed = true)
+                }
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } coAnswers {
+                    delay(10_000) // simulate long export
+                    tempFile
+                }
+                coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
+
+                try {
+                    // First call starts export (will suspend on delay)
+                    val firstJob = launch { handler.handle(callback) }
+                    // Let the first call enter the export
+                    yield()
+
+                    // Second call with same recordingId should be rejected
+                    val secondCallRequests = mutableListOf<Request<*>>()
+                    coEvery { bot.execute(capture(secondCallRequests)) } coAnswers {
+                        val request = firstArg<Request<*>>()
+                        if (request is AnswerCallbackQuery) true else mockk<ContentMessage<MessageContent>>(relaxed = true)
+                    }
+                    handler.handle(callback)
+
+                    // Verify second call got "already in progress" answer
+                    val answerRequests = secondCallRequests.filterIsInstance<AnswerCallbackQuery>()
+                    assertTrue(
+                        answerRequests.any { it.text?.contains("уже выполняется") == true },
+                        "Expected 'already in progress' answer, but got: ${answerRequests.map { it.text }}",
+                    )
+
+                    // Verify second call did NOT trigger export
+                    coVerify(exactly = 1) { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+
+                    firstJob.cancel()
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+            }
+
+        @Test
+        fun `handle allows re-export after previous export completes`() =
+            runTest {
+                val callback = createMessageCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                coEvery { bot.execute(any<Request<*>>()) } coAnswers {
+                    val request = firstArg<Request<*>>()
+                    if (request is AnswerCallbackQuery) true else mockk<ContentMessage<MessageContent>>(relaxed = true)
+                }
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
+                coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
+
+                try {
+                    // First export completes
+                    handler.handle(callback)
+                    // Second export should work (guard released)
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                // Both exports were executed
+                coVerify(exactly = 2) { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
             }
     }
 }

@@ -22,6 +22,7 @@ import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 private val logger = KotlinLogging.logger {}
 
@@ -33,6 +34,8 @@ class QuickExportHandler(
     private val authorizationFilter: AuthorizationFilter,
     private val properties: TelegramProperties,
 ) {
+    private val activeExports: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+
     suspend fun handle(callback: DataCallbackQuery) {
         val messageCallback = callback as? MessageDataCallbackQuery
         val message = messageCallback?.message
@@ -61,6 +64,12 @@ class QuickExportHandler(
         // Проверяем авторизацию через общий фильтр
         if (authorizationFilter.getRole(username) == null) {
             bot.answer(callback, properties.unauthorizedMessage)
+            return
+        }
+
+        // Защита от повторного нажатия
+        if (!activeExports.add(recordingId)) {
+            bot.answer(callback, "Экспорт уже выполняется.")
             return
         }
 
@@ -123,6 +132,8 @@ class QuickExportHandler(
                 }
             bot.sendTextMessage(chatId, errorMsg)
             restoreButton(message, recordingId)
+        } finally {
+            activeExports.remove(recordingId)
         }
     }
 
