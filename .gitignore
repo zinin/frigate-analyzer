@@ -65,4 +65,4 @@ opencode.json
 *.class
 
 # TaskMaster
-.taskmaster/prorab.lock
+.taskmaster/
