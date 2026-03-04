@@ -67,6 +67,7 @@ class TelegramNotificationSender(
                                     text = if (chunkIndex == 0 && index == 0) message else null,
                                 )
                             }
+                        // sendMediaGroup is @BetaApi in tgbotapi — stable enough for production use here
                         @Suppress("OPT_IN_USAGE")
                         bot.sendMediaGroup(chatIdObj, mediaGroup)
                     }
