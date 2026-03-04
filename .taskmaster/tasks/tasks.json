@@ -762,7 +762,7 @@
         "id": 9,
         "title": "Добавить проверку авторизации в QuickExportHandler",
         "description": "Улучшить проверку авторизации в QuickExportHandler через TelegramUserService для соответствия требованиям безопасности.",
-        "status": "pending",
+        "status": "in-progress",
         "priority": "high",
         "dependencies": [
           6
@@ -774,10 +774,16 @@
             "id": 1,
             "title": "Добавить зависимость TelegramUserService в конструктор QuickExportHandler",
             "description": "Добавить параметр userService типа TelegramUserService в конструктор класса QuickExportHandler для проверки активных пользователей.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "В конструкторе QuickExportHandler добавить параметр `private val userService: TelegramUserService`. Импортировать `ru.zinin.frigate.analyzer.telegram.service.TelegramUserService`. TelegramProperties уже должен быть добавлен в Task 6. Spring автоматически внедрит зависимость через конструктор.",
-            "testStrategy": "Проверить компиляцию. Убедиться, что Spring корректно создаёт bean QuickExportHandler с внедрённым TelegramUserService."
+            "testStrategy": "Проверить компиляцию. Убедиться, что Spring корректно создаёт bean QuickExportHandler с внедрённым TelegramUserService.",
+            "metadata": {
+              "startRev": "220f763cca47fc3c2f5a4904e2ef6f94b1cdea2a",
+              "endRev": "eabbb7d056c7bdd06153881bc931b49acf195426",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T01:09:34.786Z"
+            }
           },
           {
             "id": 2,
@@ -824,7 +830,11 @@
             "details": "Добавить финальную проверку авторизации:\n```kotlin\nif (!isOwner && !isActiveUser) {\n    bot.answer(callback, properties.unauthorizedMessage)\n    return\n}\n```\nИспользовать properties.unauthorizedMessage (по умолчанию 'Доступ запрещен...') вместо authorizationFilter.getUnauthorizedMessage(), так как AuthorizationFilter не является зависимостью QuickExportHandler. Альтернативно можно добавить AuthorizationFilter как зависимость.",
             "testStrategy": "Unit-тест: callback от неавторизованного пользователя (не owner, findActiveByUsername возвращает null) → answer с unauthorizedMessage, экспорт не вызывается. Проверить логирование попытки неавторизованного доступа."
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "220f763cca47fc3c2f5a4904e2ef6f94b1cdea2a",
+          "endRev": "eabbb7d056c7bdd06153881bc931b49acf195426"
+        }
       },
       {
         "id": 10,
