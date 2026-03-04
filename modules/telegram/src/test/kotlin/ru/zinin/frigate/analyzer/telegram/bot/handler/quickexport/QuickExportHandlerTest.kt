@@ -249,6 +249,77 @@ class QuickExportHandlerTest {
             )
 
         @Test
+        fun `should export video for authorized user`() =
+            runTest {
+                // given
+                val callback = createMessageCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                // Capture all bot requests and return type-appropriate values
+                // (AnswerCallbackQuery expects Boolean, everything else expects ContentMessage)
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(any<Request<*>>()) } coAnswers {
+                    val request = firstArg<Request<*>>()
+                    capturedRequests.add(request)
+                    if (request is AnswerCallbackQuery) {
+                        true
+                    } else {
+                        mockk<ContentMessage<MessageContent>>(relaxed = true)
+                    }
+                }
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
+                coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
+
+                try {
+                    // when
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                // then
+
+                // 1. Callback was answered (removes loading indicator)
+                val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
+                assertTrue(answerRequests.isNotEmpty(), "Expected callback to be answered")
+
+                // 2. Export was called with the correct recordingId
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+
+                // 3. Video was sent (request is neither answer, edit, nor text message)
+                val knownRequestTypes =
+                    capturedRequests.count {
+                        it is AnswerCallbackQuery || it is EditChatMessageReplyMarkup || it is SendTextMessage
+                    }
+                assertTrue(
+                    capturedRequests.size > knownRequestTypes,
+                    "Expected a sendVideo request beyond answer/edit/text requests, " +
+                        "but all ${capturedRequests.size} requests were of known types",
+                )
+
+                // 4. Exported file was cleaned up
+                coVerify { videoExportService.cleanupExportFile(tempFile) }
+
+                // 5. Button was restored to export state after completion
+                val editRequests = capturedRequests.filterIsInstance<EditChatMessageReplyMarkup>()
+                assertTrue(editRequests.size >= 2, "Expected at least 2 edit calls (processing + restore)")
+                val restoreMarkup = editRequests.last().replyMarkup
+                assertNotNull(restoreMarkup)
+                assertIs<InlineKeyboardMarkup>(restoreMarkup)
+                assertEquals(
+                    "📹 Экспорт видео",
+                    (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
+                )
+
+                // 6. No error messages were sent (happy path)
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.isEmpty(),
+                    "Expected no error messages in happy path, but got: ${sendTextRequests.map { it.text }}",
+                )
+            }
+
+        @Test
         fun `handle with non-MessageDataCallbackQuery returns early`() =
             runTest {
                 val callback =
