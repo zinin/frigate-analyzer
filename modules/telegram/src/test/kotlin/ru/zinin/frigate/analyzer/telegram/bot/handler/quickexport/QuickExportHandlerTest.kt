@@ -730,6 +730,42 @@ class QuickExportHandlerTest {
             }
 
         @Test
+        fun `should handle export error gracefully`() =
+            runTest {
+                // given — use owner callback for simplified authorization
+                val callback = createOwnerCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                } throws IllegalArgumentException("Recording not found")
+
+                // when
+                handler.handle(callback)
+
+                // then — error message containing "не найдена" was sent
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains("не найдена") },
+                    "Expected error message containing 'не найдена', but got: ${sendTextRequests.map { it.text }}",
+                )
+
+                // No video was sent — only AnswerCallbackQuery, EditChatMessageReplyMarkup, and SendTextMessage
+                val videoRequests =
+                    capturedRequests.filter {
+                        it !is AnswerCallbackQuery && it !is EditChatMessageReplyMarkup && it !is SendTextMessage
+                    }
+                assertTrue(
+                    videoRequests.isEmpty(),
+                    "Expected no sendVideo requests, but found: ${videoRequests.map { it::class.simpleName }}",
+                )
+
+                // Cleanup was NOT called (no file was produced)
+                coVerify(exactly = 0) { videoExportService.cleanupExportFile(any()) }
+            }
+
+        @Test
         fun `handle sends not found message and restores button for not found recording`() =
             runTest {
                 val callback = createMessageCallback()
