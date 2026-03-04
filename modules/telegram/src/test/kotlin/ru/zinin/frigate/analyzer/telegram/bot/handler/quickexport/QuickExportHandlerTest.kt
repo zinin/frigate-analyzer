@@ -380,6 +380,14 @@ class QuickExportHandlerTest {
                     }}",
                 )
 
+                // Verify no video was sent (only AnswerCallbackQuery should have been executed)
+                val nonAnswerRequests = capturedRequests.filter { it !is AnswerCallbackQuery }
+                assertTrue(
+                    nonAnswerRequests.isEmpty(),
+                    "Expected only AnswerCallbackQuery requests, but also found: " +
+                        nonAnswerRequests.map { it::class.simpleName },
+                )
+
                 // Verify userService was consulted for authorization check
                 coVerify { userService.findActiveByUsername("testuser") }
             }
