@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport
 
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.requests.abstracts.Request
+import dev.inmo.tgbotapi.requests.answers.AnswerCallbackQuery
 import dev.inmo.tgbotapi.requests.edit.reply_markup.EditChatMessageReplyMarkup
 import dev.inmo.tgbotapi.requests.send.SendTextMessage
 import dev.inmo.tgbotapi.types.CallbackQueryId
@@ -312,15 +313,27 @@ class QuickExportHandlerTest {
         fun `handle rejects unauthorized user with username`() =
             runTest {
                 val callback = createMessageCallback()
+                val unauthorizedMessage = "Доступ запрещен"
 
                 coEvery { userService.findActiveByUsername("testuser") } returns null
-                every { authorizationFilter.getUnauthorizedMessage() } returns "Unauthorized"
-                coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
+                every { authorizationFilter.getUnauthorizedMessage() } returns unauthorizedMessage
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
 
                 handler.handle(callback)
 
-                // Verify answer was called with unauthorized message (no export attempted)
+                // Verify no export was attempted
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+
+                // Verify answer was called with unauthorized message
+                val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
+                assertTrue(
+                    answerRequests.any { it.text == unauthorizedMessage },
+                    "Expected AnswerCallbackQuery with text '$unauthorizedMessage', but got: ${answerRequests.map { it.text }}",
+                )
+
+                // Verify userService was consulted for authorization check
+                coVerify { userService.findActiveByUsername("testuser") }
             }
 
         @Test

@@ -61,6 +61,7 @@ class QuickExportHandler(
         val isActiveUser = userService.findActiveByUsername(username) != null
 
         if (!isOwner && !isActiveUser) {
+            logger.warn { "Unauthorized quick export attempt from user: @$username" }
             bot.answer(callback, authorizationFilter.getUnauthorizedMessage())
             return
         }
