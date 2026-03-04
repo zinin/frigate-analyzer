@@ -48,9 +48,16 @@ class QuickExportHandler(
             return
         }
 
-        // Проверяем авторизацию через username
-        val username = callback.user.username?.withoutAt
-        if (username == null || authorizationFilter.getRole(username) == null) {
+        // Проверяем наличие username
+        val user = callback.user
+        val username = user.username?.withoutAt
+        if (username == null) {
+            bot.answer(callback, "Пожалуйста, установите username в настройках Telegram.")
+            return
+        }
+
+        // Проверяем авторизацию
+        if (authorizationFilter.getRole(username) == null) {
             bot.answer(callback, authorizationFilter.getUnauthorizedMessage())
             return
         }

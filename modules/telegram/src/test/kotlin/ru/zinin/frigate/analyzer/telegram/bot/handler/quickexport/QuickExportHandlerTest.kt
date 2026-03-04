@@ -220,6 +220,34 @@ class QuickExportHandlerTest {
             )
         }
 
+        /**
+         * Creates a [MessageDataCallbackQuery] with a user that has no username set.
+         */
+        private fun createMessageCallbackWithoutUsername(): MessageDataCallbackQuery {
+            val realChat =
+                PrivateChatImpl(
+                    id = ChatId(RawChatId(12345L)),
+                    firstName = "TestChat",
+                )
+            val mockMessage =
+                mockk<ContentMessage<MessageContent>>(relaxed = true) {
+                    every { chat } returns realChat
+                }
+            val user =
+                CommonUser(
+                    id = ChatId(RawChatId(2L)),
+                    firstName = "NoUsername",
+                    username = null,
+                )
+            return MessageDataCallbackQuery(
+                id = CallbackQueryId("test-callback-no-username"),
+                from = user,
+                chatInstance = "test-instance",
+                message = mockMessage,
+                data = "${QuickExportHandler.CALLBACK_PREFIX}$recordingId",
+            )
+        }
+
         @Test
         fun `handle with non-MessageDataCallbackQuery returns early`() =
             runTest {
@@ -234,6 +262,23 @@ class QuickExportHandlerTest {
                 // No interaction with bot or services (early return since cast to MessageDataCallbackQuery fails)
                 coVerify(exactly = 0) { bot.execute(any<Request<*>>()) }
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+            }
+
+        @Test
+        fun `handle rejects user without username with set username message`() =
+            runTest {
+                val callback = createMessageCallbackWithoutUsername()
+
+                coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
+
+                handler.handle(callback)
+
+                // Verify answer was called with "set username" message
+                coVerify { bot.execute(any<Request<*>>()) }
+                // Verify no export was attempted
+                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+                // Verify authorizationFilter was never consulted
+                coVerify(exactly = 0) { authorizationFilter.getRole(any<String>()) }
             }
 
         @Test
