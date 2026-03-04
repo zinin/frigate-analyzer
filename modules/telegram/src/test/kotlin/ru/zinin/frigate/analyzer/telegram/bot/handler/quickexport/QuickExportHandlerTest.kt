@@ -221,6 +221,34 @@ class QuickExportHandlerTest {
         }
 
         /**
+         * Creates a [MessageDataCallbackQuery] from the bot owner (properties.owner).
+         */
+        private fun createOwnerCallback(): MessageDataCallbackQuery {
+            val realChat =
+                PrivateChatImpl(
+                    id = ChatId(RawChatId(12345L)),
+                    firstName = "TestChat",
+                )
+            val mockMessage =
+                mockk<ContentMessage<MessageContent>>(relaxed = true) {
+                    every { chat } returns realChat
+                }
+            val user =
+                CommonUser(
+                    id = ChatId(RawChatId(3L)),
+                    firstName = "Owner",
+                    username = Username("@${properties.owner}"),
+                )
+            return MessageDataCallbackQuery(
+                id = CallbackQueryId("test-callback-owner"),
+                from = user,
+                chatInstance = "test-instance",
+                message = mockMessage,
+                data = "${QuickExportHandler.CALLBACK_PREFIX}$recordingId",
+            )
+        }
+
+        /**
          * Creates a [MessageDataCallbackQuery] with a user that has no username set.
          */
         private fun createMessageCallbackWithoutUsername(): MessageDataCallbackQuery {
@@ -294,6 +322,29 @@ class QuickExportHandlerTest {
 
                 // Verify answer was called with unauthorized message (no export attempted)
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+            }
+
+        @Test
+        fun `handle allows owner access without userService check`() =
+            runTest {
+                val callback = createOwnerCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
+                coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
+
+                try {
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                // Verify export was called (owner is authorized)
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+
+                // Verify authorizationFilter.getRole was NOT called (owner short-circuits)
+                coVerify(exactly = 0) { authorizationFilter.getRole(any<String>()) }
             }
 
         @Test
