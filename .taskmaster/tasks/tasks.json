@@ -589,7 +589,7 @@
         "id": 7,
         "title": "Обновить TelegramNotificationSender использовать QuickExportHandler.createExportKeyboard",
         "description": "Рефакторинг: использовать статический метод QuickExportHandler.createExportKeyboard вместо дублирования кода.",
-        "status": "pending",
+        "status": "in-progress",
         "priority": "medium",
         "dependencies": [
           3,
@@ -602,10 +602,16 @@
             "id": 1,
             "title": "Добавить импорт QuickExportHandler в TelegramNotificationSender",
             "description": "Добавить необходимый импорт класса QuickExportHandler для использования статического метода createExportKeyboard.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "В файле TelegramNotificationSender.kt добавить строку импорта:\n```kotlin\nimport ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler\n```\nРасположить импорт в алфавитном порядке среди других импортов пакета ru.zinin.frigate.analyzer.",
-            "testStrategy": "Проверить, что файл компилируется без ошибок после добавления импорта. Импорт должен быть разрешён IDE/компилятором (зависит от завершения задачи 6)."
+            "testStrategy": "Проверить, что файл компилируется без ошибок после добавления импорта. Импорт должен быть разрешён IDE/компилятором (зависит от завершения задачи 6).",
+            "metadata": {
+              "startRev": "b048d557586156ecf14c254535f228097874921c",
+              "endRev": "b048d557586156ecf14c254535f228097874921c",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T02:14:34.112Z"
+            }
           },
           {
             "id": 2,
@@ -652,7 +658,11 @@
             "details": "Провести ревью кода:\n1. Убедиться, что QuickExportHandler.createExportKeyboard формирует callback data в формате \"qe:{recordingId}\"\n2. Проверить, что TelegramNotificationSender теперь использует только этот единый источник истины\n3. Убедиться, что нигде в TelegramNotificationSender не осталось захардкоженных строк с префиксом \"qe:\"\n4. Запустить ./gradlew build для финальной проверки",
             "testStrategy": "1. Запустить ./gradlew :modules:telegram:test для проверки тестов модуля.\n2. Интеграционный тест: отправить уведомление и проверить формат callback data кнопки.\n3. Код-ревью: поиск по \"qe:\" должен показывать только QuickExportHandler."
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "b048d557586156ecf14c254535f228097874921c",
+          "endRev": "b048d557586156ecf14c254535f228097874921c"
+        }
       },
       {
         "id": 8,
