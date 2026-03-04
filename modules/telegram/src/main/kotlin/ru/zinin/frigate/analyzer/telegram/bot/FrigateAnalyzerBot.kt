@@ -136,7 +136,7 @@ class FrigateAnalyzerBot(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                logger.error(e) { "Error handling callback query: ${callback.data}" }
+                logger.error(e) { "Error handling quick export callback: ${callback.data}" }
             }
         }
 
