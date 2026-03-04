@@ -702,12 +702,18 @@
             "id": 3,
             "title": "Добавить QuickExportHandler в конструктор FrigateAnalyzerBot",
             "description": "Внедрить QuickExportHandler как зависимость через конструктор бота для обработки callback query.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               2
             ],
             "details": "Обновить конструктор класса FrigateAnalyzerBot, добавив новый параметр:\n```kotlin\n@Component\n@ConditionalOnProperty(prefix = \"application.telegram\", name = [\"enabled\"], havingValue = \"true\")\nclass FrigateAnalyzerBot(\n    private val bot: TelegramBot,\n    private val authorizationFilter: AuthorizationFilter,\n    private val userService: TelegramUserService,\n    private val properties: TelegramProperties,\n    private val handlers: List<CommandHandler>,\n    private val quickExportHandler: QuickExportHandler,\n) {\n```\nSpring автоматически внедрит бин QuickExportHandler при запуске приложения.",
-            "testStrategy": "Проверить компиляцию. При запуске приложения Spring должен корректно создать бин FrigateAnalyzerBot с внедрённым QuickExportHandler."
+            "testStrategy": "Проверить компиляцию. При запуске приложения Spring должен корректно создать бин FrigateAnalyzerBot с внедрённым QuickExportHandler.",
+            "metadata": {
+              "startRev": "63a72e94814c46905d6d46473d7f0157bc3decc0",
+              "endRev": "63a72e94814c46905d6d46473d7f0157bc3decc0",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T00:47:59.407Z"
+            }
           },
           {
             "id": 4,
@@ -738,7 +744,7 @@
         ],
         "metadata": {
           "startRev": "611c75c5137f1404b04800b3657754bc684ad233",
-          "endRev": "08059510b58de24fa13a8a781095d8578a5476f8"
+          "endRev": "63a72e94814c46905d6d46473d7f0157bc3decc0"
         }
       },
       {
