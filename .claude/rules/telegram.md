@@ -30,6 +30,7 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 | TelegramNotificationQueue | `telegram/queue/` | Coroutine Channel-based notification queue |
 | TelegramNotificationSender | `telegram/queue/` | Actual sending logic from queue |
 | NotificationTask | `telegram/queue/` | Notification task data class |
+| QuickExportHandler | `telegram/bot/handler/quickexport/` | Inline button callback for instant video export |
 | AuthorizationFilter | `telegram/filter/` | Role-based auth (OWNER, USER) |
 | RetryHelper | `telegram/helper/` | Retry logic for Telegram API calls |
 | TelegramProperties | `telegram/config/` | Spring Boot config |
@@ -61,29 +62,29 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 | /removeuser | OWNER | Remove user |
 | /users | OWNER | List all users |
 
-## Quick Export (Быстрый экспорт)
+## Quick Export
 
-Инлайн-кнопка на уведомлениях для мгновенного экспорта видео.
+Inline button on notifications for instant video export.
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | QuickExportHandler | `telegram/bot/handler/quickexport/` | Handles callback query `qe:{recordingId}` |
 | NotificationTask.recordingId | `telegram/queue/` | Recording ID for callback data |
 
-### Как работает
+### How It Works
 
-1. При отправке уведомления (TelegramNotificationSender) добавляется inline-кнопка "📹 Экспорт видео"
-2. Callback data формат: `qe:{UUID}` (например `qe:550e8400-e29b-41d4-a716-446655440000`)
-3. При нажатии кнопки:
-   - Кнопка меняется на "⚙️ Экспорт..."
-   - Вызывается `VideoExportService.exportByRecordingId(recordingId)`
-   - Экспортируется ±1 мин от recordTimestamp в режиме ORIGINAL
-   - Видео отправляется в чат
-   - Кнопка восстанавливается
+1. When sending a notification, `TelegramNotificationSender` adds an inline button "📹 Экспорт видео"
+2. Callback data format: `qe:{UUID}` (e.g. `qe:550e8400-e29b-41d4-a716-446655440000`)
+3. On button press:
+   - Button changes to "⚙️ Экспорт..."
+   - Calls `VideoExportService.exportByRecordingId(recordingId)`
+   - Exports ±1 min from recordTimestamp in ORIGINAL mode (2 min total)
+   - Video is sent to the chat
+   - Button is restored
 
-### Авторизация
+### Authorization
 
-Только владелец и активные пользователи могут использовать быстрый экспорт.
+Only the owner and active users can use quick export.
 
 ## Bot Architecture
 
