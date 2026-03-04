@@ -4,7 +4,9 @@ import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
 import java.nio.file.Path
+import java.time.Duration
 import java.time.Instant
+import java.util.UUID
 
 interface VideoExportService {
     suspend fun findCamerasWithRecordings(
@@ -21,4 +23,19 @@ interface VideoExportService {
     ): Path
 
     suspend fun cleanupExportFile(path: Path)
+
+    /**
+     * Exports video by recording ID within ±[duration] range from recordTimestamp.
+     * @param recordingId recording UUID from the database
+     * @param duration one-side duration (default 1 minute, total range is 2 minutes)
+     * @param onProgress progress callback
+     * @return path to the exported video file
+     * @throws IllegalArgumentException if the recording is not found or duration is negative
+     * @throws IllegalStateException if the recording has no camId or recordTimestamp
+     */
+    suspend fun exportByRecordingId(
+        recordingId: UUID,
+        duration: Duration = Duration.ofMinutes(1),
+        onProgress: suspend (VideoExportProgress) -> Unit = {},
+    ): Path
 }

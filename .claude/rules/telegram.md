@@ -30,6 +30,7 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 | TelegramNotificationQueue | `telegram/queue/` | Coroutine Channel-based notification queue |
 | TelegramNotificationSender | `telegram/queue/` | Actual sending logic from queue |
 | NotificationTask | `telegram/queue/` | Notification task data class |
+| QuickExportHandler | `telegram/bot/handler/quickexport/` | Inline button callback for instant video export |
 | AuthorizationFilter | `telegram/filter/` | Role-based auth (OWNER, USER) |
 | RetryHelper | `telegram/helper/` | Retry logic for Telegram API calls |
 | TelegramProperties | `telegram/config/` | Spring Boot config |
@@ -60,6 +61,30 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 | /adduser | OWNER | Invite user |
 | /removeuser | OWNER | Remove user |
 | /users | OWNER | List all users |
+
+## Quick Export
+
+Inline button on notifications for instant video export.
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| QuickExportHandler | `telegram/bot/handler/quickexport/` | Handles callback query `qe:{recordingId}` |
+| NotificationTask.recordingId | `telegram/queue/` | Recording ID for callback data |
+
+### How It Works
+
+1. When sending a notification, `TelegramNotificationSender` adds an inline button "📹 Экспорт видео" (Export video)
+2. Callback data format: `qe:{UUID}` (e.g. `qe:550e8400-e29b-41d4-a716-446655440000`)
+3. On button press:
+   - Button changes to "⚙️ Экспорт..." (Exporting...)
+   - Calls `VideoExportService.exportByRecordingId(recordingId)`
+   - Exports ±1 min from recordTimestamp in ORIGINAL mode (2 min total)
+   - Video is sent to the chat
+   - Button is restored
+
+### Authorization
+
+Only the owner and active users can use quick export.
 
 ## Bot Architecture
 

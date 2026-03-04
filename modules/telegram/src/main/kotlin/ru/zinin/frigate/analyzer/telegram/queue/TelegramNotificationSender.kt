@@ -11,6 +11,7 @@ import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.helper.RetryHelper
 
 private val logger = KotlinLogging.logger {}
@@ -34,7 +35,11 @@ class TelegramNotificationSender(
         when {
             frames.isEmpty() -> {
                 RetryHelper.retryIndefinitely("Send text message", task.chatId) {
-                    bot.sendTextMessage(chatId = chatIdObj, text = message)
+                    bot.sendTextMessage(
+                        chatId = chatIdObj,
+                        text = message,
+                        replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
+                    )
                 }
             }
 
@@ -46,6 +51,7 @@ class TelegramNotificationSender(
                             chatId = chatIdObj,
                             photo = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
                             text = message,
+                            replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
                         ),
                     )
                 }
@@ -61,9 +67,17 @@ class TelegramNotificationSender(
                                     text = if (chunkIndex == 0 && index == 0) message else null,
                                 )
                             }
+                        // sendMediaGroup is @BetaApi in tgbotapi — stable enough for production use here
                         @Suppress("OPT_IN_USAGE")
                         bot.sendMediaGroup(chatIdObj, mediaGroup)
                     }
+                }
+                RetryHelper.retryIndefinitely("Send export button", task.chatId) {
+                    bot.sendTextMessage(
+                        chatId = chatIdObj,
+                        text = EXPORT_PROMPT_TEXT,
+                        replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
+                    )
                 }
             }
         }
@@ -72,6 +86,7 @@ class TelegramNotificationSender(
     companion object {
         private const val MAX_MEDIA_GROUP_SIZE = 10
         private const val MAX_CAPTION_LENGTH = 1024
+        private const val EXPORT_PROMPT_TEXT = "👆 Нажмите для быстрого экспорта видео"
     }
 
     private fun String.toCaption(maxLength: Int): String {

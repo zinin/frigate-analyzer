@@ -54,3 +54,15 @@ opencode.json
 
 ### Git worktrees ###
 .worktrees/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Compiled classes
+*.class
+
+# TaskMaster
+.taskmaster/prorab.lock

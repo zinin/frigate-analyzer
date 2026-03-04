@@ -8,6 +8,7 @@ import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
 import dev.inmo.tgbotapi.extensions.behaviour_builder.buildBehaviourWithLongPolling
 import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onCommand
 import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onContentMessage
+import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onDataCallbackQuery
 import dev.inmo.tgbotapi.types.BotCommand
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
@@ -28,6 +29,7 @@ import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.OwnerActivatedEvent
+import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
@@ -43,6 +45,7 @@ class FrigateAnalyzerBot(
     private val userService: TelegramUserService,
     private val properties: TelegramProperties,
     private val handlers: List<CommandHandler>,
+    private val quickExportHandler: QuickExportHandler,
 ) {
     private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -122,6 +125,18 @@ class FrigateAnalyzerBot(
                     logger.error(e) { "Error handling command /${handler.command}" }
                     reply(message, "Произошла ошибка. Попробуйте позже.")
                 }
+            }
+        }
+
+        onDataCallbackQuery(
+            initialFilter = { it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX) },
+        ) { callback ->
+            try {
+                quickExportHandler.handle(callback)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error(e) { "Error handling quick export callback: ${callback.data}" }
             }
         }
 

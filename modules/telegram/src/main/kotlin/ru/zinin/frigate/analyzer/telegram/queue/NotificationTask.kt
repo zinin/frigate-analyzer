@@ -9,5 +9,7 @@ data class NotificationTask(
     val chatId: Long,
     val message: String,
     val visualizedFrames: List<VisualizedFrameData>,
+    /** ID of the recording, used for callback data in inline export buttons. */
+    val recordingId: UUID,
     val createdAt: Instant = Instant.now(),
 )

@@ -43,10 +43,11 @@ class TelegramNotificationServiceImpl(
             val message = formatRecordingMessage(recording, userZone.zone)
             val task =
                 NotificationTask(
-                    uuidGeneratorHelper.generateV1(),
-                    userZone.chatId,
-                    message,
-                    visualizedFrames,
+                    id = uuidGeneratorHelper.generateV1(),
+                    chatId = userZone.chatId,
+                    message = message,
+                    visualizedFrames = visualizedFrames,
+                    recordingId = recording.id,
                 )
             notificationQueue.enqueue(task)
         }
