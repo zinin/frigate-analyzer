@@ -658,7 +658,7 @@
         "id": 8,
         "title": "Зарегистрировать QuickExportHandler в FrigateAnalyzerBot",
         "description": "Добавить глобальный обработчик onDataCallbackQuery в FrigateAnalyzerBot для делегирования callback с префиксом qe: в QuickExportHandler.",
-        "status": "pending",
+        "status": "in-progress",
         "priority": "high",
         "dependencies": [
           6
@@ -670,10 +670,16 @@
             "id": 1,
             "title": "Добавить импорт onDataCallbackQuery в FrigateAnalyzerBot",
             "description": "Добавить импорт функции onDataCallbackQuery из пакета triggers_handling для обработки callback query.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Открыть файл `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt` и добавить импорт рядом с существующими импортами из triggers_handling:\n```kotlin\nimport dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onDataCallbackQuery\n```\nДобавить после строки 10 (после импорта onContentMessage).",
-            "testStrategy": "Проверить компиляцию проекта - файл должен корректно импортировать функцию без ошибок."
+            "testStrategy": "Проверить компиляцию проекта - файл должен корректно импортировать функцию без ошибок.",
+            "metadata": {
+              "startRev": "611c75c5137f1404b04800b3657754bc684ad233",
+              "endRev": "611c75c5137f1404b04800b3657754bc684ad233",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T00:43:20.889Z"
+            }
           },
           {
             "id": 2,
@@ -717,7 +723,11 @@
             "details": "QuickExportHandler должен содержать companion object с константой:\n```kotlin\nclass QuickExportHandler(...) {\n    companion object {\n        const val CALLBACK_PREFIX = \"qe:\"\n    }\n    \n    suspend fun handle(callback: DataCallbackQuery) {\n        // ... реализация ...\n    }\n}\n```\nЭта константа используется в FrigateAnalyzerBot для фильтрации callback query по префиксу. Если константа отсутствует в Task 6, необходимо добавить её.",
             "testStrategy": "Проверить что QuickExportHandler.CALLBACK_PREFIX доступна и имеет значение \"qe:\". Убедиться что код компилируется."
           }
-        ]
+        ],
+        "metadata": {
+          "startRev": "611c75c5137f1404b04800b3657754bc684ad233",
+          "endRev": "611c75c5137f1404b04800b3657754bc684ad233"
+        }
       },
       {
         "id": 9,
