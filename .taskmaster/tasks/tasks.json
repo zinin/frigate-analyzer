@@ -908,7 +908,7 @@
         "id": 10,
         "title": "Написать интеграционные тесты для Quick Export",
         "description": "Создать интеграционные тесты для проверки полного flow быстрого экспорта: от нажатия кнопки до получения видео.",
-        "status": "rework",
+        "status": "review",
         "priority": "medium",
         "dependencies": [
           8,
@@ -987,10 +987,11 @@
         "metadata": {
           "startRev": "3b0c325e9761545fb461fb9bcef4f872eab6aa98",
           "endRev": "df927c422fee1cb5b3e17cfb1e02ac01e5f18d50",
-          "reviewRound": 1,
+          "reviewRound": 2,
           "reviewRoundsTotal": 2,
           "reviewContext": false,
-          "reviewPhaseComplete": false
+          "reviewPhaseComplete": false,
+          "reworkAttempts": 0
         }
       },
       {
