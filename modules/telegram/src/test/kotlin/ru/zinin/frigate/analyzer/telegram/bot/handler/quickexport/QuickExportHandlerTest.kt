@@ -20,17 +20,18 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
+import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.nio.file.Files
 import java.time.Duration
 import java.util.UUID
-import kotlinx.coroutines.CancellationException
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
@@ -189,6 +190,10 @@ class QuickExportHandlerTest {
 
         private val recordingId = UUID.randomUUID()
 
+        init {
+            coEvery { authorizationFilter.getRole(any<String>()) } returns UserRole.USER
+        }
+
         /**
          * Creates a real [MessageDataCallbackQuery] with real data class instances
          * and only interface mocks (ContentMessage).
@@ -234,6 +239,21 @@ class QuickExportHandlerTest {
 
                 // No interaction with bot or services (early return since cast to MessageDataCallbackQuery fails)
                 coVerify(exactly = 0) { bot.execute(any<Request<*>>()) }
+                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+            }
+
+        @Test
+        fun `handle rejects unauthorized user with username`() =
+            runTest {
+                val callback = createMessageCallback()
+
+                coEvery { authorizationFilter.getRole("testuser") } returns null
+                every { authorizationFilter.getUnauthorizedMessage() } returns "Unauthorized"
+                coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
+
+                handler.handle(callback)
+
+                // Verify answer was called with unauthorized message (no export attempted)
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
             }
 

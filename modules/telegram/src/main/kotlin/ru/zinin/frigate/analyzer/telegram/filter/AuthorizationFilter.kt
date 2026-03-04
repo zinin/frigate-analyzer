@@ -20,8 +20,11 @@ class AuthorizationFilter(
 ) {
     suspend fun getRole(message: CommonMessage<MessageContent>): UserRole? {
         val username = extractUsername(message) ?: return null
+        return getRole(username)
+    }
 
-        return when {
+    suspend fun getRole(username: String): UserRole? =
+        when {
             username == properties.owner -> {
                 logger.debug { "Owner access: @$username" }
                 UserRole.OWNER
@@ -37,7 +40,6 @@ class AuthorizationFilter(
                 null
             }
         }
-    }
 
     fun extractUsername(message: CommonMessage<MessageContent>): String? {
         val privateMessage = message as? PrivateContentMessage<*> ?: return null

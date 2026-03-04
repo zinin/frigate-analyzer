@@ -48,7 +48,7 @@ class QuickExportHandler(
 
         // Проверяем авторизацию через username
         val username = callback.user.username?.withoutAt
-        if (username == null) {
+        if (username == null || authorizationFilter.getRole(username) == null) {
             bot.answer(callback, authorizationFilter.getUnauthorizedMessage())
             return
         }
