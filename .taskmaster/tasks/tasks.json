@@ -658,7 +658,7 @@
         "id": 8,
         "title": "Зарегистрировать QuickExportHandler в FrigateAnalyzerBot",
         "description": "Добавить глобальный обработчик onDataCallbackQuery в FrigateAnalyzerBot для делегирования callback с префиксом qe: в QuickExportHandler.",
-        "status": "in-progress",
+        "status": "done",
         "priority": "high",
         "dependencies": [
           6
@@ -719,12 +719,18 @@
             "id": 4,
             "title": "Реализовать обработчик onDataCallbackQuery в registerRoutes()",
             "description": "Добавить глобальный обработчик callback query с фильтрацией по префиксу qe: и делегированием в QuickExportHandler.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               3
             ],
             "details": "В методе registerRoutes() добавить обработчик callback query после цикла регистрации команд и перед onContentMessage:\n```kotlin\nprivate suspend fun BehaviourContext.registerRoutes() {\n    sortedHandlers.forEach { handler ->\n        // ... существующий код для onCommand ...\n    }\n\n    // Обработчик быстрого экспорта\n    onDataCallbackQuery(\n        initialFilter = { it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX) }\n    ) { callback ->\n        try {\n            quickExportHandler.handle(callback)\n        } catch (e: CancellationException) {\n            throw e\n        } catch (e: Exception) {\n            logger.error(e) { \"Error handling quick export callback\" }\n        }\n    }\n\n    onContentMessage { message ->\n        // ... существующий код ...\n    }\n}\n```\ninitialFilter обеспечивает, что обрабатываются только callback с данными, начинающимися с \"qe:\".",
-            "testStrategy": "1. Проверить компиляцию.\n2. Интеграционный тест: callback с data=\"qe:{uuid}\" должен вызвать quickExportHandler.handle().\n3. Callback с другим префиксом (например \"tz:\") не должен срабатывать."
+            "testStrategy": "1. Проверить компиляцию.\n2. Интеграционный тест: callback с data=\"qe:{uuid}\" должен вызвать quickExportHandler.handle().\n3. Callback с другим префиксом (например \"tz:\") не должен срабатывать.",
+            "metadata": {
+              "startRev": "79dbbdcb1fb311215c4e558cf03a6f4b9aa5cb94",
+              "endRev": "79dbbdcb1fb311215c4e558cf03a6f4b9aa5cb94",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T00:49:58.163Z"
+            }
           },
           {
             "id": 5,
@@ -744,7 +750,7 @@
         ],
         "metadata": {
           "startRev": "611c75c5137f1404b04800b3657754bc684ad233",
-          "endRev": "63a72e94814c46905d6d46473d7f0157bc3decc0"
+          "endRev": "79dbbdcb1fb311215c4e558cf03a6f4b9aa5cb94"
         }
       },
       {
