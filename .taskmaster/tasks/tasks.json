@@ -657,7 +657,12 @@
               3
             ],
             "details": "Найти все места в TelegramNotificationSender.send(), где используется createExportKeyboard, и заменить на:\n```kotlin\nreplyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId)\n```\nЭто должно быть в трёх местах:\n1. sendTextMessage — добавить параметр replyMarkup\n2. SendPhoto — добавить параметр replyMarkup\n3. sendMediaGroup (первый чанк) — добавить replyMarkup к первому элементу или отдельным сообщением\n\nПримечание: task.recordingId должен быть добавлен в NotificationTask (задача 1-2).",
-            "testStrategy": "1. Проверить компиляцию проекта.\n2. Проверить, что все три ветки when используют QuickExportHandler.createExportKeyboard.\n3. Существующие тесты должны проходить без изменений."
+            "testStrategy": "1. Проверить компиляцию проекта.\n2. Проверить, что все три ветки when используют QuickExportHandler.createExportKeyboard.\n3. Существующие тесты должны проходить без изменений.",
+            "metadata": {
+              "startRev": "d15b9f86483a360ad86a3375aee974f24eacc29f",
+              "endRev": "d15b9f86483a360ad86a3375aee974f24eacc29f",
+              "runAttempts": 1
+            }
           },
           {
             "id": 5,
