@@ -47,3 +47,44 @@ No changes needed — the fixes don't alter project structure or architecture.
 
 ---
 
+## Iteration 1
+
+Status: complete
+Agent: claude
+Model: claude-opus-4-6
+Started: 2026-03-04T00:32:16.277Z
+Finished: 2026-03-04T00:42:46.401Z
+Duration: 622.9s
+Turns: 35
+Cost: $1.7567
+Input tokens: 12215
+Output tokens: 21709
+Cache read tokens: 2260433
+Cache write tokens: 187616
+Reasoning tokens: 0
+
+### Commits
+- `078a334` Deduplicate CALLBACK_PREFIX and createExportKeyboard, add sendVideo timeout test
+
+### Agent Report
+## Fixes Applied
+
+### Issue 1 [IMPORTANT]: Deduplicate CALLBACK_PREFIX and createExportKeyboard
+
+**Files changed:**
+- `TelegramNotificationSender.kt` — Removed duplicated `CALLBACK_PREFIX`, `EXPORT_BUTTON_TEXT`, and `createExportKeyboard()`. Now imports and delegates to `QuickExportHandler.createExportKeyboard()` as the single canonical source. Removed unused imports (`CallbackDataInlineKeyboardButton`, `InlineKeyboardMarkup`, `matrix`, `row`, `UUID`).
+- `TelegramNotificationSenderTest.kt` — Updated `assertExportKeyboard` to reference `QuickExportHandler.CALLBACK_PREFIX` instead of the removed `TelegramNotificationSender.CALLBACK_PREFIX`.
+- `QuickExportHandlerTest.kt` — Removed the `CALLBACK_PREFIX matches TelegramNotificationSender prefix` test as it's no longer needed (deduplication eliminates the divergence risk by construction).
+
+### Issue 2 [IMPORTANT]: Add test for sendVideo timeout path
+
+**File changed:** `QuickExportHandlerTest.kt` — Added test `handle sends timeout message when sendVideo exceeds timeout` that:
+- Mocks `bot.execute` to delay only the `sendVideo` request past the 3-minute `sendVideoTimeout`
+- Verifies the timeout message "Не удалось отправить видео: превышено время ожидания." is sent
+- Verifies cleanup (`cleanupExportFile`) is still called via the `finally` block
+- Verifies the button is restored to the export state after timeout
+
+**Build status:** Full build passes (78 tasks), all 54 telegram module tests pass.
+
+---
+
