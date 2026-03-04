@@ -27,7 +27,6 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
-import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.nio.file.Files
@@ -185,7 +184,7 @@ class QuickExportHandlerTest {
         private val recordingId = UUID.randomUUID()
 
         init {
-            coEvery { authorizationFilter.getRole(any<String>()) } returns UserRole.USER
+            coEvery { userService.findActiveByUsername(any()) } returns mockk()
         }
 
         /**
@@ -305,8 +304,8 @@ class QuickExportHandlerTest {
                 coVerify { bot.execute(any<Request<*>>()) }
                 // Verify no export was attempted
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
-                // Verify authorizationFilter was never consulted
-                coVerify(exactly = 0) { authorizationFilter.getRole(any<String>()) }
+                // Verify userService was never consulted (early return before auth check)
+                coVerify(exactly = 0) { userService.findActiveByUsername(any()) }
             }
 
         @Test
@@ -314,7 +313,7 @@ class QuickExportHandlerTest {
             runTest {
                 val callback = createMessageCallback()
 
-                coEvery { authorizationFilter.getRole("testuser") } returns null
+                coEvery { userService.findActiveByUsername("testuser") } returns null
                 every { authorizationFilter.getUnauthorizedMessage() } returns "Unauthorized"
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
 
@@ -325,11 +324,12 @@ class QuickExportHandlerTest {
             }
 
         @Test
-        fun `handle allows owner access without userService check`() =
+        fun `handle allows owner access even when userService returns null`() =
             runTest {
                 val callback = createOwnerCallback()
                 val tempFile = Files.createTempFile("test-export", ".mp4")
 
+                coEvery { userService.findActiveByUsername(properties.owner) } returns null
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
                 coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
@@ -340,11 +340,31 @@ class QuickExportHandlerTest {
                     Files.deleteIfExists(tempFile)
                 }
 
-                // Verify export was called (owner is authorized)
+                // Verify export was called (owner is authorized regardless of userService)
                 coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+            }
 
-                // Verify authorizationFilter.getRole was NOT called (owner short-circuits)
-                coVerify(exactly = 0) { authorizationFilter.getRole(any<String>()) }
+        @Test
+        fun `handle allows active user access and performs export`() =
+            runTest {
+                val callback = createMessageCallback()
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                coEvery { userService.findActiveByUsername("testuser") } returns mockk()
+                coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
+                coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
+
+                try {
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                // Verify export was called (active user is authorized)
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+                // Verify userService was consulted
+                coVerify { userService.findActiveByUsername("testuser") }
             }
 
         @Test

@@ -56,11 +56,11 @@ class QuickExportHandler(
             return
         }
 
-        // Проверяем: владелец бота
+        // Проверяем: владелец или активный пользователь
         val isOwner = username == properties.owner
+        val isActiveUser = userService.findActiveByUsername(username) != null
 
-        // Проверяем авторизацию (если не владелец)
-        if (!isOwner && authorizationFilter.getRole(username) == null) {
+        if (!isOwner && !isActiveUser) {
             bot.answer(callback, authorizationFilter.getUnauthorizedMessage())
             return
         }
