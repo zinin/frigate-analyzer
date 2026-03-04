@@ -762,7 +762,7 @@
         "id": 9,
         "title": "Добавить проверку авторизации в QuickExportHandler",
         "description": "Улучшить проверку авторизации в QuickExportHandler через TelegramUserService для соответствия требованиям безопасности.",
-        "status": "rework",
+        "status": "review",
         "priority": "high",
         "dependencies": [
           6
@@ -858,10 +858,11 @@
         "metadata": {
           "startRev": "220f763cca47fc3c2f5a4904e2ef6f94b1cdea2a",
           "endRev": "67f55fd1254ba9aa8299a1190904ec0b91b728c0",
-          "reviewRound": 1,
+          "reviewRound": 2,
           "reviewRoundsTotal": 2,
           "reviewContext": false,
-          "reviewPhaseComplete": false
+          "reviewPhaseComplete": false,
+          "reworkAttempts": 0
         }
       },
       {
