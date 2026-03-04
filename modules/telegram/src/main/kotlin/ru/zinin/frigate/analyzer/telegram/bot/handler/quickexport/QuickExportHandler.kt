@@ -19,7 +19,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
-import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.util.UUID
@@ -31,7 +30,6 @@ private val logger = KotlinLogging.logger {}
 class QuickExportHandler(
     private val bot: TelegramBot,
     private val videoExportService: VideoExportService,
-    private val authorizationFilter: AuthorizationFilter,
     private val userService: TelegramUserService,
     private val properties: TelegramProperties,
 ) {
@@ -58,11 +56,11 @@ class QuickExportHandler(
 
         // Проверяем: владелец или активный пользователь
         val isOwner = username == properties.owner
-        val isActiveUser = userService.findActiveByUsername(username) != null
+        val isActiveUser = !isOwner && userService.findActiveByUsername(username) != null
 
         if (!isOwner && !isActiveUser) {
             logger.warn { "Unauthorized quick export attempt from user: @$username" }
-            bot.answer(callback, authorizationFilter.getUnauthorizedMessage())
+            bot.answer(callback, properties.unauthorizedMessage)
             return
         }
 

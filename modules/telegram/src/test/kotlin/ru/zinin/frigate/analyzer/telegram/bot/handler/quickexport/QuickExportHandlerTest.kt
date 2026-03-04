@@ -27,7 +27,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
-import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import java.nio.file.Files
@@ -171,7 +170,6 @@ class QuickExportHandlerTest {
     inner class HandleTest {
         private val bot = mockk<TelegramBot>()
         private val videoExportService = mockk<VideoExportService>()
-        private val authorizationFilter = mockk<AuthorizationFilter>()
         private val userService = mockk<TelegramUserService>()
         private val properties =
             TelegramProperties(
@@ -180,7 +178,7 @@ class QuickExportHandlerTest {
                 owner = "testowner",
                 sendVideoTimeout = Duration.ofMinutes(3),
             )
-        private val handler = QuickExportHandler(bot, videoExportService, authorizationFilter, userService, properties)
+        private val handler = QuickExportHandler(bot, videoExportService, userService, properties)
 
         private val recordingId = UUID.randomUUID()
 
@@ -297,12 +295,17 @@ class QuickExportHandlerTest {
             runTest {
                 val callback = createMessageCallbackWithoutUsername()
 
-                coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
 
                 handler.handle(callback)
 
-                // Verify answer was called with "set username" message
-                coVerify { bot.execute(any<Request<*>>()) }
+                // Verify answer was called with the correct "set username" message
+                val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
+                assertTrue(
+                    answerRequests.any { it.text == "Пожалуйста, установите username в настройках Telegram." },
+                    "Expected AnswerCallbackQuery with 'set username' text, but got: ${answerRequests.map { it.text }}",
+                )
                 // Verify no export was attempted
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
                 // Verify userService was never consulted (early return before auth check)
@@ -313,10 +316,8 @@ class QuickExportHandlerTest {
         fun `handle rejects unauthorized user with username`() =
             runTest {
                 val callback = createMessageCallback()
-                val unauthorizedMessage = "Доступ запрещен"
 
                 coEvery { userService.findActiveByUsername("testuser") } returns null
-                every { authorizationFilter.getUnauthorizedMessage() } returns unauthorizedMessage
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
 
@@ -325,11 +326,13 @@ class QuickExportHandlerTest {
                 // Verify no export was attempted
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
 
-                // Verify answer was called with unauthorized message
+                // Verify answer was called with unauthorized message from properties
                 val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
                 assertTrue(
-                    answerRequests.any { it.text == unauthorizedMessage },
-                    "Expected AnswerCallbackQuery with text '$unauthorizedMessage', but got: ${answerRequests.map { it.text }}",
+                    answerRequests.any { it.text == properties.unauthorizedMessage },
+                    "Expected AnswerCallbackQuery with text '${properties.unauthorizedMessage}', but got: ${answerRequests.map {
+                        it.text
+                    }}",
                 )
 
                 // Verify userService was consulted for authorization check
