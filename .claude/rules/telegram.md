@@ -61,6 +61,30 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 | /removeuser | OWNER | Remove user |
 | /users | OWNER | List all users |
 
+## Quick Export (Быстрый экспорт)
+
+Инлайн-кнопка на уведомлениях для мгновенного экспорта видео.
+
+| Компонент | Расположение | Назначение |
+|-----------|--------------|------------|
+| QuickExportHandler | `telegram/bot/handler/quickexport/` | Обработка callback query `qe:{recordingId}` |
+| NotificationTask.recordingId | `telegram/queue/` | ID записи для формирования callback data |
+
+### Как работает
+
+1. При отправке уведомления (TelegramNotificationSender) добавляется inline-кнопка "📹 Экспорт видео"
+2. Callback data формат: `qe:{UUID}` (например `qe:550e8400-e29b-41d4-a716-446655440000`)
+3. При нажатии кнопки:
+   - Кнопка меняется на "⚙️ Экспорт..."
+   - Вызывается `VideoExportService.exportByRecordingId(recordingId)`
+   - Экспортируется ±1 мин от recordTimestamp в режиме ORIGINAL
+   - Видео отправляется в чат
+   - Кнопка восстанавливается
+
+### Авторизация
+
+Только владелец и активные пользователи могут использовать быстрый экспорт.
+
 ## Bot Architecture
 
 - `FrigateAnalyzerBot` registers commands dynamically from `List<CommandHandler>`.
