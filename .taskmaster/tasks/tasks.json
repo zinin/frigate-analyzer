@@ -685,12 +685,18 @@
             "id": 2,
             "title": "Добавить импорт QuickExportHandler в FrigateAnalyzerBot",
             "description": "Добавить импорт класса QuickExportHandler для использования в качестве зависимости.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               1
             ],
             "details": "Добавить импорт класса QuickExportHandler в секцию импортов FrigateAnalyzerBot.kt:\n```kotlin\nimport ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler\n```\nРазместить в алфавитном порядке среди других импортов из пакета ru.zinin.frigate.analyzer.telegram.",
-            "testStrategy": "Компиляция пройдёт после создания класса QuickExportHandler (зависимость от Task 6)."
+            "testStrategy": "Компиляция пройдёт после создания класса QuickExportHandler (зависимость от Task 6).",
+            "metadata": {
+              "startRev": "08059510b58de24fa13a8a781095d8578a5476f8",
+              "endRev": "08059510b58de24fa13a8a781095d8578a5476f8",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T00:46:46.820Z"
+            }
           },
           {
             "id": 3,
@@ -732,7 +738,7 @@
         ],
         "metadata": {
           "startRev": "611c75c5137f1404b04800b3657754bc684ad233",
-          "endRev": "535a77d3ac7106b0bcdd4344929e6b290d745805"
+          "endRev": "08059510b58de24fa13a8a781095d8578a5476f8"
         }
       },
       {
