@@ -762,7 +762,7 @@
         "id": 9,
         "title": "Добавить проверку авторизации в QuickExportHandler",
         "description": "Улучшить проверку авторизации в QuickExportHandler через TelegramUserService для соответствия требованиям безопасности.",
-        "status": "in-progress",
+        "status": "done",
         "priority": "high",
         "dependencies": [
           6
@@ -840,18 +840,24 @@
             "id": 5,
             "title": "Добавить блокировку неавторизованных пользователей",
             "description": "Объединить проверки и заблокировать доступ для пользователей, которые не являются ни владельцем, ни активным пользователем.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               3,
               4
             ],
             "details": "Добавить финальную проверку авторизации:\n```kotlin\nif (!isOwner && !isActiveUser) {\n    bot.answer(callback, properties.unauthorizedMessage)\n    return\n}\n```\nИспользовать properties.unauthorizedMessage (по умолчанию 'Доступ запрещен...') вместо authorizationFilter.getUnauthorizedMessage(), так как AuthorizationFilter не является зависимостью QuickExportHandler. Альтернативно можно добавить AuthorizationFilter как зависимость.",
-            "testStrategy": "Unit-тест: callback от неавторизованного пользователя (не owner, findActiveByUsername возвращает null) → answer с unauthorizedMessage, экспорт не вызывается. Проверить логирование попытки неавторизованного доступа."
+            "testStrategy": "Unit-тест: callback от неавторизованного пользователя (не owner, findActiveByUsername возвращает null) → answer с unauthorizedMessage, экспорт не вызывается. Проверить логирование попытки неавторизованного доступа.",
+            "metadata": {
+              "startRev": "f4691452dc2528065bc0bafb935fe66f78e887a5",
+              "endRev": "67f55fd1254ba9aa8299a1190904ec0b91b728c0",
+              "runAttempts": 1,
+              "executedAt": "2026-03-04T01:40:38.709Z"
+            }
           }
         ],
         "metadata": {
           "startRev": "220f763cca47fc3c2f5a4904e2ef6f94b1cdea2a",
-          "endRev": "dd16080380443a16dd7bb5bf7201e5aa6d1ad2d0"
+          "endRev": "67f55fd1254ba9aa8299a1190904ec0b91b728c0"
         }
       },
       {
