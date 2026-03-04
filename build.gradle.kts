@@ -11,14 +11,22 @@ plugins {
 }
 
 fun gitVersion(): String {
-    fun exec(vararg args: String): String? = try {
-        val process = ProcessBuilder(*args)
-            .directory(rootDir)
-            .redirectErrorStream(true)
-            .start()
-        val output = process.inputStream.bufferedReader().readText().trim()
-        if (process.waitFor() == 0 && output.isNotEmpty()) output else null
-    } catch (_: Exception) { null }
+    fun exec(vararg args: String): String? =
+        try {
+            val process =
+                ProcessBuilder(*args)
+                    .directory(rootDir)
+                    .redirectErrorStream(true)
+                    .start()
+            val output =
+                process.inputStream
+                    .bufferedReader()
+                    .readText()
+                    .trim()
+            if (process.waitFor() == 0 && output.isNotEmpty()) output else null
+        } catch (_: Exception) {
+            null
+        }
 
     // На теге: точная версия тега
     exec("git", "describe", "--tags", "--exact-match")
