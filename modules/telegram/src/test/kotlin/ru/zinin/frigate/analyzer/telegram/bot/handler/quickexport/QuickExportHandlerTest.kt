@@ -286,15 +286,23 @@ class QuickExportHandlerTest {
                 // 2. Export was called with the correct recordingId
                 coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
 
-                // 3. Video was sent (request is neither answer, edit, nor text message)
-                val knownRequestTypes =
-                    capturedRequests.count {
-                        it is AnswerCallbackQuery || it is EditChatMessageReplyMarkup || it is SendTextMessage
+                // 3. Video was sent — tgbotapi's sendVideo() with a multipart file creates an
+                //    internal CommonMultipartFileRequest wrapping SendVideoData. Since the class is
+                //    internal to tgbotapi, we verify by class name rather than filterIsInstance.
+                val videoSendRequests =
+                    capturedRequests.filter {
+                        it !is AnswerCallbackQuery && it !is EditChatMessageReplyMarkup && it !is SendTextMessage
                     }
                 assertTrue(
-                    capturedRequests.size > knownRequestTypes,
+                    videoSendRequests.isNotEmpty(),
                     "Expected a sendVideo request beyond answer/edit/text requests, " +
-                        "but all ${capturedRequests.size} requests were of known types",
+                        "but all ${capturedRequests.size} requests were of known types. " +
+                        "Captured request types: ${capturedRequests.map { it::class.simpleName }}",
+                )
+                assertTrue(
+                    videoSendRequests.any { it::class.simpleName == "CommonMultipartFileRequest" },
+                    "Expected CommonMultipartFileRequest (tgbotapi's sendVideo multipart wrapper), " +
+                        "but got: ${videoSendRequests.map { "${it::class.simpleName}" }}",
                 )
 
                 // 4. Exported file was cleaned up
@@ -730,25 +738,25 @@ class QuickExportHandlerTest {
             }
 
         @Test
-        fun `should handle export error gracefully`() =
+        fun `handle does not send video or cleanup on generic RuntimeException`() =
             runTest {
-                // given — use owner callback for simplified authorization
+                // given — generic RuntimeException triggers the "Ошибка экспорта" path
                 val callback = createOwnerCallback()
 
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
                 coEvery {
                     videoExportService.exportByRecordingId(eq(recordingId), any(), any())
-                } throws IllegalArgumentException("Recording not found")
+                } throws RuntimeException("Unexpected internal error")
 
                 // when
                 handler.handle(callback)
 
-                // then — error message containing "не найдена" was sent
+                // then — generic error message was sent
                 val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
                 assertTrue(
-                    sendTextRequests.any { it.text.contains("не найдена") },
-                    "Expected error message containing 'не найдена', but got: ${sendTextRequests.map { it.text }}",
+                    sendTextRequests.any { it.text.contains("Ошибка экспорта") },
+                    "Expected generic error message containing 'Ошибка экспорта', but got: ${sendTextRequests.map { it.text }}",
                 )
 
                 // No video was sent — only AnswerCallbackQuery, EditChatMessageReplyMarkup, and SendTextMessage
@@ -758,10 +766,10 @@ class QuickExportHandlerTest {
                     }
                 assertTrue(
                     videoRequests.isEmpty(),
-                    "Expected no sendVideo requests, but found: ${videoRequests.map { it::class.simpleName }}",
+                    "Expected no sendVideo requests on error, but found: ${videoRequests.map { it::class.simpleName }}",
                 )
 
-                // Cleanup was NOT called (no file was produced)
+                // Cleanup was NOT called (no file was produced since export threw before returning)
                 coVerify(exactly = 0) { videoExportService.cleanupExportFile(any()) }
             }
 
