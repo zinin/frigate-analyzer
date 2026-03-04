@@ -998,7 +998,7 @@
         "id": 11,
         "title": "Обновить документацию CLAUDE.md",
         "description": "Добавить документацию о Quick Export в .claude/rules/telegram.md.",
-        "status": "review",
+        "status": "rework",
         "priority": "low",
         "dependencies": [
           10
