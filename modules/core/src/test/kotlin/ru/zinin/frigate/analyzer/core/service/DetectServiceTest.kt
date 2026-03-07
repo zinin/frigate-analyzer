@@ -403,6 +403,25 @@ class DetectServiceTest {
         }
 
     @Test
+    fun `extractFramesRemoteWithRetry throws UnprocessableVideoException on 413`() =
+        runBlocking {
+            mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 413)
+            val server = registry.getServer("test")!!
+            server.alive = true
+
+            assertFailsWith<UnprocessableVideoException> {
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(1, 2, 3),
+                    filePath = "/test/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+            }
+
+            assertEquals(1, (mockWebServer.dispatcher as ConfigurableDetectServiceDispatcher).getRequestCount())
+            assertEquals(0, server.processingFrameExtractionRequestsCount.get())
+        }
+
+    @Test
     fun `extractFramesRemoteWithRetry retries on 500 but not on 422`() =
         runBlocking {
             // 500 should be retried — use 2 failures then success

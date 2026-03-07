@@ -189,9 +189,10 @@ class DetectService(
                 val detail =
                     try {
                         val body = e.responseBodyAsString
-                        objectMapper.readTree(body).path("detail").asText(body)
+                        val detailNode = objectMapper.readTree(body).path("detail")
+                        if (detailNode.isTextual) detailNode.asText() else body
                     } catch (_: Exception) {
-                        e.message ?: "Unknown client error"
+                        e.message!!
                     }
                 throw UnprocessableVideoException(detail, e)
             }
