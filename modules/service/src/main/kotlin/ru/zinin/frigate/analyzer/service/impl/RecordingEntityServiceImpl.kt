@@ -114,4 +114,15 @@ class RecordingEntityServiceImpl(
         repository.deleteById(id)
         logger.info { "Deleted recording $id" }
     }
+
+    @Transactional
+    override suspend fun incrementProcessAttempts(id: UUID) {
+        repository.incrementProcessAttempts(id)
+    }
+
+    @Transactional
+    override suspend fun markProcessedWithError(id: UUID, errorMessage: String) {
+        repository.markProcessedWithError(id, Instant.now(clock), errorMessage)
+        logger.info { "Recording $id marked as failed: $errorMessage" }
+    }
 }
