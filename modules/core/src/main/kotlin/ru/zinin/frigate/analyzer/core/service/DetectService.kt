@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.core.service
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -42,6 +43,7 @@ class DetectService(
     private val detectServerLoadBalancer: DetectServerLoadBalancer,
     private val detectProperties: DetectProperties,
     private val tempFileHelper: TempFileHelper,
+    private val objectMapper: ObjectMapper,
 ) {
     /**
      * Выполняет детекцию с автоматическим retry при любых ошибках.
@@ -187,8 +189,7 @@ class DetectService(
                 val detail =
                     try {
                         val body = e.responseBodyAsString
-                        val detailRegex = """"detail"\s*:\s*"([^"]+)"""".toRegex()
-                        detailRegex.find(body)?.groupValues?.get(1) ?: body
+                        objectMapper.readTree(body).path("detail").asText(body)
                     } catch (_: Exception) {
                         e.message ?: "Unknown client error"
                     }

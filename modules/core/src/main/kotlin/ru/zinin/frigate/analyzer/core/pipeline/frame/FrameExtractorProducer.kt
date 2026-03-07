@@ -88,8 +88,6 @@ class FrameExtractorProducer(
         }
 
         try {
-            recordingEntityService.incrementProcessAttempts(record.id)
-
             val response = extractFramesFromVideo(record)
             logger.info { "Extracted ${response.frames.size} frames for recording ${record.id}" }
 
@@ -127,6 +125,7 @@ class FrameExtractorProducer(
             recordingEntityService.deleteRecording(record.id)
         } catch (e: Exception) {
             logger.error(e) { "Failed to process recording ${record.id}" }
+            recordingEntityService.incrementProcessAttempts(record.id)
         }
     }
 
