@@ -13,5 +13,6 @@ class JacksonConfiguration {
         JsonMapper
             .builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .findAndAddModules()
             .build()
 }

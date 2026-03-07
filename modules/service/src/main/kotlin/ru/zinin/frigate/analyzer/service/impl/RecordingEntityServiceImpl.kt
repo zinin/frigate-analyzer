@@ -125,7 +125,8 @@ class RecordingEntityServiceImpl(
         id: UUID,
         errorMessage: String,
     ) {
-        repository.markProcessedWithError(id, Instant.now(clock), errorMessage)
-        logger.info { "Recording $id marked as failed: $errorMessage" }
+        val truncated = errorMessage.take(65536)
+        repository.markProcessedWithError(id, Instant.now(clock), truncated)
+        logger.warn { "Recording $id marked as failed: $truncated" }
     }
 }

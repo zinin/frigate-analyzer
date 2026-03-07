@@ -23,6 +23,7 @@ import ru.zinin.frigate.analyzer.core.loadbalancer.ServerSelectionStrategy
 import ru.zinin.frigate.analyzer.core.testsupport.ConfigurableDetectServiceDispatcher
 import ru.zinin.frigate.analyzer.core.testsupport.DetectServiceDispatcher
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.exception.UnprocessableVideoException
 import ru.zinin.frigate.analyzer.model.response.JobStatus
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
@@ -357,6 +358,68 @@ class DetectServiceTest {
             // Secondary server should be used
             assertEquals(1, primaryServer.processingFrameRequestsCount.get()) // Still at capacity
             assertEquals(0, secondaryServer.processingFrameRequestsCount.get()) // Released
+        }
+
+    // ==================== Unprocessable Video Tests ====================
+
+    @Test
+    fun `extractFramesRemoteWithRetry throws UnprocessableVideoException on 422`() =
+        runBlocking {
+            mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 422)
+            val server = registry.getServer("test")!!
+            server.alive = true
+
+            assertFailsWith<UnprocessableVideoException> {
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(1, 2, 3),
+                    filePath = "/test/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+            }
+
+            // Should make only 1 request — no retry on 422
+            assertEquals(1, (mockWebServer.dispatcher as ConfigurableDetectServiceDispatcher).getRequestCount())
+            // Server should be released
+            assertEquals(0, server.processingFrameExtractionRequestsCount.get())
+        }
+
+    @Test
+    fun `extractFramesRemoteWithRetry throws UnprocessableVideoException on 400`() =
+        runBlocking {
+            mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 400)
+            val server = registry.getServer("test")!!
+            server.alive = true
+
+            assertFailsWith<UnprocessableVideoException> {
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(1, 2, 3),
+                    filePath = "/test/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+            }
+
+            assertEquals(1, (mockWebServer.dispatcher as ConfigurableDetectServiceDispatcher).getRequestCount())
+            assertEquals(0, server.processingFrameExtractionRequestsCount.get())
+        }
+
+    @Test
+    fun `extractFramesRemoteWithRetry retries on 500 but not on 422`() =
+        runBlocking {
+            // 500 should be retried — use 2 failures then success
+            mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 2, httpErrorCode = 500)
+            val server = registry.getServer("test")!!
+            server.alive = true
+
+            val response =
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(1, 2, 3),
+                    filePath = "/test/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+
+            // 500 retried: 2 failures + 1 success = 3 requests
+            assertEquals(3, (mockWebServer.dispatcher as ConfigurableDetectServiceDispatcher).getRequestCount())
+            assertTrue(response.success)
         }
 
     // ==================== Edge Case Tests ====================
