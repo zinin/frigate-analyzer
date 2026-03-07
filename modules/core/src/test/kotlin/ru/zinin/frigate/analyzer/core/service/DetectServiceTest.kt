@@ -37,6 +37,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.fasterxml.jackson.databind.ObjectMapper as FasterxmlObjectMapper
 
 class DetectServiceTest {
     @TempDir
@@ -83,7 +84,7 @@ class DetectServiceTest {
 
         val tempFileHelper = TempFileHelper(applicationProperties(serverProps), Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
         tempFileHelper.init()
-        detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper)
+        detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper, buildObjectMapper())
     }
 
     @AfterEach
@@ -395,12 +396,7 @@ class DetectServiceTest {
         }
 
     private fun buildWebClient(): WebClient {
-        val mapper =
-            JsonMapper
-                .builder()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                .build()
+        val mapper = buildJsonMapper()
 
         val strategies =
             ExchangeStrategies
@@ -411,6 +407,20 @@ class DetectServiceTest {
                 }.build()
 
         return WebClient.builder().exchangeStrategies(strategies).build()
+    }
+
+    private fun buildJsonMapper(): JsonMapper =
+        JsonMapper
+            .builder()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+            .build()
+
+    private fun buildObjectMapper(): FasterxmlObjectMapper {
+        val builder = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+        builder.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        builder.propertyNamingStrategy(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE)
+        return builder.build()
     }
 
     private fun applicationProperties(serverProps: DetectServerProperties): ApplicationProperties {
