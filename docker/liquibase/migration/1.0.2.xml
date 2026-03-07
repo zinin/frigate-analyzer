@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-5.0.xsd">
+    <changeSet author="zinin" id="20260307-01-add-error-message-to-recordings">
+        <comment>Add error_message field to recordings for unprocessable video tracking</comment>
+        <sql>
+            ALTER TABLE recordings
+              ADD COLUMN error_message VARCHAR(65536);
+        </sql>
+    </changeSet>
+</databaseChangeLog>

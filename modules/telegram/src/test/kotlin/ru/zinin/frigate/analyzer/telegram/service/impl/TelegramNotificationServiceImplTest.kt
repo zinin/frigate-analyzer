@@ -47,6 +47,7 @@ class TelegramNotificationServiceImplTest {
             detectionsCount = detectionsCount,
             analyzeTime = 5,
             analyzedFramesCount = 10,
+            errorMessage = null,
         )
 
     @Test

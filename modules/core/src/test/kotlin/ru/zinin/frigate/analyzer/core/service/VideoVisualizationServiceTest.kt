@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.core.service
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.MockWebServer
 import org.junit.jupiter.api.AfterEach
@@ -86,7 +87,7 @@ class VideoVisualizationServiceTest {
 
         val tempFileHelper = TempFileHelper(applicationProperties(serverProps), Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
         tempFileHelper.init()
-        val detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper)
+        val detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper, buildObjectMapper())
         service = VideoVisualizationService(detectService, loadBalancer, detectProperties)
     }
 
@@ -202,7 +203,8 @@ class VideoVisualizationServiceTest {
                 )
             val shortTempFileHelper = TempFileHelper(shortAppProps, clock)
             shortTempFileHelper.init()
-            val shortDetectService = DetectService(webClient, shortLoadBalancer, shortDetectProperties, shortTempFileHelper)
+            val shortDetectService =
+                DetectService(webClient, shortLoadBalancer, shortDetectProperties, shortTempFileHelper, buildObjectMapper())
             val shortService = VideoVisualizationService(shortDetectService, shortLoadBalancer, shortDetectProperties)
 
             val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
@@ -270,7 +272,8 @@ class VideoVisualizationServiceTest {
                 )
             val retryTempFileHelper = TempFileHelper(retryAppProps, clock)
             retryTempFileHelper.init()
-            val retryDetectService = DetectService(webClient, retryLoadBalancer, retryDetectProperties, retryTempFileHelper)
+            val retryDetectService =
+                DetectService(webClient, retryLoadBalancer, retryDetectProperties, retryTempFileHelper, buildObjectMapper())
             val retryService = VideoVisualizationService(retryDetectService, retryLoadBalancer, retryDetectProperties)
 
             val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
@@ -301,12 +304,7 @@ class VideoVisualizationServiceTest {
         }
 
     private fun buildWebClient(): WebClient {
-        val mapper =
-            JsonMapper
-                .builder()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                .build()
+        val mapper = buildJsonMapper()
 
         val strategies =
             ExchangeStrategies
@@ -317,6 +315,22 @@ class VideoVisualizationServiceTest {
                 }.build()
 
         return WebClient.builder().exchangeStrategies(strategies).build()
+    }
+
+    private fun buildJsonMapper(): JsonMapper =
+        JsonMapper
+            .builder()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+            .build()
+
+    private fun buildObjectMapper(): ObjectMapper {
+        val builder =
+            com.fasterxml.jackson.databind.json.JsonMapper
+                .builder()
+        builder.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        builder.propertyNamingStrategy(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE)
+        return builder.build()
     }
 
     private fun applicationProperties(serverProps: DetectServerProperties): ApplicationProperties {

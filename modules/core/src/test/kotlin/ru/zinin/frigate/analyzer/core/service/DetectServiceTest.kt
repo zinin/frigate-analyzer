@@ -23,6 +23,7 @@ import ru.zinin.frigate.analyzer.core.loadbalancer.ServerSelectionStrategy
 import ru.zinin.frigate.analyzer.core.testsupport.ConfigurableDetectServiceDispatcher
 import ru.zinin.frigate.analyzer.core.testsupport.DetectServiceDispatcher
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.exception.UnprocessableVideoException
 import ru.zinin.frigate.analyzer.model.response.JobStatus
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
@@ -37,6 +38,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.fasterxml.jackson.databind.ObjectMapper as FasterxmlObjectMapper
 
 class DetectServiceTest {
     @TempDir
@@ -83,7 +85,7 @@ class DetectServiceTest {
 
         val tempFileHelper = TempFileHelper(applicationProperties(serverProps), Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
         tempFileHelper.init()
-        detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper)
+        detectService = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper, buildObjectMapper())
     }
 
     @AfterEach
@@ -358,6 +360,87 @@ class DetectServiceTest {
             assertEquals(0, secondaryServer.processingFrameRequestsCount.get()) // Released
         }
 
+    // ==================== Unprocessable Video Tests ====================
+
+    @Test
+    fun `extractFramesRemoteWithRetry throws UnprocessableVideoException on 422`() =
+        runBlocking {
+            mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 422)
+            val server = registry.getServer("test")!!
+            server.alive = true
+
+            assertFailsWith<UnprocessableVideoException> {
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(1, 2, 3),
+                    filePath = "/test/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+            }
+
+            // Should make only 1 request — no retry on 422
+            assertEquals(1, (mockWebServer.dispatcher as ConfigurableDetectServiceDispatcher).getRequestCount())
+            // Server should be released
+            assertEquals(0, server.processingFrameExtractionRequestsCount.get())
+        }
+
+    @Test
+    fun `extractFramesRemoteWithRetry throws UnprocessableVideoException on 400`() =
+        runBlocking {
+            mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 400)
+            val server = registry.getServer("test")!!
+            server.alive = true
+
+            assertFailsWith<UnprocessableVideoException> {
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(1, 2, 3),
+                    filePath = "/test/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+            }
+
+            assertEquals(1, (mockWebServer.dispatcher as ConfigurableDetectServiceDispatcher).getRequestCount())
+            assertEquals(0, server.processingFrameExtractionRequestsCount.get())
+        }
+
+    @Test
+    fun `extractFramesRemoteWithRetry throws UnprocessableVideoException on 413`() =
+        runBlocking {
+            mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 413)
+            val server = registry.getServer("test")!!
+            server.alive = true
+
+            assertFailsWith<UnprocessableVideoException> {
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(1, 2, 3),
+                    filePath = "/test/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+            }
+
+            assertEquals(1, (mockWebServer.dispatcher as ConfigurableDetectServiceDispatcher).getRequestCount())
+            assertEquals(0, server.processingFrameExtractionRequestsCount.get())
+        }
+
+    @Test
+    fun `extractFramesRemoteWithRetry retries on 500 but not on 422`() =
+        runBlocking {
+            // 500 should be retried — use 2 failures then success
+            mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 2, httpErrorCode = 500)
+            val server = registry.getServer("test")!!
+            server.alive = true
+
+            val response =
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(1, 2, 3),
+                    filePath = "/test/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+
+            // 500 retried: 2 failures + 1 success = 3 requests
+            assertEquals(3, (mockWebServer.dispatcher as ConfigurableDetectServiceDispatcher).getRequestCount())
+            assertTrue(response.success)
+        }
+
     // ==================== Edge Case Tests ====================
 
     @Test
@@ -395,12 +478,7 @@ class DetectServiceTest {
         }
 
     private fun buildWebClient(): WebClient {
-        val mapper =
-            JsonMapper
-                .builder()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                .build()
+        val mapper = buildJsonMapper()
 
         val strategies =
             ExchangeStrategies
@@ -411,6 +489,22 @@ class DetectServiceTest {
                 }.build()
 
         return WebClient.builder().exchangeStrategies(strategies).build()
+    }
+
+    private fun buildJsonMapper(): JsonMapper =
+        JsonMapper
+            .builder()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+            .build()
+
+    private fun buildObjectMapper(): FasterxmlObjectMapper {
+        val builder =
+            com.fasterxml.jackson.databind.json.JsonMapper
+                .builder()
+        builder.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        builder.propertyNamingStrategy(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE)
+        return builder.build()
     }
 
     private fun applicationProperties(serverProps: DetectServerProperties): ApplicationProperties {

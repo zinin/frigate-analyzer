@@ -15,4 +15,11 @@ interface RecordingEntityService {
     suspend fun getRecording(id: UUID): RecordingDto?
 
     suspend fun deleteRecording(id: UUID)
+
+    suspend fun incrementProcessAttempts(id: UUID)
+
+    suspend fun markProcessedWithError(
+        id: UUID,
+        errorMessage: String,
+    )
 }

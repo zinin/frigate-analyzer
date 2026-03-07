@@ -16,6 +16,7 @@ interface RecordingMapper {
     @Mapping(target = "detectionsCount", constant = "0")
     @Mapping(target = "analyzeTime", constant = "0")
     @Mapping(target = "analyzedFramesCount", constant = "0")
+    @Mapping(target = "errorMessage", ignore = true)
     fun toEntity(request: CreateRecordingRequest): RecordingEntity
 
     fun toDto(entity: RecordingEntity): RecordingDto

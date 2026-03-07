@@ -60,6 +60,7 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
             detectionsCount = detectionsCount,
             analyzeTime = analyzeTime,
             analyzedFramesCount = analyzedFramesCount,
+            errorMessage = null,
         )
     }
 
@@ -330,6 +331,102 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
             // then
             val updated = repository.findById(saved.id!!)
             assertEquals(800, updated!!.analyzeTime)
+        }
+    }
+
+    // endregion
+
+    // region incrementProcessAttempts
+
+    @Test
+    fun `should increment process_attempts without changing other fields`() {
+        runBlocking {
+            // given
+            val entity = createRecordingEntity(processAttempts = 0, analyzeTime = 0)
+            val saved = repository.save(entity)
+
+            // when
+            repository.incrementProcessAttempts(saved.id!!)
+
+            // then
+            val updated = repository.findById(saved.id!!)
+            assertNotNull(updated)
+            assertEquals(1, updated!!.processAttempts)
+            assertNull(updated.processTimestamp)
+            assertNull(updated.errorMessage)
+        }
+    }
+
+    @Test
+    fun `should increment process_attempts multiple times`() {
+        runBlocking {
+            // given
+            val entity = createRecordingEntity(processAttempts = 0, analyzeTime = 0)
+            val saved = repository.save(entity)
+
+            // when
+            repository.incrementProcessAttempts(saved.id!!)
+            repository.incrementProcessAttempts(saved.id!!)
+            repository.incrementProcessAttempts(saved.id!!)
+
+            // then
+            val updated = repository.findById(saved.id!!)
+            assertEquals(3, updated!!.processAttempts)
+        }
+    }
+
+    // endregion
+
+    // region markProcessedWithError
+
+    @Test
+    fun `should mark recording as processed with error message`() {
+        runBlocking {
+            // given
+            val entity = createRecordingEntity(processAttempts = 0, analyzeTime = 0)
+            val saved = repository.save(entity)
+            val processTimestamp = Instant.now()
+
+            // when
+            val updatedCount =
+                repository.markProcessedWithError(
+                    saved.id!!,
+                    processTimestamp,
+                    "File contains no video stream",
+                )
+
+            // then
+            assertEquals(1L, updatedCount)
+            val updated = repository.findById(saved.id!!)
+            assertNotNull(updated)
+            assertNotNull(updated!!.processTimestamp)
+            assertEquals(1, updated.processAttempts)
+            assertEquals("File contains no video stream", updated.errorMessage)
+        }
+    }
+
+    @Test
+    fun `should not return error recordings in findUnprocessedForUpdate`() {
+        runBlocking {
+            // given
+            val errorRecording = createRecordingEntity(filePath = "/recordings/error.mp4")
+            val saved = repository.save(errorRecording)
+            repository.markProcessedWithError(saved.id!!, Instant.now(), "Corrupted video")
+
+            val normalRecording = createRecordingEntity(filePath = "/recordings/normal.mp4")
+            repository.save(normalRecording)
+
+            // when
+            val result =
+                repository.findUnprocessedForUpdate(
+                    stuckBefore = Instant.now().minusSeconds(3600),
+                    createdBefore = Instant.now(),
+                    limit = 10,
+                )
+
+            // then
+            assertEquals(1, result.size)
+            assertEquals("/recordings/normal.mp4", result[0].filePath)
         }
     }
 

@@ -145,6 +145,7 @@ class VideoExportServiceImplTest {
             detectionsCount = null,
             analyzeTime = null,
             analyzedFramesCount = null,
+            errorMessage = null,
         )
 
     private fun recordingWithTimestamp(
@@ -166,6 +167,7 @@ class VideoExportServiceImplTest {
         detectionsCount = null,
         analyzeTime = null,
         analyzedFramesCount = null,
+        errorMessage = null,
     )
 
     private fun stubExportByRecordingIdHappyPath(

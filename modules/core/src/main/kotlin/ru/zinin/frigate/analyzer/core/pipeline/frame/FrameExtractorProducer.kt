@@ -12,6 +12,7 @@ import ru.zinin.frigate.analyzer.core.config.properties.PipelineProperties
 import ru.zinin.frigate.analyzer.core.service.DetectService
 import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
+import ru.zinin.frigate.analyzer.model.exception.UnprocessableVideoException
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
 import ru.zinin.frigate.analyzer.model.response.FrameExtractionResponse
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
@@ -91,7 +92,6 @@ class FrameExtractorProducer(
             logger.info { "Extracted ${response.frames.size} frames for recording ${record.id}" }
 
             if (response.frames.isEmpty()) {
-                // Запись без кадров — сразу сохраняем пустой результат
                 recordingEntityService.saveProcessingResult(
                     SaveProcessingResultRequest(record.id),
                 )
@@ -99,7 +99,6 @@ class FrameExtractorProducer(
                 return
             }
 
-            // Декодируем кадры и создаём FrameData
             val decoder = Base64.getDecoder()
             val frameDataList =
                 response.frames.mapIndexed { index, frame ->
@@ -107,10 +106,8 @@ class FrameExtractorProducer(
                     FrameData(record.id, index, frameBytes)
                 }
 
-            // Регистрируем запись с FrameData
             recordingTracker.registerRecording(record.id, frameDataList)
 
-            // Отправляем кадры в канал
             for (frameData in frameDataList) {
                 channel.send(FrameTask(frameData.recordId, frameData.frameIndex, frameData.frameBytes))
             }
@@ -118,6 +115,9 @@ class FrameExtractorProducer(
             logger.debug { "Sent ${frameDataList.size} frame tasks for recording ${record.id}" }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: UnprocessableVideoException) {
+            logger.warn { "Recording ${record.id} has unprocessable video: ${e.message}" }
+            recordingEntityService.markProcessedWithError(record.id, e.message ?: "Unknown error")
         } catch (e: NoSuchFileException) {
             logger.warn(e) {
                 "Recording ${record.id} file missing (${record.filePath}); deleting recording"
@@ -125,6 +125,7 @@ class FrameExtractorProducer(
             recordingEntityService.deleteRecording(record.id)
         } catch (e: Exception) {
             logger.error(e) { "Failed to process recording ${record.id}" }
+            recordingEntityService.incrementProcessAttempts(record.id)
         }
     }
 

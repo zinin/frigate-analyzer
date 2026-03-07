@@ -69,6 +69,34 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         @Param("analyzedFramesCount") analyzedFramesCount: Int,
     ): Long
 
+    @Modifying
+    @Query(
+        """
+        UPDATE recordings
+        SET process_attempts = process_attempts + 1
+        WHERE id = :id
+        """,
+    )
+    suspend fun incrementProcessAttempts(
+        @Param("id") id: UUID,
+    ): Long
+
+    @Modifying
+    @Query(
+        """
+        UPDATE recordings
+        SET process_timestamp = :processTimestamp,
+            process_attempts = process_attempts + 1,
+            error_message = :errorMessage
+        WHERE id = :id
+        """,
+    )
+    suspend fun markProcessedWithError(
+        @Param("id") id: UUID,
+        @Param("processTimestamp") processTimestamp: Instant,
+        @Param("errorMessage") errorMessage: String,
+    ): Long
+
     @Query("SELECT COUNT(*) FROM recordings")
     suspend fun countAll(): Long
 

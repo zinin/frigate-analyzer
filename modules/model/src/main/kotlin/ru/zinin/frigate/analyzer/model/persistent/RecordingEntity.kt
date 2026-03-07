@@ -40,6 +40,8 @@ data class RecordingEntity(
     var analyzeTime: Int?,
     @Column("analyzed_frames_count")
     var analyzedFramesCount: Int?,
+    @Column("error_message")
+    var errorMessage: String?,
 ) : Persistable<UUID> {
     override fun getId(): UUID? = id
 
