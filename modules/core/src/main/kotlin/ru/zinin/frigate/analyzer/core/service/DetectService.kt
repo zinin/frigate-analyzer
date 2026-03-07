@@ -179,16 +179,19 @@ class DetectService(
                 .bodyToMono<FrameExtractionResponse>()
                 .awaitSingle()
         } catch (e: WebClientResponseException) {
-            logger.warn { "Frame extraction failed on server ${acquired.id}: ${e.statusCode} ${e.message} (filePath=$filePath, recordingId=$recordingId)" }
+            logger.warn {
+                "Frame extraction failed on server ${acquired.id}: ${e.statusCode} ${e.message} (filePath=$filePath, recordingId=$recordingId)"
+            }
             val statusCode = e.statusCode.value()
             if (statusCode in listOf(400, 413, 422)) {
-                val detail = try {
-                    val body = e.responseBodyAsString
-                    val detailRegex = """"detail"\s*:\s*"([^"]+)"""".toRegex()
-                    detailRegex.find(body)?.groupValues?.get(1) ?: body
-                } catch (_: Exception) {
-                    e.message ?: "Unknown client error"
-                }
+                val detail =
+                    try {
+                        val body = e.responseBodyAsString
+                        val detailRegex = """"detail"\s*:\s*"([^"]+)"""".toRegex()
+                        detailRegex.find(body)?.groupValues?.get(1) ?: body
+                    } catch (_: Exception) {
+                        e.message ?: "Unknown client error"
+                    }
                 throw UnprocessableVideoException(detail, e)
             }
             throw e

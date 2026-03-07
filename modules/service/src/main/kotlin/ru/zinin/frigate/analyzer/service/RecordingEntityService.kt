@@ -18,5 +18,8 @@ interface RecordingEntityService {
 
     suspend fun incrementProcessAttempts(id: UUID)
 
-    suspend fun markProcessedWithError(id: UUID, errorMessage: String)
+    suspend fun markProcessedWithError(
+        id: UUID,
+        errorMessage: String,
+    )
 }

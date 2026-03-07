@@ -121,7 +121,10 @@ class RecordingEntityServiceImpl(
     }
 
     @Transactional
-    override suspend fun markProcessedWithError(id: UUID, errorMessage: String) {
+    override suspend fun markProcessedWithError(
+        id: UUID,
+        errorMessage: String,
+    ) {
         repository.markProcessedWithError(id, Instant.now(clock), errorMessage)
         logger.info { "Recording $id marked as failed: $errorMessage" }
     }
