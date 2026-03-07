@@ -20,4 +20,5 @@ data class RecordingDto(
     var detectionsCount: Int,
     var analyzeTime: Int,
     var analyzedFramesCount: Int,
+    var errorMessage: String?,
 )

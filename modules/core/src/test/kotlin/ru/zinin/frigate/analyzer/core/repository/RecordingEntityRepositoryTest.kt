@@ -60,6 +60,7 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
             detectionsCount = detectionsCount,
             analyzeTime = analyzeTime,
             analyzedFramesCount = analyzedFramesCount,
+            errorMessage = null,
         )
     }
 
