@@ -16,6 +16,7 @@ import org.springframework.http.client.MultipartBodyBuilder
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.web.reactive.function.client.WebClientResponseException
 import org.springframework.web.reactive.function.client.bodyToFlux
 import org.springframework.web.reactive.function.client.bodyToMono
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
@@ -25,6 +26,7 @@ import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
 import ru.zinin.frigate.analyzer.core.loadbalancer.RequestType
 import ru.zinin.frigate.analyzer.model.exception.DetectServerUnavailableException
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.exception.UnprocessableVideoException
 import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.FrameExtractionResponse
 import ru.zinin.frigate.analyzer.model.response.JobCreatedResponse
@@ -176,9 +178,22 @@ class DetectService(
                 .retrieve()
                 .bodyToMono<FrameExtractionResponse>()
                 .awaitSingle()
+        } catch (e: WebClientResponseException) {
+            logger.warn { "Frame extraction failed on server ${acquired.id}: ${e.statusCode} ${e.message} (filePath=$filePath, recordingId=$recordingId)" }
+            val statusCode = e.statusCode.value()
+            if (statusCode in listOf(400, 413, 422)) {
+                val detail = try {
+                    val body = e.responseBodyAsString
+                    val detailRegex = """"detail"\s*:\s*"([^"]+)"""".toRegex()
+                    detailRegex.find(body)?.groupValues?.get(1) ?: body
+                } catch (_: Exception) {
+                    e.message ?: "Unknown client error"
+                }
+                throw UnprocessableVideoException(detail, e)
+            }
+            throw e
         } catch (e: Exception) {
             logger.warn { "Frame extraction failed on server ${acquired.id}: ${e.message} (filePath=$filePath, recordingId=$recordingId)" }
-//            detectServerLoadBalancer.markServerDead(acquired.id)
             throw e
         } finally {
             detectServerLoadBalancer.releaseServer(acquired.id, RequestType.FRAME_EXTRACTION)
@@ -412,6 +427,8 @@ class DetectService(
                     } catch (e: DetectServerUnavailableException) {
                         lastError = e
                         logRetry(attempt, operationName, "No available servers")
+                    } catch (e: UnprocessableVideoException) {
+                        throw e // Don't retry on client errors (400/422/413)
                     } catch (e: CancellationException) {
                         throw e // Don't retry on cancellation - maintain structured concurrency
                     } catch (e: Exception) {
