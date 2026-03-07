@@ -417,7 +417,9 @@ class DetectServiceTest {
             .build()
 
     private fun buildObjectMapper(): FasterxmlObjectMapper {
-        val builder = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+        val builder =
+            com.fasterxml.jackson.databind.json.JsonMapper
+                .builder()
         builder.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
         builder.propertyNamingStrategy(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE)
         return builder.build()

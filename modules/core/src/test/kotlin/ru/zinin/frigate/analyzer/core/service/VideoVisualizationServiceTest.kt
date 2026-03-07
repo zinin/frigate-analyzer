@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.core.service
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.MockWebServer
 import org.junit.jupiter.api.AfterEach
@@ -32,7 +33,6 @@ import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
 import tools.jackson.databind.json.JsonMapper
-import com.fasterxml.jackson.databind.ObjectMapper
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Clock
@@ -203,7 +203,8 @@ class VideoVisualizationServiceTest {
                 )
             val shortTempFileHelper = TempFileHelper(shortAppProps, clock)
             shortTempFileHelper.init()
-            val shortDetectService = DetectService(webClient, shortLoadBalancer, shortDetectProperties, shortTempFileHelper, buildObjectMapper())
+            val shortDetectService =
+                DetectService(webClient, shortLoadBalancer, shortDetectProperties, shortTempFileHelper, buildObjectMapper())
             val shortService = VideoVisualizationService(shortDetectService, shortLoadBalancer, shortDetectProperties)
 
             val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
@@ -271,7 +272,8 @@ class VideoVisualizationServiceTest {
                 )
             val retryTempFileHelper = TempFileHelper(retryAppProps, clock)
             retryTempFileHelper.init()
-            val retryDetectService = DetectService(webClient, retryLoadBalancer, retryDetectProperties, retryTempFileHelper, buildObjectMapper())
+            val retryDetectService =
+                DetectService(webClient, retryLoadBalancer, retryDetectProperties, retryTempFileHelper, buildObjectMapper())
             val retryService = VideoVisualizationService(retryDetectService, retryLoadBalancer, retryDetectProperties)
 
             val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
@@ -323,7 +325,9 @@ class VideoVisualizationServiceTest {
             .build()
 
     private fun buildObjectMapper(): ObjectMapper {
-        val builder = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+        val builder =
+            com.fasterxml.jackson.databind.json.JsonMapper
+                .builder()
         builder.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
         builder.propertyNamingStrategy(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE)
         return builder.build()
