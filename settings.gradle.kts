@@ -1,4 +1,12 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
 rootProject.name = "frigate-analyzer"
+
 val modules = listOf("common", "model", "service", "core", "telegram")
 
 include(modules)
