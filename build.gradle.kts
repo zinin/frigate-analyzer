@@ -46,6 +46,10 @@ fun gitVersion(): String {
 }
 
 val appVersion: String = findProperty("appVersion")?.toString() ?: gitVersion()
+val ktlintToolVersion =
+    libs.versions.ktlint.tool
+        .get()
+val jacocoToolVersion = libs.versions.jacoco.get()
 
 allprojects {
     group = "ru.zinin"
@@ -82,7 +86,7 @@ subprojects {
     }
 
     ktlint {
-        version.set(libs.versions.ktlint.tool.get())
+        version.set(ktlintToolVersion)
 
         android.set(false)
         verbose.set(true)
@@ -95,7 +99,7 @@ subprojects {
         }
     }
     jacoco {
-        toolVersion = libs.versions.jacoco.get()
+        toolVersion = jacocoToolVersion
     }
 
     tasks.jacocoTestReport {

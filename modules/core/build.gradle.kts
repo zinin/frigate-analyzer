@@ -26,7 +26,11 @@ configurations {
 
 dependencyManagement {
     imports {
-        mavenBom(libs.testcontainers.bom)
+        mavenBom(
+            libs.testcontainers.bom
+                .get()
+                .toString(),
+        )
     }
 }
 
