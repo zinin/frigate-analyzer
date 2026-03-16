@@ -24,7 +24,13 @@
 - `io.spring.dependency-management` плагин остаётся — он управляет версиями Spring-экосистемы
 - `apply(plugin = ...)` в блоке `subprojects {}` остаётся как есть — apply по строке не поддерживает alias
 - Встроенные плагины (`maven-publish`, `jacoco`) остаются через `id(...)`
-- Логика сборки, задачи, конфигурации — без изменений
+- Блоки `plugins {}` в модулях остаются через `id(...)` без версий — версии уже разрешены корневым `plugins {}` блоком (например, `id("org.springframework.boot")` в core, `kotlin("kapt")` в service)
+- Блоки `configurations {}` в модулях (в т.ч. `create("liquibase")` и `exclude` в core)
+- Блок `kapt {}` с аргументами MapStruct в service
+- Блок `springBoot { buildInfo() }` в core
+- Конфигурации `tasks.bootJar`, `tasks.jar` во всех модулях
+- Liquibase-задачи (`liquibaseUpdate`, `liquibaseStatus`, `liquibaseValidate`) и их property-параметры в core
+- Вся логика `subprojects {}`, `allprojects {}`, `gitVersion()` в корневом `build.gradle.kts`
 
 ---
 
