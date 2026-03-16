@@ -7,8 +7,7 @@ tasks.bootJar {
 }
 
 dependencies {
-    implementation("org.springframework.boot:spring-boot-starter")
-    implementation("com.github.f4b6a3:uuid-creator:${property("uuidCreatorVersion")}")
-
-    implementation("io.github.oshai:kotlin-logging-jvm:${property("kotlinLoggingVersion")}")
+    implementation(libs.spring.boot.starter)
+    implementation(libs.uuid.creator)
+    implementation(libs.kotlin.logging)
 }
