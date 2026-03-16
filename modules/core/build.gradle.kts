@@ -26,7 +26,11 @@ configurations {
 
 dependencyManagement {
     imports {
-        mavenBom("org.testcontainers:testcontainers-bom:${property("testcontainersVersion")}")
+        mavenBom(
+            libs.testcontainers.bom
+                .get()
+                .toString(),
+        )
     }
 }
 
@@ -35,53 +39,38 @@ dependencies {
     implementation(project(":frigate-analyzer-service"))
     implementation(project(":frigate-analyzer-telegram"))
 
-    implementation("org.springframework.boot:spring-boot-starter-actuator")
-    implementation("org.springframework.boot:spring-boot-starter-validation")
-    implementation("org.springframework.boot:spring-boot-starter-webflux")
-    implementation("org.springframework.boot:spring-boot-starter-data-r2dbc")
-    implementation("org.springframework.boot:spring-boot-starter-log4j2")
+    implementation(libs.spring.boot.starter.actuator)
+    implementation(libs.spring.boot.starter.validation)
+    implementation(libs.spring.boot.starter.webflux)
+    implementation(libs.spring.boot.starter.data.r2dbc)
+    implementation(libs.spring.boot.starter.log4j2)
 
-    implementation("org.springdoc:springdoc-openapi-starter-webflux-ui:${property("openApiStarterVersion")}")
-    implementation("org.springdoc:springdoc-openapi-starter-common:${property("openApiStarterVersion")}")
+    implementation(libs.openapi.starter.webflux.ui)
+    implementation(libs.openapi.starter.common)
 
-    implementation("org.postgresql:r2dbc-postgresql")
+    implementation(libs.r2dbc.postgresql)
+    implementation(libs.reactor.kotlin.extensions)
+    implementation(libs.kotlin.reflect)
+    implementation(libs.bundles.coroutines)
+    implementation(libs.bundles.jackson)
+    implementation(libs.kotlin.logging)
+    implementation(libs.postgresql)
 
-    implementation("io.projectreactor.kotlin:reactor-kotlin-extensions")
-    implementation("org.jetbrains.kotlin:kotlin-reflect")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
+    testImplementation(libs.spring.boot.starter.test)
+    testImplementation(libs.spring.boot.starter.webclient.test)
+    testImplementation(libs.spring.boot.starter.webflux.test)
+    testImplementation(libs.spring.boot.starter.log4j2)
+    testImplementation(libs.kotlin.test.junit5)
+    testImplementation(libs.coroutines.test)
+    testImplementation(libs.bundles.testcontainers)
+    testImplementation(libs.mockwebserver)
+    testImplementation(libs.mockk)
 
-    implementation("com.fasterxml.jackson.core:jackson-databind")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
-    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
+    testRuntimeOnly(libs.junit.platform.launcher)
 
-    implementation("io.github.oshai:kotlin-logging-jvm:${property("kotlinLoggingVersion")}")
-
-    implementation("com.fasterxml.jackson.core:jackson-databind")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
-    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
-
-    implementation("org.postgresql:postgresql:${property("postgresqlVersion")}")
-
-    testImplementation("org.springframework.boot:spring-boot-starter-test")
-    testImplementation("org.springframework.boot:spring-boot-starter-webclient-test")
-    testImplementation("org.springframework.boot:spring-boot-starter-webflux-test")
-    testImplementation("org.springframework.boot:spring-boot-starter-log4j2")
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test")
-    testImplementation("org.testcontainers:testcontainers-junit-jupiter")
-    testImplementation("org.testcontainers:testcontainers-postgresql")
-    testImplementation("com.squareup.okhttp3:mockwebserver3:${property("mockwebserverVersion")}")
-    testImplementation("io.mockk:mockk:${property("mockkVersion")}")
-
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-
-    // Liquibase dependencies
-    "liquibase"("org.liquibase:liquibase-core:${property("liquibaseCoreVersion")}")
-    "liquibase"("org.postgresql:postgresql:${property("postgresqlVersion")}")
-    "liquibase"("info.picocli:picocli:${property("picocliVersion")}")
+    "liquibase"(libs.liquibase.core)
+    "liquibase"(libs.postgresql)
+    "liquibase"(libs.picocli)
 }
 
 // Liquibase configuration

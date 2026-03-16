@@ -2,48 +2,45 @@
 paths: "modules/telegram/**/TelegramAutoConfiguration*"
 ---
 
-# Long Polling Timeout Bug (ktgbotapi) — RESOLVED
+# Long Polling Timeout Bug (ktgbotapi) — WORKAROUND ACTIVE
 
 GitHub issue: https://github.com/InsanusMokrassar/ktgbotapi/issues/1027
 
 ## Status
 
-**Fixed in ktgbotapi v31.2.0.** The library replaced `runCatchingLogging` with `runCatching`,
-moving logging after the `autoSkipTimeoutExceptions` check. The workaround (`FilterKSLog` in
-`TelegramAutoConfiguration`) was removed when upgrading to v31.2.0.
+**Workaround active in `TelegramAutoConfiguration`.** The `FilterKSLog` filter suppresses
+ERROR-level `HttpRequestTimeoutException` from KSLog.
 
-## Original Problem
+### Timeline
 
-`buildBehaviourWithLongPolling` logged `HttpRequestTimeoutException` at ERROR level every ~30 seconds
-when no updates arrived, even though `autoSkipTimeoutExceptions = true` handled it correctly.
+- **v30.0.2**: Bug discovered. Added `FilterKSLog` workaround.
+- **v31.2.0**: Library fixed `LongPolling.kt` (`runCatchingLogging` → `runCatching` in polling loop).
+  Workaround removed — but the fix was **partial** (see below).
+- **v32.0.0**: ERROR logs returned. `FilterKSLog` workaround restored.
 
-### Root Cause
+### Why the v31.2.0 fix was partial
 
-1. Per-request timeout in `AbstractRequestCallFactory.makeCall()` equalled Telegram long polling timeout (both 30s), causing race conditions with network latency.
-2. `runCatchingLogging` logged ALL exceptions at ERROR before `.onFailure` could skip timeout exceptions.
+The v31.2.0 fix changed `LongPolling.kt` to use `runCatching` instead of `runCatchingLogging`
+in the polling loop. However, `DefaultKtorRequestsExecutor.execute()` still uses
+`runCatchingLogging` which logs `HttpRequestTimeoutException` at ERROR **before** the exception
+propagates back to the polling loop where `autoSkipTimeoutExceptions` would silently skip it.
 
-## Pending: Comment About Root Cause
+The bug was always present in both v31.2.0 and v32.0.0 at the `DefaultKtorRequestsExecutor`
+level (MicroUtils `runCatchingLogging` with default message `"Something web wrong"`).
 
-v31.2.0 fixed issue 2 (logging), but issue 1 (race condition) is still present — exceptions are silently swallowed every ~30s. Consider posting this comment to the issue:
+## Root Cause
 
----
+Two issues in the library:
 
-Thank you for fixing the premature error logging — upgrading to v31.2.0 resolved the noisy logs and I was able to remove my `FilterKSLog` workaround.
+1. **Race condition**: Per-request timeout in `AbstractRequestCallFactory.makeCall()` equals
+   Telegram long polling timeout (both 30s). Network latency causes Ktor timeout to fire
+   slightly before Telegram responds, triggering `HttpRequestTimeoutException` every ~30s.
+2. **Premature logging**: `DefaultKtorRequestsExecutor.execute()` wraps the call in
+   `runCatchingLogging` which logs at ERROR before the long polling handler can skip it.
 
-However, I believe the root cause is still present: in `AbstractRequestCallFactory.makeCall()`, the per-request `requestTimeoutMillis` is set to exactly `request.timeout * 1000` — the same value as the Telegram long polling `timeout`. Because of network latency and processing overhead, Ktor's HTTP timeout fires slightly before Telegram's server responds, creating a race condition that triggers `HttpRequestTimeoutException` on almost every idle polling cycle.
+## Upstream: Awaiting Response
 
-The current fix suppresses the log, but the exception itself still occurs and is silently swallowed. This means every ~30s an exception is thrown, caught, and discarded — which is unnecessary overhead and makes it harder to notice *real* timeout issues.
+Comment posted on 2026-03-16 with detailed analysis of the partial fix and suggested solutions:
+https://github.com/InsanusMokrassar/ktgbotapi/issues/1027#issuecomment-4065937766
 
-A more robust fix would be to add a small margin to the per-request timeout for `GetUpdates` requests, e.g.:
-
-```kotlin
-// Instead of:
-timeout { requestTimeoutMillis = customTimeoutMillis }
-
-// Something like:
-timeout { requestTimeoutMillis = customTimeoutMillis + 5000 }
-```
-
-This way the Ktor timeout would only fire if Telegram genuinely fails to respond, rather than racing against normal long polling behavior.
-
-Would you consider addressing this? Happy to submit a PR if helpful.
+When the library fix lands, remove `FilterKSLog` workaround from `TelegramAutoConfiguration`.
