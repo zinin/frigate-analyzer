@@ -62,6 +62,8 @@ mockwebserver = "5.3.2"
 mockk = "1.14.9"
 liquibase = "5.0.1"
 picocli = "4.7.7"
+ktlint-tool = "1.8.0"
+jacoco = "0.8.14"
 ```
 
 Удалены неиспользуемые: `commonsLang3Version`, `jakartaMailApiVersion`.
@@ -180,7 +182,12 @@ plugins {
 
 **Удаляется:** весь блок `extra[...]` (строки 159–175).
 
-**Без изменений:** `subprojects {}`, `allprojects {}`, `gitVersion()`.
+**Изменения в `subprojects {}`:**
+- Удалить дубль `apply(plugin = "org.jlleitschuh.gradle.ktlint")` (строка 66)
+- `ktlint { version.set("1.8.0") }` → `ktlint { version.set(libs.versions.ktlint.tool.get()) }`
+- `jacoco { toolVersion = "0.8.14" }` → `jacoco { toolVersion = libs.versions.jacoco.get() }`
+
+**Без изменений:** `allprojects {}`, `gitVersion()`.
 
 ### 3. Изменения в модулях
 
@@ -250,7 +257,7 @@ dependencies {
 ```kotlin
 dependencyManagement {
     imports {
-        mavenBom(libs.testcontainers.bom.get().toString())
+        mavenBom(libs.testcontainers.bom)
     }
 }
 
@@ -300,3 +307,5 @@ dependencies {
 
 - Удалены неиспользуемые версии: `commonsLang3Version` ("3.20.0"), `jakartaMailApiVersion` ("2.1.5")
 - Удалён дубль jackson-зависимостей в core/build.gradle.kts
+- Удалён дубль `apply(plugin = "org.jlleitschuh.gradle.ktlint")` в корневом `build.gradle.kts`
+- Обновлена версия Spring Boot в CLAUDE.md: 4.0.2 → 4.0.3

@@ -43,6 +43,8 @@ mockwebserver = "5.3.2"
 mockk = "1.14.9"
 liquibase = "5.0.1"
 picocli = "4.7.7"
+ktlint-tool = "1.8.0"
+jacoco = "0.8.14"
 
 [libraries]
 # Kotlin & Coroutines
@@ -138,7 +140,7 @@ git commit -m "build: add Gradle Version Catalog (libs.versions.toml)"
 **Files:**
 - Modify: `build.gradle.kts`
 
-Two changes: (a) replace `plugins {}` block with `alias(...)`, (b) delete the `extra[...]` block.
+Four changes: (a) replace `plugins {}` block with `alias(...)`, (b) delete the `extra[...]` block, (c) remove duplicate ktlint apply in `subprojects {}`, (d) reference ktlint-tool and jacoco versions from catalog.
 
 - [ ] **Step 1: Replace plugins block**
 
@@ -197,10 +199,57 @@ extra["picocliVersion"] = "4.7.7"
 extra["commonsLang3Version"] = "3.20.0"
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Remove duplicate ktlint apply in `subprojects {}`**
+
+In `subprojects {}` block, remove the duplicate line 66:
+
+```kotlin
+// Remove this duplicate (line 66):
+apply(plugin = "org.jlleitschuh.gradle.ktlint")
+```
+
+Line 64 `apply(plugin = "org.jlleitschuh.gradle.ktlint")` stays.
+
+- [ ] **Step 4: Reference ktlint-tool and jacoco versions from catalog**
+
+In `subprojects {}` block, replace:
+
+```kotlin
+ktlint {
+    version.set("1.8.0")
+```
+
+With:
+
+```kotlin
+ktlint {
+    version.set(libs.versions.ktlint.tool.get())
+```
+
+And replace:
+
+```kotlin
+jacoco {
+    toolVersion = "0.8.14"
+}
+```
+
+With:
+
+```kotlin
+jacoco {
+    toolVersion = libs.versions.jacoco.get()
+}
+```
+
+- [ ] **Step 5: Update CLAUDE.md**
+
+Replace `Spring Boot 4.0.2` with `Spring Boot 4.0.3` in the Stack line.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add build.gradle.kts
+git add build.gradle.kts CLAUDE.md
 git commit -m "build: migrate root build.gradle.kts to Version Catalog"
 ```
 
@@ -439,7 +488,7 @@ With:
 ```kotlin
 dependencyManagement {
     imports {
-        mavenBom(libs.testcontainers.bom.get().toString())
+        mavenBom(libs.testcontainers.bom)
     }
 }
 ```
