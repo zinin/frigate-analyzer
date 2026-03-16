@@ -10,23 +10,15 @@ dependencies {
     implementation(project(":frigate-analyzer-common"))
     implementation(project(":frigate-analyzer-model"))
 
-    implementation("org.springframework.boot:spring-boot-starter")
-    implementation("org.springframework.boot:spring-boot-starter-validation")
-    implementation("org.springframework.boot:spring-boot-starter-data-r2dbc")
+    implementation(libs.spring.boot.starter)
+    implementation(libs.spring.boot.starter.validation)
+    implementation(libs.spring.boot.starter.data.r2dbc)
+    implementation(libs.ktgbotapi)
+    implementation(libs.ktor.client.okhttp)
+    implementation(libs.kotlin.logging)
+    implementation(libs.bundles.coroutines)
 
-    // Telegram Bot API
-    implementation("dev.inmo:tgbotapi:${property("ktgbotapiVersion")}")
-    implementation("io.ktor:ktor-client-okhttp:${property("ktorVersion")}")
-
-    // Logging
-    implementation("io.github.oshai:kotlin-logging-jvm:${property("kotlinLoggingVersion")}")
-
-    // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
-
-    // Test
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test")
-    testImplementation("io.mockk:mockk:${property("mockkVersion")}")
+    testImplementation(libs.kotlin.test.junit5)
+    testImplementation(libs.coroutines.test)
+    testImplementation(libs.mockk)
 }
