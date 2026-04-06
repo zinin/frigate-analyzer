@@ -21,6 +21,8 @@ import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
+import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -45,15 +47,19 @@ class QuickExportHandler(
         }
         val chatId = message.chat.id
 
-        // Парсим recordingId из callback data
-        val recordingId = parseRecordingId(callback.data)
+        val callbackData = callback.data
+        val mode =
+            if (callbackData.startsWith(CALLBACK_PREFIX_ANNOTATED)) ExportMode.ANNOTATED else ExportMode.ORIGINAL
+
+        // Parse recordingId from callback data
+        val recordingId = parseRecordingId(callbackData)
         if (recordingId == null) {
-            logger.warn { "Invalid recordingId in callback: ${callback.data}" }
+            logger.warn { "Invalid recordingId in callback: $callbackData" }
             bot.answer(callback, "Ошибка: неверный формат данных")
             return
         }
 
-        // Проверяем наличие username
+        // Check username presence
         val user = callback.user
         val username = user.username?.withoutAt
         if (username == null) {
@@ -61,22 +67,22 @@ class QuickExportHandler(
             return
         }
 
-        // Проверяем авторизацию через общий фильтр
+        // Check authorization
         if (authorizationFilter.getRole(username) == null) {
             bot.answer(callback, properties.unauthorizedMessage)
             return
         }
 
-        // Защита от повторного нажатия
+        // Prevent duplicate exports
         if (!activeExports.add(recordingId)) {
             bot.answer(callback, "Экспорт уже выполняется.")
             return
         }
 
-        // Answer callback сразу (чтобы убрать индикатор загрузки)
+        // Answer callback immediately
         bot.answer(callback)
 
-        // Меняем кнопку на "Экспорт..."
+        // Switch button to processing state
         try {
             bot.editMessageReplyMarkup(
                 message,
@@ -87,9 +93,41 @@ class QuickExportHandler(
         }
 
         try {
+            val timeout =
+                if (mode == ExportMode.ANNOTATED) QUICK_EXPORT_ANNOTATED_TIMEOUT_MS else QUICK_EXPORT_ORIGINAL_TIMEOUT_MS
+
+            var lastRenderedStage: VideoExportProgress.Stage? = null
+            var lastRenderedPercent: Int? = null
+
+            val onProgress: suspend (VideoExportProgress) -> Unit = { progress ->
+                val shouldUpdate =
+                    when {
+                        progress.stage != lastRenderedStage -> true
+                        progress.stage == VideoExportProgress.Stage.ANNOTATING && progress.percent != null -> {
+                            val lastPct = lastRenderedPercent ?: -1
+                            (progress.percent - lastPct) >= 5
+                        }
+                        else -> false
+                    }
+
+                if (shouldUpdate) {
+                    lastRenderedStage = progress.stage
+                    lastRenderedPercent = progress.percent
+                    val text = renderProgressButton(progress.stage, progress.percent)
+                    try {
+                        bot.editMessageReplyMarkup(
+                            message,
+                            replyMarkup = createProcessingKeyboard(recordingId, text),
+                        )
+                    } catch (e: Exception) {
+                        logger.warn(e) { "Failed to update progress button" }
+                    }
+                }
+            }
+
             val videoPath =
-                withTimeoutOrNull(QUICK_EXPORT_TIMEOUT_MS) {
-                    videoExportService.exportByRecordingId(recordingId)
+                withTimeoutOrNull(timeout) {
+                    videoExportService.exportByRecordingId(recordingId, mode = mode, onProgress = onProgress)
                 }
 
             if (videoPath == null) {
@@ -99,6 +137,15 @@ class QuickExportHandler(
             }
 
             try {
+                try {
+                    bot.editMessageReplyMarkup(
+                        message,
+                        replyMarkup = createProcessingKeyboard(recordingId, "⚙️ Отправка..."),
+                    )
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to update progress button to sending" }
+                }
+
                 val sent =
                     withTimeoutOrNull(properties.sendVideoTimeout.toMillis()) {
                         bot.sendVideo(
@@ -118,7 +165,7 @@ class QuickExportHandler(
                 }
             }
 
-            // Восстанавливаем кнопку
+            // Restore buttons
             restoreButton(message, recordingId)
         } catch (e: CancellationException) {
             throw e
@@ -155,7 +202,6 @@ class QuickExportHandler(
     companion object {
         const val CALLBACK_PREFIX = "qe:"
         const val CALLBACK_PREFIX_ANNOTATED = "qea:"
-        private const val QUICK_EXPORT_TIMEOUT_MS = 300_000L // TODO: remove in Task 3
         private const val QUICK_EXPORT_ORIGINAL_TIMEOUT_MS = 300_000L // 5 minutes
         private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 1_200_000L // 20 minutes
 
@@ -194,5 +240,19 @@ class QuickExportHandler(
                         }
                     },
             )
+
+        private fun renderProgressButton(
+            stage: VideoExportProgress.Stage,
+            percent: Int? = null,
+        ): String =
+            when (stage) {
+                VideoExportProgress.Stage.PREPARING -> "⚙️ Подготовка..."
+                VideoExportProgress.Stage.MERGING -> "⚙️ Склейка видео..."
+                VideoExportProgress.Stage.COMPRESSING -> "⚙️ Сжатие видео..."
+                VideoExportProgress.Stage.ANNOTATING ->
+                    if (percent != null) "⚙️ Аннотация $percent%..." else "⚙️ Аннотация..."
+                VideoExportProgress.Stage.SENDING -> "⚙️ Отправка..."
+                VideoExportProgress.Stage.DONE -> "✅ Готово"
+            }
     }
 }

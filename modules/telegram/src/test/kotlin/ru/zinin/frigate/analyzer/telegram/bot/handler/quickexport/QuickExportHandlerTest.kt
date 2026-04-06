@@ -33,6 +33,7 @@ import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import java.nio.file.Files
 import java.time.Duration
 import java.util.UUID
@@ -289,7 +290,7 @@ class QuickExportHandlerTest {
                         mockk<ContentMessage<MessageContent>>(relaxed = true)
                     }
                 }
-                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
 
                 try {
@@ -306,7 +307,7 @@ class QuickExportHandlerTest {
                 assertTrue(answerRequests.isNotEmpty(), "Expected callback to be answered")
 
                 // 2. Export was called with the correct recordingId
-                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) }
 
                 // 3. Video was sent — tgbotapi's sendVideo() with a multipart file creates an
                 //    internal CommonMultipartFileRequest wrapping SendVideoData. CommonMultipartFileRequest
@@ -381,7 +382,7 @@ class QuickExportHandlerTest {
                 assertTrue(answerRequests.isNotEmpty(), "Expected callback to be answered before early return")
 
                 // No export was attempted
-                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any(), any()) }
             }
 
         @Test
@@ -401,7 +402,7 @@ class QuickExportHandlerTest {
                     "Expected AnswerCallbackQuery with 'set username' text, but got: ${answerRequests.map { it.text }}",
                 )
                 // Verify no export was attempted
-                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any(), any()) }
                 // Verify authorizationFilter was never consulted (early return before auth check)
                 coVerify(exactly = 0) { authorizationFilter.getRole(any<String>()) }
             }
@@ -418,7 +419,7 @@ class QuickExportHandlerTest {
                 handler.handle(callback)
 
                 // Verify no export was attempted
-                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any()) }
+                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any(), any()) }
 
                 // Verify answer was called with unauthorized message from properties
                 val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
@@ -449,7 +450,7 @@ class QuickExportHandlerTest {
 
                 coEvery { authorizationFilter.getRole(properties.owner) } returns UserRole.OWNER
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
-                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
 
                 try {
@@ -459,7 +460,7 @@ class QuickExportHandlerTest {
                 }
 
                 // Verify export was called (owner is authorized via authorizationFilter)
-                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) }
             }
 
         @Test
@@ -470,7 +471,7 @@ class QuickExportHandlerTest {
 
                 coEvery { authorizationFilter.getRole("testuser") } returns UserRole.USER
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
-                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
 
                 try {
@@ -480,7 +481,7 @@ class QuickExportHandlerTest {
                 }
 
                 // Verify export was called (active user is authorized)
-                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) }
                 // Verify authorizationFilter was consulted
                 coVerify { authorizationFilter.getRole("testuser") }
             }
@@ -493,7 +494,7 @@ class QuickExportHandlerTest {
 
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
-                coEvery { videoExportService.exportByRecordingId(recordingId) } returns tempFile
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
 
                 try {
@@ -538,7 +539,7 @@ class QuickExportHandlerTest {
                     }
                     mockk(relaxed = true)
                 }
-                coEvery { videoExportService.exportByRecordingId(recordingId) } returns tempFile
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(any()) } returns Unit
 
                 try {
@@ -548,7 +549,7 @@ class QuickExportHandlerTest {
                 }
 
                 // Despite editMessageReplyMarkup failing, export was still called
-                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) }
             }
 
         @Test
@@ -558,7 +559,7 @@ class QuickExportHandlerTest {
 
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
-                coEvery { videoExportService.exportByRecordingId(recordingId) } throws
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } throws
                     IllegalArgumentException("Recording not found")
 
                 handler.handle(callback)
@@ -591,7 +592,7 @@ class QuickExportHandlerTest {
 
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
                 coEvery {
-                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
                 } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(any()) } returns Unit
 
@@ -602,7 +603,7 @@ class QuickExportHandlerTest {
                 }
 
                 // Verify exportByRecordingId was called with the correct recordingId
-                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) }
 
                 // Verify cleanupExportFile was called with the exported file path
                 coVerify { videoExportService.cleanupExportFile(tempFile) }
@@ -616,7 +617,7 @@ class QuickExportHandlerTest {
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
                 coEvery {
-                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
                 } coAnswers {
                     delay(400_000) // 400 seconds exceeds the 300-second (5 min) timeout
                     error("Should not reach here")
@@ -663,7 +664,7 @@ class QuickExportHandlerTest {
                     }
                     mockk(relaxed = true)
                 }
-                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } coAnswers {
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } coAnswers {
                     videoExportReturned = true
                     tempFile
                 }
@@ -705,7 +706,7 @@ class QuickExportHandlerTest {
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
                 coEvery {
-                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
                 } throws IllegalArgumentException("Recording not found")
 
                 handler.handle(callback)
@@ -726,7 +727,7 @@ class QuickExportHandlerTest {
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
                 coEvery {
-                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
                 } throws IllegalStateException("Recording files are missing")
 
                 handler.handle(callback)
@@ -747,7 +748,7 @@ class QuickExportHandlerTest {
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
                 coEvery {
-                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
                 } throws RuntimeException("Unexpected error")
 
                 handler.handle(callback)
@@ -767,7 +768,7 @@ class QuickExportHandlerTest {
 
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
                 coEvery {
-                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
                 } throws CancellationException("Coroutine was cancelled")
 
                 assertFailsWith<CancellationException> {
@@ -794,7 +795,7 @@ class QuickExportHandlerTest {
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
                 coEvery {
-                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
                 } throws RuntimeException("Unexpected internal error")
 
                 // when
@@ -829,7 +830,7 @@ class QuickExportHandlerTest {
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
                 coEvery {
-                    videoExportService.exportByRecordingId(eq(recordingId), any(), any())
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
                 } throws IllegalArgumentException("Recording not found")
 
                 handler.handle(callback)
@@ -865,7 +866,7 @@ class QuickExportHandlerTest {
                     val request = firstArg<Request<*>>()
                     if (request is AnswerCallbackQuery) true else mockk<ContentMessage<MessageContent>>(relaxed = true)
                 }
-                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } coAnswers {
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } coAnswers {
                     delay(10_000) // simulate long export
                     tempFile
                 }
@@ -893,7 +894,7 @@ class QuickExportHandlerTest {
                     )
 
                     // Verify second call did NOT trigger export
-                    coVerify(exactly = 1) { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+                    coVerify(exactly = 1) { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) }
 
                     firstJob.cancel()
                 } finally {
@@ -911,7 +912,7 @@ class QuickExportHandlerTest {
                     val request = firstArg<Request<*>>()
                     if (request is AnswerCallbackQuery) true else mockk<ContentMessage<MessageContent>>(relaxed = true)
                 }
-                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) } returns tempFile
+                coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) } returns tempFile
                 coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
 
                 try {
@@ -924,7 +925,53 @@ class QuickExportHandlerTest {
                 }
 
                 // Both exports were executed
-                coVerify(exactly = 2) { videoExportService.exportByRecordingId(eq(recordingId), any(), any()) }
+                coVerify(exactly = 2) { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any()) }
+            }
+
+        @Test
+        fun `handle annotated callback calls exportByRecordingId with ANNOTATED mode`() =
+            runTest {
+                val user = CommonUser(
+                    id = ChatId(RawChatId(1L)),
+                    firstName = "Test",
+                    username = Username("@testuser"),
+                )
+                val realChat = PrivateChatImpl(
+                    id = ChatId(RawChatId(12345L)),
+                    firstName = "TestChat",
+                )
+                val mockMessage = mockk<ContentMessage<MessageContent>>(relaxed = true) {
+                    every { chat } returns realChat
+                }
+                val callback = MessageDataCallbackQuery(
+                    id = CallbackQueryId("test-annotated-callback"),
+                    from = user,
+                    chatInstance = "test-instance",
+                    message = mockMessage,
+                    data = "${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId",
+                )
+
+                val tempFile = Files.createTempFile("test-export", ".mp4")
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(any<Request<*>>()) } coAnswers {
+                    val request = firstArg<Request<*>>()
+                    capturedRequests.add(request)
+                    if (request is AnswerCallbackQuery) true
+                    else mockk<ContentMessage<MessageContent>>(relaxed = true)
+                }
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), eq(ExportMode.ANNOTATED), any())
+                } returns tempFile
+                coEvery { videoExportService.cleanupExportFile(tempFile) } returns Unit
+
+                try {
+                    handler.handle(callback)
+                } finally {
+                    Files.deleteIfExists(tempFile)
+                }
+
+                coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), eq(ExportMode.ANNOTATED), any()) }
             }
     }
 }

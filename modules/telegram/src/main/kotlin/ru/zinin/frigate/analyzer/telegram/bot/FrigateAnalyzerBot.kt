@@ -129,7 +129,10 @@ class FrigateAnalyzerBot(
         }
 
         onDataCallbackQuery(
-            initialFilter = { it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX) },
+            initialFilter = {
+                it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX_ANNOTATED) ||
+                    it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX)
+            },
         ) { callback ->
             try {
                 quickExportHandler.handle(callback)
