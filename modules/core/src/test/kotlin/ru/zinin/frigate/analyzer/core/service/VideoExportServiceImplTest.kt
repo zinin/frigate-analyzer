@@ -683,6 +683,35 @@ class VideoExportServiceImplTest {
             assertEquals(Stage.MERGING, progress[1].stage)
         }
 
+    @Test
+    fun `exportByRecordingId with ANNOTATED mode calls exportVideo with ANNOTATED`() =
+        runTest {
+            val recording = recordingWithTimestamp()
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+            val annotatedFile = createTempFile("annotated.mp4")
+
+            val expectedStart = recordTimestamp.minus(exportDuration)
+            val expectedEnd = recordTimestamp.plus(exportDuration)
+
+            coEvery { recordingRepository.findById(recordingId) } returns recording
+            coEvery { recordingRepository.findByCamIdAndInstantRange("front", expectedStart, expectedEnd) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+            coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
+            stubAnnotateVideo(annotatedFile)
+
+            val result =
+                service.exportByRecordingId(
+                    recordingId = recordingId,
+                    duration = exportDuration,
+                    mode = ExportMode.ANNOTATED,
+                )
+
+            assertEquals(annotatedFile, result)
+            assertAnnotateCalledWith(mergedFile, "person,car", "yolo26x.pt")
+        }
+
     // --- end exportByRecordingId tests ---
 
     @Test
