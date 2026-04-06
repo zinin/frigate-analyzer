@@ -58,6 +58,17 @@ class QuickExportHandlerTest {
         }
 
         @Test
+        fun `returns UUID for valid annotated callback data`() {
+            val recordingId = UUID.randomUUID()
+            val data = "${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId"
+
+            val result = QuickExportHandler.parseRecordingId(data)
+
+            assertNotNull(result)
+            assertEquals(recordingId, result)
+        }
+
+        @Test
         fun `returns null for invalid UUID`() {
             val data = "${QuickExportHandler.CALLBACK_PREFIX}invalid-uuid"
 
