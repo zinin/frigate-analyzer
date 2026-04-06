@@ -68,19 +68,20 @@ Inline button on notifications for instant video export.
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| QuickExportHandler | `telegram/bot/handler/quickexport/` | Handles callback query `qe:{recordingId}` |
+| QuickExportHandler | `telegram/bot/handler/quickexport/` | Handles callback queries `qe:{recordingId}` and `qea:{recordingId}` |
 | NotificationTask.recordingId | `telegram/queue/` | Recording ID for callback data |
 
 ### How It Works
 
-1. When sending a notification, `TelegramNotificationSender` adds an inline button "📹 Экспорт видео" (Export video)
-2. Callback data format: `qe:{UUID}` (e.g. `qe:550e8400-e29b-41d4-a716-446655440000`)
+1. When sending a notification, `TelegramNotificationSender` adds two inline buttons in one row: "📹 Оригинал" and "📹 С объектами"
+2. Callback data format: `qe:{UUID}` (original) / `qea:{UUID}` (annotated)
 3. On button press:
-   - Button changes to "⚙️ Экспорт..." (Exporting...)
-   - Calls `VideoExportService.exportByRecordingId(recordingId)`
-   - Exports ±1 min from recordTimestamp in ORIGINAL mode (2 min total)
+   - Both buttons replaced with a single progress button (e.g. "⚙️ Склейка видео...", "⚙️ Аннотация 45%...")
+   - Calls `VideoExportService.exportByRecordingId(recordingId, mode=ORIGINAL|ANNOTATED)`
+   - Exports ±1 min from recordTimestamp (2 min total)
+   - Timeouts: 5 min (original), 20 min (annotated)
    - Video is sent to the chat
-   - Button is restored
+   - Two buttons restored
 
 ### Authorization
 
