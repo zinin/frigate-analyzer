@@ -154,10 +154,16 @@ class QuickExportHandler(
 
     companion object {
         const val CALLBACK_PREFIX = "qe:"
-        private const val QUICK_EXPORT_TIMEOUT_MS = 300_000L // 5 минут
+        const val CALLBACK_PREFIX_ANNOTATED = "qea:"
+        private const val QUICK_EXPORT_TIMEOUT_MS = 300_000L // TODO: remove in Task 3
+        private const val QUICK_EXPORT_ORIGINAL_TIMEOUT_MS = 300_000L // 5 minutes
+        private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 1_200_000L // 20 minutes
 
         internal fun parseRecordingId(callbackData: String): UUID? {
-            val recordingIdStr = callbackData.removePrefix(CALLBACK_PREFIX)
+            val recordingIdStr =
+                callbackData
+                    .removePrefix(CALLBACK_PREFIX_ANNOTATED)
+                    .removePrefix(CALLBACK_PREFIX)
             return try {
                 UUID.fromString(recordingIdStr)
             } catch (_: IllegalArgumentException) {
@@ -170,17 +176,21 @@ class QuickExportHandler(
                 keyboard =
                     matrix {
                         row {
-                            +CallbackDataInlineKeyboardButton("📹 Экспорт видео", "$CALLBACK_PREFIX$recordingId")
+                            +CallbackDataInlineKeyboardButton("📹 Оригинал", "$CALLBACK_PREFIX$recordingId")
+                            +CallbackDataInlineKeyboardButton("📹 С объектами", "$CALLBACK_PREFIX_ANNOTATED$recordingId")
                         }
                     },
             )
 
-        fun createProcessingKeyboard(recordingId: UUID): InlineKeyboardMarkup =
+        fun createProcessingKeyboard(
+            recordingId: UUID,
+            text: String = "⚙️ Экспорт...",
+        ): InlineKeyboardMarkup =
             InlineKeyboardMarkup(
                 keyboard =
                     matrix {
                         row {
-                            +CallbackDataInlineKeyboardButton("⚙️ Экспорт...", "$CALLBACK_PREFIX$recordingId")
+                            +CallbackDataInlineKeyboardButton(text, "$CALLBACK_PREFIX$recordingId")
                         }
                     },
             )

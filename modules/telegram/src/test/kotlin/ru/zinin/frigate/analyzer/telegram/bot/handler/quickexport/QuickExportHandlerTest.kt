@@ -98,40 +98,47 @@ class QuickExportHandlerTest {
         fun `CALLBACK_PREFIX has correct value`() {
             assertEquals("qe:", QuickExportHandler.CALLBACK_PREFIX)
         }
+
+        @Test
+        fun `CALLBACK_PREFIX_ANNOTATED has correct value`() {
+            assertEquals("qea:", QuickExportHandler.CALLBACK_PREFIX_ANNOTATED)
+        }
     }
 
     @Nested
     inner class CreateExportKeyboardTest {
         @Test
-        fun `creates keyboard with single row and single button`() {
+        fun `creates keyboard with single row and two buttons`() {
             val recordingId = UUID.randomUUID()
 
             val keyboard = QuickExportHandler.createExportKeyboard(recordingId)
 
             assertEquals(1, keyboard.keyboard.size, "Should have one row")
-            assertEquals(1, keyboard.keyboard[0].size, "Row should have one button")
+            assertEquals(2, keyboard.keyboard[0].size, "Row should have two buttons")
         }
 
         @Test
-        fun `button has correct text`() {
+        fun `first button is original export`() {
             val recordingId = UUID.randomUUID()
 
             val keyboard = QuickExportHandler.createExportKeyboard(recordingId)
             val button = keyboard.keyboard[0][0]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)
-            assertEquals("📹 Экспорт видео", button.text)
-        }
-
-        @Test
-        fun `button has correct callback data with prefix and recordingId`() {
-            val recordingId = UUID.randomUUID()
-
-            val keyboard = QuickExportHandler.createExportKeyboard(recordingId)
-            val button = keyboard.keyboard[0][0]
-
-            assertIs<CallbackDataInlineKeyboardButton>(button)
+            assertEquals("📹 Оригинал", button.text)
             assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", button.callbackData)
+        }
+
+        @Test
+        fun `second button is annotated export`() {
+            val recordingId = UUID.randomUUID()
+
+            val keyboard = QuickExportHandler.createExportKeyboard(recordingId)
+            val button = keyboard.keyboard[0][1]
+
+            assertIs<CallbackDataInlineKeyboardButton>(button)
+            assertEquals("📹 С объектами", button.text)
+            assertEquals("${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId", button.callbackData)
         }
     }
 
@@ -331,7 +338,7 @@ class QuickExportHandlerTest {
                 assertNotNull(restoreMarkup)
                 assertIs<InlineKeyboardMarkup>(restoreMarkup)
                 assertEquals(
-                    "📹 Экспорт видео",
+                    "📹 Оригинал",
                     (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
                 )
 
@@ -497,13 +504,13 @@ class QuickExportHandlerTest {
                 assertEquals("⚙️ Экспорт...", processingButton.text)
                 assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", processingButton.callbackData)
 
-                // Last edit: restored export keyboard with "📹 Экспорт видео"
+                // Last edit: restored export keyboard with "📹 Оригинал"
                 val restoreMarkup = editRequests.last().replyMarkup
                 assertNotNull(restoreMarkup, "Restored keyboard must not be null")
                 assertIs<InlineKeyboardMarkup>(restoreMarkup)
                 val exportButton = restoreMarkup.keyboard[0][0]
                 assertIs<CallbackDataInlineKeyboardButton>(exportButton)
-                assertEquals("📹 Экспорт видео", exportButton.text)
+                assertEquals("📹 Оригинал", exportButton.text)
                 assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", exportButton.callbackData)
             }
 
@@ -560,7 +567,7 @@ class QuickExportHandlerTest {
                 assertNotNull(restoreMarkup)
                 assertIs<InlineKeyboardMarkup>(restoreMarkup)
                 assertEquals(
-                    "📹 Экспорт видео",
+                    "📹 Оригинал",
                     (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
                 )
             }
@@ -621,7 +628,7 @@ class QuickExportHandlerTest {
                 assertNotNull(restoreMarkup)
                 assertIs<InlineKeyboardMarkup>(restoreMarkup)
                 assertEquals(
-                    "📹 Экспорт видео",
+                    "📹 Оригинал",
                     (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
                 )
 
@@ -674,7 +681,7 @@ class QuickExportHandlerTest {
                 assertNotNull(restoreMarkup)
                 assertIs<InlineKeyboardMarkup>(restoreMarkup)
                 assertEquals(
-                    "📹 Экспорт видео",
+                    "📹 Оригинал",
                     (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
                 )
             }
@@ -831,7 +838,7 @@ class QuickExportHandlerTest {
                 assertNotNull(restoreMarkup)
                 assertIs<InlineKeyboardMarkup>(restoreMarkup)
                 assertEquals(
-                    "📹 Экспорт видео",
+                    "📹 Оригинал",
                     (restoreMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
                 )
             }
