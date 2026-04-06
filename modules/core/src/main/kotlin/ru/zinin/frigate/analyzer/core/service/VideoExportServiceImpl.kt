@@ -144,6 +144,7 @@ class VideoExportServiceImpl(
     override suspend fun exportByRecordingId(
         recordingId: UUID,
         duration: Duration,
+        mode: ExportMode,
         onProgress: suspend (VideoExportProgress) -> Unit,
     ): Path {
         require(!duration.isNegative && !duration.isZero) { "duration must be positive" }
@@ -171,7 +172,7 @@ class VideoExportServiceImpl(
             startInstant = startInstant,
             endInstant = endInstant,
             camId = camId,
-            mode = ExportMode.ORIGINAL,
+            mode = mode,
             onProgress = onProgress,
         )
     }

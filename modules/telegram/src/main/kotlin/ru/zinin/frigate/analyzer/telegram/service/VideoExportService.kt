@@ -36,6 +36,7 @@ interface VideoExportService {
     suspend fun exportByRecordingId(
         recordingId: UUID,
         duration: Duration = Duration.ofMinutes(1),
+        mode: ExportMode = ExportMode.ORIGINAL,
         onProgress: suspend (VideoExportProgress) -> Unit = {},
     ): Path
 }
