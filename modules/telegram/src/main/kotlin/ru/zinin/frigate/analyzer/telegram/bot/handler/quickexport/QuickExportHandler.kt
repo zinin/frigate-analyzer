@@ -86,7 +86,7 @@ class QuickExportHandler(
         try {
             bot.editMessageReplyMarkup(
                 message,
-                replyMarkup = createProcessingKeyboard(recordingId),
+                replyMarkup = createProcessingKeyboard(recordingId, mode = mode),
             )
         } catch (e: Exception) {
             logger.warn(e) { "Failed to update button to processing state" }
@@ -123,7 +123,7 @@ class QuickExportHandler(
                     try {
                         bot.editMessageReplyMarkup(
                             message,
-                            replyMarkup = createProcessingKeyboard(recordingId, text),
+                            replyMarkup = createProcessingKeyboard(recordingId, text, mode),
                         )
                     } catch (e: CancellationException) {
                         throw e
@@ -148,7 +148,7 @@ class QuickExportHandler(
                 try {
                     bot.editMessageReplyMarkup(
                         message,
-                        replyMarkup = createProcessingKeyboard(recordingId, "⚙️ Отправка..."),
+                        replyMarkup = createProcessingKeyboard(recordingId, "⚙️ Отправка...", mode),
                     )
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update progress button to sending" }
@@ -239,15 +239,18 @@ class QuickExportHandler(
         fun createProcessingKeyboard(
             recordingId: UUID,
             text: String = "⚙️ Экспорт...",
-        ): InlineKeyboardMarkup =
-            InlineKeyboardMarkup(
+            mode: ExportMode = ExportMode.ORIGINAL,
+        ): InlineKeyboardMarkup {
+            val prefix = if (mode == ExportMode.ANNOTATED) CALLBACK_PREFIX_ANNOTATED else CALLBACK_PREFIX
+            return InlineKeyboardMarkup(
                 keyboard =
                     matrix {
                         row {
-                            +CallbackDataInlineKeyboardButton(text, "$CALLBACK_PREFIX$recordingId")
+                            +CallbackDataInlineKeyboardButton(text, "$prefix$recordingId")
                         }
                     },
             )
+        }
 
         private fun renderProgressButton(
             stage: VideoExportProgress.Stage,

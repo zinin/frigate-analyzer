@@ -187,6 +187,18 @@ class QuickExportHandlerTest {
             assertIs<CallbackDataInlineKeyboardButton>(button)
             assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", button.callbackData)
         }
+
+        @Test
+        fun `button uses annotated prefix when mode is ANNOTATED`() {
+            val recordingId = UUID.randomUUID()
+
+            val keyboard =
+                QuickExportHandler.createProcessingKeyboard(recordingId, mode = ExportMode.ANNOTATED)
+            val button = keyboard.keyboard[0][0]
+
+            assertIs<CallbackDataInlineKeyboardButton>(button)
+            assertEquals("${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId", button.callbackData)
+        }
     }
 
     @Nested
@@ -931,25 +943,29 @@ class QuickExportHandlerTest {
         @Test
         fun `handle annotated callback calls exportByRecordingId with ANNOTATED mode`() =
             runTest {
-                val user = CommonUser(
-                    id = ChatId(RawChatId(1L)),
-                    firstName = "Test",
-                    username = Username("@testuser"),
-                )
-                val realChat = PrivateChatImpl(
-                    id = ChatId(RawChatId(12345L)),
-                    firstName = "TestChat",
-                )
-                val mockMessage = mockk<ContentMessage<MessageContent>>(relaxed = true) {
-                    every { chat } returns realChat
-                }
-                val callback = MessageDataCallbackQuery(
-                    id = CallbackQueryId("test-annotated-callback"),
-                    from = user,
-                    chatInstance = "test-instance",
-                    message = mockMessage,
-                    data = "${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId",
-                )
+                val user =
+                    CommonUser(
+                        id = ChatId(RawChatId(1L)),
+                        firstName = "Test",
+                        username = Username("@testuser"),
+                    )
+                val realChat =
+                    PrivateChatImpl(
+                        id = ChatId(RawChatId(12345L)),
+                        firstName = "TestChat",
+                    )
+                val mockMessage =
+                    mockk<ContentMessage<MessageContent>>(relaxed = true) {
+                        every { chat } returns realChat
+                    }
+                val callback =
+                    MessageDataCallbackQuery(
+                        id = CallbackQueryId("test-annotated-callback"),
+                        from = user,
+                        chatInstance = "test-instance",
+                        message = mockMessage,
+                        data = "${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId",
+                    )
 
                 val tempFile = Files.createTempFile("test-export", ".mp4")
 
@@ -957,8 +973,11 @@ class QuickExportHandlerTest {
                 coEvery { bot.execute(any<Request<*>>()) } coAnswers {
                     val request = firstArg<Request<*>>()
                     capturedRequests.add(request)
-                    if (request is AnswerCallbackQuery) true
-                    else mockk<ContentMessage<MessageContent>>(relaxed = true)
+                    if (request is AnswerCallbackQuery) {
+                        true
+                    } else {
+                        mockk<ContentMessage<MessageContent>>(relaxed = true)
+                    }
                 }
                 coEvery {
                     videoExportService.exportByRecordingId(eq(recordingId), any(), eq(ExportMode.ANNOTATED), any())
