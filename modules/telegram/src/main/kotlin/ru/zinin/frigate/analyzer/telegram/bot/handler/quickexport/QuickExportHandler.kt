@@ -102,12 +102,18 @@ class QuickExportHandler(
             val onProgress: suspend (VideoExportProgress) -> Unit = { progress ->
                 val shouldUpdate =
                     when {
-                        progress.stage != lastRenderedStage -> true
+                        progress.stage != lastRenderedStage -> {
+                            true
+                        }
+
                         progress.stage == VideoExportProgress.Stage.ANNOTATING && progress.percent != null -> {
                             val lastPct = lastRenderedPercent ?: -1
                             (progress.percent - lastPct) >= 5
                         }
-                        else -> false
+
+                        else -> {
+                            false
+                        }
                     }
 
                 if (shouldUpdate) {
@@ -119,6 +125,8 @@ class QuickExportHandler(
                             message,
                             replyMarkup = createProcessingKeyboard(recordingId, text),
                         )
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         logger.warn(e) { "Failed to update progress button" }
                     }
@@ -246,13 +254,29 @@ class QuickExportHandler(
             percent: Int? = null,
         ): String =
             when (stage) {
-                VideoExportProgress.Stage.PREPARING -> "⚙️ Подготовка..."
-                VideoExportProgress.Stage.MERGING -> "⚙️ Склейка видео..."
-                VideoExportProgress.Stage.COMPRESSING -> "⚙️ Сжатие видео..."
-                VideoExportProgress.Stage.ANNOTATING ->
+                VideoExportProgress.Stage.PREPARING -> {
+                    "⚙️ Подготовка..."
+                }
+
+                VideoExportProgress.Stage.MERGING -> {
+                    "⚙️ Склейка видео..."
+                }
+
+                VideoExportProgress.Stage.COMPRESSING -> {
+                    "⚙️ Сжатие видео..."
+                }
+
+                VideoExportProgress.Stage.ANNOTATING -> {
                     if (percent != null) "⚙️ Аннотация $percent%..." else "⚙️ Аннотация..."
-                VideoExportProgress.Stage.SENDING -> "⚙️ Отправка..."
-                VideoExportProgress.Stage.DONE -> "✅ Готово"
+                }
+
+                VideoExportProgress.Stage.SENDING -> {
+                    "⚙️ Отправка..."
+                }
+
+                VideoExportProgress.Stage.DONE -> {
+                    "✅ Готово"
+                }
             }
     }
 }

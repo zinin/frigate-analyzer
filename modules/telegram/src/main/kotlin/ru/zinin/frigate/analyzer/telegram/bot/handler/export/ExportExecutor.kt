@@ -68,6 +68,8 @@ class ExportExecutor(
                         statusMessage,
                         renderProgress(progress.stage, progress.percent, mode, hadCompressing),
                     )
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update export progress message" }
                 }
