@@ -39,11 +39,15 @@ class TelegramNotificationSenderTest {
 
     private fun assertExportKeyboard(keyboard: InlineKeyboardMarkup) {
         assertEquals(1, keyboard.keyboard.size, "Should have one row")
-        assertEquals(1, keyboard.keyboard[0].size, "Row should have one button")
-        val button = keyboard.keyboard[0][0]
-        assertIs<CallbackDataInlineKeyboardButton>(button)
-        assertEquals("📹 Экспорт видео", button.text)
-        assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", button.callbackData)
+        assertEquals(2, keyboard.keyboard[0].size, "Row should have two buttons")
+        val originalButton = keyboard.keyboard[0][0]
+        assertIs<CallbackDataInlineKeyboardButton>(originalButton)
+        assertEquals("📹 Оригинал", originalButton.text)
+        assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", originalButton.callbackData)
+        val annotatedButton = keyboard.keyboard[0][1]
+        assertIs<CallbackDataInlineKeyboardButton>(annotatedButton)
+        assertEquals("📹 С объектами", annotatedButton.text)
+        assertEquals("${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId", annotatedButton.callbackData)
     }
 
     /**
