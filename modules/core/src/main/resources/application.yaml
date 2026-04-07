@@ -40,7 +40,6 @@ application:
     enabled: ${TELEGRAM_ENABLED:true}
     bot-token: ${TELEGRAM_BOT_TOKEN:}
     owner: ${TELEGRAM_OWNER:}
-    unauthorized-message: ${TELEGRAM_UNAUTHORIZED_MESSAGE:Доступ запрещен. Вы не авторизованы для использования этого бота.}
     queue-capacity: ${TELEGRAM_QUEUE_CAPACITY:100}
     send-video-timeout: ${TELEGRAM_SEND_VIDEO_TIMEOUT:3m}
     proxy:

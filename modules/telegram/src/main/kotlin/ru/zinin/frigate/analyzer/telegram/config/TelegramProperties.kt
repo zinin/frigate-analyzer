@@ -19,7 +19,6 @@ data class TelegramProperties(
     val botToken: String,
     @field:NotBlank(message = "Telegram owner username must not be blank")
     val owner: String,
-    val unauthorizedMessage: String = "Доступ запрещен. Вы не авторизованы для использования этого бота.",
     @field:Min(1)
     val queueCapacity: Int = 100,
     val sendVideoTimeout: Duration = Duration.ofMinutes(3),

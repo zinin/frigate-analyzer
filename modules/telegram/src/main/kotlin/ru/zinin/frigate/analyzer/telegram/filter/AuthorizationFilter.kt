@@ -45,6 +45,4 @@ class AuthorizationFilter(
         val privateMessage = message as? PrivateContentMessage<*> ?: return null
         return privateMessage.user.username?.withoutAt
     }
-
-    fun getUnauthorizedMessage(): String = properties.unauthorizedMessage
 }
