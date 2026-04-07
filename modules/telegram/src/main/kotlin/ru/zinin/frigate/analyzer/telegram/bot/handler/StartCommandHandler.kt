@@ -10,6 +10,7 @@ import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -20,9 +21,10 @@ class StartCommandHandler(
     private val userService: TelegramUserService,
     private val properties: TelegramProperties,
     private val eventPublisher: ApplicationEventPublisher,
+    private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "start"
-    override val description: String = "Начать работу с ботом"
+    override val description: String = "Start"
     override val requiredRole: UserRole? = null
     override val order: Int = 1
 
@@ -32,8 +34,11 @@ class StartCommandHandler(
     ) {
         val privateMessage = message as? PrivateContentMessage<*>
         val username = privateMessage?.user?.username?.withoutAt
+        val telegramLang = privateMessage?.user?.ietfLanguageCode?.code
+
         if (username == null) {
-            reply(message, "Ошибка: не удалось определить ваш username.")
+            val lang = detectLanguage(telegramLang)
+            reply(message, msg.get("command.start.error.username", lang))
             return
         }
 
@@ -51,6 +56,7 @@ class StartCommandHandler(
                 userService.inviteUser(username)
             }
             if (existing?.status != UserStatus.ACTIVE) {
+                val detectedLang = detectLanguage(telegramLang)
                 userService.activateUser(
                     username = username,
                     chatId = chatId,
@@ -58,21 +64,25 @@ class StartCommandHandler(
                     firstName = privateMessage.user.firstName,
                     lastName = privateMessage.user.lastName,
                 )
+                userService.updateLanguage(chatId, detectedLang)
             }
 
-            reply(message, "Добро пожаловать, владелец! Используйте /help для списка команд.")
+            val lang = userService.getUserLanguage(chatId)
+            reply(message, msg.get("command.start.welcome.owner", lang))
             eventPublisher.publishEvent(OwnerActivatedEvent(chatId))
             return
         }
 
-        val user = userService.findByUsername(username)
-        if (user == null) {
-            reply(message, properties.unauthorizedMessage)
+        val existingUser = userService.findByUsername(username)
+        if (existingUser == null) {
+            val lang = detectLanguage(telegramLang)
+            reply(message, msg.get("common.error.unauthorized", lang))
             return
         }
 
-        if (user.status == UserStatus.ACTIVE) {
-            reply(message, "Вы уже подписаны на уведомления. Используйте /help для списка команд.")
+        if (existingUser.status == UserStatus.ACTIVE) {
+            val lang = userService.getUserLanguage(chatId)
+            reply(message, msg.get("command.start.already.subscribed", lang))
             return
         }
 
@@ -86,9 +96,18 @@ class StartCommandHandler(
             )
 
         if (activated != null) {
-            reply(message, "Вы успешно подписались на уведомления! Используйте /help для списка команд.")
+            val detectedLang = detectLanguage(telegramLang)
+            userService.updateLanguage(chatId, detectedLang)
+            val lang = userService.getUserLanguage(chatId)
+            reply(message, msg.get("command.start.subscribed", lang))
         } else {
-            reply(message, "Ошибка активации. Обратитесь к администратору.")
+            val lang = detectLanguage(telegramLang)
+            reply(message, msg.get("command.start.error.activation", lang))
         }
+    }
+
+    companion object {
+        internal fun detectLanguage(telegramLanguageCode: String?): String =
+            if (telegramLanguageCode?.startsWith("en") == true) "en" else "ru"
     }
 }
