@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Lazy
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 
 @Component
@@ -16,9 +17,10 @@ import ru.zinin.frigate.analyzer.telegram.model.UserRole
 class HelpCommandHandler(
     @Lazy private val handlers: List<CommandHandler>,
     private val properties: TelegramProperties,
+    private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "help"
-    override val description: String = "Помощь"
+    override val description: String = "Help"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 2
 
@@ -26,24 +28,25 @@ class HelpCommandHandler(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
+        val lang = user?.languageCode ?: "ru"
         val sortedHandlers = handlers.sortedWith(compareBy<CommandHandler> { it.order }.thenBy { it.command })
         val defaultCommands = sortedHandlers.filterNot { it.ownerOnly }
         val ownerCommands = sortedHandlers.filter { it.ownerOnly }
 
         val helpText =
             buildString {
-                appendLine("📋 Доступные команды:")
+                appendLine(msg.get("command.help.header", lang))
                 appendLine()
 
                 defaultCommands.forEach { handler ->
-                    appendLine("/${handler.command} - ${handler.description}")
+                    appendLine("/${handler.command} - ${msg.get("command.${handler.command}.description", lang)}")
                 }
 
                 if (user?.username == properties.owner && ownerCommands.isNotEmpty()) {
                     appendLine()
-                    appendLine("👑 Команды владельца:")
+                    appendLine(msg.get("command.help.owner.header", lang))
                     ownerCommands.forEach { handler ->
-                        appendLine("/${handler.command} - ${handler.description}")
+                        appendLine("/${handler.command} - ${msg.get("command.${handler.command}.description", lang)}")
                     }
                 }
             }
