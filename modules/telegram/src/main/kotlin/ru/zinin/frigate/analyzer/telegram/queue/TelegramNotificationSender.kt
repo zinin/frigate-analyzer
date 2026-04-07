@@ -34,7 +34,7 @@ class TelegramNotificationSender(
         val chatIdObj = ChatId(RawChatId(task.chatId))
         val message = task.message.toCaption(MAX_CAPTION_LENGTH)
         val frames = task.visualizedFrames
-        val lang = task.language
+        val lang = task.language ?: "en"
         val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
 
         when {

@@ -35,6 +35,6 @@ class MessageResolver(
         }
 
     companion object {
-        private val DEFAULT_LOCALE = Locale.forLanguageTag("ru")
+        private val DEFAULT_LOCALE = Locale.forLanguageTag("en")
     }
 }

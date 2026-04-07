@@ -13,6 +13,6 @@ class I18nConfiguration {
             setBasename("classpath:messages")
             setDefaultEncoding("UTF-8")
             setFallbackToSystemLocale(false)
-            setDefaultLocale(java.util.Locale.forLanguageTag("ru"))
+            setDefaultLocale(java.util.Locale.forLanguageTag("en"))
         }
 }

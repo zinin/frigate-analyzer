@@ -34,7 +34,7 @@ class TelegramNotificationSenderTest {
                 setBasename("classpath:messages")
                 setDefaultEncoding("UTF-8")
                 setFallbackToSystemLocale(false)
-                setDefaultLocale(Locale.forLanguageTag("ru"))
+                setDefaultLocale(Locale.forLanguageTag("en"))
             },
         )
     private val quickExportHandler = mockk<QuickExportHandler>()

@@ -27,7 +27,7 @@ class UsersCommandHandler(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
-        val lang = user?.languageCode ?: "ru"
+        val lang = user?.languageCode ?: "en"
         val users = userService.getAllUsers()
         if (users.isEmpty()) {
             reply(message, msg.get("command.users.empty", lang))

@@ -42,7 +42,8 @@ class TelegramNotificationServiceImpl(
         }
 
         usersWithZones.forEach { userZone ->
-            val message = formatRecordingMessage(recording, userZone.zone, userZone.language)
+            val lang = userZone.language ?: "en"
+            val message = formatRecordingMessage(recording, userZone.zone, lang)
             val task =
                 NotificationTask(
                     id = uuidGeneratorHelper.generateV1(),

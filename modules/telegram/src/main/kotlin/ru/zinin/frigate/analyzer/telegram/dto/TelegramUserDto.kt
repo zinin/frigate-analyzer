@@ -14,5 +14,5 @@ data class TelegramUserDto(
     val status: UserStatus,
     val creationTimestamp: Instant,
     val activationTimestamp: Instant?,
-    val languageCode: String = "ru",
+    val languageCode: String? = null,
 )

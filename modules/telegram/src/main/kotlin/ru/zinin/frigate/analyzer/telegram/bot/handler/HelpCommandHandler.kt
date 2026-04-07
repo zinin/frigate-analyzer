@@ -27,7 +27,7 @@ class HelpCommandHandler(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
-        val lang = user?.languageCode ?: "ru"
+        val lang = user?.languageCode ?: "en"
         val sortedHandlers = handlers.sortedWith(compareBy<CommandHandler> { it.order }.thenBy { it.command })
         val defaultCommands = sortedHandlers.filterNot { it.ownerOnly }
         val ownerCommands = sortedHandlers.filter { it.ownerOnly }

@@ -70,6 +70,7 @@ class QuickExportHandler(
             val lang =
                 try {
                     userService.getUserLanguage(chatId.chatId.long)
+                        ?: StartCommandHandler.detectLanguage(callback.user.ietfLanguageCode?.code)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -99,6 +100,7 @@ class QuickExportHandler(
         val lang =
             try {
                 userService.getUserLanguage(chatId.chatId.long)
+                    ?: StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

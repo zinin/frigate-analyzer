@@ -151,9 +151,9 @@ class TelegramUserServiceImpl(
             }
 
     @Transactional(readOnly = true)
-    override suspend fun getUserLanguage(chatId: Long): String {
+    override suspend fun getUserLanguage(chatId: Long): String? {
         val user = repository.findByChatId(chatId)
-        return user?.languageCode ?: "ru"
+        return user?.languageCode
     }
 
     @Transactional

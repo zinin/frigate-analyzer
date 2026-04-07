@@ -29,7 +29,7 @@ class AddUserCommandHandler(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
-        val lang = user?.languageCode ?: "ru"
+        val lang = user?.languageCode ?: "en"
         val text = message.content.text
         val parts = text.split(" ", limit = 2)
         if (parts.size < 2) {

@@ -31,7 +31,7 @@ data class TelegramUserEntity(
     @Column("olson_code")
     var olsonCode: String? = null,
     @Column("language_code")
-    var languageCode: String = "ru",
+    var languageCode: String? = null,
 ) : Persistable<UUID> {
     override fun getId(): UUID? = id
 

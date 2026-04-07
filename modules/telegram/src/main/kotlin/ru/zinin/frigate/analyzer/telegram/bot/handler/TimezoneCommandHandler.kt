@@ -42,7 +42,7 @@ class TimezoneCommandHandler(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
-        val lang = user?.languageCode ?: "ru"
+        val lang = user?.languageCode ?: "en"
         val chatId = message.chat.id
         val currentZone = userService.getUserZone(chatId.chatId.long)
 

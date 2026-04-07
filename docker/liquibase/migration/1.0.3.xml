@@ -6,7 +6,7 @@
         <comment>Add language_code field to telegram_users for i18n support</comment>
         <sql>
             ALTER TABLE telegram_users
-              ADD COLUMN language_code VARCHAR(64) NOT NULL DEFAULT 'ru';
+              ADD COLUMN language_code VARCHAR(64);
         </sql>
     </changeSet>
 </databaseChangeLog>

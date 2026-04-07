@@ -12,7 +12,7 @@ class MessageResolverTest {
             setBasename("classpath:messages")
             setDefaultEncoding("UTF-8")
             setFallbackToSystemLocale(false)
-            setDefaultLocale(Locale.forLanguageTag("ru"))
+            setDefaultLocale(Locale.forLanguageTag("en"))
         }
     private val resolver = MessageResolver(messageSource)
 
@@ -41,8 +41,8 @@ class MessageResolverTest {
     }
 
     @Test
-    fun `get falls back to Russian for unknown locale`() {
+    fun `get falls back to English for unknown locale`() {
         val result = resolver.get("common.cancel", "de")
-        assertEquals("Отмена", result)
+        assertEquals("Cancel", result)
     }
 }

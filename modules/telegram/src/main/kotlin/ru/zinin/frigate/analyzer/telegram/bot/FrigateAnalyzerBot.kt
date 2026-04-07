@@ -207,7 +207,7 @@ class FrigateAnalyzerBot(
             val defaultCommands =
                 sortedHandlers
                     .filterNot { it.ownerOnly }
-                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "ru")) }
+                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
             bot.setMyCommands(defaultCommands, scope = BotCommandScopeDefault)
             logger.info { "Default bot commands registered for all languages" }
         } catch (e: Exception) {
@@ -227,7 +227,7 @@ class FrigateAnalyzerBot(
             // Default fallback for users with other languages
             val defaultCommands =
                 sortedHandlers
-                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "ru")) }
+                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
             bot.setMyCommands(defaultCommands, scope = scope)
             logger.info { "Owner bot commands registered for chat $chatId" }
         } catch (e: Exception) {

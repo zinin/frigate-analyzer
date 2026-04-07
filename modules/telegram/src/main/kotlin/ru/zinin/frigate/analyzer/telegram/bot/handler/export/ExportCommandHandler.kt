@@ -39,7 +39,7 @@ class ExportCommandHandler(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
-        val lang = user?.languageCode ?: "ru"
+        val lang = user?.languageCode ?: "en"
         val chatId = message.chat.id
         val chatIdLong = chatId.chatId.long
 

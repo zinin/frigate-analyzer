@@ -38,7 +38,7 @@ class LanguageCommandHandler(
     ) {
         val chatId = message.chat.id
         val chatIdLong = chatId.chatId.long
-        val lang = user?.languageCode ?: "ru"
+        val lang = user?.languageCode ?: "en"
 
         val completed =
             withTimeoutOrNull(LANGUAGE_DIALOG_TIMEOUT_MS) {

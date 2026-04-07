@@ -68,7 +68,7 @@ class StartCommandHandler(
                     userService.updateLanguage(chatId, detectedLang)
                     detectedLang
                 } else {
-                    userService.getUserLanguage(chatId)
+                    userService.getUserLanguage(chatId) ?: detectLanguage(telegramLang)
                 }
 
             reply(message, msg.get("command.start.welcome.owner", lang))
@@ -84,7 +84,7 @@ class StartCommandHandler(
         }
 
         if (existingUser.status == UserStatus.ACTIVE) {
-            val lang = userService.getUserLanguage(chatId)
+            val lang = userService.getUserLanguage(chatId) ?: detectLanguage(telegramLang)
             reply(message, msg.get("command.start.already.subscribed", lang))
             return
         }
@@ -110,6 +110,6 @@ class StartCommandHandler(
 
     companion object {
         internal fun detectLanguage(telegramLanguageCode: String?): String =
-            if (telegramLanguageCode?.startsWith("en") == true) "en" else "ru"
+            if (telegramLanguageCode?.startsWith("ru") == true) "ru" else "en"
     }
 }

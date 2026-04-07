@@ -58,7 +58,7 @@ class QuickExportHandlerTest {
                 setBasename("classpath:messages")
                 setDefaultEncoding("UTF-8")
                 setFallbackToSystemLocale(false)
-                setDefaultLocale(Locale.forLanguageTag("ru"))
+                setDefaultLocale(Locale.forLanguageTag("en"))
             },
         )
 
@@ -461,7 +461,7 @@ class QuickExportHandlerTest {
 
                 // Verify answer was called with the correct "set username" message
                 val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
-                val expectedText = msg.get("quickexport.error.username", "ru")
+                val expectedText = msg.get("quickexport.error.username", "en")
                 assertTrue(
                     answerRequests.any { it.text == expectedText },
                     "Expected AnswerCallbackQuery with 'set username' text, but got: ${answerRequests.map { it.text }}",
@@ -488,7 +488,7 @@ class QuickExportHandlerTest {
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any(), any()) }
 
                 // Verify answer was called with unauthorized message from msg resolver
-                val expectedText = msg.get("common.error.unauthorized", "ru")
+                val expectedText = msg.get("common.error.unauthorized", "en")
                 val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
                 assertTrue(
                     answerRequests.any { it.text == expectedText },
