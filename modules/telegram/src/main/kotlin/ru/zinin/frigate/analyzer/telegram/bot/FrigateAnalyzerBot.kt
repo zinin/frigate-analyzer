@@ -120,7 +120,11 @@ class FrigateAnalyzerBot(
                         }
 
                         if (handler.requiredRole == UserRole.OWNER && resolvedRole != UserRole.OWNER) {
-                            val lang = foundUser?.languageCode ?: "ru"
+                            val lang =
+                                foundUser?.languageCode
+                                    ?: StartCommandHandler.detectLanguage(
+                                        ((message as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code,
+                                    )
                             reply(message, msg.get("common.error.owner.only", lang))
                             return@onCommand
                         }
@@ -193,6 +197,12 @@ class FrigateAnalyzerBot(
                         .map { BotCommand(it.command, msg.get("command.${it.command}.description", langCode)) }
                 bot.setMyCommands(commands, scope = BotCommandScopeDefault, languageCode = langCode)
             }
+            // Default fallback for users with other languages
+            val defaultCommands =
+                sortedHandlers
+                    .filterNot { it.ownerOnly }
+                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
+            bot.setMyCommands(defaultCommands, scope = BotCommandScopeDefault)
             logger.info { "Default bot commands registered for all languages" }
         } catch (e: Exception) {
             logger.warn(e) { "Failed to register default bot commands" }
@@ -208,6 +218,11 @@ class FrigateAnalyzerBot(
                         .map { BotCommand(it.command, msg.get("command.${it.command}.description", langCode)) }
                 bot.setMyCommands(commands, scope = scope, languageCode = langCode)
             }
+            // Default fallback for users with other languages
+            val defaultCommands =
+                sortedHandlers
+                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
+            bot.setMyCommands(defaultCommands, scope = scope)
             logger.info { "Owner bot commands registered for chat $chatId" }
         } catch (e: Exception) {
             logger.warn(e) { "Failed to register owner bot commands for chat $chatId" }

@@ -198,7 +198,7 @@ class QuickExportHandlerTest {
         fun `creates keyboard with single row and single button`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId)
+            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId, "⚙️ Exporting...")
 
             assertEquals(1, keyboard.keyboard.size, "Should have one row")
             assertEquals(1, keyboard.keyboard[0].size, "Row should have one button")
@@ -208,7 +208,7 @@ class QuickExportHandlerTest {
         fun `button has processing text`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId)
+            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId, "⚙️ Exporting...")
             val button = keyboard.keyboard[0][0]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)
@@ -219,7 +219,7 @@ class QuickExportHandlerTest {
         fun `button has correct callback data with prefix and recordingId`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId)
+            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId, "⚙️ Exporting...")
             val button = keyboard.keyboard[0][0]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)
@@ -231,7 +231,7 @@ class QuickExportHandlerTest {
             val recordingId = UUID.randomUUID()
 
             val keyboard =
-                QuickExportHandler.createProcessingKeyboard(recordingId, mode = ExportMode.ANNOTATED)
+                QuickExportHandler.createProcessingKeyboard(recordingId, "⚙️ Exporting...", mode = ExportMode.ANNOTATED)
             val button = keyboard.keyboard[0][0]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)

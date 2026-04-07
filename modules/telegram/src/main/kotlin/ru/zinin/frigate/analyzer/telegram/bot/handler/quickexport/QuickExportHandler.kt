@@ -328,7 +328,7 @@ class QuickExportHandler(
 
         fun createProcessingKeyboard(
             recordingId: UUID,
-            text: String = "\u2699\uFE0F Exporting...",
+            text: String,
             mode: ExportMode = ExportMode.ORIGINAL,
         ): InlineKeyboardMarkup {
             val prefix = if (mode == ExportMode.ANNOTATED) CALLBACK_PREFIX_ANNOTATED else CALLBACK_PREFIX

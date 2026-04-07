@@ -161,6 +161,7 @@ class TelegramUserServiceImpl(
         chatId: Long,
         languageCode: String,
     ): Boolean {
+        require(languageCode in SUPPORTED_LANGUAGES) { "Unsupported language: $languageCode" }
         val updated = repository.updateLanguageCode(chatId, languageCode)
         if (updated == 0L) {
             logger.warn { "updateLanguage: no rows updated for chatId=$chatId" }
@@ -168,6 +169,10 @@ class TelegramUserServiceImpl(
         }
         logger.info { "Updated language for chatId=$chatId to $languageCode" }
         return true
+    }
+
+    companion object {
+        val SUPPORTED_LANGUAGES = setOf("ru", "en")
     }
 
     private fun TelegramUserEntity.toDto(): TelegramUserDto =
