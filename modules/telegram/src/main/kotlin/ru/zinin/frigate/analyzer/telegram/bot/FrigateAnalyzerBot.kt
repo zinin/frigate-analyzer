@@ -109,8 +109,9 @@ class FrigateAnalyzerBot(
                             return@onCommand
                         }
 
-                        val foundUser = userService.findActiveByUsername(username)
-                            ?: if (username == properties.owner) userService.findByUsername(username) else null
+                        val foundUser =
+                            userService.findActiveByUsername(username)
+                                ?: if (username == properties.owner) userService.findByUsername(username) else null
                         val resolvedRole =
                             when {
                                 username == properties.owner -> UserRole.OWNER
