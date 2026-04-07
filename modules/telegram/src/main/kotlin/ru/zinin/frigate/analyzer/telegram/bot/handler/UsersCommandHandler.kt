@@ -7,6 +7,7 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -15,9 +16,10 @@ import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class UsersCommandHandler(
     private val userService: TelegramUserService,
+    private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "users"
-    override val description: String = "Список пользователей"
+    override val description: String = "User list"
     override val requiredRole: UserRole = UserRole.OWNER
     override val ownerOnly: Boolean = true
     override val order: Int = 12
@@ -26,20 +28,21 @@ class UsersCommandHandler(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
+        val lang = user?.languageCode ?: "ru"
         val users = userService.getAllUsers()
         if (users.isEmpty()) {
-            reply(message, "Нет зарегистрированных пользователей.")
+            reply(message, msg.get("command.users.empty", lang))
             return
         }
 
         val text =
             buildString {
-                appendLine("👥 Пользователи:")
+                appendLine(msg.get("command.users.header", lang))
                 appendLine()
-                users.forEach { user ->
-                    val statusEmoji = if (user.status == UserStatus.ACTIVE) "✅" else "⏳"
-                    val statusText = if (user.status == UserStatus.ACTIVE) "активен" else "приглашён"
-                    appendLine("$statusEmoji @${user.username} - $statusText")
+                users.forEach { u ->
+                    val statusEmoji = if (u.status == UserStatus.ACTIVE) "✅" else "⏳"
+                    val statusText = msg.get("common.status.${u.status.name.lowercase()}", lang)
+                    appendLine("$statusEmoji @${u.username} - $statusText")
                 }
             }
 
