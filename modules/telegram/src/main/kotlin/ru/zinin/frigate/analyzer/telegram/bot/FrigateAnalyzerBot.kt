@@ -15,6 +15,7 @@ import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.chat.CommonUser
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeChat
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeDefault
+import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -41,6 +42,9 @@ import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 
 private val logger = KotlinLogging.logger {}
+
+private fun CommonMessage<*>.telegramLanguageCode(): String? =
+    ((this as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
@@ -98,7 +102,7 @@ class FrigateAnalyzerBot(
                     if (handler.requiredRole != null) {
                         val username = authorizationFilter.extractUsername(message)
                         if (username == null) {
-                            val telegramLang = ((message as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code
+                            val telegramLang = message.telegramLanguageCode()
                             val lang = StartCommandHandler.detectLanguage(telegramLang)
                             reply(message, msg.get("common.error.unauthorized", lang))
                             return@onCommand
@@ -113,7 +117,7 @@ class FrigateAnalyzerBot(
                             }
 
                         if (resolvedRole == null) {
-                            val telegramLang = ((message as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code
+                            val telegramLang = message.telegramLanguageCode()
                             val lang = StartCommandHandler.detectLanguage(telegramLang)
                             reply(message, msg.get("common.error.unauthorized", lang))
                             return@onCommand
@@ -123,7 +127,7 @@ class FrigateAnalyzerBot(
                             val lang =
                                 foundUser?.languageCode
                                     ?: StartCommandHandler.detectLanguage(
-                                        ((message as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code,
+                                        message.telegramLanguageCode(),
                                     )
                             reply(message, msg.get("common.error.owner.only", lang))
                             return@onCommand
@@ -143,7 +147,7 @@ class FrigateAnalyzerBot(
                     val lang =
                         resolvedUser?.languageCode
                             ?: StartCommandHandler.detectLanguage(
-                                ((message as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code,
+                                message.telegramLanguageCode(),
                             )
                     reply(message, msg.get("common.error.generic", lang))
                 }
@@ -173,7 +177,7 @@ class FrigateAnalyzerBot(
 
             val role = authorizationFilter.getRole(message)
             if (role == null) {
-                val telegramLang = ((message as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code
+                val telegramLang = message.telegramLanguageCode()
                 val lang = StartCommandHandler.detectLanguage(telegramLang)
                 reply(message, msg.get("common.error.unauthorized", lang))
                 return@onContentMessage
