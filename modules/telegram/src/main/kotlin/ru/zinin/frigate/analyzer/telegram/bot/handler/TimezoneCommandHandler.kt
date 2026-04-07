@@ -18,6 +18,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
@@ -30,9 +31,10 @@ import java.time.ZoneId
 class TimezoneCommandHandler(
     private val userService: TelegramUserService,
     private val clock: Clock,
+    private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "timezone"
-    override val description: String = "Часовой пояс"
+    override val description: String = "Timezone"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 4
 
@@ -41,6 +43,7 @@ class TimezoneCommandHandler(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
+        val lang = user?.languageCode ?: "ru"
         val chatId = message.chat.id
         val currentZone = userService.getUserZone(chatId.chatId.long)
 
@@ -51,48 +54,48 @@ class TimezoneCommandHandler(
                         keyboard =
                             matrix {
                                 row {
-                                    +CallbackDataInlineKeyboardButton("Калининград (UTC+2)", "tz:Europe/Kaliningrad")
-                                    +CallbackDataInlineKeyboardButton("Москва (UTC+3)", "tz:Europe/Moscow")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.kaliningrad", lang), "tz:Europe/Kaliningrad")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.moscow", lang), "tz:Europe/Moscow")
                                 }
                                 row {
-                                    +CallbackDataInlineKeyboardButton("Екатеринбург (UTC+5)", "tz:Asia/Yekaterinburg")
-                                    +CallbackDataInlineKeyboardButton("Омск (UTC+6)", "tz:Asia/Omsk")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.yekaterinburg", lang), "tz:Asia/Yekaterinburg")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.omsk", lang), "tz:Asia/Omsk")
                                 }
                                 row {
-                                    +CallbackDataInlineKeyboardButton("Красноярск (UTC+7)", "tz:Asia/Krasnoyarsk")
-                                    +CallbackDataInlineKeyboardButton("Иркутск (UTC+8)", "tz:Asia/Irkutsk")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.krasnoyarsk", lang), "tz:Asia/Krasnoyarsk")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.irkutsk", lang), "tz:Asia/Irkutsk")
                                 }
                                 row {
-                                    +CallbackDataInlineKeyboardButton("Якутск (UTC+9)", "tz:Asia/Yakutsk")
-                                    +CallbackDataInlineKeyboardButton("Владивосток (UTC+10)", "tz:Asia/Vladivostok")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.yakutsk", lang), "tz:Asia/Yakutsk")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.vladivostok", lang), "tz:Asia/Vladivostok")
                                 }
                                 row {
-                                    +CallbackDataInlineKeyboardButton("Ввести вручную", "tz:manual")
-                                    +CallbackDataInlineKeyboardButton("Отмена", "tz:cancel")
+                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.manual.input", lang), "tz:manual")
+                                    +CallbackDataInlineKeyboardButton(msg.get("common.cancel", lang), "tz:cancel")
                                 }
                             },
                     )
 
                 val tzSentMessage =
-                    sendTextMessage(chatId, "Ваш текущий часовой пояс: $currentZone\nВыберите часовой пояс:", replyMarkup = tzKeyboard)
+                    sendTextMessage(chatId, msg.get("command.timezone.current", lang, currentZone), replyMarkup = tzKeyboard)
 
                 val callback =
                     waitDataCallbackQuery()
                         .filter {
                             it.data.startsWith("tz:") &&
-                                (it as? MessageDataCallbackQuery)?.message?.let { msg ->
-                                    msg.messageId == tzSentMessage.messageId && msg.chat.id == chatId
+                                (it as? MessageDataCallbackQuery)?.message?.let { cbMsg ->
+                                    cbMsg.messageId == tzSentMessage.messageId && cbMsg.chat.id == chatId
                                 } == true
                         }.first()
                 answer(callback)
 
                 when {
                     callback.data == "tz:cancel" -> {
-                        sendTextMessage(chatId, "Отменено.")
+                        sendTextMessage(chatId, msg.get("command.timezone.cancelled", lang))
                     }
 
                     callback.data == "tz:manual" -> {
-                        sendTextMessage(chatId, "Введите Olson ID часового пояса (например: Europe/Moscow, Asia/Tokyo):")
+                        sendTextMessage(chatId, msg.get("command.timezone.prompt.olson", lang))
                         val inputMsg =
                             waitTextMessage()
                                 .filter { it.chat.id == chatId }
@@ -100,26 +103,26 @@ class TimezoneCommandHandler(
                         val input = inputMsg.content.text.trim()
 
                         if (input == "/cancel") {
-                            sendTextMessage(chatId, "Отменено.")
+                            sendTextMessage(chatId, msg.get("command.timezone.cancelled", lang))
                             return@withTimeoutOrNull
                         }
 
                         if (!input.contains('/')) {
-                            sendTextMessage(chatId, "Пожалуйста, используйте формат Continent/City (например: Europe/Moscow).")
+                            sendTextMessage(chatId, msg.get("command.timezone.error.format", lang))
                             return@withTimeoutOrNull
                         }
 
                         try {
                             val zone = ZoneId.of(input)
                             if (!userService.updateTimezone(chatId.chatId.long, zone.id)) {
-                                sendTextMessage(chatId, "Ошибка сохранения часового пояса.")
+                                sendTextMessage(chatId, msg.get("command.timezone.error.save", lang))
                                 return@withTimeoutOrNull
                             }
 
                             val offset = zone.rules.getOffset(Instant.now(clock))
-                            sendTextMessage(chatId, "Часовой пояс сохранён: ${zone.id} (UTC$offset)")
+                            sendTextMessage(chatId, msg.get("command.timezone.saved", lang, zone.id, offset))
                         } catch (e: DateTimeException) {
-                            sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова или выберите из списка.")
+                            sendTextMessage(chatId, msg.get("command.timezone.error.unknown", lang))
                         }
                     }
 
@@ -128,21 +131,21 @@ class TimezoneCommandHandler(
                         try {
                             val zone = ZoneId.of(olsonCode)
                             if (!userService.updateTimezone(chatId.chatId.long, olsonCode)) {
-                                sendTextMessage(chatId, "Ошибка сохранения часового пояса.")
+                                sendTextMessage(chatId, msg.get("command.timezone.error.save", lang))
                                 return@withTimeoutOrNull
                             }
 
                             val offset = zone.rules.getOffset(Instant.now(clock))
-                            sendTextMessage(chatId, "Часовой пояс сохранён: $olsonCode (UTC$offset)")
+                            sendTextMessage(chatId, msg.get("command.timezone.saved", lang, olsonCode, offset))
                         } catch (e: DateTimeException) {
-                            sendTextMessage(chatId, "Неизвестный часовой пояс. Попробуйте снова.")
+                            sendTextMessage(chatId, msg.get("command.timezone.error.unknown.retry", lang))
                         }
                     }
                 }
             }
 
         if (completed == null) {
-            sendTextMessage(chatId, "Время ожидания истекло. Попробуйте снова /timezone.")
+            sendTextMessage(chatId, msg.get("command.timezone.timeout", lang))
         }
     }
 
