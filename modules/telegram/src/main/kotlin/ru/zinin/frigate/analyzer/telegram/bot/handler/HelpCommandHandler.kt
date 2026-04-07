@@ -20,7 +20,6 @@ class HelpCommandHandler(
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "help"
-    override val description: String = "Help"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 2
 

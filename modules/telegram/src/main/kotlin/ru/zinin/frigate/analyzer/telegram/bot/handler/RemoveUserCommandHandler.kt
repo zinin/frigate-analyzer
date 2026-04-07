@@ -20,7 +20,6 @@ class RemoveUserCommandHandler(
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "removeuser"
-    override val description: String = "Remove user"
     override val requiredRole: UserRole = UserRole.OWNER
     override val ownerOnly: Boolean = true
     override val order: Int = 11

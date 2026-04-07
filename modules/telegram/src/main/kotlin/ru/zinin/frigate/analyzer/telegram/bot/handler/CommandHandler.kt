@@ -9,8 +9,6 @@ import ru.zinin.frigate.analyzer.telegram.model.UserRole
 interface CommandHandler {
     val command: String
 
-    val description: String
-
     val requiredRole: UserRole?
 
     val ownerOnly: Boolean get() = false

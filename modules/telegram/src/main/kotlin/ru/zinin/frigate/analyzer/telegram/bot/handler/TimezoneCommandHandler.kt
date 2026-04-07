@@ -34,7 +34,6 @@ class TimezoneCommandHandler(
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "timezone"
-    override val description: String = "Timezone"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 4
 

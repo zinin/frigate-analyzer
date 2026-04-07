@@ -19,7 +19,6 @@ class UsersCommandHandler(
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "users"
-    override val description: String = "User list"
     override val requiredRole: UserRole = UserRole.OWNER
     override val ownerOnly: Boolean = true
     override val order: Int = 12

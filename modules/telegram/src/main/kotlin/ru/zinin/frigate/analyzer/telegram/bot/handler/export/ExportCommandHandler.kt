@@ -32,7 +32,6 @@ class ExportCommandHandler(
     private val exportScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override val command: String = "export"
-    override val description: String = "Export video"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 3
 

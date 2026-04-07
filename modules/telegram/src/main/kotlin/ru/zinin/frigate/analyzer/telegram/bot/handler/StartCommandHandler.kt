@@ -25,7 +25,6 @@ class StartCommandHandler(
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "start"
-    override val description: String = "Start"
     override val requiredRole: UserRole? = null
     override val order: Int = 1
 

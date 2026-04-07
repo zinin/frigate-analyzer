@@ -28,7 +28,6 @@ class LanguageCommandHandler(
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "language"
-    override val description: String = "Language / Язык"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 6
 

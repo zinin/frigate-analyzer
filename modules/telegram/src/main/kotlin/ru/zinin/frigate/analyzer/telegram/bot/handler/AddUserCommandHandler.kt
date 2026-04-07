@@ -21,7 +21,6 @@ class AddUserCommandHandler(
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "adduser"
-    override val description: String = "Add user"
     override val requiredRole: UserRole = UserRole.OWNER
     override val ownerOnly: Boolean = true
     override val order: Int = 10
