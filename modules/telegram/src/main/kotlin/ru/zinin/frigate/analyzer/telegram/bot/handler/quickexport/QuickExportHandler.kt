@@ -23,8 +23,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
@@ -40,10 +43,13 @@ class QuickExportHandler(
     private val videoExportService: VideoExportService,
     private val authorizationFilter: AuthorizationFilter,
     private val properties: TelegramProperties,
+    private val msg: MessageResolver,
+    private val userService: TelegramUserService,
     private val exportScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
 ) {
     private val activeExports: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
 
+    @Suppress("LongMethod")
     suspend fun handle(callback: DataCallbackQuery): Job? {
         val messageCallback = callback as? MessageDataCallbackQuery
         val message = messageCallback?.message
@@ -61,7 +67,15 @@ class QuickExportHandler(
         val recordingId = parseRecordingId(callbackData)
         if (recordingId == null) {
             logger.warn { "Invalid recordingId in callback: $callbackData" }
-            bot.answer(callback, "Ошибка: неверный формат данных")
+            val lang =
+                try {
+                    userService.getUserLanguage(chatId.chatId.long)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    StartCommandHandler.detectLanguage(callback.user.ietfLanguageCode?.code)
+                }
+            bot.answer(callback, msg.get("quickexport.error.format", lang))
             return null
         }
 
@@ -69,7 +83,8 @@ class QuickExportHandler(
         val user = callback.user
         val username = user.username?.withoutAt
         if (username == null) {
-            bot.answer(callback, "Пожалуйста, установите username в настройках Telegram.")
+            val lang = StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
+            bot.answer(callback, msg.get("quickexport.error.username", lang))
             return null
         }
 
@@ -79,9 +94,19 @@ class QuickExportHandler(
             return null
         }
 
+        // Resolve language
+        val lang =
+            try {
+                userService.getUserLanguage(chatId.chatId.long)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
+            }
+
         // Prevent duplicate exports
         if (!activeExports.add(recordingId)) {
-            bot.answer(callback, "Экспорт уже выполняется.")
+            bot.answer(callback, msg.get("quickexport.error.concurrent", lang))
             return null
         }
 
@@ -132,7 +157,7 @@ class QuickExportHandler(
                     if (shouldUpdate) {
                         lastRenderedStage = progress.stage
                         lastRenderedPercent = progress.percent
-                        val text = renderProgressButton(progress.stage, progress.percent)
+                        val text = renderProgressButton(progress.stage, progress.percent, lang)
                         try {
                             bot.editMessageReplyMarkup(
                                 message,
@@ -152,8 +177,8 @@ class QuickExportHandler(
                     }
 
                 if (videoPath == null) {
-                    bot.sendTextMessage(chatId, "Экспорт занял слишком много времени. Попробуйте позже.")
-                    restoreButton(message, recordingId)
+                    bot.sendTextMessage(chatId, msg.get("quickexport.error.timeout", lang))
+                    restoreButton(message, recordingId, lang)
                     return@launch
                 }
 
@@ -161,7 +186,12 @@ class QuickExportHandler(
                     try {
                         bot.editMessageReplyMarkup(
                             message,
-                            replyMarkup = createProcessingKeyboard(recordingId, "⚙️ Отправка...", mode),
+                            replyMarkup =
+                                createProcessingKeyboard(
+                                    recordingId,
+                                    msg.get("quickexport.progress.sending", lang),
+                                    mode,
+                                ),
                         )
                     } catch (e: Exception) {
                         logger.warn(e) { "Failed to update progress button to sending" }
@@ -176,7 +206,7 @@ class QuickExportHandler(
                         }
 
                     if (sent == null) {
-                        bot.sendTextMessage(chatId, "Не удалось отправить видео: превышено время ожидания.")
+                        bot.sendTextMessage(chatId, msg.get("quickexport.error.send.timeout", lang))
                     }
                 } finally {
                     try {
@@ -187,34 +217,74 @@ class QuickExportHandler(
                 }
 
                 // Restore buttons
-                restoreButton(message, recordingId)
+                restoreButton(message, recordingId, lang)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 logger.error(e) { "Quick export failed for recording $recordingId" }
                 val errorMsg =
                     when (e) {
-                        is IllegalArgumentException -> "Запись не найдена."
-                        is IllegalStateException -> "Файлы записи недоступны."
-                        else -> "Ошибка экспорта. Попробуйте позже."
+                        is IllegalArgumentException -> msg.get("quickexport.error.not.found", lang)
+                        is IllegalStateException -> msg.get("quickexport.error.unavailable", lang)
+                        else -> msg.get("quickexport.error.generic", lang)
                     }
                 bot.sendTextMessage(chatId, errorMsg)
-                restoreButton(message, recordingId)
+                restoreButton(message, recordingId, lang)
             } finally {
                 activeExports.remove(recordingId)
             }
         }
     }
 
+    private fun renderProgressButton(
+        stage: VideoExportProgress.Stage,
+        percent: Int? = null,
+        lang: String,
+    ): String =
+        when (stage) {
+            VideoExportProgress.Stage.PREPARING -> msg.get("quickexport.progress.preparing", lang)
+            VideoExportProgress.Stage.MERGING -> msg.get("quickexport.progress.merging", lang)
+            VideoExportProgress.Stage.COMPRESSING -> msg.get("quickexport.progress.compressing", lang)
+            VideoExportProgress.Stage.ANNOTATING ->
+                if (percent != null) {
+                    msg.get("quickexport.progress.annotating.percent", lang, percent)
+                } else {
+                    msg.get("quickexport.progress.annotating", lang)
+                }
+            VideoExportProgress.Stage.SENDING -> msg.get("quickexport.progress.sending", lang)
+            VideoExportProgress.Stage.DONE -> msg.get("quickexport.progress.done", lang)
+        }
+
+    fun createExportKeyboard(
+        recordingId: UUID,
+        lang: String,
+    ): InlineKeyboardMarkup =
+        InlineKeyboardMarkup(
+            keyboard =
+                matrix {
+                    row {
+                        +CallbackDataInlineKeyboardButton(
+                            msg.get("quickexport.button.original", lang),
+                            "$CALLBACK_PREFIX$recordingId",
+                        )
+                        +CallbackDataInlineKeyboardButton(
+                            msg.get("quickexport.button.annotated", lang),
+                            "$CALLBACK_PREFIX_ANNOTATED$recordingId",
+                        )
+                    }
+                },
+        )
+
     private suspend fun restoreButton(
         message: ContentMessage<*>?,
         recordingId: UUID,
+        lang: String,
     ) {
         if (message == null) return
         try {
             bot.editMessageReplyMarkup(
                 message,
-                replyMarkup = createExportKeyboard(recordingId),
+                replyMarkup = createExportKeyboard(recordingId, lang),
             )
         } catch (e: Exception) {
             logger.warn(e) { "Failed to restore button" }
@@ -239,20 +309,9 @@ class QuickExportHandler(
             }
         }
 
-        fun createExportKeyboard(recordingId: UUID): InlineKeyboardMarkup =
-            InlineKeyboardMarkup(
-                keyboard =
-                    matrix {
-                        row {
-                            +CallbackDataInlineKeyboardButton("📹 Оригинал", "$CALLBACK_PREFIX$recordingId")
-                            +CallbackDataInlineKeyboardButton("📹 С объектами", "$CALLBACK_PREFIX_ANNOTATED$recordingId")
-                        }
-                    },
-            )
-
         fun createProcessingKeyboard(
             recordingId: UUID,
-            text: String = "⚙️ Экспорт...",
+            text: String = "\u2699\uFE0F Exporting...",
             mode: ExportMode = ExportMode.ORIGINAL,
         ): InlineKeyboardMarkup {
             val prefix = if (mode == ExportMode.ANNOTATED) CALLBACK_PREFIX_ANNOTATED else CALLBACK_PREFIX
@@ -265,35 +324,5 @@ class QuickExportHandler(
                     },
             )
         }
-
-        private fun renderProgressButton(
-            stage: VideoExportProgress.Stage,
-            percent: Int? = null,
-        ): String =
-            when (stage) {
-                VideoExportProgress.Stage.PREPARING -> {
-                    "⚙️ Подготовка..."
-                }
-
-                VideoExportProgress.Stage.MERGING -> {
-                    "⚙️ Склейка видео..."
-                }
-
-                VideoExportProgress.Stage.COMPRESSING -> {
-                    "⚙️ Сжатие видео..."
-                }
-
-                VideoExportProgress.Stage.ANNOTATING -> {
-                    if (percent != null) "⚙️ Аннотация $percent%..." else "⚙️ Аннотация..."
-                }
-
-                VideoExportProgress.Stage.SENDING -> {
-                    "⚙️ Отправка..."
-                }
-
-                VideoExportProgress.Stage.DONE -> {
-                    "✅ Готово"
-                }
-            }
     }
 }

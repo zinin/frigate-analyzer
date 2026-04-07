@@ -13,6 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.helper.RetryHelper
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 
 private val logger = KotlinLogging.logger {}
 
@@ -20,6 +21,8 @@ private val logger = KotlinLogging.logger {}
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class TelegramNotificationSender(
     private val bot: TelegramBot,
+    private val quickExportHandler: QuickExportHandler,
+    private val userService: TelegramUserService,
 ) {
     /**
      * Sends notification task to Telegram with infinite retry on failure.
@@ -31,6 +34,8 @@ class TelegramNotificationSender(
         val chatIdObj = ChatId(RawChatId(task.chatId))
         val message = task.message.toCaption(MAX_CAPTION_LENGTH)
         val frames = task.visualizedFrames
+        val lang = userService.getUserLanguage(task.chatId)
+        val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
 
         when {
             frames.isEmpty() -> {
@@ -38,7 +43,7 @@ class TelegramNotificationSender(
                     bot.sendTextMessage(
                         chatId = chatIdObj,
                         text = message,
-                        replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
+                        replyMarkup = exportKeyboard,
                     )
                 }
             }
@@ -51,7 +56,7 @@ class TelegramNotificationSender(
                             chatId = chatIdObj,
                             photo = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
                             text = message,
-                            replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
+                            replyMarkup = exportKeyboard,
                         ),
                     )
                 }
@@ -76,7 +81,7 @@ class TelegramNotificationSender(
                     bot.sendTextMessage(
                         chatId = chatIdObj,
                         text = EXPORT_PROMPT_TEXT,
-                        replyMarkup = QuickExportHandler.createExportKeyboard(task.recordingId),
+                        replyMarkup = exportKeyboard,
                     )
                 }
             }
