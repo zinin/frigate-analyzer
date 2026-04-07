@@ -118,7 +118,7 @@ class QuickExportHandler(
         try {
             bot.editMessageReplyMarkup(
                 message,
-                replyMarkup = createProcessingKeyboard(recordingId, mode = mode),
+                replyMarkup = createProcessingKeyboard(recordingId, msg.get("quickexport.button.processing", lang), mode),
             )
         } catch (e: Exception) {
             logger.warn(e) { "Failed to update button to processing state" }
@@ -243,17 +243,33 @@ class QuickExportHandler(
         lang: String,
     ): String =
         when (stage) {
-            VideoExportProgress.Stage.PREPARING -> msg.get("quickexport.progress.preparing", lang)
-            VideoExportProgress.Stage.MERGING -> msg.get("quickexport.progress.merging", lang)
-            VideoExportProgress.Stage.COMPRESSING -> msg.get("quickexport.progress.compressing", lang)
-            VideoExportProgress.Stage.ANNOTATING ->
+            VideoExportProgress.Stage.PREPARING -> {
+                msg.get("quickexport.progress.preparing", lang)
+            }
+
+            VideoExportProgress.Stage.MERGING -> {
+                msg.get("quickexport.progress.merging", lang)
+            }
+
+            VideoExportProgress.Stage.COMPRESSING -> {
+                msg.get("quickexport.progress.compressing", lang)
+            }
+
+            VideoExportProgress.Stage.ANNOTATING -> {
                 if (percent != null) {
                     msg.get("quickexport.progress.annotating.percent", lang, percent)
                 } else {
                     msg.get("quickexport.progress.annotating", lang)
                 }
-            VideoExportProgress.Stage.SENDING -> msg.get("quickexport.progress.sending", lang)
-            VideoExportProgress.Stage.DONE -> msg.get("quickexport.progress.done", lang)
+            }
+
+            VideoExportProgress.Stage.SENDING -> {
+                msg.get("quickexport.progress.sending", lang)
+            }
+
+            VideoExportProgress.Stage.DONE -> {
+                msg.get("quickexport.progress.done", lang)
+            }
         }
 
     fun createExportKeyboard(

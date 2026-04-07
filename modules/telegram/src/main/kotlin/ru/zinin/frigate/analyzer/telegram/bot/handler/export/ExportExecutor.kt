@@ -92,7 +92,10 @@ class ExportExecutor(
 
             try {
                 try {
-                    bot.editMessageText(statusMessage, renderProgress(Stage.SENDING, mode = mode, compressing = hadCompressing, msg = msg, lang = lang))
+                    bot.editMessageText(
+                        statusMessage,
+                        renderProgress(Stage.SENDING, mode = mode, compressing = hadCompressing, msg = msg, lang = lang),
+                    )
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update export progress message" }
                 }
@@ -122,7 +125,10 @@ class ExportExecutor(
                 }
 
                 try {
-                    bot.editMessageText(statusMessage, renderProgress(Stage.DONE, mode = mode, compressing = hadCompressing, msg = msg, lang = lang))
+                    bot.editMessageText(
+                        statusMessage,
+                        renderProgress(Stage.DONE, mode = mode, compressing = hadCompressing, msg = msg, lang = lang),
+                    )
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update export progress message" }
                 }

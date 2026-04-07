@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler
 
 import dev.inmo.tgbotapi.extensions.api.send.reply
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
+import dev.inmo.tgbotapi.types.chat.CommonUser
 import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
@@ -34,7 +35,7 @@ class StartCommandHandler(
     ) {
         val privateMessage = message as? PrivateContentMessage<*>
         val username = privateMessage?.user?.username?.withoutAt
-        val telegramLang = privateMessage?.user?.ietfLanguageCode?.code
+        val telegramLang = (privateMessage?.user as? CommonUser)?.ietfLanguageCode?.code
 
         if (username == null) {
             val lang = detectLanguage(telegramLang)

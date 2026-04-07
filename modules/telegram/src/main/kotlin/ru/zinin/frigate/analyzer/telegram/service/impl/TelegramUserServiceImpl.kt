@@ -157,7 +157,10 @@ class TelegramUserServiceImpl(
     }
 
     @Transactional
-    override suspend fun updateLanguage(chatId: Long, languageCode: String): Boolean {
+    override suspend fun updateLanguage(
+        chatId: Long,
+        languageCode: String,
+    ): Boolean {
         val updated = repository.updateLanguageCode(chatId, languageCode)
         if (updated == 0L) {
             logger.warn { "updateLanguage: no rows updated for chatId=$chatId" }

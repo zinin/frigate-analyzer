@@ -6,10 +6,12 @@ import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.NotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -17,6 +19,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -25,7 +28,16 @@ class TelegramNotificationServiceImplTest {
     private val userService = mockk<TelegramUserService>()
     private val notificationQueue = mockk<TelegramNotificationQueue>()
     private val uuidGeneratorHelper = mockk<UUIDGeneratorHelper>()
-    private val service = TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper)
+    private val msg =
+        MessageResolver(
+            ReloadableResourceBundleMessageSource().apply {
+                setBasename("classpath:messages")
+                setDefaultEncoding("UTF-8")
+                setFallbackToSystemLocale(false)
+                setDefaultLocale(Locale.forLanguageTag("ru"))
+            },
+        )
+    private val service = TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper, msg)
 
     private val taskId = UUID.randomUUID()
     private val recordingId = UUID.randomUUID()
@@ -62,7 +74,7 @@ class TelegramNotificationServiceImplTest {
 
             coEvery { uuidGeneratorHelper.generateV1() } returns taskId
             coEvery { userService.getAuthorizedUsersWithZones() } returns
-                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC")))
+                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC"), language = "ru"))
             coEvery { notificationQueue.enqueue(capture(taskSlot)) } returns Unit
 
             service.sendRecordingNotification(recording, visualizedFrames)
@@ -72,6 +84,7 @@ class TelegramNotificationServiceImplTest {
             assertEquals(taskId, taskSlot.captured.id)
             assertEquals(chatId, taskSlot.captured.chatId)
             assertEquals(visualizedFrames, taskSlot.captured.visualizedFrames)
+            assertEquals("ru", taskSlot.captured.language)
             assertTrue(taskSlot.captured.message.contains("camera1"), "message should contain camera ID")
         }
 
@@ -114,8 +127,8 @@ class TelegramNotificationServiceImplTest {
             coEvery { uuidGeneratorHelper.generateV1() } returnsMany listOf(taskId1, taskId2)
             coEvery { userService.getAuthorizedUsersWithZones() } returns
                 listOf(
-                    UserZoneInfo(chatId = 100L, zone = ZoneId.of("Europe/Moscow")),
-                    UserZoneInfo(chatId = 200L, zone = ZoneId.of("Asia/Tokyo")),
+                    UserZoneInfo(chatId = 100L, zone = ZoneId.of("Europe/Moscow"), language = "ru"),
+                    UserZoneInfo(chatId = 200L, zone = ZoneId.of("Asia/Tokyo"), language = "en"),
                 )
             coEvery { notificationQueue.enqueue(capture(tasks)) } returns Unit
 
@@ -129,5 +142,7 @@ class TelegramNotificationServiceImplTest {
             assertEquals(taskId2, tasks[1].id)
             assertEquals(100L, tasks[0].chatId)
             assertEquals(200L, tasks[1].chatId)
+            assertEquals("ru", tasks[0].language)
+            assertEquals("en", tasks[1].language)
         }
 }

@@ -7,7 +7,6 @@ import org.springframework.context.support.ReloadableResourceBundleMessageSource
 
 @Configuration
 class I18nConfiguration {
-
     @Bean
     fun messageSource(): MessageSource =
         ReloadableResourceBundleMessageSource().apply {

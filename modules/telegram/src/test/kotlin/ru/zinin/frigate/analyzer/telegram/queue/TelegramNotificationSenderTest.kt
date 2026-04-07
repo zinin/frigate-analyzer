@@ -10,12 +10,16 @@ import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
 import dev.inmo.tgbotapi.types.message.content.PhotoContent
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
+import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -24,9 +28,41 @@ import kotlin.test.assertTrue
 
 class TelegramNotificationSenderTest {
     private val bot = mockk<TelegramBot>()
-    private val sender = TelegramNotificationSender(bot)
+    private val msg =
+        MessageResolver(
+            ReloadableResourceBundleMessageSource().apply {
+                setBasename("classpath:messages")
+                setDefaultEncoding("UTF-8")
+                setFallbackToSystemLocale(false)
+                setDefaultLocale(Locale.forLanguageTag("ru"))
+            },
+        )
+    private val quickExportHandler = mockk<QuickExportHandler>()
+    private val sender = TelegramNotificationSender(bot, quickExportHandler, msg)
 
     private val recordingId = UUID.randomUUID()
+
+    init {
+        // Default mock for createExportKeyboard — returns a Russian-localized keyboard
+        every { quickExportHandler.createExportKeyboard(any(), any()) } answers {
+            val rid = firstArg<UUID>()
+            InlineKeyboardMarkup(
+                keyboard =
+                    listOf(
+                        listOf(
+                            CallbackDataInlineKeyboardButton(
+                                "📹 Оригинал",
+                                "${QuickExportHandler.CALLBACK_PREFIX}$rid",
+                            ),
+                            CallbackDataInlineKeyboardButton(
+                                "📹 С объектами",
+                                "${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$rid",
+                            ),
+                        ),
+                    ),
+            )
+        }
+    }
 
     private fun createTask(frames: List<VisualizedFrameData> = emptyList()) =
         NotificationTask(
@@ -35,6 +71,7 @@ class TelegramNotificationSenderTest {
             message = "Test notification",
             visualizedFrames = frames,
             recordingId = recordingId,
+            language = "ru",
         )
 
     private fun assertExportKeyboard(keyboard: InlineKeyboardMarkup) {

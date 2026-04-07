@@ -9,12 +9,20 @@ import java.util.Locale
 private val logger = KotlinLogging.logger {}
 
 @Component
-class MessageResolver(private val messageSource: MessageSource) {
+class MessageResolver(
+    private val messageSource: MessageSource,
+) {
+    fun get(
+        key: String,
+        language: String,
+        vararg args: Any,
+    ): String = get(key, Locale.forLanguageTag(language), *args)
 
-    fun get(key: String, language: String, vararg args: Any): String =
-        get(key, Locale.forLanguageTag(language), *args)
-
-    fun get(key: String, locale: Locale, vararg args: Any): String =
+    fun get(
+        key: String,
+        locale: Locale,
+        vararg args: Any,
+    ): String =
         try {
             messageSource.getMessage(key, args, locale)
         } catch (e: NoSuchMessageException) {
