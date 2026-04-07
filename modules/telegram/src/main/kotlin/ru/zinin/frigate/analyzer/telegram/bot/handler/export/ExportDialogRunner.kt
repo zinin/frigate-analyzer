@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import java.time.Clock
@@ -36,11 +37,13 @@ import java.time.temporal.ChronoUnit
 class ExportDialogRunner(
     private val videoExportService: VideoExportService,
     private val clock: Clock,
+    private val msg: MessageResolver,
 ) {
     @Suppress("LongMethod")
     suspend fun BehaviourContext.runDialog(
         chatId: IdChatIdentifier,
         userZone: ZoneId,
+        lang: String,
     ): ExportDialogOutcome =
         withTimeoutOrNull(EXPORT_DIALOG_TIMEOUT_MS) {
             val dateKeyboard =
@@ -48,17 +51,17 @@ class ExportDialogRunner(
                     keyboard =
                         matrix {
                             row {
-                                +CallbackDataInlineKeyboardButton("Сегодня", "export:today")
-                                +CallbackDataInlineKeyboardButton("Вчера", "export:yesterday")
+                                +CallbackDataInlineKeyboardButton(msg.get("export.dialog.today", lang), "export:today")
+                                +CallbackDataInlineKeyboardButton(msg.get("export.dialog.yesterday", lang), "export:yesterday")
                             }
                             row {
-                                +CallbackDataInlineKeyboardButton("Ввести дату", "export:custom")
-                                +CallbackDataInlineKeyboardButton("Отмена", "export:cancel")
+                                +CallbackDataInlineKeyboardButton(msg.get("export.dialog.enter.date", lang), "export:custom")
+                                +CallbackDataInlineKeyboardButton(msg.get("common.cancel", lang), "export:cancel")
                             }
                         },
                 )
 
-            val dateSentMessage = sendTextMessage(chatId, "Выберите дату:", replyMarkup = dateKeyboard)
+            val dateSentMessage = sendTextMessage(chatId, msg.get("export.dialog.select.date", lang), replyMarkup = dateKeyboard)
 
             val dateCallback =
                 waitDataCallbackQuery()
@@ -77,7 +80,7 @@ class ExportDialogRunner(
             }
 
             if (dateCallback.data == "export:cancel") {
-                sendTextMessage(chatId, "Экспорт отменён.")
+                sendTextMessage(chatId, msg.get("export.cancelled", lang))
                 return@withTimeoutOrNull ExportDialogOutcome.Cancelled
             }
 
@@ -96,20 +99,20 @@ class ExportDialogRunner(
                     }
 
                     "export:custom" -> {
-                        sendTextMessage(chatId, "Введите дату (формат: YYYY-MM-DD) или /cancel для отмены:")
+                        sendTextMessage(chatId, msg.get("export.dialog.date.prompt", lang))
                         val dateMsg =
                             waitTextMessage()
                                 .filter { it.chat.id == chatId }
                                 .first()
                         val dateInput = dateMsg.content.text.trim()
-                        if (dateInput == "/cancel" || dateInput.equals("отмена", ignoreCase = true)) {
-                            sendTextMessage(chatId, "Экспорт отменён.")
+                        if (dateInput == "/cancel") {
+                            sendTextMessage(chatId, msg.get("export.cancelled", lang))
                             return@withTimeoutOrNull ExportDialogOutcome.Cancelled
                         }
                         try {
                             LocalDate.parse(dateInput)
                         } catch (e: DateTimeParseException) {
-                            sendTextMessage(chatId, "Неверный формат даты. Используйте YYYY-MM-DD. Экспорт отменён.")
+                            sendTextMessage(chatId, msg.get("export.dialog.date.error", lang))
                             return@withTimeoutOrNull ExportDialogOutcome.Cancelled
                         }
                     }
@@ -121,7 +124,7 @@ class ExportDialogRunner(
 
             sendTextMessage(
                 chatId,
-                "Введите диапазон времени (например: 9:15-9:20, макс. 5 минут)\nВремя в вашем часовом поясе: $userZone\nИли /cancel:",
+                msg.get("export.dialog.time.prompt", lang, MAX_EXPORT_DURATION_MINUTES, userZone),
             )
             val timeMsg =
                 waitTextMessage()
@@ -129,14 +132,14 @@ class ExportDialogRunner(
                     .first()
 
             val timeInput = timeMsg.content.text.trim()
-            if (timeInput == "/cancel" || timeInput.equals("отмена", ignoreCase = true)) {
-                sendTextMessage(chatId, "Экспорт отменён.")
+            if (timeInput == "/cancel") {
+                sendTextMessage(chatId, msg.get("export.cancelled", lang))
                 return@withTimeoutOrNull ExportDialogOutcome.Cancelled
             }
 
             val timeRange = parseTimeRange(timeInput)
             if (timeRange == null) {
-                sendTextMessage(chatId, "Неверный формат. Используйте H:MM-H:MM (например, 9:15-9:20). Экспорт отменён.")
+                sendTextMessage(chatId, msg.get("export.dialog.time.error", lang))
                 return@withTimeoutOrNull ExportDialogOutcome.Cancelled
             }
 
@@ -145,7 +148,7 @@ class ExportDialogRunner(
             if (durationMinutes > MAX_EXPORT_DURATION_MINUTES || durationMinutes <= 0) {
                 sendTextMessage(
                     chatId,
-                    "Диапазон должен быть от 1 до $MAX_EXPORT_DURATION_MINUTES минут. Экспорт отменён.",
+                    msg.get("export.dialog.time.range.error", lang, MAX_EXPORT_DURATION_MINUTES),
                 )
                 return@withTimeoutOrNull ExportDialogOutcome.Cancelled
             }
@@ -157,15 +160,14 @@ class ExportDialogRunner(
             if (actualDuration.isNegative || actualDuration.isZero || actualDuration.toMinutes() > MAX_EXPORT_DURATION_MINUTES) {
                 sendTextMessage(
                     chatId,
-                    "Диапазон после конвертации в UTC превышает 5 минут " +
-                        "(возможно из-за перехода на летнее/зимнее время). Попробуйте другой диапазон.",
+                    msg.get("export.dialog.time.dst.error", lang, MAX_EXPORT_DURATION_MINUTES),
                 )
                 return@withTimeoutOrNull ExportDialogOutcome.Cancelled
             }
 
             val cameras = videoExportService.findCamerasWithRecordings(startInstant, endInstant)
             if (cameras.isEmpty()) {
-                sendTextMessage(chatId, "Записей за $date $startTime-$endTime не найдено.")
+                sendTextMessage(chatId, msg.get("export.dialog.no.recordings", lang, date, startTime, endTime))
                 return@withTimeoutOrNull ExportDialogOutcome.Cancelled
             }
 
@@ -182,12 +184,12 @@ class ExportDialogRunner(
                                 }
                             }
                             row {
-                                +CallbackDataInlineKeyboardButton("Отмена", "export:cancel")
+                                +CallbackDataInlineKeyboardButton(msg.get("common.cancel", lang), "export:cancel")
                             }
                         },
                 )
 
-            val camSentMessage = sendTextMessage(chatId, "Выберите камеру:", replyMarkup = cameraKeyboard)
+            val camSentMessage = sendTextMessage(chatId, msg.get("export.dialog.select.camera", lang), replyMarkup = cameraKeyboard)
 
             val camCallback =
                 waitDataCallbackQuery()
@@ -206,7 +208,7 @@ class ExportDialogRunner(
             }
 
             if (camCallback.data == "export:cancel") {
-                sendTextMessage(chatId, "Экспорт отменён.")
+                sendTextMessage(chatId, msg.get("export.cancelled", lang))
                 return@withTimeoutOrNull ExportDialogOutcome.Cancelled
             }
 
@@ -217,16 +219,16 @@ class ExportDialogRunner(
                     keyboard =
                         matrix {
                             row {
-                                +CallbackDataInlineKeyboardButton("Оригинал", "export:mode:original")
-                                +CallbackDataInlineKeyboardButton("С объектами", "export:mode:annotated")
+                                +CallbackDataInlineKeyboardButton(msg.get("export.dialog.mode.original", lang), "export:mode:original")
+                                +CallbackDataInlineKeyboardButton(msg.get("export.dialog.mode.annotated", lang), "export:mode:annotated")
                             }
                             row {
-                                +CallbackDataInlineKeyboardButton("Отмена", "export:cancel")
+                                +CallbackDataInlineKeyboardButton(msg.get("common.cancel", lang), "export:cancel")
                             }
                         },
                 )
 
-            val modeSentMessage = sendTextMessage(chatId, "Выберите режим экспорта:", replyMarkup = modeKeyboard)
+            val modeSentMessage = sendTextMessage(chatId, msg.get("export.dialog.select.mode", lang), replyMarkup = modeKeyboard)
 
             val modeCallback =
                 waitDataCallbackQuery()
@@ -245,7 +247,7 @@ class ExportDialogRunner(
             }
 
             if (modeCallback.data == "export:cancel") {
-                sendTextMessage(chatId, "Экспорт отменён.")
+                sendTextMessage(chatId, msg.get("export.cancelled", lang))
                 return@withTimeoutOrNull ExportDialogOutcome.Cancelled
             }
 

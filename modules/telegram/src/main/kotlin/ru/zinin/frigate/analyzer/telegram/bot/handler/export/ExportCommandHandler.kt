@@ -53,14 +53,14 @@ class ExportCommandHandler(
 
         try {
             val userZone = userService.getUserZone(chatIdLong)
-            val outcome = with(exportDialogRunner) { runDialog(chatId, userZone) }
+            val outcome = with(exportDialogRunner) { runDialog(chatId, userZone, lang) }
 
             when (outcome) {
                 is ExportDialogOutcome.Success -> {
                     releaseNeeded = false
                     exportScope.launch {
                         try {
-                            exportExecutor.execute(chatId, userZone, outcome)
+                            exportExecutor.execute(chatId, userZone, outcome, lang)
                         } finally {
                             activeExportTracker.release(chatIdLong)
                         }
