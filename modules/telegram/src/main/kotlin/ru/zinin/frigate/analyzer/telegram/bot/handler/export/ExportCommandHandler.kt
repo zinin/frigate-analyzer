@@ -14,6 +14,7 @@ import org.springframework.beans.factory.DisposableBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 
@@ -35,7 +36,7 @@ class ExportCommandHandler(
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
-        role: UserRole?,
+        user: TelegramUserDto?,
     ) {
         val chatId = message.chat.id
         val chatIdLong = chatId.chatId.long

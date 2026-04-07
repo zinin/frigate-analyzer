@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
@@ -38,7 +39,7 @@ class TimezoneCommandHandler(
     @Suppress("LongMethod")
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
-        role: UserRole?,
+        user: TelegramUserDto?,
     ) {
         val chatId = message.chat.id
         val currentZone = userService.getUserZone(chatId.chatId.long)

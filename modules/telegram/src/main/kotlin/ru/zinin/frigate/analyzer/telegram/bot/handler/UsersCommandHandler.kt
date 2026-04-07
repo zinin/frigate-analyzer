@@ -6,6 +6,7 @@ import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -23,7 +24,7 @@ class UsersCommandHandler(
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
-        role: UserRole?,
+        user: TelegramUserDto?,
     ) {
         val users = userService.getAllUsers()
         if (users.isEmpty()) {

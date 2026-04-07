@@ -117,7 +117,7 @@ class FrigateAnalyzerBot(
 
                 try {
                     with(handler) {
-                        handle(message, role)
+                        handle(message, null) // TODO: resolve TelegramUserDto in Task 16
                     }
                 } catch (e: CancellationException) {
                     throw e

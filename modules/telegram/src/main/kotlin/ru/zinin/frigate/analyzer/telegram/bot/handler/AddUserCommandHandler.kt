@@ -7,6 +7,7 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -25,7 +26,7 @@ class AddUserCommandHandler(
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
-        role: UserRole?,
+        user: TelegramUserDto?,
     ) {
         val text = message.content.text
         val parts = text.split(" ", limit = 2)

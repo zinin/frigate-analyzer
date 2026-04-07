@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -27,7 +28,7 @@ class StartCommandHandler(
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
-        role: UserRole?,
+        user: TelegramUserDto?,
     ) {
         val privateMessage = message as? PrivateContentMessage<*>
         val username = privateMessage?.user?.username?.withoutAt

@@ -7,12 +7,15 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Lazy
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class HelpCommandHandler(
     @Lazy private val handlers: List<CommandHandler>,
+    private val properties: TelegramProperties,
 ) : CommandHandler {
     override val command: String = "help"
     override val description: String = "Помощь"
@@ -21,7 +24,7 @@ class HelpCommandHandler(
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
-        role: UserRole?,
+        user: TelegramUserDto?,
     ) {
         val sortedHandlers = handlers.sortedWith(compareBy<CommandHandler> { it.order }.thenBy { it.command })
         val defaultCommands = sortedHandlers.filterNot { it.ownerOnly }
@@ -36,7 +39,7 @@ class HelpCommandHandler(
                     appendLine("/${handler.command} - ${handler.description}")
                 }
 
-                if (role == UserRole.OWNER && ownerCommands.isNotEmpty()) {
+                if (user?.username == properties.owner && ownerCommands.isNotEmpty()) {
                     appendLine()
                     appendLine("👑 Команды владельца:")
                     ownerCommands.forEach { handler ->
