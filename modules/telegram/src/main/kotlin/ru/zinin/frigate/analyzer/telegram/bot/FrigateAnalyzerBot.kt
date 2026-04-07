@@ -12,8 +12,11 @@ import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onDataCa
 import dev.inmo.tgbotapi.types.BotCommand
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
+import dev.inmo.tgbotapi.types.chat.CommonUser
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeChat
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeDefault
+import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import io.github.oshai.kotlinlogging.KotlinLogging
 import jakarta.annotation.PostConstruct
@@ -29,13 +32,20 @@ import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.OwnerActivatedEvent
+import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import ru.zinin.frigate.analyzer.telegram.service.impl.TelegramUserServiceImpl
 
 private val logger = KotlinLogging.logger {}
+
+private fun CommonMessage<*>.telegramLanguageCode(): String? =
+    ((this as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
@@ -46,20 +56,12 @@ class FrigateAnalyzerBot(
     private val properties: TelegramProperties,
     private val handlers: List<CommandHandler>,
     private val quickExportHandler: QuickExportHandler,
+    private val msg: MessageResolver,
 ) {
     private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val sortedHandlers: List<CommandHandler>
         get() = handlers.sortedWith(compareBy<CommandHandler> { it.order }.thenBy { it.command })
-
-    private val defaultCommands: List<BotCommand>
-        get() =
-            sortedHandlers
-                .filterNot { it.ownerOnly }
-                .map { BotCommand(it.command, it.description) }
-
-    private val ownerCommands: List<BotCommand>
-        get() = sortedHandlers.map { BotCommand(it.command, it.description) }
 
     @PostConstruct
     fun start() {
@@ -93,37 +95,63 @@ class FrigateAnalyzerBot(
         }
     }
 
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
     private suspend fun BehaviourContext.registerRoutes() {
         sortedHandlers.forEach { handler ->
             onCommand(handler.command, requireOnlyCommandInMessage = false) { message ->
-                val role: UserRole? =
+                val resolvedUser: TelegramUserDto? =
                     if (handler.requiredRole != null) {
-                        val resolvedRole = authorizationFilter.getRole(message)
+                        val username = authorizationFilter.extractUsername(message)
+                        if (username == null) {
+                            val telegramLang = message.telegramLanguageCode()
+                            val lang = StartCommandHandler.detectLanguage(telegramLang)
+                            reply(message, msg.get("common.error.unauthorized", lang))
+                            return@onCommand
+                        }
+
+                        val foundUser = userService.findActiveByUsername(username)
+                            ?: if (username == properties.owner) userService.findByUsername(username) else null
+                        val resolvedRole =
+                            when {
+                                username == properties.owner -> UserRole.OWNER
+                                foundUser != null -> UserRole.USER
+                                else -> null
+                            }
 
                         if (resolvedRole == null) {
-                            reply(message, authorizationFilter.getUnauthorizedMessage())
+                            val telegramLang = message.telegramLanguageCode()
+                            val lang = StartCommandHandler.detectLanguage(telegramLang)
+                            reply(message, msg.get("common.error.unauthorized", lang))
                             return@onCommand
                         }
 
                         if (handler.requiredRole == UserRole.OWNER && resolvedRole != UserRole.OWNER) {
-                            reply(message, "Эта команда доступна только владельцу.")
+                            val lang =
+                                foundUser?.languageCode
+                                    ?: StartCommandHandler.detectLanguage(
+                                        message.telegramLanguageCode(),
+                                    )
+                            reply(message, msg.get("common.error.owner.only", lang))
                             return@onCommand
                         }
 
-                        resolvedRole
+                        foundUser
                     } else {
                         null
                     }
 
                 try {
-                    with(handler) {
-                        handle(message, role)
-                    }
+                    with(handler) { handle(message, resolvedUser) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     logger.error(e) { "Error handling command /${handler.command}" }
-                    reply(message, "Произошла ошибка. Попробуйте позже.")
+                    val lang =
+                        resolvedUser?.languageCode
+                            ?: StartCommandHandler.detectLanguage(
+                                message.telegramLanguageCode(),
+                            )
+                    reply(message, msg.get("common.error.generic", lang))
                 }
             }
         }
@@ -151,7 +179,9 @@ class FrigateAnalyzerBot(
 
             val role = authorizationFilter.getRole(message)
             if (role == null) {
-                reply(message, authorizationFilter.getUnauthorizedMessage())
+                val telegramLang = message.telegramLanguageCode()
+                val lang = StartCommandHandler.detectLanguage(telegramLang)
+                reply(message, msg.get("common.error.unauthorized", lang))
                 return@onContentMessage
             }
         }
@@ -166,8 +196,20 @@ class FrigateAnalyzerBot(
 
     private suspend fun registerDefaultCommands() {
         try {
+            for (langCode in TelegramUserServiceImpl.SUPPORTED_LANGUAGES) {
+                val commands =
+                    sortedHandlers
+                        .filterNot { it.ownerOnly }
+                        .map { BotCommand(it.command, msg.get("command.${it.command}.description", langCode)) }
+                bot.setMyCommands(commands, scope = BotCommandScopeDefault, languageCode = langCode)
+            }
+            // Default fallback for users with other languages
+            val defaultCommands =
+                sortedHandlers
+                    .filterNot { it.ownerOnly }
+                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
             bot.setMyCommands(defaultCommands, scope = BotCommandScopeDefault)
-            logger.info { "Default bot commands registered" }
+            logger.info { "Default bot commands registered for all languages" }
         } catch (e: Exception) {
             logger.warn(e) { "Failed to register default bot commands" }
         }
@@ -175,7 +217,18 @@ class FrigateAnalyzerBot(
 
     private suspend fun registerOwnerCommands(chatId: Long) {
         try {
-            bot.setMyCommands(ownerCommands, scope = BotCommandScopeChat(ChatId(RawChatId(chatId))))
+            val scope = BotCommandScopeChat(ChatId(RawChatId(chatId)))
+            for (langCode in TelegramUserServiceImpl.SUPPORTED_LANGUAGES) {
+                val commands =
+                    sortedHandlers
+                        .map { BotCommand(it.command, msg.get("command.${it.command}.description", langCode)) }
+                bot.setMyCommands(commands, scope = scope, languageCode = langCode)
+            }
+            // Default fallback for users with other languages
+            val defaultCommands =
+                sortedHandlers
+                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
+            bot.setMyCommands(defaultCommands, scope = scope)
             logger.info { "Owner bot commands registered for chat $chatId" }
         } catch (e: Exception) {
             logger.warn(e) { "Failed to register owner bot commands for chat $chatId" }

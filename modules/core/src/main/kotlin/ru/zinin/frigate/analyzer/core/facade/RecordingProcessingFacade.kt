@@ -29,8 +29,8 @@ class RecordingProcessingFacade(
             return
         }
 
-        // Визуализируем кадры ДО сохранения результата.
-        // Если визуализация не удастся, запись будет повторно обработана.
+        // Visualize frames BEFORE saving the result.
+        // If visualization fails, the recording will be reprocessed.
         val visualizedFrames = frameVisualizationService.visualizeFrames(request.frames)
 
         try {

@@ -32,7 +32,7 @@ class FrameExtractorProducer(
     private val detectProperties: DetectProperties,
 ) {
     /**
-     * Основной цикл продюсера. Извлекает кадры из видео и отправляет в канал.
+     * Main producer loop. Extracts frames from video and sends them to the channel.
      */
     suspend fun produce(
         channel: SendChannel<FrameTask>,
@@ -79,7 +79,7 @@ class FrameExtractorProducer(
         record: RecordingDto,
         channel: SendChannel<FrameTask>,
     ) {
-        // Проверка: запись уже обрабатывается?
+        // Check: is the recording already being processed?
         if (recordingTracker.isRegistered(record.id)) {
             logger.warn {
                 "Recording ${record.id} is already being processed, skipping to avoid overwriting state"

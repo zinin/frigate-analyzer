@@ -5,4 +5,5 @@ import java.time.ZoneId
 data class UserZoneInfo(
     val chatId: Long,
     val zone: ZoneId,
+    val language: String? = null,
 )

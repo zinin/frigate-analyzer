@@ -94,7 +94,7 @@ class RecordingEntityServiceImpl(
             }
         }
 
-        // Обновляем запись
+        // Update the recording
         repository.markProcessed(
             recordingId = request.recordingId,
             processTimestamp = Instant.now(clock),

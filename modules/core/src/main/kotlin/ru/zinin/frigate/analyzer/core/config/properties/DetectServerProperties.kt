@@ -17,25 +17,25 @@ data class DetectServerProperties(
     @field:Max(65535)
     val port: Int = 80,
     /**
-     * Конфигурация для запросов детекции кадров
+     * Configuration for frame detection requests
      */
     @field:NotNull
     @field:Valid
     val frameRequests: RequestConfig,
     /**
-     * Конфигурация для запросов извлечения кадров
+     * Configuration for frame extraction requests
      */
     @field:NotNull
     @field:Valid
     val framesExtractRequests: RequestConfig,
     /**
-     * Конфигурация для запросов визуализации
+     * Configuration for visualization requests
      */
     @field:NotNull
     @field:Valid
     val visualizeRequests: RequestConfig,
     /**
-     * Конфигурация для запросов видео-визуализации
+     * Configuration for video visualization requests
      */
     @field:NotNull
     @field:Valid

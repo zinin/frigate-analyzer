@@ -58,4 +58,11 @@ interface TelegramUserRepository : CoroutineCrudRepository<TelegramUserEntity, U
         @Param("chatId") chatId: Long,
         @Param("olsonCode") olsonCode: String,
     ): Long
+
+    @Modifying
+    @Query("UPDATE telegram_users SET language_code = :languageCode WHERE chat_id = :chatId")
+    suspend fun updateLanguageCode(
+        @Param("chatId") chatId: Long,
+        @Param("languageCode") languageCode: String,
+    ): Long
 }

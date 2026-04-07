@@ -7,6 +7,8 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -16,43 +18,44 @@ import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 class AddUserCommandHandler(
     private val userService: TelegramUserService,
     private val properties: TelegramProperties,
+    private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "adduser"
-    override val description: String = "Добавить пользователя"
     override val requiredRole: UserRole = UserRole.OWNER
     override val ownerOnly: Boolean = true
     override val order: Int = 10
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
-        role: UserRole?,
+        user: TelegramUserDto?,
     ) {
+        val lang = user?.languageCode ?: "en"
         val text = message.content.text
         val parts = text.split(" ", limit = 2)
         if (parts.size < 2) {
-            reply(message, "Использование: /adduser @username")
+            reply(message, msg.get("command.adduser.usage", lang))
             return
         }
 
         val targetUsername = parts[1].trim().removePrefix("@")
         if (targetUsername.isBlank()) {
-            reply(message, "Использование: /adduser @username")
+            reply(message, msg.get("command.adduser.usage", lang))
             return
         }
 
         if (targetUsername == properties.owner) {
-            reply(message, "Владелец не может быть добавлен как пользователь.")
+            reply(message, msg.get("command.adduser.error.owner", lang))
             return
         }
 
         val existing = userService.findByUsername(targetUsername)
         if (existing != null) {
-            val statusText = if (existing.status == UserStatus.ACTIVE) "активен" else "приглашён"
-            reply(message, "Пользователь @$targetUsername уже $statusText.")
+            val statusText = msg.get("common.status.${existing.status.name.lowercase()}", lang)
+            reply(message, msg.get("command.adduser.already.exists", lang, targetUsername, statusText))
             return
         }
 
         userService.inviteUser(targetUsername)
-        reply(message, "Пользователь @$targetUsername приглашён. Он должен написать /start боту для активации.")
+        reply(message, msg.get("command.adduser.invited", lang, targetUsername))
     }
 }

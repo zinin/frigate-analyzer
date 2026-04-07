@@ -17,18 +17,18 @@ import org.springframework.web.bind.annotation.RestController
 
 private val logger = KotlinLogging.logger {}
 
-@Tag(name = "VersionController", description = "API-сервис для получения версии приложения")
+@Tag(name = "VersionController", description = "API for retrieving application version")
 @RequestMapping("/version")
 @RestController
 class VersionController(
     val buildProperties: BuildProperties,
     val gitProperties: GitProperties,
 ) {
-    @Operation(summary = "Получить версию сервиса", method = "GET")
+    @Operation(summary = "Get service version", method = "GET")
     @ApiResponse(
         responseCode = "200",
         content = [Content(schema = Schema(implementation = String::class))],
-        description = "Ответ с версией сервиса",
+        description = "Response with the service version",
     )
     @GetMapping(produces = [MediaType.TEXT_PLAIN_VALUE])
     suspend fun version(): String {

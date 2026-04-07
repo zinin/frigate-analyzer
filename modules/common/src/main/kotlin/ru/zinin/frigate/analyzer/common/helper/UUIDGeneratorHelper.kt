@@ -5,24 +5,24 @@ import org.springframework.stereotype.Component
 import java.util.UUID
 
 /**
- * Вспомогательный класс для генерации UUID различных версий.
- * Использует библиотеку UuidCreator для создания UUID.
+ * Helper class for generating UUIDs of various versions.
+ * Uses the UuidCreator library for UUID generation.
  */
 @Component
 class UUIDGeneratorHelper {
     /**
-     * Генерирует UUID версии 1 (time-based).
-     * UUID версии 1 создается на основе временной метки и MAC-адреса.
+     * Generates a version 1 (time-based) UUID.
+     * Version 1 UUIDs are created based on a timestamp and MAC address.
      *
-     * @return UUID версии 1
+     * @return version 1 UUID
      */
     fun generateV1(): UUID = UuidCreator.getTimeBased()
 
     /**
-     * Генерирует UUID версии 4 (random-based).
-     * UUID версии 4 создается на основе случайных или псевдослучайных чисел.
+     * Generates a version 4 (random-based) UUID.
+     * Version 4 UUIDs are created using random or pseudo-random numbers.
      *
-     * @return UUID версии 4
+     * @return version 4 UUID
      */
     fun generateV4(): UUID = UuidCreator.getRandomBased()
 }

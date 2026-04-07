@@ -15,13 +15,13 @@ class FrameVisualizationService(
     private val visualizationProperties: LocalVisualizationProperties,
 ) {
     /**
-     * Визуализирует кадры с детекциями.
-     * Выбирает до maxFrames кадров с наибольшим confidence, затем по количеству детекций.
+     * Visualizes frames with detections.
+     * Selects up to maxFrames frames with the highest confidence, then by number of detections.
      *
-     * @param frames список кадров с результатами детекции
-     * @param maxFrames максимальное количество кадров для визуализации (по умолчанию 10)
-     * @return список визуализированных кадров
-     * @throws FrameVisualizationException если визуализация хотя бы одного кадра не удалась
+     * @param frames list of frames with detection results
+     * @param maxFrames maximum number of frames to visualize (default 10)
+     * @return list of visualized frames
+     * @throws FrameVisualizationException if visualization of at least one frame fails
      */
     suspend fun visualizeFrames(
         frames: List<FrameData>,
@@ -32,10 +32,10 @@ class FrameVisualizationService(
                 .filter { it.detectResponse?.detections?.isNotEmpty() == true }
                 .sortedWith(
                     compareByDescending<FrameData> { frame ->
-                        // Сначала по максимальному confidence среди всех детекций кадра
+                        // First by maximum confidence among all detections in the frame
                         frame.detectResponse?.detections?.maxOfOrNull { it.confidence } ?: 0.0
                     }.thenByDescending { frame ->
-                        // Потом по количеству детекций
+                        // Then by number of detections
                         frame.detectResponse?.detections?.size ?: 0
                     },
                 ).take(maxFrames)

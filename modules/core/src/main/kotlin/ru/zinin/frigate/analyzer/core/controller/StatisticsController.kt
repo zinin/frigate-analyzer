@@ -18,24 +18,24 @@ import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
 
 private val logger = KotlinLogging.logger {}
 
-@Tag(name = "StatisticsController", description = "API-сервис для получения статистики")
+@Tag(name = "StatisticsController", description = "API for retrieving system statistics")
 @RequestMapping("/statistics")
 @RestController
 class StatisticsController(
     private val recordingRepository: RecordingEntityRepository,
     private val detectServerLoadBalancer: DetectServerLoadBalancer,
 ) {
-    @Operation(summary = "Получить статистику системы", method = "GET")
+    @Operation(summary = "Get system statistics", method = "GET")
     @ApiResponse(
         responseCode = "200",
         content = [Content(schema = Schema(implementation = StatisticsResponse::class))],
-        description = "Статистика по recordings и detect servers",
+        description = "Statistics for recordings and detect servers",
     )
     @GetMapping(produces = [MediaType.APPLICATION_JSON_VALUE])
     suspend fun getStatistics(): StatisticsResponse {
         logger.debug { "Fetching statistics" }
 
-        // Получаем статистику по recordings
+        // Fetch recording statistics
         val total = recordingRepository.countAll()
         val processed = recordingRepository.countProcessed()
         val unprocessed = recordingRepository.countUnprocessed()
@@ -59,7 +59,7 @@ class StatisticsController(
                 processingRatePerMinute = processingRate,
             )
 
-        // Получаем статистику по detect servers
+        // Fetch detect server statistics
         val serverStatistics = detectServerLoadBalancer.getAllServersStatistics()
 
         val response =

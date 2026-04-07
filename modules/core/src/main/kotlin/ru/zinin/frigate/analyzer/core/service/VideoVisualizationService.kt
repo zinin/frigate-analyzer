@@ -28,17 +28,17 @@ class VideoVisualizationService(
     private val detectProperties: DetectProperties,
 ) {
     /**
-     * Отправляет видео на аннотацию, опрашивает прогресс и скачивает результат.
+     * Submits video for annotation, polls progress, and downloads the result.
      *
-     * Три фазы:
-     * 1. Submit — с retry между серверами при ошибках
-     * 2. Poll — на фиксированном сервере до completed/failed
-     * 3. Download — с того же сервера (streaming в temp file)
+     * Three phases:
+     * 1. Submit — with retry across servers on errors
+     * 2. Poll — on a fixed server until completed/failed
+     * 3. Download — from the same server (streaming to temp file)
      *
-     * Оркестратор управляет slot lifecycle (acquire/release).
+     * The orchestrator manages the slot lifecycle (acquire/release).
      *
-     * @param onProgress вызывается на каждом успешном poll
-     * @return Path к временному файлу с аннотированным видео. Caller отвечает за удаление.
+     * @param onProgress called on each successful poll
+     * @return Path to the temporary file with annotated video. Caller is responsible for deletion.
      */
     suspend fun annotateVideo(
         videoPath: Path,

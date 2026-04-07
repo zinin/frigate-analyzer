@@ -33,4 +33,11 @@ interface TelegramUserService {
     ): Boolean
 
     suspend fun getAuthorizedUsersWithZones(): List<UserZoneInfo>
+
+    suspend fun getUserLanguage(chatId: Long): String?
+
+    suspend fun updateLanguage(
+        chatId: Long,
+        languageCode: String,
+    ): Boolean
 }

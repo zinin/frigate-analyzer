@@ -14,6 +14,8 @@ import org.springframework.beans.factory.DisposableBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 
@@ -24,24 +26,25 @@ class ExportCommandHandler(
     private val exportDialogRunner: ExportDialogRunner,
     private val exportExecutor: ExportExecutor,
     private val activeExportTracker: ActiveExportTracker,
+    private val msg: MessageResolver,
 ) : CommandHandler,
     DisposableBean {
     private val exportScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override val command: String = "export"
-    override val description: String = "Выгрузить видео"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 3
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
-        role: UserRole?,
+        user: TelegramUserDto?,
     ) {
+        val lang = user?.languageCode ?: "en"
         val chatId = message.chat.id
         val chatIdLong = chatId.chatId.long
 
         if (!activeExportTracker.tryAcquire(chatIdLong)) {
-            reply(message, "Экспорт уже выполняется. Дождитесь завершения текущего экспорта.")
+            reply(message, msg.get("export.error.concurrent", lang))
             return
         }
 
@@ -49,14 +52,14 @@ class ExportCommandHandler(
 
         try {
             val userZone = userService.getUserZone(chatIdLong)
-            val outcome = with(exportDialogRunner) { runDialog(chatId, userZone) }
+            val outcome = with(exportDialogRunner) { runDialog(chatId, userZone, lang) }
 
             when (outcome) {
                 is ExportDialogOutcome.Success -> {
                     releaseNeeded = false
                     exportScope.launch {
                         try {
-                            exportExecutor.execute(chatId, userZone, outcome)
+                            exportExecutor.execute(chatId, userZone, outcome, lang)
                         } finally {
                             activeExportTracker.release(chatIdLong)
                         }
@@ -67,7 +70,7 @@ class ExportCommandHandler(
                 }
 
                 is ExportDialogOutcome.Timeout -> {
-                    sendTextMessage(chatId, "Время ожидания истекло. Попробуйте снова /export.")
+                    sendTextMessage(chatId, msg.get("export.timeout", lang))
                 }
             }
         } finally {

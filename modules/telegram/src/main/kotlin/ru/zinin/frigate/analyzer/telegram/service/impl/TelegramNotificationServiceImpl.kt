@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.NotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
@@ -23,6 +24,7 @@ class TelegramNotificationServiceImpl(
     private val userService: TelegramUserService,
     private val notificationQueue: TelegramNotificationQueue,
     private val uuidGeneratorHelper: UUIDGeneratorHelper,
+    private val msg: MessageResolver,
 ) : TelegramNotificationService {
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
@@ -40,7 +42,8 @@ class TelegramNotificationServiceImpl(
         }
 
         usersWithZones.forEach { userZone ->
-            val message = formatRecordingMessage(recording, userZone.zone)
+            val lang = userZone.language ?: "en"
+            val message = formatRecordingMessage(recording, userZone.zone, lang)
             val task =
                 NotificationTask(
                     id = uuidGeneratorHelper.generateV1(),
@@ -48,6 +51,7 @@ class TelegramNotificationServiceImpl(
                     message = message,
                     visualizedFrames = visualizedFrames,
                     recordingId = recording.id,
+                    language = userZone.language,
                 )
             notificationQueue.enqueue(task)
         }
@@ -58,6 +62,7 @@ class TelegramNotificationServiceImpl(
     private fun formatRecordingMessage(
         recording: RecordingDto,
         zone: ZoneId,
+        language: String,
     ): String {
         val fileName = recording.filePath.substringAfterLast("/")
         val camId = recording.camId
@@ -68,7 +73,7 @@ class TelegramNotificationServiceImpl(
         val formatter =
             DateTimeFormatter
                 .ofLocalizedDateTime(FormatStyle.LONG)
-                .withLocale(Locale.of("ru"))
+                .withLocale(Locale.forLanguageTag(language))
 
         val timestampFormatted =
             recording.processTimestamp
@@ -82,15 +87,15 @@ class TelegramNotificationServiceImpl(
                 .format(formatter)
 
         return buildString {
-            appendLine("📹 Обработка записи завершена")
+            appendLine(msg.get("notification.recording.title", language))
             appendLine()
-            appendLine("🎥 Камера: $camId")
-            appendLine("📁 Файл: $fileName")
-            appendLine("🔍 Обнаружений: $detectionsCount")
-            appendLine("🖼 Кадров проанализировано: $analyzedFrames")
-            appendLine("⏱ Время обработки: $analyzeTime сек")
-            appendLine("📸 Запись: $recordTimestampFormatted")
-            appendLine("⏰ Обработка: $timestampFormatted")
+            appendLine(msg.get("notification.recording.camera", language, camId))
+            appendLine(msg.get("notification.recording.file", language, fileName))
+            appendLine(msg.get("notification.recording.detections", language, detectionsCount))
+            appendLine(msg.get("notification.recording.frames", language, analyzedFrames))
+            appendLine(msg.get("notification.recording.processing.time", language, analyzeTime))
+            appendLine(msg.get("notification.recording.timestamp", language, recordTimestampFormatted))
+            appendLine(msg.get("notification.recording.processed", language, timestampFormatted))
         }
     }
 }

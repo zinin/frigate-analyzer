@@ -14,9 +14,9 @@ class RecordingTracker {
     private val recordings = ConcurrentHashMap<UUID, RecordingState>()
 
     /**
-     * Регистрирует запись для отслеживания прогресса
-     * @param recordId ID записи
-     * @param frames список кадров записи (не пустой)
+     * Registers a recording for progress tracking
+     * @param recordId recording ID
+     * @param frames list of recording frames (must not be empty)
      */
     fun registerRecording(
         recordId: UUID,
@@ -30,8 +30,8 @@ class RecordingTracker {
     }
 
     /**
-     * Отмечает кадр как успешно обработанный.
-     * @return true если это последний кадр и текущий поток должен финализировать запись
+     * Marks a frame as successfully processed.
+     * @return true if this is the last frame and the current thread should finalize the recording
      */
     fun markCompleted(
         recordId: UUID,
@@ -50,9 +50,9 @@ class RecordingTracker {
     }
 
     /**
-     * Отмечает кадр как неудачно обработанный.
-     * Безопасно вызывать даже если кадр уже был обработан через markCompleted.
-     * @return true если это последний кадр и текущий поток должен финализировать запись
+     * Marks a frame as failed.
+     * Safe to call even if the frame was already processed via markCompleted.
+     * @return true if this is the last frame and the current thread should finalize the recording
      */
     fun markFailed(
         recordId: UUID,
@@ -60,7 +60,7 @@ class RecordingTracker {
     ): Boolean {
         val state = getStateOrThrow(recordId)
 
-        // Если кадр уже не в pending (обработан или уже failed) - ничего не делаем
+        // If the frame is no longer pending (already processed or failed) — do nothing
         if (!state.isPending(frameIndex)) {
             logger.debug { "Frame $frameIndex already processed, skipping markFailed" }
             return false
@@ -78,12 +78,12 @@ class RecordingTracker {
     }
 
     /**
-     * Получить состояние записи
+     * Returns the recording state
      */
     fun getState(recordId: UUID): RecordingState? = recordings[recordId]
 
     /**
-     * Удалить запись из отслеживания и вернуть её состояние
+     * Removes a recording from tracking and returns its state
      */
     fun removeRecording(recordId: UUID): RecordingState? {
         val state = recordings.remove(recordId)
@@ -94,12 +94,12 @@ class RecordingTracker {
     }
 
     /**
-     * Проверить, зарегистрирована ли запись
+     * Checks whether a recording is registered
      */
     fun isRegistered(recordId: UUID): Boolean = recordings.containsKey(recordId)
 
     /**
-     * Количество записей в обработке
+     * Number of recordings currently being processed
      */
     fun getActiveRecordingsCount(): Int = recordings.size
 

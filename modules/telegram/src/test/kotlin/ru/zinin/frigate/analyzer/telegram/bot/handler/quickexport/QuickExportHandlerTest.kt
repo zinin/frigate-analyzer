@@ -32,13 +32,17 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
+import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import java.nio.file.Files
 import java.time.Duration
+import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -48,6 +52,16 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class QuickExportHandlerTest {
+    private val msg =
+        MessageResolver(
+            ReloadableResourceBundleMessageSource().apply {
+                setBasename("classpath:messages")
+                setDefaultEncoding("UTF-8")
+                setFallbackToSystemLocale(false)
+                setDefaultLocale(Locale.forLanguageTag("en"))
+            },
+        )
+
     @Nested
     inner class ParseRecordingIdTest {
         @Test
@@ -122,11 +136,32 @@ class QuickExportHandlerTest {
 
     @Nested
     inner class CreateExportKeyboardTest {
+        private val bot = mockk<TelegramBot>()
+        private val videoExportService = mockk<VideoExportService>()
+        private val authorizationFilter = mockk<AuthorizationFilter>()
+        private val userService = mockk<TelegramUserService>()
+        private val properties =
+            TelegramProperties(
+                enabled = true,
+                botToken = "test-token",
+                owner = "testowner",
+                sendVideoTimeout = Duration.ofMinutes(3),
+            )
+        private val handler =
+            QuickExportHandler(
+                bot,
+                videoExportService,
+                authorizationFilter,
+                properties,
+                msg,
+                userService,
+            )
+
         @Test
         fun `creates keyboard with single row and two buttons`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createExportKeyboard(recordingId)
+            val keyboard = handler.createExportKeyboard(recordingId, "ru")
 
             assertEquals(1, keyboard.keyboard.size, "Should have one row")
             assertEquals(2, keyboard.keyboard[0].size, "Row should have two buttons")
@@ -136,7 +171,7 @@ class QuickExportHandlerTest {
         fun `first button is original export`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createExportKeyboard(recordingId)
+            val keyboard = handler.createExportKeyboard(recordingId, "ru")
             val button = keyboard.keyboard[0][0]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)
@@ -148,7 +183,7 @@ class QuickExportHandlerTest {
         fun `second button is annotated export`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createExportKeyboard(recordingId)
+            val keyboard = handler.createExportKeyboard(recordingId, "ru")
             val button = keyboard.keyboard[0][1]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)
@@ -163,7 +198,7 @@ class QuickExportHandlerTest {
         fun `creates keyboard with single row and single button`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId)
+            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId, "⚙️ Exporting...")
 
             assertEquals(1, keyboard.keyboard.size, "Should have one row")
             assertEquals(1, keyboard.keyboard[0].size, "Row should have one button")
@@ -173,18 +208,18 @@ class QuickExportHandlerTest {
         fun `button has processing text`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId)
+            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId, "⚙️ Exporting...")
             val button = keyboard.keyboard[0][0]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)
-            assertEquals("⚙️ Экспорт...", button.text)
+            assertEquals("⚙️ Exporting...", button.text)
         }
 
         @Test
         fun `button has correct callback data with prefix and recordingId`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId)
+            val keyboard = QuickExportHandler.createProcessingKeyboard(recordingId, "⚙️ Exporting...")
             val button = keyboard.keyboard[0][0]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)
@@ -196,7 +231,7 @@ class QuickExportHandlerTest {
             val recordingId = UUID.randomUUID()
 
             val keyboard =
-                QuickExportHandler.createProcessingKeyboard(recordingId, mode = ExportMode.ANNOTATED)
+                QuickExportHandler.createProcessingKeyboard(recordingId, "⚙️ Exporting...", mode = ExportMode.ANNOTATED)
             val button = keyboard.keyboard[0][0]
 
             assertIs<CallbackDataInlineKeyboardButton>(button)
@@ -209,6 +244,7 @@ class QuickExportHandlerTest {
         private val bot = mockk<TelegramBot>()
         private val videoExportService = mockk<VideoExportService>()
         private val authorizationFilter = mockk<AuthorizationFilter>()
+        private val userService = mockk<TelegramUserService>()
         private val properties =
             TelegramProperties(
                 enabled = true,
@@ -220,6 +256,7 @@ class QuickExportHandlerTest {
 
         init {
             coEvery { authorizationFilter.getRole(any<String>()) } returns UserRole.USER
+            coEvery { userService.getUserLanguage(any()) } returns "ru"
         }
 
         private fun TestScope.createHandler() =
@@ -228,6 +265,8 @@ class QuickExportHandlerTest {
                 videoExportService,
                 authorizationFilter,
                 properties,
+                msg,
+                userService,
                 exportScope = CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
             )
 
@@ -422,8 +461,9 @@ class QuickExportHandlerTest {
 
                 // Verify answer was called with the correct "set username" message
                 val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
+                val expectedText = msg.get("quickexport.error.username", "en")
                 assertTrue(
-                    answerRequests.any { it.text == "Пожалуйста, установите username в настройках Telegram." },
+                    answerRequests.any { it.text == expectedText },
                     "Expected AnswerCallbackQuery with 'set username' text, but got: ${answerRequests.map { it.text }}",
                 )
                 // Verify no export was attempted
@@ -447,11 +487,12 @@ class QuickExportHandlerTest {
                 // Verify no export was attempted
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any(), any()) }
 
-                // Verify answer was called with unauthorized message from properties
+                // Verify answer was called with unauthorized message from msg resolver
+                val expectedText = msg.get("common.error.unauthorized", "en")
                 val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
                 assertTrue(
-                    answerRequests.any { it.text == properties.unauthorizedMessage },
-                    "Expected AnswerCallbackQuery with text '${properties.unauthorizedMessage}', but got: ${answerRequests.map {
+                    answerRequests.any { it.text == expectedText },
+                    "Expected AnswerCallbackQuery with text '$expectedText', but got: ${answerRequests.map {
                         it.text
                     }}",
                 )
@@ -536,16 +577,16 @@ class QuickExportHandlerTest {
                 val editRequests = capturedRequests.filterIsInstance<EditChatMessageReplyMarkup>()
                 assertTrue(editRequests.size >= 2, "Expected at least 2 editMessageReplyMarkup calls, got ${editRequests.size}")
 
-                // First edit: processing keyboard with "⚙️ Экспорт..."
+                // First edit: processing keyboard with localized processing text
                 val processingMarkup = editRequests[0].replyMarkup
                 assertNotNull(processingMarkup, "Processing keyboard must not be null")
                 assertIs<InlineKeyboardMarkup>(processingMarkup)
                 val processingButton = processingMarkup.keyboard[0][0]
                 assertIs<CallbackDataInlineKeyboardButton>(processingButton)
-                assertEquals("⚙️ Экспорт...", processingButton.text)
+                assertEquals(msg.get("quickexport.button.processing", "ru"), processingButton.text)
                 assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", processingButton.callbackData)
 
-                // Last edit: restored export keyboard with "📹 Оригинал"
+                // Last edit: restored export keyboard with localized original button text
                 val restoreMarkup = editRequests.last().replyMarkup
                 assertNotNull(restoreMarkup, "Restored keyboard must not be null")
                 assertIs<InlineKeyboardMarkup>(restoreMarkup)
@@ -603,7 +644,10 @@ class QuickExportHandlerTest {
                 val processingMarkup = editRequests[0].replyMarkup
                 assertNotNull(processingMarkup)
                 assertIs<InlineKeyboardMarkup>(processingMarkup)
-                assertEquals("⚙️ Экспорт...", (processingMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text)
+                assertEquals(
+                    msg.get("quickexport.button.processing", "ru"),
+                    (processingMarkup.keyboard[0][0] as CallbackDataInlineKeyboardButton).text,
+                )
 
                 // Last edit: restored export keyboard
                 val restoreMarkup = editRequests.last().replyMarkup
@@ -659,9 +703,10 @@ class QuickExportHandlerTest {
                 handler.handle(callback)?.join()
 
                 // Verify timeout message was sent
+                val expectedTimeoutMsg = msg.get("quickexport.error.timeout", "ru")
                 val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
                 assertTrue(
-                    sendTextRequests.any { it.text.contains("Экспорт занял слишком много времени") },
+                    sendTextRequests.any { it.text.contains(expectedTimeoutMsg) },
                     "Expected timeout message, but got text requests: ${sendTextRequests.map { it.text }}",
                 )
 
@@ -711,9 +756,10 @@ class QuickExportHandlerTest {
                 }
 
                 // Verify sendVideo timeout message was sent
+                val expectedSendTimeoutMsg = msg.get("quickexport.error.send.timeout", "ru")
                 val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
                 assertTrue(
-                    sendTextRequests.any { it.text.contains("Не удалось отправить видео") },
+                    sendTextRequests.any { it.text.contains(expectedSendTimeoutMsg) },
                     "Expected sendVideo timeout message, but got text requests: ${sendTextRequests.map { it.text }}",
                 )
 
@@ -747,9 +793,10 @@ class QuickExportHandlerTest {
                 handler.handle(callback)?.join()
 
                 // Verify "not found" error message
+                val expectedNotFoundMsg = msg.get("quickexport.error.not.found", "ru")
                 val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
                 assertTrue(
-                    sendTextRequests.any { it.text.contains("Запись не найдена") },
+                    sendTextRequests.any { it.text.contains(expectedNotFoundMsg) },
                     "Expected 'not found' error message, but got: ${sendTextRequests.map { it.text }}",
                 )
             }
@@ -769,9 +816,10 @@ class QuickExportHandlerTest {
                 handler.handle(callback)?.join()
 
                 // Verify "missing files" error message
+                val expectedUnavailableMsg = msg.get("quickexport.error.unavailable", "ru")
                 val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
                 assertTrue(
-                    sendTextRequests.any { it.text.contains("Файлы записи недоступны") },
+                    sendTextRequests.any { it.text.contains(expectedUnavailableMsg) },
                     "Expected 'missing files' error message, but got: ${sendTextRequests.map { it.text }}",
                 )
             }
@@ -791,9 +839,10 @@ class QuickExportHandlerTest {
                 handler.handle(callback)?.join()
 
                 // Verify generic error message
+                val expectedGenericMsg = msg.get("quickexport.error.generic", "ru")
                 val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
                 assertTrue(
-                    sendTextRequests.any { it.text.contains("Ошибка экспорта") },
+                    sendTextRequests.any { it.text.contains(expectedGenericMsg) },
                     "Expected generic error message, but got: ${sendTextRequests.map { it.text }}",
                 )
             }
@@ -825,7 +874,7 @@ class QuickExportHandlerTest {
         fun `handle does not send video or cleanup on generic RuntimeException`() =
             runTest {
                 val handler = createHandler()
-                // given — generic RuntimeException triggers the "Ошибка экспорта" path
+                // given — generic RuntimeException triggers the "error" path
                 val callback = createOwnerCallback()
 
                 // Error path throws before reaching sendVideo, so a uniform relaxed mock is safe here
@@ -840,10 +889,11 @@ class QuickExportHandlerTest {
                 handler.handle(callback)?.join()
 
                 // then — generic error message was sent
+                val expectedGenericMsg = msg.get("quickexport.error.generic", "ru")
                 val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
                 assertTrue(
-                    sendTextRequests.any { it.text.contains("Ошибка экспорта") },
-                    "Expected generic error message containing 'Ошибка экспорта', but got: ${sendTextRequests.map { it.text }}",
+                    sendTextRequests.any { it.text.contains(expectedGenericMsg) },
+                    "Expected generic error message containing '$expectedGenericMsg', but got: ${sendTextRequests.map { it.text }}",
                 )
 
                 // No video was sent — only AnswerCallbackQuery, EditChatMessageReplyMarkup, and SendTextMessage
@@ -875,9 +925,10 @@ class QuickExportHandlerTest {
                 handler.handle(callback)?.join()
 
                 // Verify "not found" error message was sent
+                val expectedNotFoundMsg = msg.get("quickexport.error.not.found", "ru")
                 val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
                 assertTrue(
-                    sendTextRequests.any { it.text.contains("Запись не найдена") },
+                    sendTextRequests.any { it.text.contains(expectedNotFoundMsg) },
                     "Expected 'not found' error message, but got: ${sendTextRequests.map { it.text }}",
                 )
 
@@ -927,9 +978,10 @@ class QuickExportHandlerTest {
                     handler.handle(callback)?.join()
 
                     // Verify second call got "already in progress" answer
+                    val expectedConcurrentMsg = msg.get("quickexport.error.concurrent", "ru")
                     val answerRequests = secondCallRequests.filterIsInstance<AnswerCallbackQuery>()
                     assertTrue(
-                        answerRequests.any { it.text?.contains("уже выполняется") == true },
+                        answerRequests.any { it.text?.contains(expectedConcurrentMsg) == true },
                         "Expected 'already in progress' answer, but got: ${answerRequests.map { it.text }}",
                     )
 

@@ -147,8 +147,33 @@ class TelegramUserServiceImpl(
                         logger.warn { "Invalid olson_code='${user.olsonCode}' for chatId=${user.chatId}, falling back to UTC" }
                         ZoneId.of("UTC")
                     }
-                UserZoneInfo(user.chatId!!, zone)
+                UserZoneInfo(user.chatId!!, zone, user.languageCode)
             }
+
+    @Transactional(readOnly = true)
+    override suspend fun getUserLanguage(chatId: Long): String? {
+        val user = repository.findByChatId(chatId)
+        return user?.languageCode
+    }
+
+    @Transactional
+    override suspend fun updateLanguage(
+        chatId: Long,
+        languageCode: String,
+    ): Boolean {
+        require(languageCode in SUPPORTED_LANGUAGES) { "Unsupported language: $languageCode" }
+        val updated = repository.updateLanguageCode(chatId, languageCode)
+        if (updated == 0L) {
+            logger.warn { "updateLanguage: no rows updated for chatId=$chatId" }
+            return false
+        }
+        logger.info { "Updated language for chatId=$chatId to $languageCode" }
+        return true
+    }
+
+    companion object {
+        val SUPPORTED_LANGUAGES = setOf("ru", "en")
+    }
 
     private fun TelegramUserEntity.toDto(): TelegramUserDto =
         TelegramUserDto(
@@ -161,5 +186,6 @@ class TelegramUserServiceImpl(
             status = UserStatus.valueOf(status!!),
             creationTimestamp = creationTimestamp!!,
             activationTimestamp = activationTimestamp,
+            languageCode = languageCode,
         )
 }

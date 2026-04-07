@@ -21,7 +21,7 @@ class FrameAnalyzerConsumer(
     private val detectionPostProcessor: DetectionPostProcessor,
 ) {
     /**
-     * Основной цикл консьюмера. Получает задачи из канала и обрабатывает их.
+     * Main consumer loop. Receives tasks from the channel and processes them.
      */
     suspend fun consume(
         channel: ReceiveChannel<FrameTask>,
@@ -61,7 +61,7 @@ class FrameAnalyzerConsumer(
     }
 
     /**
-     * Обрабатывает кадр и возвращает флаг необходимости финализации.
+     * Processes a frame and returns whether finalization is needed.
      */
     private suspend fun processFrame(
         task: FrameTask,
@@ -69,7 +69,7 @@ class FrameAnalyzerConsumer(
     ): Boolean {
         logger.debug { "Consumer #$consumerId processing frame ${task.frameIndex}" }
 
-        // Выполняем детекцию (retry встроен)
+        // Perform detection (retry is built-in)
         val initialResponse = detectService.detectWithRetry(task.frameBytes)
 
         logger.debug {
@@ -88,7 +88,7 @@ class FrameAnalyzerConsumer(
             "Consumer #$consumerId: Detected ${finalResponse.detections.size} objects (final)"
         }
 
-        // Отмечаем успешную обработку
+        // Mark as successfully processed
         return recordingTracker.markCompleted(task.recordId, task.frameIndex, finalResponse)
     }
 
