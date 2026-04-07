@@ -19,7 +19,7 @@ class VersionCommandHandler(
     private val gitProperties: ObjectProvider<GitProperties>,
 ) : CommandHandler {
     override val command: String = "version"
-    override val description: String = "Версия приложения"
+    override val description: String = "Version"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 5
 
