@@ -13,7 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.helper.RetryHelper
-import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 
 private val logger = KotlinLogging.logger {}
 
@@ -22,7 +22,7 @@ private val logger = KotlinLogging.logger {}
 class TelegramNotificationSender(
     private val bot: TelegramBot,
     private val quickExportHandler: QuickExportHandler,
-    private val userService: TelegramUserService,
+    private val msg: MessageResolver,
 ) {
     /**
      * Sends notification task to Telegram with infinite retry on failure.
@@ -34,7 +34,7 @@ class TelegramNotificationSender(
         val chatIdObj = ChatId(RawChatId(task.chatId))
         val message = task.message.toCaption(MAX_CAPTION_LENGTH)
         val frames = task.visualizedFrames
-        val lang = userService.getUserLanguage(task.chatId)
+        val lang = task.language
         val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
 
         when {
@@ -80,7 +80,7 @@ class TelegramNotificationSender(
                 RetryHelper.retryIndefinitely("Send export button", task.chatId) {
                     bot.sendTextMessage(
                         chatId = chatIdObj,
-                        text = EXPORT_PROMPT_TEXT,
+                        text = msg.get("notification.recording.export.prompt", lang),
                         replyMarkup = exportKeyboard,
                     )
                 }
@@ -91,7 +91,6 @@ class TelegramNotificationSender(
     companion object {
         private const val MAX_MEDIA_GROUP_SIZE = 10
         private const val MAX_CAPTION_LENGTH = 1024
-        private const val EXPORT_PROMPT_TEXT = "👆 Нажмите для быстрого экспорта видео"
     }
 
     private fun String.toCaption(maxLength: Int): String {

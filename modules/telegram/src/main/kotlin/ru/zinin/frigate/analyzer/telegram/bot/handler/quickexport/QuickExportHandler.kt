@@ -90,7 +90,8 @@ class QuickExportHandler(
 
         // Check authorization
         if (authorizationFilter.getRole(username) == null) {
-            bot.answer(callback, properties.unauthorizedMessage)
+            val lang = StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
+            bot.answer(callback, msg.get("common.error.unauthorized", lang))
             return null
         }
 

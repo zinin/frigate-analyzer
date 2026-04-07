@@ -11,5 +11,6 @@ data class NotificationTask(
     val visualizedFrames: List<VisualizedFrameData>,
     /** ID of the recording, used for callback data in inline export buttons. */
     val recordingId: UUID,
+    val language: String = "ru",
     val createdAt: Instant = Instant.now(),
 )
