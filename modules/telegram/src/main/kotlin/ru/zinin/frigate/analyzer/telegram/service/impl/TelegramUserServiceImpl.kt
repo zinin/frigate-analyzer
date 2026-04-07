@@ -150,6 +150,23 @@ class TelegramUserServiceImpl(
                 UserZoneInfo(user.chatId!!, zone, user.languageCode)
             }
 
+    @Transactional(readOnly = true)
+    override suspend fun getUserLanguage(chatId: Long): String {
+        val user = repository.findByChatId(chatId)
+        return user?.languageCode ?: "ru"
+    }
+
+    @Transactional
+    override suspend fun updateLanguage(chatId: Long, languageCode: String): Boolean {
+        val updated = repository.updateLanguageCode(chatId, languageCode)
+        if (updated == 0L) {
+            logger.warn { "updateLanguage: no rows updated for chatId=$chatId" }
+            return false
+        }
+        logger.info { "Updated language for chatId=$chatId to $languageCode" }
+        return true
+    }
+
     private fun TelegramUserEntity.toDto(): TelegramUserDto =
         TelegramUserDto(
             id = id!!,
