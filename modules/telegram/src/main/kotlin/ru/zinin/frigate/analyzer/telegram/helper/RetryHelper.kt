@@ -29,8 +29,8 @@ object RetryHelper {
     }
 
     private fun calculateBackoff(attempt: Int): Long {
-        val baseDelay = 30_000L // 30 секунд
-        val maxDelay = 300_000L // 5 минут
+        val baseDelay = 30_000L // 30 seconds
+        val maxDelay = 300_000L // 5 minutes
         val delay = baseDelay * (1L shl minOf(attempt - 1, 4))
         return minOf(delay, maxDelay)
     }

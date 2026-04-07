@@ -48,11 +48,11 @@ class FrameAnalysisPipeline(
     private suspend fun runPipeline() {
         val frameConfig = pipelineProperties.frame
 
-        // Создаём канал с ограниченным буфером
+        // Create a channel with a bounded buffer
         val channel = Channel<FrameTask>(frameConfig.channelBufferSize)
         frameChannel = channel
 
-        // Определяем количество консьюмеров на основе ёмкости серверов для кадров
+        // Determine the number of consumers based on server capacity for frames
         val consumerCount =
             detectServerLoadBalancer
                 .getTotalCapacity(RequestType.FRAME)
@@ -62,7 +62,7 @@ class FrameAnalysisPipeline(
             "Pipeline configuration: buffer=${frameConfig.channelBufferSize}, consumers=$consumerCount"
         }
 
-        // Запускаем консьюмеры
+        // Start consumers
         val consumerJobs =
             (1..consumerCount).map { id ->
                 scope.launch {
@@ -71,7 +71,7 @@ class FrameAnalysisPipeline(
             }
         logger.info { "Started $consumerCount consumer(s)" }
 
-        // Запускаем продюсер
+        // Start producers
         val producerJobs =
             (1..frameConfig.producersCount).map { id ->
                 scope.launch {
@@ -82,10 +82,10 @@ class FrameAnalysisPipeline(
             }
         logger.info { "Started producers" }
 
-        // Ждём завершения (при нормальной работе не завершится)
+        // Wait for completion (will not complete under normal operation)
         producerJobs.joinAll()
 
-        // Закрываем канал и ждём завершения консьюмеров
+        // Close the channel and wait for consumers to finish
         channel.close()
         consumerJobs.joinAll()
 
@@ -96,10 +96,10 @@ class FrameAnalysisPipeline(
     fun stop() {
         logger.info { "Stopping analysis pipeline..." }
 
-        // Закрываем канал для graceful shutdown
+        // Close the channel for graceful shutdown
         frameChannel?.close()
 
-        // Отменяем все корутины
+        // Cancel all coroutines
         pipelineJob?.cancel()
         scope.cancel()
 

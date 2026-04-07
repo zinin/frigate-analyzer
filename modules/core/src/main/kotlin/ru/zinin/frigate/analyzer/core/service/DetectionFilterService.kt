@@ -4,9 +4,9 @@ import ru.zinin.frigate.analyzer.model.response.DetectResponse
 
 interface DetectionFilterService {
     /**
-     * Фильтрует детекции, оставляя только разрешенные классы.
-     * Если после фильтрации не осталось объектов, вернет response с пустым списком детекций.
-     * @return отфильтрованный response
+     * Filters detections, keeping only allowed classes.
+     * If no objects remain after filtering, returns a response with an empty detections list.
+     * @return filtered response
      */
     fun filterDetections(response: DetectResponse): DetectResponse
 }

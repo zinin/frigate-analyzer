@@ -1,7 +1,7 @@
 package ru.zinin.frigate.analyzer.model.exception
 
 /**
- * Исключение при превышении таймаута детекции
+ * Exception thrown when a detection timeout is exceeded
  */
 class DetectTimeoutException(
     message: String,

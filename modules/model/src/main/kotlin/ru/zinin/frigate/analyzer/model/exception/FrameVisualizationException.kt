@@ -1,7 +1,7 @@
 package ru.zinin.frigate.analyzer.model.exception
 
 /**
- * Исключение при ошибке визуализации кадров
+ * Exception thrown when frame visualization fails
  */
 class FrameVisualizationException(
     message: String,

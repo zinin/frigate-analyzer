@@ -46,11 +46,11 @@ class DetectService(
     private val objectMapper: ObjectMapper,
 ) {
     /**
-     * Выполняет детекцию с автоматическим retry при любых ошибках.
-     * Retry продолжается до успеха или до истечения таймаута.
+     * Performs detection with automatic retry on any errors.
+     * Retries continue until success or timeout expiration.
      *
-     * @param timeoutMs таймаут в миллисекундах (для тестирования)
-     * @throws DetectTimeoutException если превышен таймаут ожидания
+     * @param timeoutMs timeout in milliseconds (for testing)
+     * @throws DetectTimeoutException if the wait timeout is exceeded
      */
     suspend fun detectWithRetry(
         bytes: ByteArray,
@@ -64,10 +64,10 @@ class DetectService(
         }
 
     /**
-     * Выполняет одну попытку детекции на доступном сервере.
+     * Performs a single detection attempt on an available server.
      *
-     * @throws DetectServerUnavailableException если нет доступных серверов
-     * @throws Exception при любой ошибке от сервера
+     * @throws DetectServerUnavailableException if no servers are available
+     * @throws Exception on any server error
      */
     private suspend fun detect(
         bytes: ByteArray,
@@ -112,16 +112,16 @@ class DetectService(
     }
 
     /**
-     * Извлекает кадры из видео с автоматическим retry при любых ошибках.
-     * Retry продолжается до успеха или до истечения таймаута.
+     * Extracts frames from video with automatic retry on any errors.
+     * Retries continue until success or timeout expiration.
      *
-     * @param bytes содержимое видеофайла
-     * @param filename имя файла для Content-Disposition
-     * @param sceneThreshold порог чувствительности смены сцены (меньше = больше кадров)
-     * @param minInterval минимальный интервал между кадрами в секундах
-     * @param maxFrames максимальное количество кадров
-     * @param quality качество JPEG
-     * @throws DetectTimeoutException если превышен таймаут ожидания
+     * @param bytes video file content
+     * @param filePath file path for Content-Disposition
+     * @param sceneThreshold scene change sensitivity threshold (lower = more frames)
+     * @param minInterval minimum interval between frames in seconds
+     * @param maxFrames maximum number of frames
+     * @param quality JPEG quality
+     * @throws DetectTimeoutException if the wait timeout is exceeded
      */
     suspend fun extractFramesRemoteWithRetry(
         bytes: ByteArray,
@@ -137,10 +137,10 @@ class DetectService(
         }
 
     /**
-     * Выполняет одну попытку извлечения кадров на доступном сервере.
+     * Performs a single frame extraction attempt on an available server.
      *
-     * @throws DetectServerUnavailableException если нет доступных серверов
-     * @throws Exception при любой ошибке от сервера
+     * @throws DetectServerUnavailableException if no servers are available
+     * @throws Exception on any server error
      */
     private suspend fun extractFramesRemote(
         bytes: ByteArray,
@@ -206,19 +206,19 @@ class DetectService(
     }
 
     /**
-     * Выполняет детекцию с визуализацией и автоматическим retry при любых ошибках.
-     * Retry продолжается до успеха или до истечения таймаута.
+     * Performs detection with visualization and automatic retry on any errors.
+     * Retries continue until success or timeout expiration.
      *
-     * @param bytes содержимое изображения
-     * @param conf порог уверенности (0.0 - 1.0)
-     * @param imgSize размер изображения для инференса
-     * @param maxDet максимальное количество детекций
-     * @param lineWidth ширина линии bounding box
-     * @param showLabels показывать ли классы
-     * @param showConf показывать ли confidence
-     * @param quality качество JPEG (1-100)
-     * @return ByteArray с JPEG изображением
-     * @throws DetectTimeoutException если превышен таймаут ожидания
+     * @param bytes image content
+     * @param conf confidence threshold (0.0 - 1.0)
+     * @param imgSize image size for inference
+     * @param maxDet maximum number of detections
+     * @param lineWidth bounding box line width
+     * @param showLabels whether to show class labels
+     * @param showConf whether to show confidence values
+     * @param quality JPEG quality (1-100)
+     * @return ByteArray with JPEG image
+     * @throws DetectTimeoutException if the wait timeout is exceeded
      */
     suspend fun detectVisualizeWithRetry(
         bytes: ByteArray,
@@ -236,11 +236,11 @@ class DetectService(
         }
 
     /**
-     * Выполняет одну попытку детекции с визуализацией на доступном сервере.
+     * Performs a single detection with visualization attempt on an available server.
      *
-     * @throws DetectServerUnavailableException если нет доступных серверов
-     * @throws Exception при любой ошибке от сервера
-     * @return ByteArray с JPEG изображением
+     * @throws DetectServerUnavailableException if no servers are available
+     * @throws Exception on any server error
+     * @return ByteArray with JPEG image
      */
     private suspend fun detectVisualize(
         bytes: ByteArray,
@@ -294,8 +294,8 @@ class DetectService(
     }
 
     /**
-     * Отправляет видео на аннотацию на конкретный сервер.
-     * НЕ управляет слотами — caller отвечает за acquire/release.
+     * Submits video for annotation to a specific server.
+     * Does NOT manage slots — the caller is responsible for acquire/release.
      */
     suspend fun submitVideoVisualize(
         acquired: AcquiredServer,
@@ -346,8 +346,8 @@ class DetectService(
     }
 
     /**
-     * Опрашивает статус job на конкретном сервере.
-     * Не использует load balancer — обращается напрямую к серверу, на котором запущен job.
+     * Polls the job status on a specific server.
+     * Does not use load balancer — communicates directly with the server running the job.
      */
     suspend fun getJobStatus(
         acquired: AcquiredServer,
@@ -367,11 +367,11 @@ class DetectService(
             .awaitSingle()
 
     /**
-     * Скачивает результат аннотированного видео с конкретного сервера.
-     * Использует streaming запись во временный файл для избежания OOM.
-     * Не использует load balancer — обращается напрямую к серверу, на котором завершился job.
+     * Downloads the annotated video result from a specific server.
+     * Uses streaming write to a temporary file to avoid OOM.
+     * Does not use load balancer — communicates directly with the server where the job completed.
      *
-     * @return Path к временному файлу с видео. Caller отвечает за удаление.
+     * @return Path to the temporary video file. Caller is responsible for deletion.
      */
     suspend fun downloadJobResult(
         acquired: AcquiredServer,
@@ -406,13 +406,13 @@ class DetectService(
     }
 
     /**
-     * Универсальный метод retry с таймаутом.
-     * Использует корутинный withTimeout для контроля времени выполнения.
+     * Generic retry method with timeout.
+     * Uses coroutine withTimeout to control execution time.
      *
-     * @param timeoutMs таймаут в миллисекундах
-     * @param operationName название операции для логирования
-     * @param block операция для выполнения
-     * @throws DetectTimeoutException если превышен таймаут
+     * @param timeoutMs timeout in milliseconds
+     * @param operationName operation name for logging
+     * @param block operation to execute
+     * @throws DetectTimeoutException if the timeout is exceeded
      */
     private suspend fun <T> retryWithTimeout(
         timeoutMs: Long,

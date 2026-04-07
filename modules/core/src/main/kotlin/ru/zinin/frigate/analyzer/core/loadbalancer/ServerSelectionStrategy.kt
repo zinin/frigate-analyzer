@@ -5,7 +5,7 @@ import org.springframework.stereotype.Component
 @Component
 class ServerSelectionStrategy {
     /**
-     * Выбирает оптимальный сервер на основе приоритета и загрузки
+     * Selects the optimal server based on priority and load
      */
     fun selectServer(
         servers: Collection<ServerState>,

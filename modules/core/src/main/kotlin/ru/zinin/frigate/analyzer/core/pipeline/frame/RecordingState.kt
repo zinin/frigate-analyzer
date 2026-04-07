@@ -7,34 +7,34 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Состояние обработки записи.
- * Отслеживает прогресс через кадры.
+ * Recording processing state.
+ * Tracks progress through frames.
  */
 class RecordingState(
     val recordId: UUID,
     framesList: List<FrameData>,
 ) {
-    /** Все кадры записи */
+    /** All frames of the recording */
     private val frames =
         ConcurrentHashMap<Int, FrameData>().apply {
             framesList.forEach { put(it.frameIndex, it) }
         }
 
-    /** Индексы кадров, ожидающих обработки */
+    /** Indices of frames awaiting processing */
     private val pendingIndices =
         ConcurrentHashMap.newKeySet<Int>().apply {
             addAll(framesList.map { it.frameIndex })
         }
 
-    /** Флаг финализации — гарантирует однократное выполнение */
+    /** Finalization flag — ensures single execution */
     private val finalized = AtomicBoolean(false)
 
-    /** Общее количество кадров */
+    /** Total number of frames */
     val totalFrames: Int = framesList.size
 
     /**
-     * Отмечает кадр как успешно обработанный.
-     * @return true если это был последний кадр и текущий поток должен финализировать запись
+     * Marks a frame as successfully processed.
+     * @return true if this was the last frame and the current thread should finalize the recording
      */
     fun markCompleted(
         frameIndex: Int,
@@ -49,8 +49,8 @@ class RecordingState(
     }
 
     /**
-     * Отмечает кадр как неудачно обработанный (без результата).
-     * @return true если это был последний кадр и текущий поток должен финализировать запись
+     * Marks a frame as failed (without result).
+     * @return true if this was the last frame and the current thread should finalize the recording
      */
     fun markFailed(frameIndex: Int): Boolean {
         pendingIndices.remove(frameIndex)
@@ -58,32 +58,32 @@ class RecordingState(
     }
 
     /**
-     * Проверяет, ожидает ли кадр обработки
+     * Checks whether a frame is pending processing
      */
     fun isPending(frameIndex: Int): Boolean = pendingIndices.contains(frameIndex)
 
     /**
-     * Получить все успешно обработанные кадры (с detectResponse)
+     * Returns all successfully processed frames (with detectResponse)
      */
     fun getFrames(): List<FrameData> = frames.values.filter { it.detectResponse != null }
 
     /**
-     * Количество успешно обработанных кадров
+     * Number of successfully processed frames
      */
     fun getCompletedCount(): Int = frames.values.count { it.detectResponse != null }
 
     /**
-     * Количество необработанных кадров
+     * Number of pending frames
      */
     fun getPendingCount(): Int = pendingIndices.size
 
     /**
-     * Количество неудачных (totalFrames - completed - pending)
+     * Number of failed frames (totalFrames - completed - pending)
      */
     fun getFailedCount(): Int = totalFrames - getCompletedCount() - pendingIndices.size
 
     /**
-     * Проверяет завершение и атомарно захватывает право на финализацию.
+     * Checks for completion and atomically acquires the right to finalize.
      */
     private fun tryAcquireFinalization(): Boolean {
         if (pendingIndices.isEmpty()) {
