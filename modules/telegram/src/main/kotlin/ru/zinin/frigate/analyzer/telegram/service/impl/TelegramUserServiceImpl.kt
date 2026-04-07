@@ -147,7 +147,7 @@ class TelegramUserServiceImpl(
                         logger.warn { "Invalid olson_code='${user.olsonCode}' for chatId=${user.chatId}, falling back to UTC" }
                         ZoneId.of("UTC")
                     }
-                UserZoneInfo(user.chatId!!, zone)
+                UserZoneInfo(user.chatId!!, zone, user.languageCode)
             }
 
     private fun TelegramUserEntity.toDto(): TelegramUserDto =
@@ -161,5 +161,6 @@ class TelegramUserServiceImpl(
             status = UserStatus.valueOf(status!!),
             creationTimestamp = creationTimestamp!!,
             activationTimestamp = activationTimestamp,
+            languageCode = languageCode,
         )
 }
