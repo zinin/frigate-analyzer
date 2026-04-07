@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-5.0.xsd">
+    <changeSet author="zinin" id="20260407-01-add-language-code-to-telegram-users">
+        <comment>Add language_code field to telegram_users for i18n support</comment>
+        <sql>
+            ALTER TABLE telegram_users
+              ADD COLUMN language_code VARCHAR(64) NOT NULL DEFAULT 'ru';
+        </sql>
+    </changeSet>
+</databaseChangeLog>
