@@ -65,6 +65,7 @@ Migrations location: `docker/liquibase/migration/`
 | status | VARCHAR(20) | INVITED or ACTIVE |
 | creation_timestamp | TIMESTAMPTZ | Creation time |
 | activation_timestamp | TIMESTAMPTZ | Activation time |
+| language_code | VARCHAR(10) | User language code (e.g. "ru", "en") |
 | olson_code | VARCHAR(50) | User timezone (Olson format) |
 
 ## Patterns

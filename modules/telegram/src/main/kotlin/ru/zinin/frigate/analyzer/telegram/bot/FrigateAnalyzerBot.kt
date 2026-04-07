@@ -40,6 +40,7 @@ import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import ru.zinin.frigate.analyzer.telegram.service.impl.TelegramUserServiceImpl
 
 private val logger = KotlinLogging.logger {}
 
@@ -109,6 +110,7 @@ class FrigateAnalyzerBot(
                         }
 
                         val foundUser = userService.findActiveByUsername(username)
+                            ?: if (username == properties.owner) userService.findByUsername(username) else null
                         val resolvedRole =
                             when {
                                 username == properties.owner -> UserRole.OWNER
@@ -194,7 +196,7 @@ class FrigateAnalyzerBot(
 
     private suspend fun registerDefaultCommands() {
         try {
-            for (langCode in SUPPORTED_LANGUAGES) {
+            for (langCode in TelegramUserServiceImpl.SUPPORTED_LANGUAGES) {
                 val commands =
                     sortedHandlers
                         .filterNot { it.ownerOnly }
@@ -205,7 +207,7 @@ class FrigateAnalyzerBot(
             val defaultCommands =
                 sortedHandlers
                     .filterNot { it.ownerOnly }
-                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
+                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "ru")) }
             bot.setMyCommands(defaultCommands, scope = BotCommandScopeDefault)
             logger.info { "Default bot commands registered for all languages" }
         } catch (e: Exception) {
@@ -216,7 +218,7 @@ class FrigateAnalyzerBot(
     private suspend fun registerOwnerCommands(chatId: Long) {
         try {
             val scope = BotCommandScopeChat(ChatId(RawChatId(chatId)))
-            for (langCode in SUPPORTED_LANGUAGES) {
+            for (langCode in TelegramUserServiceImpl.SUPPORTED_LANGUAGES) {
                 val commands =
                     sortedHandlers
                         .map { BotCommand(it.command, msg.get("command.${it.command}.description", langCode)) }
@@ -225,7 +227,7 @@ class FrigateAnalyzerBot(
             // Default fallback for users with other languages
             val defaultCommands =
                 sortedHandlers
-                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
+                    .map { BotCommand(it.command, msg.get("command.${it.command}.description", "ru")) }
             bot.setMyCommands(defaultCommands, scope = scope)
             logger.info { "Owner bot commands registered for chat $chatId" }
         } catch (e: Exception) {
@@ -238,9 +240,5 @@ class FrigateAnalyzerBot(
         logger.info { "Stopping Telegram bot..." }
         botScope.cancel()
         logger.info { "Telegram bot stopped" }
-    }
-
-    companion object {
-        private val SUPPORTED_LANGUAGES = listOf("ru", "en")
     }
 }

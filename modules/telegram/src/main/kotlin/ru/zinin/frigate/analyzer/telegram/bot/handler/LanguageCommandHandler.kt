@@ -20,6 +20,7 @@ import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import ru.zinin.frigate.analyzer.telegram.service.impl.TelegramUserServiceImpl
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
@@ -66,6 +67,9 @@ class LanguageCommandHandler(
                 answer(callback)
 
                 val newLang = callback.data.removePrefix("lang:")
+                if (newLang !in TelegramUserServiceImpl.SUPPORTED_LANGUAGES) {
+                    return@withTimeoutOrNull
+                }
                 if (!userService.updateLanguage(chatIdLong, newLang)) {
                     sendTextMessage(chatId, msg.get("common.error.generic", lang))
                     return@withTimeoutOrNull

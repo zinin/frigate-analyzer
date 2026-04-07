@@ -55,19 +55,22 @@ class StartCommandHandler(
             if (existing == null) {
                 userService.inviteUser(username)
             }
-            if (existing?.status != UserStatus.ACTIVE) {
-                val detectedLang = detectLanguage(telegramLang)
-                userService.activateUser(
-                    username = username,
-                    chatId = chatId,
-                    userId = userId,
-                    firstName = privateMessage.user.firstName,
-                    lastName = privateMessage.user.lastName,
-                )
-                userService.updateLanguage(chatId, detectedLang)
-            }
+            val lang =
+                if (existing?.status != UserStatus.ACTIVE) {
+                    val detectedLang = detectLanguage(telegramLang)
+                    userService.activateUser(
+                        username = username,
+                        chatId = chatId,
+                        userId = userId,
+                        firstName = privateMessage.user.firstName,
+                        lastName = privateMessage.user.lastName,
+                    )
+                    userService.updateLanguage(chatId, detectedLang)
+                    detectedLang
+                } else {
+                    userService.getUserLanguage(chatId)
+                }
 
-            val lang = userService.getUserLanguage(chatId)
             reply(message, msg.get("command.start.welcome.owner", lang))
             eventPublisher.publishEvent(OwnerActivatedEvent(chatId))
             return
@@ -98,8 +101,7 @@ class StartCommandHandler(
         if (activated != null) {
             val detectedLang = detectLanguage(telegramLang)
             userService.updateLanguage(chatId, detectedLang)
-            val lang = userService.getUserLanguage(chatId)
-            reply(message, msg.get("command.start.subscribed", lang))
+            reply(message, msg.get("command.start.subscribed", detectedLang))
         } else {
             val lang = detectLanguage(telegramLang)
             reply(message, msg.get("command.start.error.activation", lang))
