@@ -12,6 +12,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
@@ -26,16 +27,18 @@ class ExportExecutor(
     private val bot: TelegramBot,
     private val videoExportService: VideoExportService,
     private val properties: TelegramProperties,
+    private val msg: MessageResolver,
 ) {
     @Suppress("LongMethod")
     suspend fun execute(
         chatId: IdChatIdentifier,
         userZone: ZoneId,
         dialogResult: ExportDialogOutcome.Success,
+        lang: String,
     ) {
         val (startInstant, endInstant, camId, mode) = dialogResult
 
-        val statusMessage = bot.sendTextMessage(chatId, renderProgress(Stage.PREPARING, mode = mode))
+        val statusMessage = bot.sendTextMessage(chatId, renderProgress(Stage.PREPARING, mode = mode, msg = msg, lang = lang))
 
         var lastRenderedStage: Stage? = Stage.PREPARING
         var lastRenderedPercent: Int? = null
@@ -66,7 +69,7 @@ class ExportExecutor(
                 try {
                     bot.editMessageText(
                         statusMessage,
-                        renderProgress(progress.stage, progress.percent, mode, hadCompressing),
+                        renderProgress(progress.stage, progress.percent, mode, hadCompressing, msg, lang),
                     )
                 } catch (e: CancellationException) {
                     throw e
@@ -83,13 +86,13 @@ class ExportExecutor(
                 withTimeoutOrNull(processingTimeout) {
                     videoExportService.exportVideo(startInstant, endInstant, camId, mode, onProgress)
                 } ?: run {
-                    bot.sendTextMessage(chatId, "Обработка видео заняла слишком много времени. Попробуйте меньший диапазон.")
+                    bot.sendTextMessage(chatId, msg.get("export.error.processing.timeout", lang))
                     return
                 }
 
             try {
                 try {
-                    bot.editMessageText(statusMessage, renderProgress(Stage.SENDING, mode = mode, compressing = hadCompressing))
+                    bot.editMessageText(statusMessage, renderProgress(Stage.SENDING, mode = mode, compressing = hadCompressing, msg = msg, lang = lang))
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update export progress message" }
                 }
@@ -113,15 +116,13 @@ class ExportExecutor(
                     }
                     bot.sendTextMessage(
                         chatId,
-                        "Не удалось отправить видео: превышено время ожидания " +
-                            "(${properties.sendVideoTimeout.toSeconds()} сек). " +
-                            "Возможно, проблемы с сетью. Попробуйте позже.",
+                        msg.get("export.error.send.timeout", lang, properties.sendVideoTimeout.toSeconds()),
                     )
                     return
                 }
 
                 try {
-                    bot.editMessageText(statusMessage, renderProgress(Stage.DONE, mode = mode, compressing = hadCompressing))
+                    bot.editMessageText(statusMessage, renderProgress(Stage.DONE, mode = mode, compressing = hadCompressing, msg = msg, lang = lang))
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update export progress message" }
                 }
@@ -138,9 +139,9 @@ class ExportExecutor(
             logger.error(e) { "Video export failed" }
             val errorText =
                 if (mode == ExportMode.ANNOTATED) {
-                    "Ошибка экспорта видео с объектами. Попробуйте обычный режим или другие параметры."
+                    msg.get("export.error.annotated", lang)
                 } else {
-                    "Ошибка экспорта видео. Попробуйте меньший диапазон или другую камеру."
+                    msg.get("export.error.original", lang)
                 }
             bot.sendTextMessage(chatId, errorText)
         }

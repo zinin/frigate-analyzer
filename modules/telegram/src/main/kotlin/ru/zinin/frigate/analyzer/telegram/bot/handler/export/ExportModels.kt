@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.telegram.bot.handler.export
 
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress.Stage
 import java.time.Instant
@@ -27,15 +28,17 @@ internal fun renderProgress(
     percent: Int? = null,
     mode: ExportMode = ExportMode.ORIGINAL,
     compressing: Boolean = false,
+    msg: MessageResolver,
+    lang: String,
 ): String {
     val stages =
         buildList {
-            add(Stage.PREPARING to "Подготовка")
-            add(Stage.MERGING to "Склейка видео")
-            if (compressing) add(Stage.COMPRESSING to "Сжатие видео")
-            if (mode == ExportMode.ANNOTATED) add(Stage.ANNOTATING to "Аннотация видео")
-            add(Stage.SENDING to "Отправка")
-            add(Stage.DONE to "Готово")
+            add(Stage.PREPARING to msg.get("export.progress.preparing", lang))
+            add(Stage.MERGING to msg.get("export.progress.merging", lang))
+            if (compressing) add(Stage.COMPRESSING to msg.get("export.progress.compressing", lang))
+            if (mode == ExportMode.ANNOTATED) add(Stage.ANNOTATING to msg.get("export.progress.annotating", lang))
+            add(Stage.SENDING to msg.get("export.progress.sending", lang))
+            add(Stage.DONE to msg.get("export.progress.done", lang))
         }
 
     val currentIndex = stages.indexOfFirst { it.first == stage }
