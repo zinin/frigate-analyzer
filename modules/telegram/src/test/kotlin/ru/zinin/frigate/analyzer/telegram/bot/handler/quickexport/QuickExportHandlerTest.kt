@@ -33,6 +33,7 @@ import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
@@ -821,6 +822,28 @@ class QuickExportHandlerTest {
                 assertTrue(
                     sendTextRequests.any { it.text.contains(expectedUnavailableMsg) },
                     "Expected 'missing files' error message, but got: ${sendTextRequests.map { it.text }}",
+                )
+            }
+
+        @Test
+        fun `handle sends annotation timeout message for DetectTimeoutException`() =
+            runTest {
+                val handler = createHandler()
+                val callback = createMessageCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any())
+                } throws DetectTimeoutException("Video annotation timed out after 2700000ms")
+
+                handler.handle(callback)?.join()
+
+                val expectedTimeoutMsg = msg.get("quickexport.error.annotation.timeout", "ru")
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains(expectedTimeoutMsg) },
+                    "Expected annotation timeout message, but got: ${sendTextRequests.map { it.text }}",
                 )
             }
 

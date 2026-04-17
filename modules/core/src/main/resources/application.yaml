@@ -71,7 +71,9 @@ application:
       show-conf: ${DETECT_SHOW_CONF:true}
       quality: ${DETECT_VISUALIZE_QUALITY:90}
     video-visualize:
-      timeout: ${DETECT_VIDEO_VISUALIZE_TIMEOUT:15m}
+      # Must stay below 50m (Telegram QuickExport/Export annotated outer timeouts) or the
+      # dedicated annotation-timeout message is replaced by a generic one.
+      timeout: ${DETECT_VIDEO_VISUALIZE_TIMEOUT:45m}
       poll-interval: ${DETECT_VIDEO_VISUALIZE_POLL_INTERVAL:3s}
       max-det: ${DETECT_VIDEO_VISUALIZE_MAX_DET:100}
       detect-every: ${DETECT_VIDEO_VISUALIZE_DETECT_EVERY:1}

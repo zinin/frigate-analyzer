@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
@@ -180,6 +181,10 @@ class QuickExportHandler(
                     }
 
                 if (videoPath == null) {
+                    logger.warn {
+                        "Quick export outer timeout fired (recordingId=$recordingId, mode=$mode, timeoutMs=$timeout). " +
+                            "Inner annotation timeout should normally fire first — check margin."
+                    }
                     bot.sendTextMessage(chatId, msg.get("quickexport.error.timeout", lang))
                     restoreButton(message, recordingId, lang)
                     return@launch
@@ -229,6 +234,7 @@ class QuickExportHandler(
                     when (e) {
                         is IllegalArgumentException -> msg.get("quickexport.error.not.found", lang)
                         is IllegalStateException -> msg.get("quickexport.error.unavailable", lang)
+                        is DetectTimeoutException -> msg.get("quickexport.error.annotation.timeout", lang)
                         else -> msg.get("quickexport.error.generic", lang)
                     }
                 bot.sendTextMessage(chatId, errorMsg)
@@ -314,7 +320,10 @@ class QuickExportHandler(
         const val CALLBACK_PREFIX = "qe:"
         const val CALLBACK_PREFIX_ANNOTATED = "qea:"
         private const val QUICK_EXPORT_ORIGINAL_TIMEOUT_MS = 300_000L // 5 minutes
-        private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 1_200_000L // 20 minutes
+
+        // Must exceed application.detect.video-visualize.timeout (default 45m) so the inner
+        // annotation timeout surfaces DetectTimeoutException instead of being masked by this outer one.
+        private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 3_000_000L // 50 minutes
 
         internal fun parseRecordingId(callbackData: String): UUID? {
             val recordingIdStr =

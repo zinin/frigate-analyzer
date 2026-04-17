@@ -79,7 +79,8 @@ Inline button on notifications for instant video export.
    - Both buttons replaced with a single progress button (e.g. "⚙️ Склейка видео...", "⚙️ Аннотация 45%...")
    - Calls `VideoExportService.exportByRecordingId(recordingId, mode=ORIGINAL|ANNOTATED)`
    - Exports ±1 min from recordTimestamp (2 min total)
-   - Timeouts: 5 min (original), 20 min (annotated)
+   - Timeouts: outer 5 min (original), outer 50 min (annotated); inner annotation timeout `DETECT_VIDEO_VISUALIZE_TIMEOUT` defaults to 45 min
+   - On inner annotation timeout a dedicated message `quickexport.error.annotation.timeout` is shown (not the generic one)
    - Video is sent to the chat
    - Two buttons restored
 
