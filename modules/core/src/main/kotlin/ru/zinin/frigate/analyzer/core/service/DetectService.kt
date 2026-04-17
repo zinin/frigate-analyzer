@@ -403,10 +403,11 @@ class DetectService(
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(tempFile) }
             throw e
         } catch (e: Exception) {
-            // `deleteIfExists` — suspend. Если parent cancelled в момент попадания сюда (например,
-            // shutdown или user-cancel пришёл ровно после 500 от vision server), suspend-вызов
-            // мгновенно бросит CancellationException без реальной работы и перезапишет исходное
-            // исключение. NonCancellable превращает cleanup в непрерываемый блок.
+            // `deleteIfExists` is `suspend`. If the parent was cancelled by the time we land here
+            // (e.g., shutdown or a user-cancel arriving right after a 500 from the vision server),
+            // a plain suspend call would immediately throw a fresh CancellationException without
+            // doing real work and would overwrite the original exception. `NonCancellable` makes
+            // the cleanup an uninterruptible block so the file is actually deleted.
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(tempFile) }
             throw e
         }
