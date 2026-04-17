@@ -6,6 +6,7 @@ import dev.inmo.tgbotapi.extensions.api.edit.reply_markup.editMessageReplyMarkup
 import dev.inmo.tgbotapi.extensions.api.send.media.sendVideo
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.requests.abstracts.asMultipartFile
+import dev.inmo.tgbotapi.types.IdChatIdentifier
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
@@ -15,25 +16,28 @@ import dev.inmo.tgbotapi.utils.matrix
 import dev.inmo.tgbotapi.utils.row
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
+import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ExportCoroutineScope
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 private val logger = KotlinLogging.logger {}
 
@@ -46,10 +50,9 @@ class QuickExportHandler(
     private val properties: TelegramProperties,
     private val msg: MessageResolver,
     private val userService: TelegramUserService,
-    private val exportScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+    private val registry: ActiveExportRegistry,
+    private val exportScope: ExportCoroutineScope,
 ) {
-    private val activeExports: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
-
     @Suppress("LongMethod")
     suspend fun handle(callback: DataCallbackQuery): Job? {
         val messageCallback = callback as? MessageDataCallbackQuery
@@ -59,18 +62,17 @@ class QuickExportHandler(
             return null
         }
         val chatId = message.chat.id
+        val chatIdLong = chatId.chatId.long
 
         val callbackData = callback.data
         val mode =
             if (callbackData.startsWith(CALLBACK_PREFIX_ANNOTATED)) ExportMode.ANNOTATED else ExportMode.ORIGINAL
 
-        // Parse recordingId from callback data
         val recordingId = parseRecordingId(callbackData)
         if (recordingId == null) {
-            logger.warn { "Invalid recordingId in callback: $callbackData" }
             val lang =
                 try {
-                    userService.getUserLanguage(chatId.chatId.long)
+                    userService.getUserLanguage(chatIdLong)
                         ?: StartCommandHandler.detectLanguage(callback.user.ietfLanguageCode?.code)
                 } catch (e: CancellationException) {
                     throw e
@@ -81,7 +83,6 @@ class QuickExportHandler(
             return null
         }
 
-        // Check username presence
         val user = callback.user
         val username = user.username?.withoutAt
         if (username == null) {
@@ -90,17 +91,15 @@ class QuickExportHandler(
             return null
         }
 
-        // Check authorization
         if (authorizationFilter.getRole(username) == null) {
             val lang = StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
             bot.answer(callback, msg.get("common.error.unauthorized", lang))
             return null
         }
 
-        // Resolve language
         val lang =
             try {
-                userService.getUserLanguage(chatId.chatId.long)
+                userService.getUserLanguage(chatIdLong)
                     ?: StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
             } catch (e: CancellationException) {
                 throw e
@@ -108,140 +107,230 @@ class QuickExportHandler(
                 StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
             }
 
-        // Prevent duplicate exports
-        if (!activeExports.add(recordingId)) {
-            bot.answer(callback, msg.get("quickexport.error.concurrent", lang))
-            return null
-        }
+        val exportId = UUID.randomUUID()
+        val job =
+            exportScope.launch(start = CoroutineStart.LAZY) {
+                runExport(message, chatIdLong, chatId, recordingId, mode, lang, exportId)
+            }
+        // Safety net for LAZY cancel-before-body — finally in runExport won't fire if job is
+        // cancelled before its first suspension point. release() is idempotent, so double-firing
+        // (finally + invokeOnCompletion) is harmless.
+        job.invokeOnCompletion { registry.release(exportId) }
 
-        // Answer callback immediately
-        bot.answer(callback)
+        val startResult = registry.tryStartQuickExport(exportId, chatIdLong, mode, recordingId, job)
+        when (startResult) {
+            is ActiveExportRegistry.StartResult.DuplicateRecording -> {
+                job.cancel()
+                bot.answer(callback, msg.get("quickexport.error.concurrent", lang))
+                return null
+            }
 
-        // Switch button to processing state
-        try {
-            bot.editMessageReplyMarkup(
-                message,
-                replyMarkup = createProcessingKeyboard(recordingId, msg.get("quickexport.button.processing", lang), mode),
-            )
-        } catch (e: Exception) {
-            logger.warn(e) { "Failed to update button to processing state" }
-        }
+            is ActiveExportRegistry.StartResult.DuplicateChat -> {
+                // Impossible for QuickExport (registry doesn't check byChat for QuickExport).
+                // If this ever fires, it's a programming error — fail loudly.
+                job.cancel()
+                error("Unexpected DuplicateChat from tryStartQuickExport")
+            }
 
-        // Launch export in background so handle() returns immediately,
-        // allowing subsequent callbacks to be processed (and blocked by activeExports)
-        return exportScope.launch {
-            try {
-                val timeout =
-                    if (mode == ExportMode.ANNOTATED) {
-                        QUICK_EXPORT_ANNOTATED_TIMEOUT_MS
-                    } else {
-                        QUICK_EXPORT_ORIGINAL_TIMEOUT_MS
-                    }
-
-                var lastRenderedStage: VideoExportProgress.Stage? = null
-                var lastRenderedPercent: Int? = null
-
-                val onProgress: suspend (VideoExportProgress) -> Unit = { progress ->
-                    val shouldUpdate =
-                        when {
-                            progress.stage != lastRenderedStage -> {
-                                true
-                            }
-
-                            progress.stage == VideoExportProgress.Stage.ANNOTATING && progress.percent != null -> {
-                                val lastPct = lastRenderedPercent ?: -1
-                                (progress.percent - lastPct) >= 5
-                            }
-
-                            else -> {
-                                false
-                            }
-                        }
-
-                    if (shouldUpdate) {
-                        lastRenderedStage = progress.stage
-                        lastRenderedPercent = progress.percent
-                        val text = renderProgressButton(progress.stage, progress.percent, lang)
-                        try {
-                            bot.editMessageReplyMarkup(
-                                message,
-                                replyMarkup = createProcessingKeyboard(recordingId, text, mode),
-                            )
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            logger.warn(e) { "Failed to update progress button" }
-                        }
-                    }
-                }
-
-                val videoPath =
-                    withTimeoutOrNull(timeout) {
-                        videoExportService.exportByRecordingId(recordingId, mode = mode, onProgress = onProgress)
-                    }
-
-                if (videoPath == null) {
-                    logger.warn {
-                        "Quick export outer timeout fired (recordingId=$recordingId, mode=$mode, timeoutMs=$timeout). " +
-                            "Inner annotation timeout should normally fire first — check margin."
-                    }
-                    bot.sendTextMessage(chatId, msg.get("quickexport.error.timeout", lang))
-                    restoreButton(message, recordingId, lang)
-                    return@launch
-                }
-
+            is ActiveExportRegistry.StartResult.Success -> {
+                // CRITICAL: bot.answer + editMessageReplyMarkup run BEFORE job.start(). If the
+                // handler scope is cancelled during either suspend call (Telegram timeout, network
+                // blip, shutdown), `throw e` leaves the LAZY job in NEW state forever — the body
+                // never runs, invokeOnCompletion never fires, and the registry entry leaks,
+                // permanently blocking this recordingId until restart (iter-4 gemini CRITICAL-12).
+                // Fix: cancel the job explicitly before rethrowing. `invokeOnCompletion` fires even
+                // for a LAZY job cancelled from NEW → Cancelled, triggering registry.release().
                 try {
+                    bot.answer(callback)
+                } catch (e: CancellationException) {
+                    job.cancel()
+                    throw e
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to answer callback on quick-export start" }
+                }
+                try {
+                    bot.editMessageReplyMarkup(
+                        message,
+                        replyMarkup =
+                            createProgressKeyboard(
+                                exportId,
+                                msg.get("quickexport.button.processing", lang),
+                                msg.get("quickexport.button.cancel", lang),
+                            ),
+                    )
+                } catch (e: CancellationException) {
+                    job.cancel()
+                    throw e
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to update button to processing state" }
+                }
+                job.start()
+                return job
+            }
+        }
+    }
+
+    @Suppress("LongMethod")
+    private suspend fun runExport(
+        message: ContentMessage<*>,
+        chatIdLong: Long,
+        chatId: IdChatIdentifier,
+        recordingId: UUID,
+        mode: ExportMode,
+        lang: String,
+        exportId: UUID,
+    ) {
+        try {
+            val timeout =
+                if (mode == ExportMode.ANNOTATED) {
+                    QUICK_EXPORT_ANNOTATED_TIMEOUT_MS
+                } else {
+                    QUICK_EXPORT_ORIGINAL_TIMEOUT_MS
+                }
+
+            var lastRenderedStage: VideoExportProgress.Stage? = null
+            var lastRenderedPercent: Int? = null
+
+            val onProgress: suspend (VideoExportProgress) -> Unit = lambda@{ progress ->
+                if (registry.get(exportId)?.state == ActiveExportRegistry.State.CANCELLING) {
+                    // Skip — keyboard is showing "Cancelling..." now.
+                    return@lambda
+                }
+                val shouldUpdate =
+                    when {
+                        progress.stage != lastRenderedStage -> {
+                            true
+                        }
+
+                        progress.stage == VideoExportProgress.Stage.ANNOTATING && progress.percent != null -> {
+                            val lastPct = lastRenderedPercent ?: -1
+                            (progress.percent - lastPct) >= 5
+                        }
+
+                        else -> {
+                            false
+                        }
+                    }
+
+                if (shouldUpdate) {
+                    lastRenderedStage = progress.stage
+                    lastRenderedPercent = progress.percent
+                    val text = renderProgressButton(progress.stage, progress.percent, lang)
                     try {
                         bot.editMessageReplyMarkup(
                             message,
                             replyMarkup =
-                                createProcessingKeyboard(
-                                    recordingId,
-                                    msg.get("quickexport.progress.sending", lang),
-                                    mode,
+                                createProgressKeyboard(
+                                    exportId,
+                                    text,
+                                    msg.get("quickexport.button.cancel", lang),
                                 ),
                         )
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
-                        logger.warn(e) { "Failed to update progress button to sending" }
+                        logger.warn(e) { "Failed to update progress button" }
+                    }
+                }
+            }
+
+            val onJobSubmitted: suspend (CancellableJob) -> Unit =
+                { cancellable -> registry.attachCancellable(exportId, cancellable) }
+
+            val videoPath =
+                withTimeoutOrNull(timeout) {
+                    videoExportService.exportByRecordingId(
+                        recordingId = recordingId,
+                        mode = mode,
+                        onProgress = onProgress,
+                        onJobSubmitted = onJobSubmitted,
+                    )
+                }
+
+            if (videoPath == null) {
+                logger.warn {
+                    "Quick export outer timeout fired (recordingId=$recordingId, mode=$mode, timeoutMs=$timeout)."
+                }
+                bot.sendTextMessage(chatId, msg.get("quickexport.error.timeout", lang))
+                restoreButton(message, recordingId, lang)
+                return
+            }
+
+            try {
+                try {
+                    bot.editMessageReplyMarkup(
+                        message,
+                        replyMarkup =
+                            createProgressKeyboard(
+                                exportId,
+                                msg.get("quickexport.progress.sending", lang),
+                                msg.get("quickexport.button.cancel", lang),
+                            ),
+                    )
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to update progress button to sending" }
+                }
+
+                val sent =
+                    withTimeoutOrNull(properties.sendVideoTimeout.toMillis()) {
+                        bot.sendVideo(
+                            chatId,
+                            videoPath.toFile().asMultipartFile().copy(filename = "quick_export_$recordingId.mp4"),
+                        )
                     }
 
-                    val sent =
-                        withTimeoutOrNull(properties.sendVideoTimeout.toMillis()) {
-                            bot.sendVideo(
-                                chatId,
-                                videoPath.toFile().asMultipartFile().copy(filename = "quick_export_$recordingId.mp4"),
-                            )
-                        }
-
-                    if (sent == null) {
-                        bot.sendTextMessage(chatId, msg.get("quickexport.error.send.timeout", lang))
-                    }
-                } finally {
+                if (sent == null) {
+                    bot.sendTextMessage(chatId, msg.get("quickexport.error.send.timeout", lang))
+                }
+            } finally {
+                // cleanupExportFile is suspend → any suspend call in an already-cancelled coroutine
+                // instantly throws CancellationException without doing real work. Wrap in
+                // NonCancellable so the temp-file is actually deleted on user-cancel/shutdown.
+                withContext(NonCancellable) {
                     try {
                         videoExportService.cleanupExportFile(videoPath)
                     } catch (e: Exception) {
                         logger.warn(e) { "Failed to cleanup: $videoPath" }
                     }
                 }
-
-                // Restore buttons
-                restoreButton(message, recordingId, lang)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.error(e) { "Quick export failed for recording $recordingId" }
-                val errorMsg =
-                    when (e) {
-                        is IllegalArgumentException -> msg.get("quickexport.error.not.found", lang)
-                        is IllegalStateException -> msg.get("quickexport.error.unavailable", lang)
-                        is DetectTimeoutException -> msg.get("quickexport.error.annotation.timeout", lang)
-                        else -> msg.get("quickexport.error.generic", lang)
-                    }
-                bot.sendTextMessage(chatId, errorMsg)
-                restoreButton(message, recordingId, lang)
-            } finally {
-                activeExports.remove(recordingId)
             }
+
+            restoreButton(message, recordingId, lang)
+        } catch (e: CancellationException) {
+            val entry = registry.get(exportId)
+            if (entry?.state == ActiveExportRegistry.State.CANCELLING) {
+                // UI updates are suspend (bot.sendTextMessage / bot.editMessageReplyMarkup inside
+                // restoreButton). In a cancelled coroutine they throw CancellationException on
+                // first suspension, leaving the user stuck on "⏹ Отменяется…". Wrap in
+                // NonCancellable so the final "❌ Отменён" actually reaches Telegram.
+                withContext(NonCancellable) {
+                    try {
+                        bot.sendTextMessage(chatId, msg.get("quickexport.cancelled", lang))
+                    } catch (ex: Exception) {
+                        logger.warn(ex) { "Failed to send cancelled message" }
+                    }
+                    restoreButton(message, recordingId, lang)
+                }
+                return
+            }
+            throw e
+        } catch (e: Exception) {
+            logger.error(e) { "Quick export failed for recording $recordingId" }
+            val errorMsg =
+                when (e) {
+                    is IllegalArgumentException -> msg.get("quickexport.error.not.found", lang)
+                    is IllegalStateException -> msg.get("quickexport.error.unavailable", lang)
+                    is DetectTimeoutException -> msg.get("quickexport.error.annotation.timeout", lang)
+                    else -> msg.get("quickexport.error.generic", lang)
+                }
+            try {
+                bot.sendTextMessage(chatId, errorMsg)
+            } catch (ex: Exception) {
+                logger.warn(ex) { "Failed to send error message" }
+            }
+            restoreButton(message, recordingId, lang)
+        } finally {
+            registry.release(exportId)
         }
     }
 
@@ -337,20 +426,34 @@ class QuickExportHandler(
             }
         }
 
-        fun createProcessingKeyboard(
-            recordingId: UUID,
-            text: String,
-            mode: ExportMode = ExportMode.ORIGINAL,
-        ): InlineKeyboardMarkup {
-            val prefix = if (mode == ExportMode.ANNOTATED) CALLBACK_PREFIX_ANNOTATED else CALLBACK_PREFIX
-            return InlineKeyboardMarkup(
+        /**
+         * Two-row keyboard: progress-button (row 1, `np:` noop callback) + cancel-button (row 2, `xc:` cancel).
+         * Key is `exportId` — progress button payload `np:{exportId}` and cancel button payload
+         * `xc:{exportId}`. `recordingId` is intentionally NOT a parameter: the initial keyboard row
+         * (original vs annotated choice) is rebuilt separately via `restoreButton(message, recordingId, ...)`
+         * when the export completes or errors.
+         */
+        fun createProgressKeyboard(
+            exportId: UUID,
+            progressText: String,
+            cancelText: String,
+        ): InlineKeyboardMarkup =
+            InlineKeyboardMarkup(
                 keyboard =
                     matrix {
                         row {
-                            +CallbackDataInlineKeyboardButton(text, "$prefix$recordingId")
+                            +CallbackDataInlineKeyboardButton(
+                                progressText,
+                                "${CancelExportHandler.NOOP_PREFIX}$exportId",
+                            )
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton(
+                                cancelText,
+                                "${CancelExportHandler.CANCEL_PREFIX}$exportId",
+                            )
                         }
                     },
             )
-        }
     }
 }

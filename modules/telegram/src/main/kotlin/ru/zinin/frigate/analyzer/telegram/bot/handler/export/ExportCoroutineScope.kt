@@ -26,9 +26,15 @@ import org.springframework.stereotype.Component
  */
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
-class ExportCoroutineScope : CoroutineScope by CoroutineScope(Dispatchers.IO + SupervisorJob()) {
+open class ExportCoroutineScope internal constructor(
+    delegate: CoroutineScope,
+) : CoroutineScope by delegate {
+    // Production bean constructor — uses Dispatchers.IO + SupervisorJob. Tests may use the
+    // internal delegate-taking constructor to inject a TestDispatcher-backed scope for virtual time.
+    constructor() : this(CoroutineScope(Dispatchers.IO + SupervisorJob()))
+
     @PreDestroy
-    fun shutdown() {
+    open fun shutdown() {
         cancel()
     }
 }
