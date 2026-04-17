@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.core.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -12,6 +13,7 @@ import ru.zinin.frigate.analyzer.core.helper.VideoMergeHelper
 import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress
 import ru.zinin.frigate.analyzer.telegram.service.model.VideoExportProgress.Stage
@@ -43,6 +45,7 @@ class VideoExportServiceImpl(
         camId: String,
         mode: ExportMode,
         onProgress: suspend (VideoExportProgress) -> Unit,
+        onJobSubmitted: suspend (CancellableJob) -> Unit,
     ): Path {
         logger.debug { "exportVideo started: camId=$camId, mode=$mode, range=$startInstant..$endInstant" }
         onProgress(VideoExportProgress(Stage.PREPARING))
@@ -95,10 +98,14 @@ class VideoExportServiceImpl(
             }
 
             if (mode == ExportMode.ANNOTATED) {
-                return annotate(mergedFile, onProgress)
+                return annotate(mergedFile, onProgress, onJobSubmitted)
             }
 
             return mergedFile
+        } catch (e: CancellationException) {
+            logger.debug(e) { "Export cancelled after merge, cleaning up: $mergedFile" }
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(mergedFile) }
+            throw e
         } catch (e: Exception) {
             logger.debug(e) { "Export failed, cleaning up: $mergedFile" }
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(mergedFile) }
@@ -109,6 +116,7 @@ class VideoExportServiceImpl(
     private suspend fun annotate(
         originalPath: Path,
         onProgress: suspend (VideoExportProgress) -> Unit,
+        onJobSubmitted: suspend (CancellableJob) -> Unit,
     ): Path {
         onProgress(VideoExportProgress(Stage.ANNOTATING, percent = 0))
 
@@ -129,11 +137,16 @@ class VideoExportServiceImpl(
                         logger.debug { "Annotation progress: ${status.progress}%" }
                         onProgress(VideoExportProgress(Stage.ANNOTATING, percent = status.progress))
                     },
+                    onJobSubmitted = onJobSubmitted,
                 )
             logger.debug { "Annotation complete: $annotatedPath" }
             tempFileHelper.deleteIfExists(originalPath)
             logger.debug { "Deleted intermediate file: $originalPath" }
             return annotatedPath
+        } catch (e: CancellationException) {
+            logger.debug(e) { "Annotation cancelled, cleaning up: $originalPath" }
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
+            throw e
         } catch (e: Exception) {
             logger.debug(e) { "Annotation failed, cleaning up: $originalPath" }
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
@@ -146,6 +159,7 @@ class VideoExportServiceImpl(
         duration: Duration,
         mode: ExportMode,
         onProgress: suspend (VideoExportProgress) -> Unit,
+        onJobSubmitted: suspend (CancellableJob) -> Unit,
     ): Path {
         require(!duration.isNegative && !duration.isZero) { "duration must be positive" }
 
@@ -174,6 +188,7 @@ class VideoExportServiceImpl(
             camId = camId,
             mode = mode,
             onProgress = onProgress,
+            onJobSubmitted = onJobSubmitted,
         )
     }
 

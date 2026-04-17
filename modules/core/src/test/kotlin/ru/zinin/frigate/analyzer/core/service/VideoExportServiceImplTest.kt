@@ -5,8 +5,10 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.spyk
 import io.mockk.unmockkStatic
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -93,6 +95,7 @@ class VideoExportServiceImplTest {
                 showConf = any(),
                 model = any(),
                 onProgress = any(),
+                onJobSubmitted = any(),
             )
         } coAnswers {
             lastAnnotateCall = AnnotateCall(firstArg(), arg(5), arg(9))
@@ -114,6 +117,7 @@ class VideoExportServiceImplTest {
                 showConf = any(),
                 model = any(),
                 onProgress = any(),
+                onJobSubmitted = any(),
             )
         } throws exception
     }
@@ -501,6 +505,7 @@ class VideoExportServiceImplTest {
                     showConf = any(),
                     model = any(),
                     onProgress = any(),
+                    onJobSubmitted = any(),
                 )
             }
         }
@@ -566,6 +571,7 @@ class VideoExportServiceImplTest {
                     showConf = any(),
                     model = any(),
                     onProgress = any(),
+                    onJobSubmitted = any(),
                 )
             }
         }
@@ -751,4 +757,257 @@ class VideoExportServiceImplTest {
                 unmockkStatic(Files::class)
             }
         }
+
+    @Test
+    fun `exportVideo plumbs onJobSubmitted through to annotateVideo for ANNOTATED mode`() {
+        runBlocking {
+            val camId = "cam1"
+            val rangeStart = Instant.parse("2026-02-16T12:00:00Z")
+            val rangeEnd = Instant.parse("2026-02-16T12:05:00Z")
+            val recFile = Files.createTempFile("rec-", ".mp4")
+            Files.write(recFile, byteArrayOf(1, 2, 3, 4, 5))
+            val recordingEntity =
+                RecordingEntity(
+                    id = UUID.randomUUID(),
+                    creationTimestamp = null,
+                    filePath = recFile.toString(),
+                    fileCreationTimestamp = null,
+                    camId = camId,
+                    recordDate = null,
+                    recordTime = null,
+                    recordTimestamp = rangeStart,
+                    startProcessingTimestamp = null,
+                    processTimestamp = null,
+                    processAttempts = null,
+                    detectionsCount = null,
+                    analyzeTime = null,
+                    analyzedFramesCount = null,
+                    errorMessage = null,
+                )
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
+            val mergedPath = Files.createTempFile("merged-", ".mp4")
+            Files.write(mergedPath, ByteArray(100))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
+            coEvery { tempFileHelper.deleteIfExists(mergedPath) } returns true
+            val annotatedPath = Files.createTempFile("ann-", ".mp4")
+            Files.write(annotatedPath, ByteArray(50))
+            val capturedCallback = slot<suspend (ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob) -> Unit>()
+            coEvery {
+                videoVisualizationService.annotateVideo(
+                    videoPath = any(),
+                    classes = any(),
+                    model = any(),
+                    onProgress = any(),
+                    onJobSubmitted = capture(capturedCallback),
+                )
+            } returns annotatedPath
+
+            var received: ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob? = null
+            val result =
+                service.exportVideo(
+                    startInstant = rangeStart,
+                    endInstant = rangeEnd,
+                    camId = camId,
+                    mode = ExportMode.ANNOTATED,
+                    onProgress = {},
+                    onJobSubmitted = { received = it },
+                )
+
+            val testCancellable =
+                ru.zinin.frigate.analyzer.telegram.service.model
+                    .CancellableJob { /* noop */ }
+            capturedCallback.captured.invoke(testCancellable)
+
+            assertEquals(annotatedPath, result)
+            assertEquals(testCancellable, received)
+
+            Files.deleteIfExists(recFile)
+            Files.deleteIfExists(annotatedPath)
+        }
+    }
+
+    @Test
+    fun `exportVideo does not call annotateVideo for ORIGINAL mode`() {
+        runBlocking {
+            val camId = "cam1"
+            val rangeStart = Instant.parse("2026-02-16T12:00:00Z")
+            val rangeEnd = Instant.parse("2026-02-16T12:05:00Z")
+            val recFile = Files.createTempFile("rec-", ".mp4")
+            Files.write(recFile, byteArrayOf(1, 2, 3))
+            val recordingEntity =
+                RecordingEntity(
+                    id = UUID.randomUUID(),
+                    creationTimestamp = null,
+                    filePath = recFile.toString(),
+                    fileCreationTimestamp = null,
+                    camId = camId,
+                    recordDate = null,
+                    recordTime = null,
+                    recordTimestamp = rangeStart,
+                    startProcessingTimestamp = null,
+                    processTimestamp = null,
+                    processAttempts = null,
+                    detectionsCount = null,
+                    analyzeTime = null,
+                    analyzedFramesCount = null,
+                    errorMessage = null,
+                )
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
+            val mergedPath = Files.createTempFile("merged-", ".mp4")
+            Files.write(mergedPath, ByteArray(100))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
+
+            var invoked = false
+            service.exportVideo(
+                startInstant = rangeStart,
+                endInstant = rangeEnd,
+                camId = camId,
+                mode = ExportMode.ORIGINAL,
+                onProgress = {},
+                onJobSubmitted = { invoked = true },
+            )
+
+            assertEquals(false, invoked)
+            coVerify(exactly = 0) {
+                videoVisualizationService.annotateVideo(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            }
+
+            Files.deleteIfExists(recFile)
+            Files.deleteIfExists(mergedPath)
+        }
+    }
+
+    @Test
+    fun `exportByRecordingId plumbs onJobSubmitted through exportVideo for ANNOTATED mode`() {
+        runBlocking {
+            // Guards iter-4 codex TEST-3: QuickExportHandler calls videoExportService.exportByRecordingId(...),
+            // NOT exportVideo(...). The happy-path test above (`exportVideo plumbs onJobSubmitted ...`) only
+            // covers the /export entry point; this one ensures the QuickExport entry point propagates the
+            // callback down to annotateVideo as well. Without this test, a regression that silently drops
+            // `onJobSubmitted` inside exportByRecordingId() would leave QuickExport users unable to cancel
+            // vision-server jobs (visible symptom: "Cancelled" in UI, but the job keeps running on GPU).
+            val camId = "cam1"
+            val recordingId = UUID.randomUUID()
+            val recordTimestamp = Instant.parse("2026-02-16T12:03:00Z")
+            val duration = Duration.ofMinutes(1)
+            val rangeStart = recordTimestamp.minus(duration)
+            val rangeEnd = recordTimestamp.plus(duration)
+            val recFile = Files.createTempFile("rec-", ".mp4")
+            Files.write(recFile, byteArrayOf(1, 2, 3, 4, 5))
+            val recordingEntity =
+                RecordingEntity(
+                    id = recordingId,
+                    creationTimestamp = null,
+                    filePath = recFile.toString(),
+                    fileCreationTimestamp = null,
+                    camId = camId,
+                    recordDate = null,
+                    recordTime = null,
+                    recordTimestamp = recordTimestamp,
+                    startProcessingTimestamp = null,
+                    processTimestamp = null,
+                    processAttempts = null,
+                    detectionsCount = null,
+                    analyzeTime = null,
+                    analyzedFramesCount = null,
+                    errorMessage = null,
+                )
+            coEvery { recordingRepository.findById(recordingId) } returns recordingEntity
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
+            val mergedPath = Files.createTempFile("merged-", ".mp4")
+            Files.write(mergedPath, ByteArray(100))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
+            coEvery { tempFileHelper.deleteIfExists(mergedPath) } returns true
+            val annotatedPath = Files.createTempFile("ann-", ".mp4")
+            Files.write(annotatedPath, ByteArray(50))
+            val capturedCallback = slot<suspend (ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob) -> Unit>()
+            coEvery {
+                videoVisualizationService.annotateVideo(
+                    videoPath = any(),
+                    classes = any(),
+                    model = any(),
+                    onProgress = any(),
+                    onJobSubmitted = capture(capturedCallback),
+                )
+            } returns annotatedPath
+
+            var received: ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob? = null
+            val result =
+                service.exportByRecordingId(
+                    recordingId = recordingId,
+                    duration = duration,
+                    mode = ExportMode.ANNOTATED,
+                    onProgress = {},
+                    onJobSubmitted = { received = it },
+                )
+
+            val testCancellable =
+                ru.zinin.frigate.analyzer.telegram.service.model
+                    .CancellableJob { /* noop */ }
+            capturedCallback.captured.invoke(testCancellable)
+
+            assertEquals(annotatedPath, result)
+            assertEquals(testCancellable, received)
+
+            Files.deleteIfExists(recFile)
+            Files.deleteIfExists(annotatedPath)
+        }
+    }
+
+    @Test
+    fun `exportByRecordingId does not invoke onJobSubmitted for ORIGINAL mode`() {
+        runBlocking {
+            // Negative companion to the above test — ORIGINAL flow must not call annotateVideo at all,
+            // so the onJobSubmitted callback is never triggered. Protects against accidentally always
+            // invoking the callback in exportByRecordingId regardless of mode.
+            val camId = "cam1"
+            val recordingId = UUID.randomUUID()
+            val recordTimestamp = Instant.parse("2026-02-16T12:03:00Z")
+            val duration = Duration.ofMinutes(1)
+            val rangeStart = recordTimestamp.minus(duration)
+            val rangeEnd = recordTimestamp.plus(duration)
+            val recFile = Files.createTempFile("rec-", ".mp4")
+            Files.write(recFile, byteArrayOf(1, 2, 3))
+            val recordingEntity =
+                RecordingEntity(
+                    id = recordingId,
+                    creationTimestamp = null,
+                    filePath = recFile.toString(),
+                    fileCreationTimestamp = null,
+                    camId = camId,
+                    recordDate = null,
+                    recordTime = null,
+                    recordTimestamp = recordTimestamp,
+                    startProcessingTimestamp = null,
+                    processTimestamp = null,
+                    processAttempts = null,
+                    detectionsCount = null,
+                    analyzeTime = null,
+                    analyzedFramesCount = null,
+                    errorMessage = null,
+                )
+            coEvery { recordingRepository.findById(recordingId) } returns recordingEntity
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
+            val mergedPath = Files.createTempFile("merged-", ".mp4")
+            Files.write(mergedPath, ByteArray(100))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
+
+            var invoked = false
+            service.exportByRecordingId(
+                recordingId = recordingId,
+                duration = duration,
+                mode = ExportMode.ORIGINAL,
+                onProgress = {},
+                onJobSubmitted = { invoked = true },
+            )
+
+            assertEquals(false, invoked)
+            coVerify(exactly = 0) {
+                videoVisualizationService.annotateVideo(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            }
+
+            Files.deleteIfExists(recFile)
+            Files.deleteIfExists(mergedPath)
+        }
+    }
 }
