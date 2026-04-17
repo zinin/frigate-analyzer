@@ -35,10 +35,10 @@
 | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/VideoExportServiceImpl.kt` | Add `onJobSubmitted` param; plumb into `annotate(...)` only for ANNOTATED mode. |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/VideoExportService.kt` | Add `onJobSubmitted: suspend (CancellableJob) -> Unit = {}` to both methods. |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandler.kt` | Remove local `activeExports` set; use `ActiveExportRegistry`; launch job with `CoroutineStart.LAZY`; add cancel keyboard (two rows: progress + cancel); `np:` noop callback on progress button; cancellation UI branch in catch; constructor takes shared `ExportCoroutineScope` bean. |
-| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportExecutor.kt` | Wrap body in `exportScope.launch(start = LAZY)` with registry.tryStart + `job.join()`; add `[✖ Отмена]` keyboard to status message; cancellation UI branch; plumb `onJobSubmitted` → `registry.attachCancellable`. |
+| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportExecutor.kt` | Wrap body in `exportScope.launch(start = LAZY)` with registry.tryStart; fire-and-forget `job.start()` (NO `job.join()` — would collapse two-tier lock model); add `[✖ Отмена]` keyboard to status message; cancellation UI branch; plumb `onJobSubmitted` → `registry.attachCancellable`. |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportCommandHandler.kt` | **Keep** `ActiveExportTracker` usage for dialog-phase lock; remove private `exportScope` (executor owns its own via `ExportCoroutineScope` bean). |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt` | Add second `onDataCallbackQuery` route for prefixes `xc:` and `np:` → `CancelExportHandler.handle(callback)`. |
-| `modules/telegram/src/main/resources/messages_ru.properties` | New keys (cancel.*, quickexport.button.cancel, quickexport.progress.cancelling, quickexport.cancelled, export.button.cancel, export.progress.cancelling, export.cancelled.action — see Task 6). |
+| `modules/telegram/src/main/resources/messages_ru.properties` | New keys (cancel.*, quickexport.button.cancel, quickexport.progress.cancelling, quickexport.cancelled, export.button.cancel, export.progress.cancelling, export.cancelled.by.user — see Task 6). |
 | `modules/telegram/src/main/resources/messages_en.properties` | Same new keys in English. |
 | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/testsupport/DetectServiceDispatcher.kt` | Add handling for `POST /jobs/{id}/cancel` → 200 with status response. |
 | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/DetectServiceTest.kt` | If does not exist, create; add tests for `cancelJob`. |
@@ -212,6 +212,7 @@ import ru.zinin.frigate.analyzer.core.testsupport.DetectServiceDispatcher
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
 import tools.jackson.databind.json.JsonMapper
+import com.fasterxml.jackson.databind.ObjectMapper as FasterxmlObjectMapper
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -253,8 +254,8 @@ class DetectServiceCancelJobTest {
             .exchangeStrategies(
                 ExchangeStrategies.builder()
                     .codecs {
-                        it.defaultCodecs().jacksonJsonDecoder(JacksonJsonDecoder(buildObjectMapper()))
-                        it.defaultCodecs().jacksonJsonEncoder(JacksonJsonEncoder(buildObjectMapper()))
+                        it.defaultCodecs().jacksonJsonDecoder(JacksonJsonDecoder(buildJsonMapper()))
+                        it.defaultCodecs().jacksonJsonEncoder(JacksonJsonEncoder(buildJsonMapper()))
                     }.build(),
             ).build()
 
@@ -337,41 +338,66 @@ class DetectServiceCancelJobTest {
         // a parent-scope cancellation. The catch (TimeoutCancellationException) before
         // catch (CancellationException) ensures timeouts are logged, but external (parent)
         // cancellation must propagate so the caller's shutdown / user-cancel path works.
+        //
+        // NOTE on sleep vs cancelTimeout: server sleeps 60s (much longer than cancelTimeout=2s).
+        // The intent is to cancel externally ~100ms after the request fires — BEFORE withTimeout
+        // would fire a TimeoutCancellationException. We detect propagation by catching the
+        // exception inside the launched coroutine and setting a flag — `job.isCancelled` alone is
+        // a tautology (`job.cancel()` always sets it to true regardless of swallow vs rethrow).
         mockWebServer.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
-                Thread.sleep(10_000) // longer than cancelTimeout + our own cancel
+                Thread.sleep(60_000) // far longer than cancelTimeout=2s; cancel must arrive first
                 return MockResponse.Builder().code(200).body("{}").build()
             }
         }
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
         val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val propagated = kotlinx.coroutines.CompletableDeferred<Throwable>()
         val job = scope.launch {
             started.complete(Unit)
-            service.cancelJob(acquired, "abc-123")
+            try {
+                service.cancelJob(acquired, "abc-123")
+                propagated.complete(AssertionError("cancelJob returned normally — expected CancellationException"))
+            } catch (e: CancellationException) {
+                propagated.complete(e)
+                throw e
+            }
         }
         started.await()
         kotlinx.coroutines.delay(100) // let the request actually fly
         job.cancel()
         job.join()
-        // If cancelJob swallowed the CancellationException, job.isCancelled would still be true
-        // but the job would have completed "normally" — we assert the cancel propagated.
-        assertEquals(true, job.isCancelled)
+        val caught = kotlinx.coroutines.withTimeout(5_000) { propagated.await() }
+        assertEquals(true, caught is CancellationException)
+        assertEquals(false, caught is kotlinx.coroutines.TimeoutCancellationException)
         scope.cancel()
     }
 
-    private fun buildObjectMapper(): tools.jackson.databind.ObjectMapper =
+    // Two separate mappers — matches DetectServiceTest pattern (DetectServiceTest.kt:494, 501):
+    //   - `buildJsonMapper()` returns tools.jackson.databind.json.JsonMapper for WebClient codecs
+    //     (Spring Boot 4.0 Jackson 3 integration).
+    //   - `buildObjectMapper()` returns com.fasterxml.jackson.databind.ObjectMapper for DetectService
+    //     ctor (DetectService.kt:3).
+    private fun buildJsonMapper(): JsonMapper =
         JsonMapper
             .builder()
-            .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
             .build()
+
+    private fun buildObjectMapper(): FasterxmlObjectMapper {
+        val builder = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+        builder.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        builder.propertyNamingStrategy(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE)
+        return builder.build()
+    }
 }
 ```
 
 - [ ] **Step 3: Run tests to verify they fail**
 
 Delegate to build-runner: `./gradlew :core:test --tests "ru.zinin.frigate.analyzer.core.service.DetectServiceCancelJobTest"`.
-Expected: all 4 tests fail with `cancelJob` not defined.
+Expected: all 5 tests fail with `cancelJob` not defined.
 
 - [ ] **Step 4: Implement `cancelJob`**
 
@@ -395,6 +421,10 @@ import kotlinx.coroutines.TimeoutCancellationException
     ) {
         try {
             withTimeout(detectProperties.videoVisualize.cancelTimeout.toMillis()) {
+                // Bodiless: JobStatus enum has no `CANCELLED` variant, so deserializing
+                // `{"status":"cancelled"}` into JobStatusResponse would fail. We only care about the
+                // HTTP status — a 200 means the server accepted the cancel request, 409 means the
+                // job is already terminal. The actual body is irrelevant to clients.
                 webClient
                     .post()
                     .uri { uriBuilder ->
@@ -405,7 +435,7 @@ import kotlinx.coroutines.TimeoutCancellationException
                             .path("/jobs/{jobId}/cancel")
                             .build(jobId)
                     }.retrieve()
-                    .bodyToMono<JobStatusResponse>()
+                    .toBodilessEntity()
                     .awaitSingleOrNull()
             }
             logger.info { "Cancel request accepted for job $jobId on ${acquired.id}" }
@@ -1228,8 +1258,13 @@ class ActiveExportRegistryTest {
         // Guards design §5.3 edge case "LAZY-корутина отменена до первого suspension point":
         // body (with finally { release() }) never runs, so invokeOnCompletion is the only path
         // that cleans the registry. This test mirrors what Quick/Dialog handlers do in production.
+        //
+        // Uses a scoped SupervisorJob rather than GlobalScope (anti-pattern — leaks test coroutines
+        // across the JVM). The scope is cancelled in `@AfterEach` via `jobs`-tracking plus a local
+        // `finally` — kept in sync with the class-level `@AfterEach tearDown`.
         val exportId = UUID.randomUUID()
-        val job = kotlinx.coroutines.GlobalScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+        val localScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
+        val job = localScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             // Body that would normally run the export.
             kotlinx.coroutines.awaitCancellation()
         }
@@ -1240,7 +1275,7 @@ class ActiveExportRegistryTest {
             runBlocking { job.join() }
             assertNull(registry.get(exportId), "registry must be released via invokeOnCompletion")
         } finally {
-            job.cancel()
+            localScope.cancel()
         }
     }
 
@@ -1277,6 +1312,28 @@ class ActiveExportRegistryTest {
 
         assertEquals(1, successes.get())
         assertEquals(31, duplicates.get())
+    }
+
+    @Test
+    fun `start-vs-release race — tryStart after release returns Success, not a false Duplicate`() {
+        // Guards iter-3 codex BUG-1: `release()` removes from byExportId BEFORE taking
+        // `synchronized(entry)` to avoid reverse-order deadlock, but that leaves a window where
+        // byChat/byRecordingId still points at the (already removed) exportId. tryStart* must
+        // self-heal the stale secondary index and succeed.
+        val chatId = 42L
+        val firstExportId = UUID.randomUUID()
+        val firstJob = newJob()
+        val r1 = registry.tryStartDialogExport(firstExportId, chatId, ExportMode.ORIGINAL, firstJob)
+        assertTrue(r1 is ActiveExportRegistry.StartResult.Success)
+
+        // Simulate the narrow race: remove from primary index directly (byExportId), then
+        // immediately try a fresh start for the same chat BEFORE secondary cleanup runs.
+        registry.release(firstExportId) // the whole release — primary + secondary removal together.
+        val secondExportId = UUID.randomUUID()
+        val r2 = registry.tryStartDialogExport(secondExportId, chatId, ExportMode.ANNOTATED, newJob())
+        assertTrue(r2 is ActiveExportRegistry.StartResult.Success, "start after release must succeed")
+
+        firstJob.cancel()
     }
 }
 ```
@@ -1349,7 +1406,14 @@ class ActiveExportRegistry(
         // Atomic under startLock: putIfAbsent(byRecordingId) + byExportId[...] = Entry so that
         // a failure between the two doesn't leave byRecordingId permanently locked.
         val existing = byRecordingId.putIfAbsent(recordingId, exportId)
-        if (existing != null) return StartResult.DuplicateRecording
+        if (existing != null) {
+            // Self-heal: release() removes byExportId BEFORE cleaning secondary indexes, so a
+            // concurrent release can leave byRecordingId pointing at an already-gone entry.
+            // If the primary index no longer contains `existing`, the stale secondary entry is
+            // our leftover — replace it and proceed.
+            if (byExportId.containsKey(existing)) return StartResult.DuplicateRecording
+            byRecordingId[recordingId] = exportId
+        }
         byExportId[exportId] = Entry(exportId, chatId, mode, recordingId, job)
         return StartResult.Success(exportId)
     }
@@ -1361,7 +1425,11 @@ class ActiveExportRegistry(
         job: Job,
     ): StartResult = synchronized(startLock) {
         val existing = byChat.putIfAbsent(chatId, exportId)
-        if (existing != null) return StartResult.DuplicateChat
+        if (existing != null) {
+            // Self-heal same race as tryStartQuickExport — see comment above.
+            if (byExportId.containsKey(existing)) return StartResult.DuplicateChat
+            byChat[chatId] = exportId
+        }
         byExportId[exportId] = Entry(exportId, chatId, mode, null, job)
         return StartResult.Success(exportId)
     }
@@ -1383,10 +1451,11 @@ class ActiveExportRegistry(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // cancelJob itself is tolerant (409/5xx/timeout logged WARN), so this
-                    // branch only fires on truly unexpected errors — log and move on.
-                    @Suppress("ktlint:standard:no-unused-imports")
-                    Unit
+                    // cancelJob itself is tolerant (409/5xx/timeout logged WARN internally), so this
+                    // branch only fires on truly unexpected errors — log WARN per design §9.
+                    logger.warn(e) {
+                        "Vision server cancel failed on attach-retry path, exportId=$exportId"
+                    }
                 }
             }
         }
@@ -1709,8 +1778,12 @@ class CancelExportHandlerTest {
         val recordingId = UUID.randomUUID()
         val job = Job()
         registry.tryStartQuickExport(exportId, 111L, ExportMode.ANNOTATED, recordingId, job)
-        var cancellableCalled = false
-        registry.attachCancellable(exportId, CancellableJob { cancellableCalled = true })
+        // `attachCancellable` dispatches the cancel via `exportScope.launch` on Dispatchers.IO —
+        // a real dispatcher, not controlled by runTest's virtual time. `delay(50)` under runTest
+        // is virtual (0 ms real), so it can't wait for an IO thread. CompletableDeferred +
+        // withTimeout(5s) gives deterministic sync — mirrors ActiveExportRegistryTest pattern.
+        val cancellableCalled = CompletableDeferred<Unit>()
+        registry.attachCancellable(exportId, CancellableJob { cancellableCalled.complete(Unit) })
 
         val cb = mockk<MessageDataCallbackQuery>(relaxed = true).also {
             every { it.data } returns "${CancelExportHandler.CANCEL_PREFIX}$exportId"
@@ -1732,9 +1805,8 @@ class CancelExportHandlerTest {
         assertTrue(entry != null && entry.state == ActiveExportRegistry.State.CANCELLING)
         // Coroutine Job is cancelled
         assertTrue(job.isCancelled)
-        // Give the launched cancellable coroutine a moment to run
-        kotlinx.coroutines.delay(50)
-        assertTrue(cancellableCalled)
+        // Deterministic wait for the fire-and-forget cancellable.cancel() launched on Dispatchers.IO.
+        kotlinx.coroutines.withTimeout(5_000) { cancellableCalled.await() }
     }
 
     @Test
@@ -2020,7 +2092,13 @@ class CancelExportHandler(
 
         val marked = registry.markCancelling(exportId)
         if (marked == null) {
-            answerSafely(callback, msg.get("cancel.error.already.cancelling", lang))
+            // Disambiguate: markCancelling returns null if the entry is already CANCELLING OR if
+            // it was released between our registry.get above and now (natural completion race).
+            // Show the correct user-facing message — "already cancelling" only when the entry is
+            // still present.
+            val stillPresent = registry.get(exportId) != null
+            val errorKey = if (stillPresent) "cancel.error.already.cancelling" else "cancel.error.not.active"
+            answerSafely(callback, msg.get(errorKey, lang))
             return
         }
 
@@ -2341,11 +2419,12 @@ class QuickExportHandler(
                         replyMarkup =
                             createProgressKeyboard(
                                 exportId,
-                                recordingId,
                                 msg.get("quickexport.button.processing", lang),
                                 msg.get("quickexport.button.cancel", lang),
                             ),
                     )
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update button to processing state" }
                 }
@@ -2401,7 +2480,6 @@ class QuickExportHandler(
                             replyMarkup =
                                 createProgressKeyboard(
                                     exportId,
-                                    recordingId,
                                     text,
                                     msg.get("quickexport.button.cancel", lang),
                                 ),
@@ -2443,7 +2521,6 @@ class QuickExportHandler(
                         replyMarkup =
                             createProgressKeyboard(
                                 exportId,
-                                recordingId,
                                 msg.get("quickexport.progress.sending", lang),
                                 msg.get("quickexport.button.cancel", lang),
                             ),
@@ -2591,10 +2668,13 @@ class QuickExportHandler(
 
         /**
          * Two-row keyboard: progress-button (row 1, `np:` noop callback) + cancel-button (row 2, `xc:` cancel).
+         * Key is `exportId` — progress button payload `np:{exportId}` and cancel button payload
+         * `xc:{exportId}`. `recordingId` is intentionally NOT a parameter: the initial keyboard row
+         * (original vs annotated choice) is rebuilt separately via `restoreButton(message, recordingId, ...)`
+         * when the export completes or errors.
          */
         fun createProgressKeyboard(
             exportId: UUID,
-            @Suppress("unused") recordingId: UUID,
             progressText: String,
             cancelText: String,
         ): InlineKeyboardMarkup =
@@ -2663,6 +2743,8 @@ coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), 
 
 Similarly for `coVerify`. Do this for every occurrence.
 
+**Also: remove the obsolete `CreateProcessingKeyboardTest` inner class (QuickExportHandlerTest.kt:197).** Task 9 Step 1 replaces `createProcessingKeyboard(recordingId, text, mode=)` with `createProgressKeyboard(exportId, progressText, cancelText)` — different signature and different semantics (`exportId` key, two rows, no `mode` param). The existing `CreateProcessingKeyboardTest` calls the old API at four sites (lines ~202, 212, 223, 235) and will not compile after Step 1. Recommendation: **delete the whole `CreateProcessingKeyboardTest` inner class** — keyboard shape is sufficiently covered by Step 3's end-to-end cancellation tests, which assert `createProgressKeyboard(...)` result structure directly.
+
 - [ ] **Step 3: Add mandatory cancellation tests in `QuickExportHandlerTest`**
 
 Add a new `@Nested inner class CancellationTest` (after existing nested classes). **Mandatory** (not optional) — these tests guard the most critical new behavior:
@@ -2673,8 +2755,7 @@ Add a new `@Nested inner class CancellationTest` (after existing nested classes)
         @Test
         fun `progress keyboard has two rows — progress noop + cancel`() {
             val exportId = UUID.randomUUID()
-            val recordingId = UUID.randomUUID()
-            val kb = QuickExportHandler.createProgressKeyboard(exportId, recordingId, "progress", "cancel")
+            val kb = QuickExportHandler.createProgressKeyboard(exportId, "progress", "cancel")
             assertEquals(2, kb.keyboard.size, "progress keyboard must have 2 rows")
             val row1 = kb.keyboard[0]
             val row2 = kb.keyboard[1]
@@ -2843,8 +2924,12 @@ class ExportExecutor(
                 error("Unexpected DuplicateRecording from tryStartDialogExport")
             }
             is ActiveExportRegistry.StartResult.Success -> {
+                // Fire-and-forget: start the LAZY job and return immediately. execute() MUST NOT
+                // block on job.join() — ExportCommandHandler releases ActiveExportTracker in its
+                // finally block, and blocking here would collapse the two-tier lock model (tracker
+                // would remain acquired for the entire export, up to 50 min). Registry's byChat
+                // index then owns execution-phase dedup independently of tracker.
                 job.start()
-                job.join()
             }
         }
     }
@@ -2860,12 +2945,12 @@ class ExportExecutor(
         lang: String,
         exportId: UUID,
     ) {
-        val cancelKeyboard = cancelKeyboard(exportId, lang)
+        val cancelKeyboardMarkup = cancelKeyboard(exportId, lang)
         val statusMessage =
             bot.sendTextMessage(
                 chatId,
                 renderProgress(Stage.PREPARING, mode = mode, msg = msg, lang = lang),
-                replyMarkup = cancelKeyboard,
+                replyMarkup = cancelKeyboardMarkup,
             )
 
         var lastRenderedStage: Stage? = Stage.PREPARING
@@ -2895,7 +2980,7 @@ class ExportExecutor(
                     bot.editMessageText(
                         statusMessage,
                         renderProgress(progress.stage, progress.percent, mode, hadCompressing, msg, lang),
-                        replyMarkup = cancelKeyboard,
+                        replyMarkup = cancelKeyboardMarkup,
                     )
                 } catch (e: CancellationException) {
                     throw e
@@ -2925,13 +3010,21 @@ class ExportExecutor(
                 } ?: run {
                     // Drop the cancel keyboard on the status message — otherwise a dead "✖ Отмена"
                     // button remains on the final error screen.
-                    runCatching {
+                    // try/catch + explicit CancellationException rethrow (NOT runCatching) —
+                    // consistent with answerSafely pattern (iter-2 BUG-8): runCatching catches
+                    // Throwable including CancellationException, which would break graceful
+                    // shutdown / user-cancel propagation if the outer coroutine is cancelled during
+                    // the bot.editMessageText call.
+                    try {
                         bot.editMessageText(
                             statusMessage,
                             msg.get("export.error.processing.timeout", lang),
                             replyMarkup = null,
                         )
-                    }.onFailure {
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        logger.warn(e) { "Failed to clear cancel keyboard on processing-timeout final screen" }
                         bot.sendTextMessage(chatId, msg.get("export.error.processing.timeout", lang))
                     }
                     return
@@ -2942,8 +3035,10 @@ class ExportExecutor(
                     bot.editMessageText(
                         statusMessage,
                         renderProgress(Stage.SENDING, mode = mode, compressing = hadCompressing, msg = msg, lang = lang),
-                        replyMarkup = cancelKeyboard,
+                        replyMarkup = cancelKeyboardMarkup,
                     )
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update export progress message" }
                 }
@@ -2965,14 +3060,18 @@ class ExportExecutor(
                         "Telegram sendVideo timed out after ${properties.sendVideoTimeout} " +
                             "for chat=$chatId, camera=$camId, file=$fileName"
                     }
-                    // Drop keyboard on final error.
-                    runCatching {
+                    // Drop keyboard on final error. try/catch + rethrow CancellationException —
+                    // NOT runCatching, for the same reason as the processing-timeout path above.
+                    try {
                         bot.editMessageText(
                             statusMessage,
                             msg.get("export.error.send.timeout", lang, properties.sendVideoTimeout.toSeconds()),
                             replyMarkup = null,
                         )
-                    }.onFailure {
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        logger.warn(e) { "Failed to clear cancel keyboard on send-timeout final screen" }
                         bot.sendTextMessage(
                             chatId,
                             msg.get("export.error.send.timeout", lang, properties.sendVideoTimeout.toSeconds()),
@@ -2987,6 +3086,8 @@ class ExportExecutor(
                         renderProgress(Stage.DONE, mode = mode, compressing = hadCompressing, msg = msg, lang = lang),
                         replyMarkup = null,
                     )
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update export progress message" }
                 }
@@ -3170,6 +3271,19 @@ class ExportExecutorTest {
         },
     )
 
+    // Track every scope the tests create so @AfterEach can clean them up even if a test fails
+    // before reaching its own `scope.shutdown()`. Consistent with Task 5 Step 1's `@AfterEach
+    // tearDown()` pattern — prevents coroutine leaks across tests.
+    private val createdScopes = java.util.concurrent.ConcurrentLinkedQueue<ExportCoroutineScope>()
+
+    private fun newScope(): ExportCoroutineScope = ExportCoroutineScope().also { createdScopes.add(it) }
+
+    @org.junit.jupiter.api.AfterEach
+    fun tearDown() {
+        createdScopes.forEach { runCatching { it.shutdown() } }
+        createdScopes.clear()
+    }
+
     @Test
     fun `cancelled export — final editMessageText with null keyboard + registry released`() = runTest {
         val bot: TelegramBot = mockk(relaxed = true)
@@ -3177,7 +3291,7 @@ class ExportExecutorTest {
         val properties = mockk<TelegramProperties>(relaxed = true).also {
             every { it.sendVideoTimeout } returns Duration.ofSeconds(30)
         }
-        val scope = ExportCoroutineScope()
+        val scope = newScope()
         val registry = ActiveExportRegistry(scope)
         val executor = ExportExecutor(bot, videoExportService, properties, msg, registry, scope)
 
@@ -3230,7 +3344,7 @@ class ExportExecutorTest {
         val properties = mockk<TelegramProperties>(relaxed = true).also {
             every { it.sendVideoTimeout } returns Duration.ofSeconds(30)
         }
-        val scope = ExportCoroutineScope()
+        val scope = newScope()
         val registry = ActiveExportRegistry(scope)
         val executor = ExportExecutor(bot, videoExportService, properties, msg, registry, scope)
 
@@ -3325,9 +3439,13 @@ Both QuickExport and `/export` support user-initiated cancellation.
 | ExportCoroutineScope | `telegram/bot/handler/export/` | Shared scope for export coroutines, gracefully cancelled on @PreDestroy. |
 | CancellableJob (SAM) | `telegram/service/model/` | Hides AcquiredServer behind an abstraction; published via onJobSubmitted callback. |
 
-Cancel callback format: `xc:{exportId}` triggers registry `ACTIVE → CANCELLING` transition. The
-coroutine is cancelled (`Job.cancel()`), and if the vision server already has an active annotation
-job, `DetectService.cancelJob(server, jobId)` is fire-and-forget-posted to `POST /jobs/{id}/cancel`.
+Callback payload formats:
+- `xc:{exportId}` — cancel: triggers registry `ACTIVE → CANCELLING` transition, cancels the coroutine
+  (`Job.cancel()`), and if the vision server already has an active annotation job,
+  `DetectService.cancelJob(server, jobId)` is fire-and-forget-posted to `POST /jobs/{id}/cancel`.
+- `np:{exportId}` — no-op / "ack spinner" for the progress button shown alongside the cancel button
+  (ktgbotapi requires every inline button to have either a URL or callback data). The handler
+  silently acks the callback so the Telegram client stops the inline spinner without any UI change.
 
 ### Lock Ordering Invariant (Tracker + Registry)
 
@@ -3454,7 +3572,7 @@ The documents remain accessible in branch history if needed.
 
 All spec sections have tasks.
 
-**2. Placeholder scan:** No "TBD", "TODO", "implement later", or vague steps. Task 9 Step 3 has an optional cancellation-test that is explicitly flagged as flexible (minimum-viable keyboard shape test is acceptable) — this is a pragmatic flexibility, not a placeholder: the task defines what's required vs. desirable.
+**2. Placeholder scan:** No "TBD", "TODO", "implement later", or vague steps. Task 9 Step 3 — both cancellation tests (keyboard-shape unit + end-to-end cancel flow) are **mandatory** per iter-1 TEST-2 — no "optional/flexible" language remains.
 
 **3. Type consistency:**
 - `CancellableJob` — one declaration site (Task 1), consistent `suspend fun cancel()` across all uses.
@@ -3464,5 +3582,9 @@ All spec sections have tasks.
 - `onJobSubmitted: suspend (CancellableJob) -> Unit = {}` — identical signature in `VideoVisualizationService.annotateVideo`, `VideoExportService.exportVideo` / `exportByRecordingId`.
 
 **4. No methods/types referenced without being defined:** all types defined in Tasks 1 and 5 before first use. `ExportCoroutineScope` defined in Task 6 before first use in Task 7. `CancelExportHandler` defined in Task 7 before first use in Task 8.
+
+**5. Lock Ordering Invariant:** Tracker acquired before Registry (ExportCommandHandler `finally { tracker.release }` wraps `exportExecutor.execute(...)` which fires-and-forgets the LAZY job — tracker held only for dialog phase). Registry's internal locks: `release()` removes from `byExportId` BEFORE taking `synchronized(entry)` to avoid reverse-order deadlock with `markCancelling` (which holds CHM bucket lock inside `computeIfPresent` and takes entry monitor inside the lambda). Documented in Task 12 Step 1 for `.claude/rules/telegram.md`.
+
+**6. i18n key consistency:** File Structure row lists `export.cancelled.by.user` (not `export.cancelled.action`). Task 6 creates it; design §7 references it. No asymmetry with `quickexport.cancelled`: the legacy `export.cancelled` key is owned by the dialog-cancel-before-start path, so the new key needs the `.by.user` suffix to disambiguate.
 
 No gaps found.
