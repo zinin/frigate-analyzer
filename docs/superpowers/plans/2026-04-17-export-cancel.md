@@ -36,7 +36,7 @@
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/VideoExportService.kt` | Add `onJobSubmitted: suspend (CancellableJob) -> Unit = {}` to both methods. |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandler.kt` | Remove local `activeExports` set; use `ActiveExportRegistry`; launch job with `CoroutineStart.LAZY`; add cancel keyboard (two rows: progress + cancel); `np:` noop callback on progress button; cancellation UI branch in catch; constructor takes shared `ExportCoroutineScope` bean. |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportExecutor.kt` | Wrap body in `exportScope.launch(start = LAZY)` with registry.tryStart + `job.join()`; add `[✖ Отмена]` keyboard to status message; cancellation UI branch; plumb `onJobSubmitted` → `registry.attachCancellable`. |
-| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportCommandHandler.kt` | Remove `ActiveExportTracker` usage (dedup migrates into `ExportExecutor` via registry). Remove private `exportScope` (use injected shared). |
+| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportCommandHandler.kt` | **Keep** `ActiveExportTracker` usage for dialog-phase lock; remove private `exportScope` (executor owns its own via `ExportCoroutineScope` bean). |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt` | Add second `onDataCallbackQuery` route for prefixes `xc:` and `np:` → `CancelExportHandler.handle(callback)`. |
 | `modules/telegram/src/main/resources/messages_ru.properties` | New keys (cancel.*, quickexport.button.cancel, quickexport.progress.cancelling, quickexport.cancelled, export.button.cancel, export.progress.cancelling, export.cancelled.action — see Task 6). |
 | `modules/telegram/src/main/resources/messages_en.properties` | Same new keys in English. |
@@ -49,10 +49,7 @@
 
 ### Deleted files
 
-| Path | Reason |
-|---|---|
-| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ActiveExportTracker.kt` | Superseded by `ActiveExportRegistry`. |
-| `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ActiveExportTrackerTest.kt` | Tests deleted class. |
+None. (Earlier plan iteration had `ActiveExportTracker` deletion; after review-iter-1 it is kept for `/export` dialog-phase lock.)
 
 ---
 
@@ -384,6 +381,10 @@ import kotlinx.coroutines.TimeoutCancellationException
                     .awaitSingleOrNull()
             }
             logger.info { "Cancel request accepted for job $jobId on ${acquired.id}" }
+        } catch (e: TimeoutCancellationException) {
+            // MUST come before CancellationException catch: TimeoutCancellationException is a subtype,
+            // otherwise timeouts would be rethrown as cancellation instead of logged as WARN.
+            logger.warn { "Cancel request timed out for job $jobId on ${acquired.id}" }
         } catch (e: CancellationException) {
             throw e
         } catch (e: WebClientResponseException) {
@@ -392,12 +393,33 @@ import kotlinx.coroutines.TimeoutCancellationException
             } else {
                 logger.warn { "Cancel failed for job $jobId on ${acquired.id}: ${e.statusCode} ${e.message}" }
             }
-        } catch (e: TimeoutCancellationException) {
-            logger.warn { "Cancel request timed out for job $jobId on ${acquired.id}" }
         } catch (e: Exception) {
             logger.warn(e) { "Cancel request error for job $jobId on ${acquired.id}" }
         }
     }
+```
+
+- [ ] **Step 4b: Fix `downloadJobResult` to clean temp-file on CancellationException**
+
+Temp-файл download'а утекает при cancel, так как `catch (Exception)` в Kotlin-корутинах **не** ловит `CancellationException`. Заменить блок в `downloadJobResult`:
+
+```kotlin
+        } catch (e: Exception) {
+            tempFileHelper.deleteIfExists(tempFile)
+            throw e
+        }
+```
+
+на:
+
+```kotlin
+        } catch (e: CancellationException) {
+            tempFileHelper.deleteIfExists(tempFile)
+            throw e
+        } catch (e: Exception) {
+            tempFileHelper.deleteIfExists(tempFile)
+            throw e
+        }
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -686,7 +708,7 @@ Replace the annotate call site (the `if (mode == ExportMode.ANNOTATED) return an
             }
 ```
 
-Update the `private suspend fun annotate(...)` signature and forward the callback:
+Update the `private suspend fun annotate(...)` signature, forward the callback, AND add a dedicated `CancellationException` cleanup branch (otherwise the merged/compressed temp file leaks on user-cancel or shutdown — `catch (Exception)` does NOT catch `CancellationException` in coroutines):
 
 ```kotlin
     private suspend fun annotate(
@@ -719,6 +741,10 @@ Update the `private suspend fun annotate(...)` signature and forward the callbac
             tempFileHelper.deleteIfExists(originalPath)
             logger.debug { "Deleted intermediate file: $originalPath" }
             return annotatedPath
+        } catch (e: CancellationException) {
+            logger.debug(e) { "Annotation cancelled, cleaning up: $originalPath" }
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
+            throw e
         } catch (e: Exception) {
             logger.debug(e) { "Annotation failed, cleaning up: $originalPath" }
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
@@ -726,6 +752,8 @@ Update the `private suspend fun annotate(...)` signature and forward the callbac
         }
     }
 ```
+
+Add import `import kotlinx.coroutines.CancellationException` if not already present.
 
 Update `exportByRecordingId` signature and forward onJobSubmitted:
 
@@ -916,8 +944,18 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 
 class ActiveExportRegistryTest {
-    private val registry = ActiveExportRegistry()
-    private fun newJob(): Job = Job()
+    private val scope = ExportCoroutineScope()
+    private val registry = ActiveExportRegistry(scope)
+    private val jobs = mutableListOf<Job>()
+
+    private fun newJob(): Job = Job().also { jobs.add(it) }
+
+    @org.junit.jupiter.api.AfterEach
+    fun tearDown() {
+        jobs.forEach { it.cancel() }
+        jobs.clear()
+        scope.shutdown()
+    }
 
     @Test
     fun `tryStartQuickExport returns Success and stores entry`() {
@@ -1064,6 +1102,47 @@ class ActiveExportRegistryTest {
     }
 
     @Test
+    fun `markCancelling after release returns null (TOCTOU)`() {
+        val exportId = UUID.randomUUID()
+        registry.tryStartQuickExport(exportId, 1L, ExportMode.ANNOTATED, UUID.randomUUID(), newJob())
+        registry.release(exportId)
+
+        val result = registry.markCancelling(exportId)
+
+        assertNull(result)
+    }
+
+    @Test
+    fun `attachCancellable fires cancel when entry is already CANCELLING`() = runBlocking {
+        val exportId = UUID.randomUUID()
+        registry.tryStartQuickExport(exportId, 1L, ExportMode.ANNOTATED, UUID.randomUUID(), newJob())
+        registry.markCancelling(exportId)
+        var called = false
+        val cancellable = CancellableJob { called = true }
+
+        registry.attachCancellable(exportId, cancellable)
+
+        // Give the launched coroutine a moment to run.
+        kotlinx.coroutines.delay(50)
+        assertTrue(called, "attachCancellable must invoke cancel when state is already CANCELLING")
+        Unit
+    }
+
+    @Test
+    fun `attachCancellable does not fire cancel when entry is ACTIVE`() = runBlocking {
+        val exportId = UUID.randomUUID()
+        registry.tryStartQuickExport(exportId, 1L, ExportMode.ANNOTATED, UUID.randomUUID(), newJob())
+        var called = false
+        val cancellable = CancellableJob { called = true }
+
+        registry.attachCancellable(exportId, cancellable)
+
+        kotlinx.coroutines.delay(50)
+        assertEquals(false, called)
+        Unit
+    }
+
+    @Test
     fun `concurrent tryStartQuickExport for same recordingId — exactly one succeeds`() = runBlocking {
         val recordingId = UUID.randomUUID()
         val successes = AtomicInteger(0)
@@ -1129,7 +1208,9 @@ import java.util.concurrent.ConcurrentHashMap
  */
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
-class ActiveExportRegistry {
+class ActiveExportRegistry(
+    private val exportScope: ExportCoroutineScope,
+) {
     enum class State { ACTIVE, CANCELLING }
 
     data class Entry(
@@ -1151,6 +1232,7 @@ class ActiveExportRegistry {
     private val byExportId = ConcurrentHashMap<UUID, Entry>()
     private val byRecordingId = ConcurrentHashMap<UUID, UUID>()
     private val byChat = ConcurrentHashMap<Long, UUID>()
+    private val startLock = Any()
 
     fun tryStartQuickExport(
         exportId: UUID,
@@ -1158,7 +1240,9 @@ class ActiveExportRegistry {
         mode: ExportMode,
         recordingId: UUID,
         job: Job,
-    ): StartResult {
+    ): StartResult = synchronized(startLock) {
+        // Atomic under startLock: putIfAbsent(byRecordingId) + byExportId[...] = Entry so that
+        // a failure between the two doesn't leave byRecordingId permanently locked.
         val existing = byRecordingId.putIfAbsent(recordingId, exportId)
         if (existing != null) return StartResult.DuplicateRecording
         byExportId[exportId] = Entry(exportId, chatId, mode, recordingId, job)
@@ -1170,41 +1254,69 @@ class ActiveExportRegistry {
         chatId: Long,
         mode: ExportMode,
         job: Job,
-    ): StartResult {
+    ): StartResult = synchronized(startLock) {
         val existing = byChat.putIfAbsent(chatId, exportId)
         if (existing != null) return StartResult.DuplicateChat
         byExportId[exportId] = Entry(exportId, chatId, mode, null, job)
         return StartResult.Success(exportId)
     }
 
+    /**
+     * Publishes the cancel handle. If the entry is already `CANCELLING` at the time of publication
+     * (because a cancel click arrived between `submitWithRetry` and this call), fire-and-forget the
+     * cancel so the vision server is still told to stop.
+     */
     fun attachCancellable(exportId: UUID, cancellable: CancellableJob) {
-        byExportId[exportId]?.cancellable = cancellable
+        val entry = byExportId[exportId] ?: return
+        entry.cancellable = cancellable
+        if (entry.state == State.CANCELLING) {
+            exportScope.launch {
+                runCatching { cancellable.cancel() }
+            }
+        }
     }
 
     /**
-     * Atomic transition `ACTIVE → CANCELLING`.
+     * Atomic transition `ACTIVE → CANCELLING` under `computeIfPresent` + `synchronized(entry)`.
+     * Closes the TOCTOU race vs. `release()` — if a concurrent release removes the entry from the
+     * map, `computeIfPresent` sees null and we return null cleanly.
      *
      * @return the entry snapshot after the transition on success, `null` if the entry does not
-     *   exist or is already in `CANCELLING`.
+     *   exist (released) or is already in `CANCELLING`.
      */
     fun markCancelling(exportId: UUID): Entry? {
-        val entry = byExportId[exportId] ?: return null
-        synchronized(entry) {
-            if (entry.state == State.CANCELLING) return null
-            entry.state = State.CANCELLING
-            return entry
+        var snapshot: Entry? = null
+        byExportId.computeIfPresent(exportId) { _, entry ->
+            synchronized(entry) {
+                if (entry.state != State.CANCELLING) {
+                    entry.state = State.CANCELLING
+                    snapshot = entry
+                }
+            }
+            entry
         }
+        return snapshot
     }
 
     fun get(exportId: UUID): Entry? = byExportId[exportId]
 
+    /**
+     * Idempotent. All secondary-index cleanups happen under `synchronized(entry)` to be atomic vs
+     * concurrent `markCancelling`. Called both from `finally` of the export coroutine and from
+     * `Job.invokeOnCompletion` — double-call is safe (map operations are idempotent).
+     */
     fun release(exportId: UUID) {
-        val entry = byExportId.remove(exportId) ?: return
-        entry.recordingId?.let { byRecordingId.remove(it, exportId) }
-        byChat.remove(entry.chatId, exportId)
+        val entry = byExportId[exportId] ?: return
+        synchronized(entry) {
+            byExportId.remove(exportId)
+            entry.recordingId?.let { byRecordingId.remove(it, exportId) }
+            byChat.remove(entry.chatId, exportId)
+        }
     }
 }
 ```
+
+**Important**: `ActiveExportRegistry` now takes `ExportCoroutineScope` as a constructor parameter. Task 6 (creating `ExportCoroutineScope`) must already be completed — adjust the task order if you're executing by-hand. Since Task 6 is already bite-sized and independent, running it before Task 5 works; alternatively, temporarily create `ExportCoroutineScope` inline if you prefer strictly monotonic order — but then swap the dependency in Task 6. Recommended: **run Task 6 before Task 5**.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1384,7 +1496,7 @@ class CancelExportHandlerTest {
     private val authFilter: AuthorizationFilter = mockk(relaxed = true)
     private val userService: TelegramUserService = mockk(relaxed = true)
     private val scope = ExportCoroutineScope()
-    private val registry = ActiveExportRegistry()
+    private val registry = ActiveExportRegistry(scope)
 
     private val handler = CancelExportHandler(bot, registry, scope, authFilter, userService, msg)
 
@@ -1411,7 +1523,7 @@ class CancelExportHandlerTest {
                 null,
             )
         }
-        every { authFilter.getRole("alice") } returns UserRole.USER
+        coEvery { authFilter.getRole("alice") } returns UserRole.USER
 
         handler.handle(cb)
 
@@ -1444,7 +1556,7 @@ class CancelExportHandlerTest {
                 null,
             )
         }
-        every { authFilter.getRole("alice") } returns UserRole.USER
+        coEvery { authFilter.getRole("alice") } returns UserRole.USER
         coEvery { userService.getUserLanguage(any()) } returns "en"
 
         handler.handle(cb)
@@ -1487,7 +1599,7 @@ class CancelExportHandlerTest {
                 null,
             )
         }
-        every { authFilter.getRole("alice") } returns UserRole.USER
+        coEvery { authFilter.getRole("alice") } returns UserRole.USER
         coEvery { userService.getUserLanguage(any()) } returns "en"
 
         handler.handle(cb)
@@ -1529,7 +1641,7 @@ class CancelExportHandlerTest {
                 null,
             )
         }
-        every { authFilter.getRole("alice") } returns UserRole.USER
+        coEvery { authFilter.getRole("alice") } returns UserRole.USER
         coEvery { userService.getUserLanguage(any()) } returns "en"
 
         handler.handle(cb)
@@ -1568,7 +1680,7 @@ class CancelExportHandlerTest {
                 null,
             )
         }
-        every { authFilter.getRole("alice") } returns UserRole.USER
+        coEvery { authFilter.getRole("alice") } returns UserRole.USER
         coEvery { userService.getUserLanguage(any()) } returns "en"
 
         handler.handle(cb)
@@ -1606,7 +1718,7 @@ class CancelExportHandlerTest {
                 null,
             )
         }
-        every { authFilter.getRole("bob") } returns null
+        coEvery { authFilter.getRole("bob") } returns null
         coEvery { userService.getUserLanguage(any()) } returns "en"
 
         handler.handle(cb)
@@ -1753,7 +1865,10 @@ class CancelExportHandler(
         }
 
         runCatching {
-            bot.editMessageReplyMarkup(message, replyMarkup = buildCancellingKeyboard(exportId, marked.mode, lang))
+            bot.editMessageReplyMarkup(
+                message,
+                replyMarkup = buildCancellingKeyboard(exportId, marked.recordingId, lang),
+            )
         }.onFailure { logger.warn(it) { "Failed to update keyboard to cancelling state" } }
 
         marked.job.cancel(CancellationException("user cancelled"))
@@ -1773,11 +1888,13 @@ class CancelExportHandler(
 
     private fun buildCancellingKeyboard(
         exportId: UUID,
-        mode: ExportMode,
+        recordingId: UUID?,
         lang: String,
     ): InlineKeyboardMarkup {
+        // Distinguish QuickExport vs /export by presence of recordingId (NOT by ExportMode — that
+        // enum has only ANNOTATED/ORIGINAL and both flows use both modes).
         val label =
-            if (mode == ExportMode.ANNOTATED || mode == ExportMode.ORIGINAL) {
+            if (recordingId != null) {
                 msg.get("quickexport.progress.cancelling", lang)
             } else {
                 msg.get("export.progress.cancelling", lang)
@@ -1805,7 +1922,13 @@ class CancelExportHandler(
         const val NOOP_PREFIX = "np:"
 
         fun parseExportId(data: String): UUID? {
-            val raw = data.removePrefix(CANCEL_PREFIX).removePrefix(NOOP_PREFIX)
+            // Strict: require exactly one of the prefixes at the start. `data = "xc:np:uuid"` must
+            // not parse — removePrefix-chain would silently accept it.
+            val raw = when {
+                data.startsWith(CANCEL_PREFIX) -> data.removePrefix(CANCEL_PREFIX)
+                data.startsWith(NOOP_PREFIX) -> data.removePrefix(NOOP_PREFIX)
+                else -> return null
+            }
             return try {
                 UUID.fromString(raw)
             } catch (_: IllegalArgumentException) {
@@ -2005,6 +2128,10 @@ class QuickExportHandler(
         val job = exportScope.launch(start = CoroutineStart.LAZY) {
             runExport(message, chatIdLong, chatId, recordingId, mode, lang, exportId)
         }
+        // Safety net for LAZY cancel-before-body — finally in runExport won't fire if job is
+        // cancelled before its first suspension point. release() is idempotent, so double-firing
+        // (finally + invokeOnCompletion) is harmless.
+        job.invokeOnCompletion { registry.release(exportId) }
 
         val startResult = registry.tryStartQuickExport(exportId, chatIdLong, mode, recordingId, job)
         when (startResult) {
@@ -2014,10 +2141,10 @@ class QuickExportHandler(
                 return null
             }
             is ActiveExportRegistry.StartResult.DuplicateChat -> {
-                // Not used for QuickExport; defensive.
+                // Impossible for QuickExport (registry doesn't check byChat for QuickExport).
+                // If this ever fires, it's a programming error — fail loudly.
                 job.cancel()
-                bot.answer(callback, msg.get("quickexport.error.concurrent", lang))
-                return null
+                error("Unexpected DuplicateChat from tryStartQuickExport")
             }
             is ActiveExportRegistry.StartResult.Success -> {
                 bot.answer(callback)
@@ -2336,29 +2463,81 @@ coEvery { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), 
 
 Similarly for `coVerify`. Do this for every occurrence.
 
-- [ ] **Step 3: Add a cancellation test in `QuickExportHandlerTest`**
+- [ ] **Step 3: Add mandatory cancellation tests in `QuickExportHandlerTest`**
 
-Add in a new `@Nested inner class CancellationTest { ... }` (after existing nested classes):
+Add a new `@Nested inner class CancellationTest` (after existing nested classes). **Mandatory** (not optional) — these tests guard the most critical new behavior:
 
 ```kotlin
     @Nested
     inner class CancellationTest {
         @Test
-        fun `when user cancels — handler sends cancelled message and restores keyboard`() = runTest {
-            // Arrange full environment like existing success test.
-            // (Copy the setup from the existing "performs export successfully" test: bot, mocks, user, callback.)
-            // Use an ExportCoroutineScope that shares this test's TestScope.
-            // Trigger cancel by manually calling registry.markCancelling(exportId) + job.cancel()
-            // after the handler returns the Job, then wait for join, and verify that
-            // bot.sendTextMessage was called with "Export cancelled" text.
-            // This test is optional but recommended. If it's too cumbersome given existing helper
-            // structure, at minimum verify: after job.cancel(), registry.release was called
-            // (i.e., registry.get(exportId) returns null after join).
+        fun `progress keyboard has two rows — progress noop + cancel`() {
+            val exportId = UUID.randomUUID()
+            val recordingId = UUID.randomUUID()
+            val kb = QuickExportHandler.createProgressKeyboard(exportId, recordingId, "progress", "cancel")
+            assertEquals(2, kb.keyboard.size, "progress keyboard must have 2 rows")
+            val row1 = kb.keyboard[0]
+            val row2 = kb.keyboard[1]
+            assertEquals(1, row1.size)
+            assertEquals(1, row2.size)
+            val noop = row1[0] as CallbackDataInlineKeyboardButton
+            val cancel = row2[0] as CallbackDataInlineKeyboardButton
+            assertTrue(noop.callbackData.startsWith("np:"), "row 1 must be np:-callback")
+            assertTrue(cancel.callbackData.startsWith("xc:"), "row 2 must be xc:-callback")
+            assertTrue(noop.callbackData.endsWith(exportId.toString()))
+            assertTrue(cancel.callbackData.endsWith(exportId.toString()))
         }
+
+        @Test
+        fun `when user cancels — registry released and cancelled message sent`() = runTest {
+            // Setup: same as existing "successful export" test, but videoExportService.exportByRecordingId
+            // should suspend indefinitely (awaitCancellation) so we can cancel it externally.
+            val bot: TelegramBot = mockk(relaxed = true)
+            val videoExportService: VideoExportService = mockk(relaxed = true)
+            val authFilter: AuthorizationFilter = mockk(relaxed = true)
+            val userService: TelegramUserService = mockk(relaxed = true)
+            val properties = mockk<TelegramProperties>(relaxed = true).also {
+                every { it.sendVideoTimeout } returns Duration.ofSeconds(30)
+            }
+            val scope = ExportCoroutineScope()
+            val registry = ActiveExportRegistry(scope)
+            val handler = QuickExportHandler(
+                bot, videoExportService, authFilter, properties, msg, userService, registry, scope,
+            )
+            coEvery { authFilter.getRole(any()) } returns UserRole.USER
+            coEvery { userService.getUserLanguage(any()) } returns "en"
+            coEvery {
+                videoExportService.exportByRecordingId(any(), any(), any(), any(), any())
+            } coAnswers { kotlinx.coroutines.awaitCancellation() }
+            val recordingId = UUID.randomUUID()
+            val callback = makeQuickExportCallback(recordingId)
+            val returnedJob = handler.handle(callback)!!
+
+            // Simulate cancel click: mark + cancel.
+            val exportId = registry.get(recordingId)?.exportId
+                ?: registry.byExportIdForTest().keys.first()
+            registry.markCancelling(exportId)
+            returnedJob.cancel()
+            returnedJob.join()
+
+            // Verify: registry released; "cancelled" text sent.
+            assertNull(registry.get(exportId))
+            coVerify {
+                bot.sendTextMessage(
+                    any<dev.inmo.tgbotapi.types.IdChatIdentifier>(),
+                    match<String> { it.contains("cancelled", ignoreCase = true) or it.contains("Отменён") },
+                )
+            }
+            scope.shutdown()
+        }
+
+        // Helper: see Helpers at the bottom of the test file.
     }
 ```
 
-Implementor note: If full e2e cancellation test is hard to set up without rewriting the existing test helpers, it is acceptable to ship Task 9 with a minimal smoke test that only exercises the new `createProgressKeyboard` shape (row count = 2, button 1 callback = `np:`, button 2 callback = `xc:`) and defer the full cancellation test to a follow-up. Document the decision in the commit message.
+Implementor note:
+- `registry.get(recordingId)` is not a real API — the production registry is keyed by `exportId`. In the test, you can add a small test-only helper in the production registry (`@VisibleForTesting`) or iterate `byExportId` directly. The simplest path: expose `internal fun getAllActive(): Collection<Entry>` for test purposes.
+- If rewriting existing test helpers is infeasible, the first sub-test (keyboard shape) is still **mandatory**; the second (end-to-end cancel flow) may be deferred only by explicit approval and a tracking follow-up.
 
 - [ ] **Step 4: Run full telegram test suite**
 
@@ -2442,6 +2621,8 @@ class ExportExecutor(
         val job: Job = exportScope.launch(start = CoroutineStart.LAZY) {
             runExport(chatId, userZone, camId, mode, startInstant, endInstant, lang, exportId)
         }
+        // Safety net for LAZY cancel-before-body. Idempotent with finally inside runExport.
+        job.invokeOnCompletion { registry.release(exportId) }
 
         val startResult =
             registry.tryStartDialogExport(exportId, chatId.chatId.long, mode, job)
@@ -2452,10 +2633,10 @@ class ExportExecutor(
                 return
             }
             is ActiveExportRegistry.StartResult.DuplicateRecording -> {
-                // Not used for /export; defensive.
+                // Impossible for /export (registry doesn't check byRecordingId for /export).
+                // Programming error — fail loudly.
                 job.cancel()
-                bot.sendTextMessage(chatId, msg.get("export.error.concurrent", lang))
-                return
+                error("Unexpected DuplicateRecording from tryStartDialogExport")
             }
             is ActiveExportRegistry.StartResult.Success -> {
                 job.start()
@@ -2538,7 +2719,17 @@ class ExportExecutor(
                         onJobSubmitted = onJobSubmitted,
                     )
                 } ?: run {
-                    bot.sendTextMessage(chatId, msg.get("export.error.processing.timeout", lang))
+                    // Drop the cancel keyboard on the status message — otherwise a dead "✖ Отмена"
+                    // button remains on the final error screen.
+                    runCatching {
+                        bot.editMessageText(
+                            statusMessage,
+                            msg.get("export.error.processing.timeout", lang),
+                            replyMarkup = null,
+                        )
+                    }.onFailure {
+                        bot.sendTextMessage(chatId, msg.get("export.error.processing.timeout", lang))
+                    }
                     return
                 }
 
@@ -2570,10 +2761,19 @@ class ExportExecutor(
                         "Telegram sendVideo timed out after ${properties.sendVideoTimeout} " +
                             "for chat=$chatId, camera=$camId, file=$fileName"
                     }
-                    bot.sendTextMessage(
-                        chatId,
-                        msg.get("export.error.send.timeout", lang, properties.sendVideoTimeout.toSeconds()),
-                    )
+                    // Drop keyboard on final error.
+                    runCatching {
+                        bot.editMessageText(
+                            statusMessage,
+                            msg.get("export.error.send.timeout", lang, properties.sendVideoTimeout.toSeconds()),
+                            replyMarkup = null,
+                        )
+                    }.onFailure {
+                        bot.sendTextMessage(
+                            chatId,
+                            msg.get("export.error.send.timeout", lang, properties.sendVideoTimeout.toSeconds()),
+                        )
+                    }
                     return
                 }
 
@@ -2640,13 +2840,16 @@ class ExportExecutor(
 }
 ```
 
-- [ ] **Step 2: Update `ExportCommandHandler` to drop `ActiveExportTracker`**
+- [ ] **Step 2: Update `ExportCommandHandler` — keep `ActiveExportTracker` for dialog phase**
 
-Replace `ExportCommandHandler.kt`:
+Do **NOT** remove `ActiveExportTracker`. It guards the dialog phase where registry has no hook (dialog runs before any `exportId` is generated, and ktgbotapi's `waitDataCallbackQuery`/`waitTextMessage` collectors compete if multiple dialogs run in the same chat).
+
+Refactor `ExportCommandHandler.kt`:
 
 ```kotlin
 package ru.zinin.frigate.analyzer.telegram.bot.handler.export
 
+import dev.inmo.tgbotapi.extensions.api.send.reply
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
 import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
@@ -2665,6 +2868,7 @@ class ExportCommandHandler(
     private val userService: TelegramUserService,
     private val exportDialogRunner: ExportDialogRunner,
     private val exportExecutor: ExportExecutor,
+    private val activeExportTracker: ActiveExportTracker,
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "export"
@@ -2679,70 +2883,174 @@ class ExportCommandHandler(
         val chatId = message.chat.id
         val chatIdLong = chatId.chatId.long
 
-        val userZone = userService.getUserZone(chatIdLong)
-        val outcome = with(exportDialogRunner) { runDialog(chatId, userZone, lang) }
+        // Dialog-phase lock: prevent two parallel /export dialogs in the same DM from hijacking each
+        // other's callback/text replies. Execution-phase lock lives in ExportExecutor via registry.
+        if (!activeExportTracker.tryAcquire(chatIdLong)) {
+            reply(message, msg.get("export.error.concurrent", lang))
+            return
+        }
+        try {
+            val userZone = userService.getUserZone(chatIdLong)
+            val outcome = with(exportDialogRunner) { runDialog(chatId, userZone, lang) }
 
-        when (outcome) {
-            is ExportDialogOutcome.Success -> {
-                exportExecutor.execute(chatId, userZone, outcome, lang)
+            when (outcome) {
+                is ExportDialogOutcome.Success -> {
+                    exportExecutor.execute(chatId, userZone, outcome, lang)
+                }
+                is ExportDialogOutcome.Cancelled -> {
+                }
+                is ExportDialogOutcome.Timeout -> {
+                    sendTextMessage(chatId, msg.get("export.timeout", lang))
+                }
             }
-            is ExportDialogOutcome.Cancelled -> {
-            }
-            is ExportDialogOutcome.Timeout -> {
-                sendTextMessage(chatId, msg.get("export.timeout", lang))
-            }
+        } finally {
+            activeExportTracker.release(chatIdLong)
         }
     }
 }
 ```
 
-Note: the per-chat dedup now lives inside `ExportExecutor.execute()` via `registry.tryStartDialogExport(...)` which returns `DuplicateChat` and sends `export.error.concurrent`.
+Notes on lock layering:
+- `ActiveExportTracker` = dialog-phase chat lock (original role, preserved).
+- `ActiveExportRegistry.tryStartDialogExport(...)` = execution-phase chat lock + exportId registry (new).
+- Both locks are held concurrently for a short period (during `exportExecutor.execute`), but they don't deadlock — registry's `synchronized(startLock)` is short-lived and doesn't wait on tracker.
+- Private `exportScope` in the old handler is removed (executor now manages its own via `ExportCoroutineScope` bean).
 
-- [ ] **Step 3: Build and run telegram tests**
+- [ ] **Step 3: Write mandatory cancellation test for `ExportExecutor`**
+
+Create/extend `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportExecutorTest.kt`. **Mandatory** (replaces the earlier "optional" flag).
+
+```kotlin
+package ru.zinin.frigate.analyzer.telegram.bot.handler.export
+
+import dev.inmo.tgbotapi.bot.TelegramBot
+import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
+import io.mockk.Runs
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.just
+import io.mockk.mockk
+import io.mockk.slot
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Test
+import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
+import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
+import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
+import java.time.Duration
+import java.time.Instant
+import java.util.Locale
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class ExportExecutorTest {
+    private val msg = MessageResolver(
+        ReloadableResourceBundleMessageSource().apply {
+            setBasename("classpath:messages")
+            setDefaultEncoding("UTF-8")
+            setFallbackToSystemLocale(false)
+            setDefaultLocale(Locale.forLanguageTag("en"))
+        },
+    )
+
+    @Test
+    fun `cancelled export — final editMessageText with null keyboard + registry released`() = runTest {
+        val bot: TelegramBot = mockk(relaxed = true)
+        val videoExportService: VideoExportService = mockk(relaxed = true)
+        val properties = mockk<TelegramProperties>(relaxed = true).also {
+            every { it.sendVideoTimeout } returns Duration.ofSeconds(30)
+        }
+        val scope = ExportCoroutineScope()
+        val registry = ActiveExportRegistry(scope)
+        val executor = ExportExecutor(bot, videoExportService, properties, msg, registry, scope)
+
+        coEvery {
+            videoExportService.exportVideo(any(), any(), any(), any(), any(), any())
+        } coAnswers { awaitCancellation() }
+
+        val chatId = dev.inmo.tgbotapi.types.ChatId(dev.inmo.tgbotapi.types.RawChatId(42L))
+        val outcome = ExportDialogOutcome.Success(
+            Instant.parse("2026-02-16T12:00:00Z"),
+            Instant.parse("2026-02-16T12:05:00Z"),
+            "cam1",
+            ExportMode.ANNOTATED,
+        )
+
+        val executeJob = scope.launch { executor.execute(chatId, java.time.ZoneOffset.UTC, outcome, "en") }
+
+        // Wait for registry to have the entry (execute fires registry.tryStartDialogExport synchronously-ish).
+        var exportId: java.util.UUID? = null
+        repeat(50) {
+            exportId = firstActiveExport(registry)
+            if (exportId != null) return@repeat
+            kotlinx.coroutines.delay(10)
+        }
+        assertTrue(exportId != null, "registry must contain active export")
+
+        // Simulate cancel click.
+        registry.markCancelling(exportId!!)
+        registry.get(exportId!!)!!.job.cancel()
+        executeJob.join()
+
+        // Final editMessageText should have been called with the cancelled text and null keyboard.
+        coVerify {
+            bot.editMessageText(any(), match<String> { it.contains("cancelled", ignoreCase = true) or it.contains("Отменён") }, replyMarkup = null)
+        }
+        // Registry released.
+        assertNull(registry.get(exportId!!))
+
+        scope.shutdown()
+    }
+
+    @Test
+    fun `second parallel execute — returns DuplicateChat and sends concurrent message`() = runTest {
+        // Setup similar, but exportVideo suspends indefinitely on first call.
+        // Launch first execute; once registry has entry, launch second execute — expect
+        // bot.sendTextMessage with "concurrent" text.
+        // (Abbreviated: implementation mirrors the test above; verify concurrent path.)
+    }
+
+    private fun firstActiveExport(registry: ActiveExportRegistry): java.util.UUID? {
+        // Use an @VisibleForTesting helper on registry or reflection.
+        return null // IMPLEMENTOR: wire this up using a test-only accessor (see Task 5 Step 3 note).
+    }
+}
+```
+
+Note: `firstActiveExport` requires a test-only accessor on `ActiveExportRegistry`. Add one as part of this task:
+
+```kotlin
+// In ActiveExportRegistry — anywhere in the class:
+internal fun snapshotForTest(): Map<UUID, Entry> = byExportId.toMap()
+```
+
+- [ ] **Step 4: Build and run telegram tests**
 
 `./gradlew :telegram:test` (build-runner).
-Expected: existing tests for ExportCommandHandler (if any) may need updated constructor args — adjust accordingly. All tests PASS.
+Expected: all tests PASS, including the new cancellation test.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportExecutor.kt \
-        modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportCommandHandler.kt
+        modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportCommandHandler.kt \
+        modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ActiveExportRegistry.kt \
+        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportExecutorTest.kt
 git commit -m "feat(export): migrate /export to registry with cancel button"
 ```
 
 ---
 
-### Task 11: Delete `ActiveExportTracker`
+### Task 11: ~~Delete `ActiveExportTracker`~~ — SKIPPED
 
-**Files:**
-- Delete: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ActiveExportTracker.kt`
-- Delete: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ActiveExportTrackerTest.kt`
+After review iteration 1 (2026-04-17), this task is **removed** from the plan.
 
-- [ ] **Step 1: Delete both files**
+`ActiveExportTracker` continues to guard the `/export` dialog phase (`ExportCommandHandler.tryAcquire(chatId)` before `runDialog()`). The registry owns the execution-phase lifecycle only — dialog-phase has no hook into the registry because `exportId` is generated only after the dialog completes.
 
-```bash
-git rm modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ActiveExportTracker.kt \
-       modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ActiveExportTrackerTest.kt
-```
-
-- [ ] **Step 2: Verify no remaining references**
-
-Run Grep: `ActiveExportTracker` across the codebase.
-Expected: 0 matches.
-
-If any references remain (e.g., in comments or other files), update them to `ActiveExportRegistry`.
-
-- [ ] **Step 3: Build check**
-
-Delegate to build-runner: `./gradlew :telegram:compileKotlin :core:compileKotlin`.
-Expected: compiles.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git commit -m "chore(telegram): remove obsolete ActiveExportTracker"
-```
+**No file deletions.** `ActiveExportTrackerTest` is also preserved.
 
 ---
 
@@ -2763,7 +3071,8 @@ Both QuickExport and `/export` support user-initiated cancellation.
 
 | Component | Location | Purpose |
 |---|---|---|
-| ActiveExportRegistry | `telegram/bot/handler/export/` | Tracks active exports by synthetic exportId. Replaces ActiveExportTracker. |
+| ActiveExportRegistry | `telegram/bot/handler/export/` | Tracks active exports **in execution phase** by synthetic exportId. Dedup: by recordingId for QuickExport, by chatId for /export. |
+| ActiveExportTracker | `telegram/bot/handler/export/` | Kept from before. Dialog-phase lock for /export — prevents two parallel /export dialogs in the same DM from hijacking each other's waiter replies. |
 | CancelExportHandler | `telegram/bot/handler/cancel/` | Handles `xc:{exportId}` (cancel) and `np:{exportId}` (noop-ack). |
 | ExportCoroutineScope | `telegram/bot/handler/export/` | Shared scope for export coroutines, gracefully cancelled on @PreDestroy. |
 | CancellableJob (SAM) | `telegram/service/model/` | Hides AcquiredServer behind an abstraction; published via onJobSubmitted callback. |
@@ -2772,8 +3081,16 @@ Cancel callback format: `xc:{exportId}` triggers registry `ACTIVE → CANCELLING
 coroutine is cancelled (`Job.cancel()`), and if the vision server already has an active annotation
 job, `DetectService.cancelJob(server, jobId)` is fire-and-forget-posted to `POST /jobs/{id}/cancel`.
 
-Restart of the application wipes the in-memory registry; old cancel buttons respond with
-"Экспорт уже завершён или недоступен" / "Export is already finished or unavailable".
+### Known Limitations
+
+- **ffmpeg cancellation is best-effort.** On MERGING/COMPRESSING stages `CancellationException` waits
+  for `VideoMergeHelper.process.waitFor(...)` to return before unwinding. UI shows "⏹ Отменяется…"
+  immediately but the final "❌ Отменён" appears only after ffmpeg finishes (seconds for merge, up to
+  minutes for compress). Full sync cancel would need a cancellation-aware ffmpeg wrapper (out of scope).
+- **Restart wipes registry.** Old cancel buttons respond with "Экспорт уже завершён или недоступен".
+  Vision-server jobs orphaned on restart are killed by the server's TTL.
+- **Legacy Telegram notifications.** Pre-deploy messages with `qe:/qea:` buttons don't have inline
+  cancel — start a new export, which opens a fresh status message with the cancel button.
 ```
 
 - [ ] **Step 2: Add `DETECT_VIDEO_VISUALIZE_CANCEL_TIMEOUT` to `.claude/rules/configuration.md`**
