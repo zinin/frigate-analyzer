@@ -265,7 +265,7 @@ export.error.concurrent       = Уже идёт экспорт. / An export is a
 | `VideoVisualizationServiceTest` (extend) | `onJobSubmitted` вызван один раз после submit; не вызван при провале submit; выполнен под NonCancellable (тест с одновременной отменой родительской корутины) |
 | `VideoExportServiceImplTest` (extend) | `onJobSubmitted` прокинут в `annotateVideo` для ANNOTATED; не вызывается для ORIGINAL |
 | `QuickExportHandlerTest` (extend) | клик Cancel → UI «Отменяется…»; финал «Отменён» + восстановление initial keyboard; dedup через registry вместо локального Set |
-| `ExportExecutorTest` (new/extend) | клик Cancel → editMessageText «Отменён» + replyMarkup=null; dedup через registry; LAZY launch + join |
+| `ExportExecutorTest` (new/extend) | клик Cancel → editMessageText «Отменён» + replyMarkup=null; dedup через registry; fire-and-forget launch (без `executeJob.join()`: ждём освобождения registry через `withTimeout { while (registry.get(exportId) != null) delay(10) }`) |
 
 Ручная e2e валидация (записать в плане как item для реализатора): запустить annotated QuickExport в dev-окружении, нажать «Отмена» на этапе ANNOTATING, проверить что vision server получает `POST /jobs/{id}/cancel` и job уходит в `cancelled`.
 

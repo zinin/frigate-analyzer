@@ -192,6 +192,7 @@ import mockwebserver3.RecordedRequest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import org.springframework.http.codec.json.JacksonJsonDecoder
 import org.springframework.http.codec.json.JacksonJsonEncoder
 import org.springframework.web.reactive.function.client.ExchangeStrategies
@@ -213,14 +214,20 @@ import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
 import tools.jackson.databind.json.JsonMapper
 import com.fasterxml.jackson.databind.ObjectMapper as FasterxmlObjectMapper
+import java.nio.file.Path
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertIs
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class DetectServiceCancelJobTest {
+    @TempDir
+    lateinit var tempDir: Path
+
     private lateinit var mockWebServer: MockWebServer
     private lateinit var service: DetectService
     private lateinit var acquired: AcquiredServer
@@ -240,7 +247,11 @@ class DetectServiceCancelJobTest {
             visualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
             videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
         )
-        val appProps = ApplicationProperties(detectServers = mapOf("test" to serverProps))
+        // `ApplicationProperties` is a @ConfigurationProperties data class with 6 non-default
+        // required fields (tempFolder, ffmpegPath, connectionTimeout, readTimeout, writeTimeout,
+        // responseTimeout). Use the `applicationProperties(...)` helper below (matches the pattern
+        // in DetectServiceTest.kt:510-522) instead of a direct ctor call.
+        val appProps = applicationProperties(serverProps)
         val registry = DetectServerRegistry()
         registry.register("test", serverProps)
         registry.getServer("test")!!.alive = true
@@ -368,9 +379,24 @@ class DetectServiceCancelJobTest {
         job.cancel()
         job.join()
         val caught = kotlinx.coroutines.withTimeout(5_000) { propagated.await() }
-        assertEquals(true, caught is CancellationException)
-        assertEquals(false, caught is kotlinx.coroutines.TimeoutCancellationException)
+        assertIs<CancellationException>(caught)
+        assertTrue(caught !is kotlinx.coroutines.TimeoutCancellationException)
         scope.cancel()
+    }
+
+    // Copied from DetectServiceTest.kt:510-522 — creates an ApplicationProperties with dummy
+    // values for all 6 required fields. Reuses the shared @TempDir for tempFolder.
+    private fun applicationProperties(serverProps: DetectServerProperties): ApplicationProperties {
+        val dummyDuration = Duration.ofSeconds(1)
+        return ApplicationProperties(
+            tempFolder = tempDir,
+            ffmpegPath = Path.of("/usr/bin/ffmpeg"),
+            connectionTimeout = dummyDuration,
+            readTimeout = dummyDuration,
+            writeTimeout = dummyDuration,
+            responseTimeout = dummyDuration,
+            detectServers = mapOf("test" to serverProps),
+        )
     }
 
     // Two separate mappers — matches DetectServiceTest pattern (DetectServiceTest.kt:494, 501):
@@ -477,7 +503,11 @@ Temp-файл download'а утекает при cancel, так как `catch (Ex
             withContext(NonCancellable) { tempFileHelper.deleteIfExists(tempFile) }
             throw e
         } catch (e: Exception) {
-            tempFileHelper.deleteIfExists(tempFile)
+            // `deleteIfExists` — suspend. Если parent cancelled в момент попадания сюда (например,
+            // shutdown или user-cancel пришёл ровно после 500 от vision server), suspend-вызов
+            // мгновенно бросит CancellationException без реальной работы и перезапишет исходное
+            // исключение. NonCancellable превращает cleanup в непрерываемый блок.
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(tempFile) }
             throw e
         }
 ```
@@ -485,7 +515,7 @@ Temp-файл download'а утекает при cancel, так как `catch (Ex
 - [ ] **Step 5: Run tests to verify they pass**
 
 `./gradlew :core:test --tests "ru.zinin.frigate.analyzer.core.service.DetectServiceCancelJobTest"` (via build-runner).
-Expected: all 4 tests PASS.
+Expected: all 5 tests PASS (happy-200, 409-terminal, 500, timeout, rethrow-parent-cancellation).
 
 - [ ] **Step 6: Commit**
 
@@ -510,19 +540,37 @@ Append to `VideoVisualizationServiceTest.kt` (before the closing `}` of the clas
 
 ```kotlin
     @Test
-    fun `annotateVideo invokes onJobSubmitted once after successful submit`() =
+    fun `annotateVideo invokes onJobSubmitted after submit and before first job status poll`() =
         runBlocking {
+            // Guards design §2.3 "ровно один раз сразу после успешного submitWithRetry()":
+            // onJobSubmitted must fire AFTER the submit POST returns jobId and BEFORE the first
+            // GET /jobs/{id} status poll. Otherwise a user-cancel arriving in that window would
+            // miss (server, jobId) publication — orphan job on vision server (iter-4 codex TEST-1).
+            //
+            // We capture mockWebServer.requestCount inside the callback. The submit POST is
+            // request #1. If onJobSubmitted fires strictly between submit and the first poll,
+            // the captured count equals 1. If it fires later (after N polls), the count is >1
+            // and the test fails — guarding the ordering invariant against regression.
             val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
             Files.write(testVideoPath, byteArrayOf(1, 2, 3))
+            val requestCountAtCallback = java.util.concurrent.atomic.AtomicInteger(-1)
             val invocations = mutableListOf<String>()
             try {
                 val result = service.annotateVideo(
                     videoPath = testVideoPath,
                     onJobSubmitted = { cancellable ->
                         invocations.add(cancellable.toString())
+                        requestCountAtCallback.set(mockWebServer.requestCount)
                     },
                 )
                 assertEquals(1, invocations.size, "onJobSubmitted must fire exactly once")
+                assertEquals(
+                    1,
+                    requestCountAtCallback.get(),
+                    "onJobSubmitted must fire immediately after submit (request #1) and " +
+                        "before any status poll — observed request count at callback was " +
+                        "${requestCountAtCallback.get()}, total after flow ${mockWebServer.requestCount}",
+                )
                 Files.deleteIfExists(result)
             } finally {
                 Files.deleteIfExists(testVideoPath)
@@ -536,9 +584,18 @@ Append to `VideoVisualizationServiceTest.kt` (before the closing `}` of the clas
             // Guards design §2.3 "NonCancellable" invariant and iter-2 codex TEST-2: the callback
             // publication must survive a user-cancel that arrives simultaneously with submit
             // completion — otherwise the handler never learns (server, jobId) and can't POST /cancel.
+            //
+            // Gate pattern (iter-4 codex TEST-2): the callback does (a) signal `entered`, (b) suspend
+            // via delay(100), (c) signal `finished`. Externally we wait for `entered`, then cancel
+            // the parent, then wait for `finished`. If NonCancellable is removed, cancelling the
+            // parent at step (a) would throw CancellationException at step (b) and `finished` would
+            // never complete — the finished.await() below would time out and fail the test. The
+            // earlier version asserted `callbackFired.isCompleted`, which is set BEFORE suspension
+            // and therefore always true regardless of NonCancellable — a false-positive assertion.
             val testVideoPath = Files.createTempFile(tempDir, "test-input-", ".mp4")
             Files.write(testVideoPath, byteArrayOf(1, 2, 3))
-            val callbackFired = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val finished = kotlinx.coroutines.CompletableDeferred<Unit>()
             try {
                 val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
                 val job = scope.launch {
@@ -546,23 +603,25 @@ Append to `VideoVisualizationServiceTest.kt` (before the closing `}` of the clas
                         service.annotateVideo(
                             videoPath = testVideoPath,
                             onJobSubmitted = {
-                                callbackFired.complete(Unit)
-                                // Give the parent a chance to observe cancellation mid-callback.
-                                kotlinx.coroutines.delay(50)
+                                entered.complete(Unit)
+                                // Observation point: parent gets cancelled while we are suspended here.
+                                // Under NonCancellable this delay returns normally; without it, it would
+                                // throw CancellationException and `finished.complete(Unit)` below would
+                                // never run.
+                                kotlinx.coroutines.delay(100)
+                                finished.complete(Unit)
                             },
                         )
                     } catch (_: CancellationException) {
                         // Expected path — we cancelled externally.
                     }
                 }
-                // Wait for callback to fire, THEN cancel the parent.
-                kotlinx.coroutines.withTimeout(5_000) { callbackFired.await() }
+                kotlinx.coroutines.withTimeout(5_000) { entered.await() }
                 job.cancel()
                 job.join()
-                // If onJobSubmitted had NOT been wrapped in NonCancellable, cancelling the parent
-                // before the callback resumed would have thrown CancellationException inside it,
-                // skipping the completion. Successful await above proves the callback fully ran.
-                assertEquals(true, callbackFired.isCompleted)
+                // The assertion: `finished.complete(Unit)` must have run — proving the full callback
+                // body executed despite parent cancellation. withTimeout provides fail-fast on regression.
+                kotlinx.coroutines.withTimeout(5_000) { finished.await() }
                 scope.cancel()
             } finally {
                 Files.deleteIfExists(testVideoPath)
@@ -808,6 +867,22 @@ Replace the annotate call site (the `if (mode == ExportMode.ANNOTATED) return an
             }
 ```
 
+Additionally, add a dedicated `catch (CancellationException)` branch BEFORE the existing `catch (Exception)` in `exportVideo(...)` (VideoExportServiceImpl.kt:102-106 — the outer `try`-block that wraps size-check / compress / annotate). Reason: `catch (Exception)` does NOT catch `CancellationException` in Kotlin coroutines, so a user-cancel arriving between `mergeVideos()` and `annotate()` (during compress / size-check / mode-check) would let `mergedFile` orphan. Symmetric with iter-1 BUG-5 for `annotate()`:
+
+```kotlin
+        } catch (e: CancellationException) {
+            logger.debug(e) { "Export cancelled after merge, cleaning up: $mergedFile" }
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(mergedFile) }
+            throw e
+        } catch (e: Exception) {
+            logger.debug(e) { "Export failed, cleaning up: $mergedFile" }
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(mergedFile) }
+            throw e
+        }
+```
+
+Note: in the ANNOTATED path, `annotate(...)` already cleans `originalPath = mergedFile` on its own `catch (CancellationException)` — double-delete is idempotent via `deleteIfExists`. The new outer block adds defence-in-depth for the pre-annotate window (compress + size-check + mode-check). Add import `import kotlinx.coroutines.CancellationException` if not already present.
+
 Update the `private suspend fun annotate(...)` signature, forward the callback, AND add a dedicated `CancellationException` cleanup branch (otherwise the merged/compressed temp file leaks on user-cancel or shutdown — `catch (Exception)` does NOT catch `CancellationException` in coroutines):
 
 ```kotlin
@@ -904,17 +979,31 @@ Append to `VideoExportServiceImplTest.kt` (before the closing `}` of the test cl
 ```kotlin
     @Test
     fun `exportVideo plumbs onJobSubmitted through to annotateVideo for ANNOTATED mode`() = runBlocking {
-        // Arrange: minimum recording + file stub. Reuse existing test helpers.
+        // Arrange: minimum recording + file stub. Use the full 15-field ctor of
+        // ru.zinin.frigate.analyzer.model.persistent.RecordingEntity — this is the type the
+        // repository returns (already imported at the top of this test file). The class lives in
+        // `model.persistent`, NOT `service.entity`.
         val camId = "cam1"
         val rangeStart = Instant.parse("2026-02-16T12:00:00Z")
         val rangeEnd = Instant.parse("2026-02-16T12:05:00Z")
         val recFile = Files.createTempFile("rec-", ".mp4")
         Files.write(recFile, byteArrayOf(1, 2, 3, 4, 5))
-        val recordingEntity = ru.zinin.frigate.analyzer.service.entity.RecordingEntity(
-            id = java.util.UUID.randomUUID(),
-            camId = camId,
+        val recordingEntity = RecordingEntity(
+            id = UUID.randomUUID(),
+            creationTimestamp = null,
             filePath = recFile.toString(),
+            fileCreationTimestamp = null,
+            camId = camId,
+            recordDate = null,
+            recordTime = null,
             recordTimestamp = rangeStart,
+            startProcessingTimestamp = null,
+            processTimestamp = null,
+            processAttempts = null,
+            detectionsCount = null,
+            analyzeTime = null,
+            analyzedFramesCount = null,
+            errorMessage = null,
         )
         coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
         val mergedPath = Files.createTempFile("merged-", ".mp4")
@@ -963,11 +1052,22 @@ Append to `VideoExportServiceImplTest.kt` (before the closing `}` of the test cl
         val rangeEnd = Instant.parse("2026-02-16T12:05:00Z")
         val recFile = Files.createTempFile("rec-", ".mp4")
         Files.write(recFile, byteArrayOf(1, 2, 3))
-        val recordingEntity = ru.zinin.frigate.analyzer.service.entity.RecordingEntity(
-            id = java.util.UUID.randomUUID(),
-            camId = camId,
+        val recordingEntity = RecordingEntity(
+            id = UUID.randomUUID(),
+            creationTimestamp = null,
             filePath = recFile.toString(),
+            fileCreationTimestamp = null,
+            camId = camId,
+            recordDate = null,
+            recordTime = null,
             recordTimestamp = rangeStart,
+            startProcessingTimestamp = null,
+            processTimestamp = null,
+            processAttempts = null,
+            detectionsCount = null,
+            analyzeTime = null,
+            analyzedFramesCount = null,
+            errorMessage = null,
         )
         coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
         val mergedPath = Files.createTempFile("merged-", ".mp4")
@@ -979,6 +1079,128 @@ Append to `VideoExportServiceImplTest.kt` (before the closing `}` of the test cl
             startInstant = rangeStart,
             endInstant = rangeEnd,
             camId = camId,
+            mode = ExportMode.ORIGINAL,
+            onProgress = {},
+            onJobSubmitted = { invoked = true },
+        )
+
+        assertEquals(false, invoked)
+        coVerify(exactly = 0) { videoVisualizationService.annotateVideo(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+
+        Files.deleteIfExists(recFile)
+        Files.deleteIfExists(mergedPath)
+    }
+
+    @Test
+    fun `exportByRecordingId plumbs onJobSubmitted through exportVideo for ANNOTATED mode`() = runBlocking {
+        // Guards iter-4 codex TEST-3: QuickExportHandler calls videoExportService.exportByRecordingId(...),
+        // NOT exportVideo(...). The happy-path test above (`exportVideo plumbs onJobSubmitted ...`) only
+        // covers the /export entry point; this one ensures the QuickExport entry point propagates the
+        // callback down to annotateVideo as well. Without this test, a regression that silently drops
+        // `onJobSubmitted` inside exportByRecordingId() would leave QuickExport users unable to cancel
+        // vision-server jobs (visible symptom: "Отменено" in UI, but the job keeps running on GPU).
+        val camId = "cam1"
+        val recordingId = UUID.randomUUID()
+        val recordTimestamp = Instant.parse("2026-02-16T12:03:00Z")
+        val duration = Duration.ofMinutes(1)
+        val rangeStart = recordTimestamp.minus(duration)
+        val rangeEnd = recordTimestamp.plus(duration)
+        val recFile = Files.createTempFile("rec-", ".mp4")
+        Files.write(recFile, byteArrayOf(1, 2, 3, 4, 5))
+        val recordingEntity = RecordingEntity(
+            id = recordingId,
+            creationTimestamp = null,
+            filePath = recFile.toString(),
+            fileCreationTimestamp = null,
+            camId = camId,
+            recordDate = null,
+            recordTime = null,
+            recordTimestamp = recordTimestamp,
+            startProcessingTimestamp = null,
+            processTimestamp = null,
+            processAttempts = null,
+            detectionsCount = null,
+            analyzeTime = null,
+            analyzedFramesCount = null,
+            errorMessage = null,
+        )
+        coEvery { recordingRepository.findById(recordingId) } returns recordingEntity
+        coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
+        val mergedPath = Files.createTempFile("merged-", ".mp4")
+        Files.write(mergedPath, ByteArray(100))
+        coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
+        val annotatedPath = Files.createTempFile("ann-", ".mp4")
+        Files.write(annotatedPath, ByteArray(50))
+        val capturedCallback = slot<suspend (ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob) -> Unit>()
+        coEvery {
+            videoVisualizationService.annotateVideo(
+                videoPath = any(),
+                classes = any(),
+                model = any(),
+                onProgress = any(),
+                onJobSubmitted = capture(capturedCallback),
+            )
+        } returns annotatedPath
+
+        var received: ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob? = null
+        val result = service.exportByRecordingId(
+            recordingId = recordingId,
+            duration = duration,
+            mode = ExportMode.ANNOTATED,
+            onProgress = {},
+            onJobSubmitted = { received = it },
+        )
+
+        val testCancellable = ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob { /* noop */ }
+        capturedCallback.captured.invoke(testCancellable)
+
+        assertEquals(annotatedPath, result)
+        assertEquals(testCancellable, received)
+
+        Files.deleteIfExists(recFile)
+        Files.deleteIfExists(annotatedPath)
+    }
+
+    @Test
+    fun `exportByRecordingId does not invoke onJobSubmitted for ORIGINAL mode`() = runBlocking {
+        // Negative companion to the above test — ORIGINAL flow must not call annotateVideo at all,
+        // so the onJobSubmitted callback is never triggered. Protects against accidentally always
+        // invoking the callback in exportByRecordingId regardless of mode.
+        val camId = "cam1"
+        val recordingId = UUID.randomUUID()
+        val recordTimestamp = Instant.parse("2026-02-16T12:03:00Z")
+        val duration = Duration.ofMinutes(1)
+        val rangeStart = recordTimestamp.minus(duration)
+        val rangeEnd = recordTimestamp.plus(duration)
+        val recFile = Files.createTempFile("rec-", ".mp4")
+        Files.write(recFile, byteArrayOf(1, 2, 3))
+        val recordingEntity = RecordingEntity(
+            id = recordingId,
+            creationTimestamp = null,
+            filePath = recFile.toString(),
+            fileCreationTimestamp = null,
+            camId = camId,
+            recordDate = null,
+            recordTime = null,
+            recordTimestamp = recordTimestamp,
+            startProcessingTimestamp = null,
+            processTimestamp = null,
+            processAttempts = null,
+            detectionsCount = null,
+            analyzeTime = null,
+            analyzedFramesCount = null,
+            errorMessage = null,
+        )
+        coEvery { recordingRepository.findById(recordingId) } returns recordingEntity
+        coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
+        val mergedPath = Files.createTempFile("merged-", ".mp4")
+        Files.write(mergedPath, ByteArray(100))
+        coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
+
+        var invoked = false
+        service.exportByRecordingId(
+            recordingId = recordingId,
+            duration = duration,
             mode = ExportMode.ORIGINAL,
             onProgress = {},
             onJobSubmitted = { invoked = true },
@@ -1350,13 +1572,18 @@ Create `ActiveExportRegistry.kt`:
 ```kotlin
 package ru.zinin.frigate.analyzer.telegram.bot.handler.export
 
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+
+private val logger = KotlinLogging.logger {}
 
 /**
  * In-memory registry of currently active video exports.
@@ -1712,6 +1939,15 @@ class CancelExportHandlerTest {
     private val registry = ActiveExportRegistry(scope)
 
     private val handler = CancelExportHandler(bot, registry, scope, authFilter, userService, msg)
+
+    @org.junit.jupiter.api.AfterEach
+    fun tearDown() {
+        // Match ActiveExportRegistryTest / ExportExecutorTest pattern — the happy-path test below
+        // triggers registry.attachCancellable(...), which launches coroutines on the real
+        // Dispatchers.IO inside ExportCoroutineScope. Without shutdown() those coroutines would leak
+        // across subsequent tests on CI.
+        scope.shutdown()
+    }
 
     @Test
     fun `handle on noop prefix answers silently without side effects`() = runTest {
@@ -2412,7 +2648,21 @@ class QuickExportHandler(
                 error("Unexpected DuplicateChat from tryStartQuickExport")
             }
             is ActiveExportRegistry.StartResult.Success -> {
-                bot.answer(callback)
+                // CRITICAL: bot.answer + editMessageReplyMarkup run BEFORE job.start(). If the
+                // handler scope is cancelled during either suspend call (Telegram timeout, network
+                // blip, shutdown), `throw e` leaves the LAZY job in NEW state forever — the body
+                // never runs, invokeOnCompletion never fires, and the registry entry leaks,
+                // permanently blocking this recordingId until restart (iter-4 gemini CRITICAL-12).
+                // Fix: cancel the job explicitly before rethrowing. `invokeOnCompletion` fires even
+                // for a LAZY job cancelled from NEW → Cancelled, triggering registry.release().
+                try {
+                    bot.answer(callback)
+                } catch (e: CancellationException) {
+                    job.cancel()
+                    throw e
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to answer callback on quick-export start" }
+                }
                 try {
                     bot.editMessageReplyMarkup(
                         message,
@@ -2424,6 +2674,7 @@ class QuickExportHandler(
                             ),
                     )
                 } catch (e: CancellationException) {
+                    job.cancel()
                     throw e
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update button to processing state" }
@@ -2814,7 +3065,32 @@ Add a new `@Nested inner class CancellationTest` (after existing nested classes)
             scope.shutdown()
         }
 
-        // Helper: see Helpers at the bottom of the test file.
+        // Helper `makeQuickExportCallback(recordingId)` — see definition at the top-level of
+        // QuickExportHandlerTest (outside this @Nested class).
+    }
+```
+
+Also add the following helper at the top-level of the test class (outside `CancellationTest`, alongside existing shared helpers like the handler/bot/mocks — it's shared across tests and therefore should not live inside the `@Nested inner class CancellationTest`):
+
+```kotlin
+    // iter-4 kimi DOC-11: test helper that fabricates a ktgbotapi callback payload for the
+    // qea:{recordingId} (ANNOTATED quick-export) prefix. Matches the CommonUser 3-param named-args
+    // pattern used in existing tests.
+    private fun makeQuickExportCallback(recordingId: UUID): MessageDataCallbackQuery {
+        val chatId = ChatId(RawChatId(111L))
+        val msgMock = mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+            every { it.chat } returns PrivateChatImpl(chatId, null, null, null, Username("@alice"))
+        }
+        return mockk<MessageDataCallbackQuery>(relaxed = true).also {
+            every { it.data } returns "${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId"
+            every { it.id } returns CallbackQueryId("cbq-${UUID.randomUUID()}")
+            every { it.message } returns msgMock
+            every { it.user } returns CommonUser(
+                id = dev.inmo.tgbotapi.types.UserId(RawChatId(123L)),
+                firstName = "Alice",
+                username = Username("@alice"),
+            )
+        }
     }
 ```
 
@@ -3321,16 +3597,25 @@ class ExportExecutorTest {
             id
         }
 
-        // Simulate cancel click.
+        // Simulate cancel click. Capture the export-job reference BEFORE cancelling — once
+        // release() runs (via finally + invokeOnCompletion), registry.get(exportId) returns null.
+        val exportJob = registry.get(exportId)!!.job
         registry.markCancelling(exportId)
-        registry.get(exportId)!!.job.cancel()
+        exportJob.cancel()
+        // Wait for the export-job's finally block (including registry.release()) to run. We CANNOT
+        // rely on executeJob.join() — execute() is fire-and-forget after iter-3 CRITICAL-11, so
+        // executeJob completes almost instantly after job.start(), long before the export-job's
+        // body (which awaitCancellation's on the mock) gets to its finally-block. exportJob.join()
+        // blocks until body + finally + all invokeOnCompletion handlers have run (iter-4 codex
+        // DESIGN-1). executeJob is then joined to cleanly end the launcher coroutine.
+        exportJob.join()
         executeJob.join()
 
         // Final editMessageText should have been called with the cancelled text and null keyboard.
         coVerify {
             bot.editMessageText(any(), match<String> { it.contains("cancelled", ignoreCase = true) or it.contains("Отменён") }, replyMarkup = null)
         }
-        // Registry released.
+        // Registry released — guaranteed by exportJob.join() above (not a timing assertion).
         assertNull(registry.get(exportId))
 
         scope.shutdown()
@@ -3399,7 +3684,6 @@ Expected: all tests PASS, including the new cancellation test.
 ```bash
 git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportExecutor.kt \
         modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportCommandHandler.kt \
-        modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ActiveExportRegistry.kt \
         modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/export/ExportExecutorTest.kt
 git commit -m "feat(export): migrate /export to registry with cancel button"
 ```
