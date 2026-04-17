@@ -61,6 +61,7 @@ data class VideoVisualizeConfig(
     // an annotation timeout surfaces as DetectTimeoutException with a dedicated user message
     // instead of being masked by the outer withTimeoutOrNull.
     val timeout: Duration = Duration.ofMinutes(45),
+    val cancelTimeout: Duration = Duration.ofSeconds(10),
     val pollInterval: Duration = Duration.ofSeconds(3),
     @field:Min(1)
     val maxDet: Int = 100,
