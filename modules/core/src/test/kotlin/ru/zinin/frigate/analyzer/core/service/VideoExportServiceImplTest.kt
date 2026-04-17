@@ -764,7 +764,7 @@ class VideoExportServiceImplTest {
             val camId = "cam1"
             val rangeStart = Instant.parse("2026-02-16T12:00:00Z")
             val rangeEnd = Instant.parse("2026-02-16T12:05:00Z")
-            val recFile = Files.createTempFile("rec-", ".mp4")
+            val recFile = tempDir.resolve("rec-${UUID.randomUUID()}.mp4")
             Files.write(recFile, byteArrayOf(1, 2, 3, 4, 5))
             val recordingEntity =
                 RecordingEntity(
@@ -785,11 +785,11 @@ class VideoExportServiceImplTest {
                     errorMessage = null,
                 )
             coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
-            val mergedPath = Files.createTempFile("merged-", ".mp4")
+            val mergedPath = tempDir.resolve("merged-${UUID.randomUUID()}.mp4")
             Files.write(mergedPath, ByteArray(100))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
             coEvery { tempFileHelper.deleteIfExists(mergedPath) } returns true
-            val annotatedPath = Files.createTempFile("ann-", ".mp4")
+            val annotatedPath = tempDir.resolve("ann-${UUID.randomUUID()}.mp4")
             Files.write(annotatedPath, ByteArray(50))
             val capturedCallback = slot<suspend (ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob) -> Unit>()
             coEvery {
@@ -820,9 +820,6 @@ class VideoExportServiceImplTest {
 
             assertEquals(annotatedPath, result)
             assertEquals(testCancellable, received)
-
-            Files.deleteIfExists(recFile)
-            Files.deleteIfExists(annotatedPath)
         }
     }
 
@@ -832,7 +829,7 @@ class VideoExportServiceImplTest {
             val camId = "cam1"
             val rangeStart = Instant.parse("2026-02-16T12:00:00Z")
             val rangeEnd = Instant.parse("2026-02-16T12:05:00Z")
-            val recFile = Files.createTempFile("rec-", ".mp4")
+            val recFile = tempDir.resolve("rec-${UUID.randomUUID()}.mp4")
             Files.write(recFile, byteArrayOf(1, 2, 3))
             val recordingEntity =
                 RecordingEntity(
@@ -853,7 +850,7 @@ class VideoExportServiceImplTest {
                     errorMessage = null,
                 )
             coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
-            val mergedPath = Files.createTempFile("merged-", ".mp4")
+            val mergedPath = tempDir.resolve("merged-${UUID.randomUUID()}.mp4")
             Files.write(mergedPath, ByteArray(100))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
 
@@ -869,11 +866,21 @@ class VideoExportServiceImplTest {
 
             assertEquals(false, invoked)
             coVerify(exactly = 0) {
-                videoVisualizationService.annotateVideo(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                videoVisualizationService.annotateVideo(
+                    videoPath = any(),
+                    conf = any(),
+                    imgSize = any(),
+                    maxDet = any(),
+                    detectEvery = any(),
+                    classes = any(),
+                    lineWidth = any(),
+                    showLabels = any(),
+                    showConf = any(),
+                    model = any(),
+                    onProgress = any(),
+                    onJobSubmitted = any(),
+                )
             }
-
-            Files.deleteIfExists(recFile)
-            Files.deleteIfExists(mergedPath)
         }
     }
 
@@ -892,7 +899,7 @@ class VideoExportServiceImplTest {
             val duration = Duration.ofMinutes(1)
             val rangeStart = recordTimestamp.minus(duration)
             val rangeEnd = recordTimestamp.plus(duration)
-            val recFile = Files.createTempFile("rec-", ".mp4")
+            val recFile = tempDir.resolve("rec-${UUID.randomUUID()}.mp4")
             Files.write(recFile, byteArrayOf(1, 2, 3, 4, 5))
             val recordingEntity =
                 RecordingEntity(
@@ -914,11 +921,11 @@ class VideoExportServiceImplTest {
                 )
             coEvery { recordingRepository.findById(recordingId) } returns recordingEntity
             coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
-            val mergedPath = Files.createTempFile("merged-", ".mp4")
+            val mergedPath = tempDir.resolve("merged-${UUID.randomUUID()}.mp4")
             Files.write(mergedPath, ByteArray(100))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
             coEvery { tempFileHelper.deleteIfExists(mergedPath) } returns true
-            val annotatedPath = Files.createTempFile("ann-", ".mp4")
+            val annotatedPath = tempDir.resolve("ann-${UUID.randomUUID()}.mp4")
             Files.write(annotatedPath, ByteArray(50))
             val capturedCallback = slot<suspend (ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob) -> Unit>()
             coEvery {
@@ -948,9 +955,6 @@ class VideoExportServiceImplTest {
 
             assertEquals(annotatedPath, result)
             assertEquals(testCancellable, received)
-
-            Files.deleteIfExists(recFile)
-            Files.deleteIfExists(annotatedPath)
         }
     }
 
@@ -966,7 +970,7 @@ class VideoExportServiceImplTest {
             val duration = Duration.ofMinutes(1)
             val rangeStart = recordTimestamp.minus(duration)
             val rangeEnd = recordTimestamp.plus(duration)
-            val recFile = Files.createTempFile("rec-", ".mp4")
+            val recFile = tempDir.resolve("rec-${UUID.randomUUID()}.mp4")
             Files.write(recFile, byteArrayOf(1, 2, 3))
             val recordingEntity =
                 RecordingEntity(
@@ -988,7 +992,7 @@ class VideoExportServiceImplTest {
                 )
             coEvery { recordingRepository.findById(recordingId) } returns recordingEntity
             coEvery { recordingRepository.findByCamIdAndInstantRange(camId, rangeStart, rangeEnd) } returns listOf(recordingEntity)
-            val mergedPath = Files.createTempFile("merged-", ".mp4")
+            val mergedPath = tempDir.resolve("merged-${UUID.randomUUID()}.mp4")
             Files.write(mergedPath, ByteArray(100))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedPath
 
@@ -1003,11 +1007,21 @@ class VideoExportServiceImplTest {
 
             assertEquals(false, invoked)
             coVerify(exactly = 0) {
-                videoVisualizationService.annotateVideo(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+                videoVisualizationService.annotateVideo(
+                    videoPath = any(),
+                    conf = any(),
+                    imgSize = any(),
+                    maxDet = any(),
+                    detectEvery = any(),
+                    classes = any(),
+                    lineWidth = any(),
+                    showLabels = any(),
+                    showConf = any(),
+                    model = any(),
+                    onProgress = any(),
+                    onJobSubmitted = any(),
+                )
             }
-
-            Files.deleteIfExists(recFile)
-            Files.deleteIfExists(mergedPath)
         }
     }
 }
