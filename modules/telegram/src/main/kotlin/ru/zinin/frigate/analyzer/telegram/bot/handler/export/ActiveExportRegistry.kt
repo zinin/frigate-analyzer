@@ -30,7 +30,11 @@ class ActiveExportRegistry(
 ) {
     enum class State { ACTIVE, CANCELLING }
 
-    data class Entry(
+    // Plain `class` (not `data class`): Entry holds `var`s (`cancellable`, `state`) whose values
+    // mutate concurrently. A data class's synthesized equals/hashCode over mutable state is a
+    // latent footgun — Entry is identified by `exportId` alone, and this registry already keys
+    // maps on the UUID rather than on Entry instances.
+    class Entry(
         val exportId: UUID,
         val chatId: Long,
         val mode: ExportMode,
@@ -65,6 +69,8 @@ class ActiveExportRegistry(
         synchronized(startLock) {
             // Atomic under startLock: putIfAbsent(byRecordingId) + byExportId[...] = Entry so that
             // a failure between the two doesn't leave byRecordingId permanently locked.
+            // NOTE: startLock also linearizes two concurrent starts racing to self-heal the same
+            // stale secondary — do not remove on the assumption that CHM alone is enough.
             val existing = byRecordingId.putIfAbsent(recordingId, exportId)
             if (existing != null) {
                 // Self-heal: release() removes byExportId BEFORE cleaning secondary indexes, so a
@@ -105,6 +111,12 @@ class ActiveExportRegistry(
         cancellable: CancellableJob,
     ) {
         val entry = byExportId[exportId] ?: return
+        // DO NOT REORDER: cancellable must be published (line below) before the state check.
+        // If the check came first and found ACTIVE, a concurrent markCancelling + CancelHandler
+        // read of entry.cancellable could observe null because the write wasn't flushed yet.
+        // With cancellable written first, the reader either sees the new cancellable (via @Volatile
+        // happens-before) or the cancellable arrived too late and this method's state check
+        // itself triggers the fire-and-forget cancel on line below.
         entry.cancellable = cancellable
         if (entry.state == State.CANCELLING) {
             exportScope.launch {
