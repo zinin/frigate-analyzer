@@ -70,15 +70,7 @@ class QuickExportHandler(
 
         val recordingId = parseRecordingId(callbackData)
         if (recordingId == null) {
-            val lang =
-                try {
-                    userService.getUserLanguage(chatIdLong)
-                        ?: StartCommandHandler.detectLanguage(callback.user.ietfLanguageCode?.code)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    StartCommandHandler.detectLanguage(callback.user.ietfLanguageCode?.code)
-                }
+            val lang = resolveLang(chatIdLong, callback.user.ietfLanguageCode?.code)
             bot.answer(callback, msg.get("quickexport.error.format", lang))
             return null
         }
@@ -97,15 +89,7 @@ class QuickExportHandler(
             return null
         }
 
-        val lang =
-            try {
-                userService.getUserLanguage(chatIdLong)
-                    ?: StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
-            }
+        val lang = resolveLang(chatIdLong, user.ietfLanguageCode?.code)
 
         val exportId = UUID.randomUUID()
         val job =
@@ -342,6 +326,18 @@ class QuickExportHandler(
         }
     }
 
+    private suspend fun resolveLang(
+        chatId: Long,
+        ietf: String?,
+    ): String =
+        try {
+            userService.getUserLanguage(chatId) ?: StartCommandHandler.detectLanguage(ietf)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            StartCommandHandler.detectLanguage(ietf)
+        }
+
     private fun renderProgressButton(
         stage: VideoExportProgress.Stage,
         percent: Int? = null,
@@ -425,12 +421,24 @@ class QuickExportHandler(
         private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 3_000_000L // 50 minutes
 
         internal fun parseRecordingId(callbackData: String): UUID? {
-            val recordingIdStr =
-                callbackData
-                    .removePrefix(CALLBACK_PREFIX_ANNOTATED)
-                    .removePrefix(CALLBACK_PREFIX)
+            // Order matters: check the annotated prefix first because it shares the "qe:" stem
+            // with the original prefix. Strict single-prefix match — "qe:qea:uuid" must not parse.
+            val raw =
+                when {
+                    callbackData.startsWith(CALLBACK_PREFIX_ANNOTATED) -> {
+                        callbackData.removePrefix(CALLBACK_PREFIX_ANNOTATED)
+                    }
+
+                    callbackData.startsWith(CALLBACK_PREFIX) -> {
+                        callbackData.removePrefix(CALLBACK_PREFIX)
+                    }
+
+                    else -> {
+                        return null
+                    }
+                }
             return try {
-                UUID.fromString(recordingIdStr)
+                UUID.fromString(raw)
             } catch (_: IllegalArgumentException) {
                 null
             }

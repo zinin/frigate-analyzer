@@ -400,19 +400,27 @@ class DetectService(
                 .then()
                 .awaitSingleOrNull()
         } catch (e: CancellationException) {
-            withContext(NonCancellable) { tempFileHelper.deleteIfExists(tempFile) }
+            safeDeleteTemp(tempFile)
             throw e
         } catch (e: Exception) {
-            // `deleteIfExists` is `suspend`. If the parent was cancelled by the time we land here
-            // (e.g., shutdown or a user-cancel arriving right after a 500 from the vision server),
-            // a plain suspend call would immediately throw a fresh CancellationException without
-            // doing real work and would overwrite the original exception. `NonCancellable` makes
-            // the cleanup an uninterruptible block so the file is actually deleted.
-            withContext(NonCancellable) { tempFileHelper.deleteIfExists(tempFile) }
+            safeDeleteTemp(tempFile)
             throw e
         }
 
         return tempFile
+    }
+
+    // Wrap deleteIfExists so a filesystem error can't replace the CancellationException / original
+    // exception we're about to rethrow. NonCancellable is required because deleteIfExists is
+    // suspend and would otherwise throw CE instantly in an already-cancelled coroutine.
+    private suspend fun safeDeleteTemp(tempFile: Path) {
+        withContext(NonCancellable) {
+            try {
+                tempFileHelper.deleteIfExists(tempFile)
+            } catch (e: Exception) {
+                logger.warn(e) { "Failed to delete temp file: $tempFile" }
+            }
+        }
     }
 
     /**
@@ -447,7 +455,10 @@ class DetectService(
         } catch (e: TimeoutCancellationException) {
             // MUST come before CancellationException catch: TimeoutCancellationException is a subtype,
             // otherwise timeouts would be rethrown as cancellation instead of logged as WARN.
-            logger.warn { "Cancel request timed out for job $jobId on ${acquired.id}" }
+            logger.warn {
+                "Cancel request timed out after ${detectProperties.videoVisualize.cancelTimeout} " +
+                    "for job $jobId on ${acquired.id}"
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: WebClientResponseException) {

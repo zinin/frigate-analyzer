@@ -118,6 +118,14 @@ class ActiveExportRegistry(
         // With cancellable written first, the reader either sees the new cancellable (via @Volatile
         // happens-before) or the cancellable arrived too late and this method's state check
         // itself triggers the fire-and-forget cancel on line below.
+        //
+        // JMM note: @Volatile writes/reads on DIFFERENT fields don't strictly establish
+        // happens-before across threads without a shared lock or a common volatile. On
+        // x86/ARM TSO (our deployment target) this pattern works in practice, and the
+        // fallback paths (CancelExportHandler re-reads marked.cancellable and this check
+        // itself fires the cancel when state == CANCELLING) cover the edge case if a
+        // weaker-memory CPU is ever introduced. Taking synchronized(entry) here would add
+        // contention to the hot submit path for a non-observable improvement.
         entry.cancellable = cancellable
         if (entry.state == State.CANCELLING) {
             exportScope.launch {
