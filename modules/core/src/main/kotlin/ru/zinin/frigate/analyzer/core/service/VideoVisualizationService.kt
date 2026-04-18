@@ -2,8 +2,10 @@ package ru.zinin.frigate.analyzer.core.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClientResponseException
@@ -17,6 +19,7 @@ import ru.zinin.frigate.analyzer.model.exception.VideoAnnotationFailedException
 import ru.zinin.frigate.analyzer.model.response.JobCreatedResponse
 import ru.zinin.frigate.analyzer.model.response.JobStatus
 import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
+import ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob
 import java.nio.file.Path
 
 private val logger = KotlinLogging.logger {}
@@ -52,6 +55,7 @@ class VideoVisualizationService(
         showConf: Boolean = detectProperties.videoVisualize.showConf,
         model: String = detectProperties.defaultModel,
         onProgress: suspend (JobStatusResponse) -> Unit = {},
+        onJobSubmitted: suspend (CancellableJob) -> Unit = {},
     ): Path {
         val timeoutMs = detectProperties.videoVisualize.timeout.toMillis()
         val pollIntervalMs = detectProperties.videoVisualize.pollInterval.toMillis()
@@ -80,6 +84,12 @@ class VideoVisualizationService(
                     jobId = job.jobId
 
                     logger.info { "Video annotation job ${job.jobId} submitted to server ${server.id}" }
+
+                    // Publish cancellable to caller under NonCancellable so that if user-cancellation
+                    // races with submit completion, the caller still learns the (server, jobId) pair
+                    // and can call /jobs/{id}/cancel on the vision server.
+                    val cancellable = CancellableJob { detectService.cancelJob(server, job.jobId) }
+                    withContext(NonCancellable) { onJobSubmitted(cancellable) }
 
                     // Phase 2: Poll until completed/failed
                     pollUntilDone(server, job.jobId, pollIntervalMs, onProgress)

@@ -55,6 +55,12 @@ class DetectServiceDispatcher : Dispatcher() {
             else -> {
                 if (path.matches(Regex("/jobs/[^/]+/download"))) {
                     respondBinary(200, "video/mp4", fakeVideoBytes())
+                } else if (path.matches(Regex("/jobs/[^/]+/cancel"))) {
+                    if (method == "POST") {
+                        respondJson(200, jobStatusCancelledJson())
+                    } else {
+                        respondJson(405, errorJson("Method Not Allowed"))
+                    }
                 } else if (path.matches(Regex("/jobs/[^/]+"))) {
                     respondJson(200, jobStatusCompletedJson())
                 } else {
@@ -180,6 +186,20 @@ class DetectServiceDispatcher : Dispatcher() {
             "total_detections": 120,
             "processing_time_ms": 15000
           }
+        }
+        """.trimIndent()
+
+    private fun jobStatusCancelledJson(): String =
+        """
+        {
+          "job_id": "test-job-123",
+          "status": "cancelled",
+          "progress": 50,
+          "created_at": "2026-02-16T12:00:00Z",
+          "completed_at": null,
+          "download_url": null,
+          "error": null,
+          "stats": null
         }
         """.trimIndent()
 

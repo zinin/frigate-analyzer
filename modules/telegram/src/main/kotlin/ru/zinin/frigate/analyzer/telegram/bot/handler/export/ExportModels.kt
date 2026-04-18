@@ -20,7 +20,10 @@ sealed class ExportDialogOutcome {
 
 internal const val EXPORT_DIALOG_TIMEOUT_MS = 600_000L
 internal const val EXPORT_ORIGINAL_TIMEOUT_MS = 300_000L
-internal const val EXPORT_ANNOTATED_TIMEOUT_MS = 1_200_000L
+
+// Must exceed application.detect.video-visualize.timeout (default 45m) so the inner
+// annotation timeout surfaces a real failure instead of being masked by this outer one.
+internal const val EXPORT_ANNOTATED_TIMEOUT_MS = 3_000_000L
 internal const val MAX_EXPORT_DURATION_MINUTES = 5L
 
 internal fun renderProgress(

@@ -78,6 +78,19 @@ Settings under `application.records-watcher` in `application.yaml`.
 | `DETECT_SHOW_CONF` | true | Show confidence scores |
 | `DETECT_VISUALIZE_QUALITY` | 90 | Output JPEG quality |
 
+### Video Visualization (Annotation)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DETECT_VIDEO_VISUALIZE_TIMEOUT` | 45m | Full annotation job timeout. Must be < QuickExport annotated outer timeout (50m), otherwise generic error replaces the dedicated annotation-timeout message |
+| `DETECT_VIDEO_VISUALIZE_CANCEL_TIMEOUT` | 10s | HTTP timeout for POST /jobs/{id}/cancel on vision server. Tolerant of all errors. |
+| `DETECT_VIDEO_VISUALIZE_POLL_INTERVAL` | 3s | Annotation job status poll interval |
+| `DETECT_VIDEO_VISUALIZE_MAX_DET` | 100 | Max detections per frame |
+| `DETECT_VIDEO_VISUALIZE_DETECT_EVERY` | 1 | Detect every N frames |
+| `DETECT_VIDEO_VISUALIZE_LINE_WIDTH` | 2 | Bounding box line width |
+| `DETECT_VIDEO_VISUALIZE_SHOW_LABELS` | true | Show class labels |
+| `DETECT_VIDEO_VISUALIZE_SHOW_CONF` | true | Show confidence scores |
+
 ## Detection Filter
 
 | Variable | Default | Purpose |

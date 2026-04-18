@@ -5,12 +5,6 @@ import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
 import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import org.springframework.beans.factory.DisposableBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
@@ -27,10 +21,7 @@ class ExportCommandHandler(
     private val exportExecutor: ExportExecutor,
     private val activeExportTracker: ActiveExportTracker,
     private val msg: MessageResolver,
-) : CommandHandler,
-    DisposableBean {
-    private val exportScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
+) : CommandHandler {
     override val command: String = "export"
     override val requiredRole: UserRole = UserRole.USER
     override val order: Int = 3
@@ -43,27 +34,19 @@ class ExportCommandHandler(
         val chatId = message.chat.id
         val chatIdLong = chatId.chatId.long
 
+        // Dialog-phase lock: prevent two parallel /export dialogs in the same DM from hijacking each
+        // other's callback/text replies. Execution-phase lock lives in ExportExecutor via registry.
         if (!activeExportTracker.tryAcquire(chatIdLong)) {
             reply(message, msg.get("export.error.concurrent", lang))
             return
         }
-
-        var releaseNeeded = true
-
         try {
             val userZone = userService.getUserZone(chatIdLong)
             val outcome = with(exportDialogRunner) { runDialog(chatId, userZone, lang) }
 
             when (outcome) {
                 is ExportDialogOutcome.Success -> {
-                    releaseNeeded = false
-                    exportScope.launch {
-                        try {
-                            exportExecutor.execute(chatId, userZone, outcome, lang)
-                        } finally {
-                            activeExportTracker.release(chatIdLong)
-                        }
-                    }
+                    exportExecutor.execute(chatId, userZone, outcome, lang)
                 }
 
                 is ExportDialogOutcome.Cancelled -> {
@@ -74,13 +57,7 @@ class ExportCommandHandler(
                 }
             }
         } finally {
-            if (releaseNeeded) {
-                activeExportTracker.release(chatIdLong)
-            }
+            activeExportTracker.release(chatIdLong)
         }
-    }
-
-    override fun destroy() {
-        exportScope.cancel()
     }
 }

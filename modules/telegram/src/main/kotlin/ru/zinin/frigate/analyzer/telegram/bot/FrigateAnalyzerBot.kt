@@ -33,6 +33,7 @@ import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.OwnerActivatedEvent
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
@@ -56,6 +57,7 @@ class FrigateAnalyzerBot(
     private val properties: TelegramProperties,
     private val handlers: List<CommandHandler>,
     private val quickExportHandler: QuickExportHandler,
+    private val cancelExportHandler: CancelExportHandler,
     private val msg: MessageResolver,
 ) {
     private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -169,6 +171,21 @@ class FrigateAnalyzerBot(
                 throw e
             } catch (e: Exception) {
                 logger.error(e) { "Error handling quick export callback: ${callback.data}" }
+            }
+        }
+
+        onDataCallbackQuery(
+            initialFilter = {
+                it.data.startsWith(CancelExportHandler.CANCEL_PREFIX) ||
+                    it.data.startsWith(CancelExportHandler.NOOP_PREFIX)
+            },
+        ) { callback ->
+            try {
+                cancelExportHandler.handle(callback)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error(e) { "Error handling cancel/noop callback: ${callback.data}" }
             }
         }
 

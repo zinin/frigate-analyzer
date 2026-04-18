@@ -3,10 +3,12 @@ package ru.zinin.frigate.analyzer.core.service
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.springframework.core.io.ByteArrayResource
 import org.springframework.core.io.FileSystemResource
@@ -397,12 +399,77 @@ class DetectService(
                 .write(flux, tempFile, StandardOpenOption.WRITE)
                 .then()
                 .awaitSingleOrNull()
+        } catch (e: CancellationException) {
+            safeDeleteTemp(tempFile)
+            throw e
         } catch (e: Exception) {
-            tempFileHelper.deleteIfExists(tempFile)
+            safeDeleteTemp(tempFile)
             throw e
         }
 
         return tempFile
+    }
+
+    // Wrap deleteIfExists so a filesystem error can't replace the CancellationException / original
+    // exception we're about to rethrow. NonCancellable is required because deleteIfExists is
+    // suspend and would otherwise throw CE instantly in an already-cancelled coroutine.
+    private suspend fun safeDeleteTemp(tempFile: Path) {
+        withContext(NonCancellable) {
+            try {
+                tempFileHelper.deleteIfExists(tempFile)
+            } catch (e: Exception) {
+                logger.warn(e) { "Failed to delete temp file: $tempFile" }
+            }
+        }
+    }
+
+    /**
+     * Requests cancellation of a running vision-server job.
+     * Fire-and-forget semantics: tolerant of 409 (already terminal), 5xx, timeouts, and network errors.
+     * Only `CancellationException` propagates up to the caller.
+     */
+    suspend fun cancelJob(
+        acquired: AcquiredServer,
+        jobId: String,
+    ) {
+        try {
+            withTimeout(detectProperties.videoVisualize.cancelTimeout.toMillis()) {
+                // Bodiless: JobStatus enum has no `CANCELLED` variant, so deserializing
+                // `{"status":"cancelled"}` into JobStatusResponse would fail. We only care about the
+                // HTTP status — a 200 means the server accepted the cancel request, 409 means the
+                // job is already terminal. The actual body is irrelevant to clients.
+                webClient
+                    .post()
+                    .uri { uriBuilder ->
+                        uriBuilder
+                            .scheme(acquired.schema)
+                            .host(acquired.host)
+                            .port(acquired.port)
+                            .path("/jobs/{jobId}/cancel")
+                            .build(jobId)
+                    }.retrieve()
+                    .toBodilessEntity()
+                    .awaitSingleOrNull()
+            }
+            logger.info { "Cancel request accepted for job $jobId on ${acquired.id}" }
+        } catch (e: TimeoutCancellationException) {
+            // MUST come before CancellationException catch: TimeoutCancellationException is a subtype,
+            // otherwise timeouts would be rethrown as cancellation instead of logged as WARN.
+            logger.warn {
+                "Cancel request timed out after ${detectProperties.videoVisualize.cancelTimeout} " +
+                    "for job $jobId on ${acquired.id}"
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: WebClientResponseException) {
+            if (e.statusCode.value() == 409) {
+                logger.info { "Cancel: job $jobId already terminal (409)" }
+            } else {
+                logger.warn { "Cancel failed for job $jobId on ${acquired.id}: ${e.statusCode} ${e.message}" }
+            }
+        } catch (e: Exception) {
+            logger.warn(e) { "Cancel request error for job $jobId on ${acquired.id}" }
+        }
     }
 
     /**
