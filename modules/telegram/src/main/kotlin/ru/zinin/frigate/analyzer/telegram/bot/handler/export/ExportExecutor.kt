@@ -293,8 +293,16 @@ class ExportExecutor(
                 }
             try {
                 bot.editMessageText(statusMessage, errorText, replyMarkup = null)
+            } catch (ex: CancellationException) {
+                throw ex
             } catch (ex: Exception) {
-                bot.sendTextMessage(chatId, errorText)
+                try {
+                    bot.sendTextMessage(chatId, errorText)
+                } catch (ex2: CancellationException) {
+                    throw ex2
+                } catch (ex2: Exception) {
+                    logger.warn(ex2) { "Failed to send export error message fallback" }
+                }
             }
         } finally {
             registry.release(exportId)

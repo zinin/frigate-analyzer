@@ -267,6 +267,8 @@ class QuickExportHandler(
                                 msg.get("quickexport.button.cancel", lang),
                             ),
                     )
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.warn(e) { "Failed to update progress button to sending" }
                 }
@@ -280,7 +282,13 @@ class QuickExportHandler(
                     }
 
                 if (sent == null) {
-                    bot.sendTextMessage(chatId, msg.get("quickexport.error.send.timeout", lang))
+                    try {
+                        bot.sendTextMessage(chatId, msg.get("quickexport.error.send.timeout", lang))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        logger.warn(e) { "Failed to send quick export send-timeout message" }
+                    }
                 }
             } finally {
                 // cleanupExportFile is suspend → any suspend call in an already-cancelled coroutine
@@ -400,6 +408,8 @@ class QuickExportHandler(
                 message,
                 replyMarkup = createExportKeyboard(recordingId, lang),
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.warn(e) { "Failed to restore button" }
         }

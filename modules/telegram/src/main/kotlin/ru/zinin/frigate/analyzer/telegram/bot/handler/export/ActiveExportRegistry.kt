@@ -111,7 +111,8 @@ class ActiveExportRegistry(
         cancellable: CancellableJob,
     ) {
         val entry = byExportId[exportId] ?: return
-        // DO NOT REORDER: cancellable must be published (line below) before the state check.
+        // Local invariant: write cancellable BEFORE reading state (closes the
+        // submitWithRetry → attachCancellable race with markCancelling).
         // If the check came first and found ACTIVE, a concurrent markCancelling + CancelHandler
         // read of entry.cancellable could observe null because the write wasn't flushed yet.
         // With cancellable written first, the reader either sees the new cancellable (via @Volatile

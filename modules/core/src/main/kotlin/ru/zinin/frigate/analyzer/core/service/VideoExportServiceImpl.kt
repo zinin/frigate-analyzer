@@ -104,11 +104,11 @@ class VideoExportServiceImpl(
             return mergedFile
         } catch (e: CancellationException) {
             logger.debug(e) { "Export cancelled after merge, cleaning up: $mergedFile" }
-            withContext(NonCancellable) { tempFileHelper.deleteIfExists(mergedFile) }
+            safeDelete(mergedFile)
             throw e
         } catch (e: Exception) {
             logger.debug(e) { "Export failed, cleaning up: $mergedFile" }
-            withContext(NonCancellable) { tempFileHelper.deleteIfExists(mergedFile) }
+            safeDelete(mergedFile)
             throw e
         }
     }
@@ -145,12 +145,25 @@ class VideoExportServiceImpl(
             return annotatedPath
         } catch (e: CancellationException) {
             logger.debug(e) { "Annotation cancelled, cleaning up: $originalPath" }
-            withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
+            safeDelete(originalPath)
             throw e
         } catch (e: Exception) {
             logger.debug(e) { "Annotation failed, cleaning up: $originalPath" }
-            withContext(NonCancellable) { tempFileHelper.deleteIfExists(originalPath) }
+            safeDelete(originalPath)
             throw e
+        }
+    }
+
+    // Wrap deleteIfExists so an IOException doesn't replace the CancellationException / original
+    // exception we're about to rethrow. NonCancellable is required because deleteIfExists is
+    // suspend and would otherwise throw CE instantly in an already-cancelled coroutine.
+    private suspend fun safeDelete(path: Path) {
+        withContext(NonCancellable) {
+            try {
+                tempFileHelper.deleteIfExists(path)
+            } catch (e: Exception) {
+                logger.warn(e) { "Failed to delete temp file: $path" }
+            }
         }
     }
 

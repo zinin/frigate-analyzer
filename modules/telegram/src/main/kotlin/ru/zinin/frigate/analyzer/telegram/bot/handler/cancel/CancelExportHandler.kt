@@ -97,6 +97,12 @@ class CancelExportHandler(
             return
         }
 
+        // Cancel the export job synchronously BEFORE any suspend call. If the handler scope is
+        // cancelled while we're inside answerSafely or editMessageReplyMarkup, those suspends
+        // rethrow CancellationException and a later job.cancel() would never run — leaving the
+        // registry entry stuck in CANCELLING and the export coroutine still executing.
+        marked.job.cancel(CancellationException("user cancelled"))
+
         answerSafely(callback)
         logger.info {
             "Export cancelled by user exportId=$exportId chatId=${marked.chatId} mode=${marked.mode} " +
@@ -113,8 +119,6 @@ class CancelExportHandler(
         } catch (e: Exception) {
             logger.warn(e) { "Failed to update keyboard to cancelling state" }
         }
-
-        marked.job.cancel(CancellationException("user cancelled"))
 
         marked.cancellable?.let { cancellable ->
             exportScope.launch {
