@@ -123,6 +123,8 @@ Agent/Invoker условны дополнительно по `provider=claude`.
 class AiDescriptionAutoConfiguration
 ```
 
+**Класс автоконфига БЕЗ `@ConditionalOnProperty`**: `DescriptionProperties` регистрируется всегда (facade и supplier-код инжектят его безусловно). Условность только на уровне бинов агента: `@Component` + `@ConditionalOnProperty("application.ai.description.enabled")` и `@ConditionalOnProperty("application.ai.description.provider")`.
+
 Регистрация:
 ```
 modules/ai-description/src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
@@ -133,6 +135,8 @@ ru.zinin.frigate.analyzer.ai.description.config.AiDescriptionAutoConfiguration
 ```
 
 Это стандартный Spring Boot 3+ путь. `@EnableConfigurationProperties` в `FrigateAnalyzerApplication` для `DescriptionProperties`/`ClaudeProperties` **не добавляется** — всё регистрируется в auto-config'е.
+
+**WARN о missing agent** — выполняется отдельным `@Component` `DescriptionAgentSanityChecker` (не условным по `enabled`), который получает `ObjectProvider<DescriptionAgent>` и в `@PostConstruct` пишет WARN при `enabled=true && agentProvider.getIfAvailable() == null`. Вынесено из autoconfig'а, чтобы корректно срабатывать и при `enabled=true, provider=foo` (когда бинов `ClaudeDescriptionAgent` нет, но autoconfig активен).
 
 ## 4. Конфигурация
 
@@ -229,9 +233,13 @@ data class ClaudeProperties(
 
 1. `oauthToken.isBlank()` → `IllegalStateException("CLAUDE_CODE_OAUTH_TOKEN must be set when application.ai.description.enabled=true")`. Приложение **не** стартует — чтобы избежать тихой нерабочей фичи.
 2. `language` уже провалидирован `@Pattern` на уровне `@ConfigurationProperties`. В `ClaudePromptBuilder.languageNameFor()` нет silent fallback — unknown код → `IllegalStateException`.
-3. `Query.isCliInstalled() == false` → WARN, но приложение стартует (в dev-окружении CLI может отсутствовать). Первый вызов `describe()` вернёт fallback через обычный error-path. Метод использует `ProcessBuilder("which", "claude")` — требует корректный PATH на момент JVM startup.
+3. **CLI detection** — зависит от наличия `cliPath`:
+   - `cliPath.isBlank()` → проверяем `Query.isCliInstalled()` (использует `ProcessBuilder("which", "claude")` — требует корректный PATH на момент JVM startup). `false` → WARN "CLI not found in PATH, all descriptions will return fallback". Приложение стартует.
+   - `cliPath.isNotBlank()` → проверяем `Files.isExecutable(Path.of(cliPath))`. `false` → WARN "explicit CLI path $cliPath not executable or not found". Приложение стартует. Не опираемся на PATH-based `Query.isCliInstalled()` — он даст false negative при explicit path вне PATH.
+   
+   В обоих случаях первый вызов `describe()` вернёт fallback через обычный error-path, если CLI реально недоступен.
 
-i18n-ключи захардкожены в коде (стабильные константы):
+i18n-ключи загружаются через `MessageSource` из `messages_ru.properties`/`messages_en.properties` (см. §9). Имена ключей — стабильные константы:
 - `ai.description.placeholder.short`
 - `ai.description.placeholder.detailed`
 - `ai.description.fallback.unavailable`
@@ -277,8 +285,9 @@ sealed class DescriptionException(message: String, cause: Throwable? = null)
     class InvalidResponse(cause: Throwable? = null) : DescriptionException("Claude returned invalid JSON", cause)
     class Transport(cause: Throwable? = null) : DescriptionException("Claude transport error", cause)
     class RateLimited(cause: Throwable? = null) : DescriptionException("Claude rate-limited (429)", cause)
-    class Disabled : DescriptionException("Description agent is disabled")
 }
+// "Агент выключен" не исключение, а DI-состояние: facade возвращает null supplier,
+// describe-job не запускается — ветка ошибки не нужна.
 ```
 
 ### Реализация (`claude/`)
@@ -291,7 +300,7 @@ sealed class DescriptionException(message: String, cause: Throwable? = null)
 @ConditionalOnProperty("application.ai.description.provider", havingValue = "claude")
 class ClaudeDescriptionAgent(
     private val claudeProperties: ClaudeProperties,
-    private val commonProperties: DescriptionProperties.CommonSection,
+    private val descriptionProperties: DescriptionProperties,  // root @ConfigurationProperties-бин
     private val promptBuilder: ClaudePromptBuilder,
     private val responseParser: ClaudeResponseParser,
     private val imageStager: ClaudeImageStager,
@@ -299,6 +308,7 @@ class ClaudeDescriptionAgent(
     private val exceptionMapper: ClaudeExceptionMapper,
 ) : DescriptionAgent {
 
+    private val commonProperties: DescriptionProperties.CommonSection = descriptionProperties.common
     private val semaphore = Semaphore(commonProperties.maxConcurrent)
 
     override suspend fun describe(request: DescriptionRequest): DescriptionResult {
@@ -347,7 +357,11 @@ class ClaudeDescriptionAgent(
   `api/` пакете, реализуется в `core` через `TempFileHelper`).
   `stage(request)`: для каждого кадра вызывает
   `tempWriter.createTempFile("claude-${recordingId}-frame-${i}", ".jpg", bytes)`.
-  `cleanup(paths)` → `tempWriter.deleteFiles(paths)` в `finally`.
+  `cleanup(paths)` → `withContext(NonCancellable) { tempWriter.deleteFiles(paths) }`
+  в `finally`. `NonCancellable`-обёртка обязательна: describe() часто попадает
+  в finally через `TimeoutCancellationException`, а вызов suspend-функции в
+  отменённой корутине немедленно бросает `CancellationException` — без
+  `NonCancellable` временные файлы останутся до PT1H cron-чистки.
   Cron-чистка «сирот» обеспечена PT1H-шедулером в `TempFileHelper`.
 - **`ClaudeAsyncClientFactory`** — `@Component`, метод `create(workTimeout: Duration)`:
   ```kotlin
@@ -429,11 +443,11 @@ Telegram-слой вызывает `descriptionSupplier()` только **пос
 
 `Result<DescriptionResult>` вместо голого `Deferred<DescriptionResult>` — чтобы `await()` никогда не бросал исключение в edit-coroutine Telegram-слоя. Ошибки нормализуются в `Result.failure`, потребитель выбирает fallback.
 
-`descriptionScope` — `@Component` (`DescriptionCoroutineScope`) **без** `@ConditionalOnProperty` — scope создаётся всегда, при `enabled=false` он просто простаивает (idle SupervisorJob дешёв, agentProvider.getIfAvailable() вернёт null и supplier не заполнится). `@PreDestroy shutdown()` с `cancelAndJoin()` + 10s timeout — паттерн по аналогии с `ExportCoroutineScope`.
+`descriptionScope` — `@Component` (`DescriptionCoroutineScope`) **без** `@ConditionalOnProperty` — scope создаётся всегда, при `enabled=false` он просто простаивает (idle SupervisorJob дешёв, agentProvider.getIfAvailable() вернёт null и supplier не заполнится). Внутри — `CoroutineScope(Dispatchers.IO + SupervisorJob())`. `Dispatchers.IO` выбран намеренно: describe-job выполняет IO-операции (запись/удаление временных файлов, subprocess-запуск CLI). `@PreDestroy shutdown()` с `cancelAndJoin()` + 10s timeout — паттерн по аналогии с `ExportCoroutineScope`.
 
 ### Telegram edit flow — отдельный scope
 
-`DescriptionEditJobRunner` — `@Component` с `@ConditionalOnProperty("application.telegram.enabled=true")`, собственный `CoroutineScope(Dispatchers.IO + SupervisorJob())` и `@PreDestroy shutdown()`. Scope runner-а отделён от describe-scope: describe живёт в core, edit — в telegram модуле, изоляция lifecycle.
+`DescriptionEditScope` и `DescriptionEditJobRunner` — оба `@Component` с `@ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")`. Условность по `ai.description.enabled` (не по `telegram.enabled`) — runner нужен только когда описания генерируются; edit-scope существует вместе с runner'ом. Собственный `CoroutineScope(Dispatchers.IO + SupervisorJob())` и `@PreDestroy shutdown()`. Scope runner-а отделён от describe-scope: describe живёт в core, edit — в telegram модуле, изоляция lifecycle.
 
 ## 6. Data flow: placeholder → Claude → edit
 
@@ -447,20 +461,39 @@ Telegram-слой вызывает `descriptionSupplier()` только **пос
 во всех трёх caption-методах. Вызывающему коду не надо это помнить —
 `camId`/`filePath` с `<`/`>`/`&` не сломают Telegram API-запрос.
 
-**Caption 1024-лимит (HTML-безопасно):** при `withDescription=true` бюджет
-считается **до** добавления HTML-хвоста:
-```kotlin
-private val HINT_OVERHEAD = "\n\n" + placeholderShort(lang)  // или longest possible
-val captionBase = task.message.toCaption(MAX_CAPTION - HINT_OVERHEAD.length)
-```
-Для edit success-пути: `baseCaption = task.message.toCaption(MAX_CAPTION - shortMaxLength - 2)`.
-Это гарантирует, что финальный HTML-caption укладывается в 1024 символа
-без разрывов тегов.
+**Caption 1024-лимит (HTML-aware):** бюджет считается **после** HTML-escape,
+чтобы корректно учесть расширение `&` → `&amp;` (+4), `<` → `&lt;` (+3),
+`>` → `&gt;` (+3). Алгоритм:
 
-**MessageIsNotModifiedException**: ловится специфично через тип из
-`dev.inmo.tgbotapi.bot.exceptions` и логируется как DEBUG (не WARN) —
-это ожидаемое поведение, а не ошибка. `MessageToEditNotFoundException`
-аналогично.
+```kotlin
+// В DescriptionMessageFormatter: escape → truncate (не разрывая entity).
+private fun escapeAndTruncate(text: String, budget: Int): String {
+    val escaped = htmlEscape(text)
+    if (escaped.length <= budget) return escaped
+    // Truncate до budget, но если оборвали внутри HTML entity (&amp;/&lt;/&gt;/&quot;),
+    // откатываемся до символа ПЕРЕД амперсандом.
+    var cutoff = budget
+    val lastAmp = escaped.lastIndexOf('&', startIndex = cutoff - 1)
+    if (lastAmp >= 0 && escaped.indexOf(';', startIndex = lastAmp) >= cutoff) {
+        cutoff = lastAmp
+    }
+    return escaped.substring(0, cutoff) + "…"
+}
+```
+
+Бюджет для initial (placeholder) send: `captionBase = escapeAndTruncate(task.message, MAX_CAPTION - HINT_OVERHEAD.length)`.
+Бюджет для edit success: `editBaseCaption = escapeAndTruncate(task.message, MAX_CAPTION - SHORT_MAX_LENGTH - 2)`,
+где `SHORT_MAX_LENGTH = 500` — pessimistic worst-case (верхняя граница `@Max(500)` из config),
+гарантирует что caption+short умещается даже при максимальной длине AI-ответа. Компромисс между простотой
+(без проброса реального `shortMaxLength` в sender) и безопасностью — незначительное «пересечивание»
+на ~300 символах при дефолтном `shortMaxLength=200`.
+
+**MessageIsNotModifiedException** и **MessageToEditNotFoundException**:
+ловятся специфично через типы из `dev.inmo.tgbotapi.bot.exceptions` и
+логируются как **DEBUG** (не WARN) — это ожидаемые исходы при edit (например,
+сообщение уже удалено пользователем, или контент не изменился после retry).
+Единообразно применяется в `DescriptionEditJobRunner.runEdit()` (Failure
+matrix §7 согласована: во всех таблицах edit-ошибок стоит DEBUG).
 
 **Edit ktgbotapi API (v32):**
 - `bot.sendTextMessage(..., replyParameters = ReplyParameters(chatIdObj, photoMsg.messageId), ...)` — `replyToMessageId` удалён.
@@ -474,42 +507,48 @@ val captionBase = task.message.toCaption(MAX_CAPTION - HINT_OVERHEAD.length)
 ### Single photo (1 кадр)
 
 ```
-t=0   facade стартует claudeHandle = descriptionScope.async { describe(...) }
-      enqueue NotificationTask(claudeHandle)
+t=0   facade формирует descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)?
+      (supplier = null, если agent=off или trimmedFrames пусто)
+      enqueue NotificationTask(descriptionSupplier)
 
-t+ε   sender берёт task, для каждого получателя делает ПОСЛЕДОВАТЕЛЬНО:
-      caption_initial = currentCaption + "\n\n⏳ <i>AI анализирует кадры…</i>"
+t+ε   TelegramNotificationServiceImpl фильтрует получателей. Если их нет —
+      supplier НЕ вызывается, токены не тратятся. Если есть хотя бы один —
+      вызывает supplier() ровно один раз, получает Deferred<Result<...>>,
+      передаёт в sender вместе со списком получателей.
+
+t+ε'  sender для каждого получателя ПОСЛЕДОВАТЕЛЬНО:
+      caption_initial = escapeAndTruncate(task.message, MAX_CAPTION - hintOverhead)
+          + "\n\n⏳ <i>AI анализирует кадры…</i>"
       sendPhoto(caption_initial, parseMode=HTML, replyMarkup=exportKeyboard)
-          → photoMsgId
+          → photoMsg: ContentMessage<...>
       sendTextMessage(
           text="<blockquote expandable>⏳ <i>AI готовит подробное описание…</i></blockquote>",
-          replyToMessageId=photoMsgId, parseMode=HTML)
-          → detailsMsgId
-      editTargets.add(EditTarget(chatId, photoMsgId, detailsMsgId, isMediaGroup=false))
+          replyParameters = ReplyParameters(chatIdObj, photoMsg.messageId),
+          parseMode=HTMLParseMode)
+          → detailsMsg: ContentMessage<...>
+      editTargets.add(EditTarget(photoMsg, detailsMsg, isMediaGroup=false))
 
-t+Δ   ПОСЛЕ завершения рассылки ВСЕМ получателям (т.е. editTargets полностью заполнен):
-      senderScope.launch {
-          val outcome = claudeHandle.await()  // Result<DescriptionResult>
-          editTargets.forEach { target -> editSingleTarget(target, outcome) }
-      }
+t+Δ   ПОСЛЕ завершения рассылки ВСЕМ получателям:
+      editJobRunner.launchEdit(descriptionDeferred, editTargets)
 ```
 
 ### Media group (2-10 кадров)
 
 ```
-sendMediaGroup(photos with current captions) → [messages]
-firstMsgId = messages[0].messageId
+mediaGroupMsg: ContentMessage<MediaGroupContent<...>> = sendMediaGroup(photos with captions)
+// sendMediaGroup возвращает ОДИН ContentMessage (не List); .messageId = id первого альбомного сообщения.
 
 text_initial (HTML) =
     "👆 Нажмите для быстрого экспорта видео\n\n" +
     "⏳ <i>AI анализирует кадры…</i>\n\n" +
     "<blockquote expandable>⏳ <i>AI готовит подробное описание…</i></blockquote>"
 
-sendTextMessage(chat, text_initial, parseMode=HTML,
-    replyToMessageId=firstMsgId, replyMarkup=exportKeyboard)
-    → detailsMsgId
+detailsMsg: ContentMessage<...> = sendTextMessage(
+    chat, text_initial, parseMode=HTMLParseMode,
+    replyParameters = ReplyParameters(chatIdObj, mediaGroupMsg.messageId),
+    replyMarkup=exportKeyboard)
 
-editTargets.add(EditTarget(chatId, null, detailsMsgId, isMediaGroup=true))
+editTargets.add(EditTarget(photoMsg=null, detailsMsg, isMediaGroup=true))
 ```
 
 ### Таблица редактирования
@@ -525,8 +564,7 @@ editTargets.add(EditTarget(chatId, null, detailsMsgId, isMediaGroup=true))
 placeholder, отправляет всё как сейчас, edit-job не запускает. UX идентичен
 текущему. Код форматтера содержит ровно один `if (claudeHandle != null)`.
 
-Ошибки `editMessage*` (`message is not modified`, `message to edit not
-found`) — WARN в лог и пропускаем. Retry на edit не делаем.
+Ошибки `editMessage*` (`MessageIsNotModifiedException`, `MessageToEditNotFoundException` из `dev.inmo.tgbotapi.bot.exceptions`) — **DEBUG** в лог и пропускаем. Прочие исключения edit-а — WARN. Retry на edit не делаем.
 
 ## 7. Error handling и retry
 
@@ -593,8 +631,9 @@ private suspend fun executeWithRetry(prompt: String, request: DescriptionRequest
 
 | Что случилось | UI-результат |
 |---|---|
-| `Timeout`, `Transport` (после retry), `RateLimited`, `InvalidResponse` (после retry), `Disabled` | `caption` + «⚠ <i>Описание недоступно</i>», expandable → «⚠ <i>Описание недоступно</i>». Нейтральный тон, без упоминания Claude. |
-| Edit → `message is not modified` / `message to edit not found` | WARN, игнор |
+| `Timeout`, `Transport` (после retry), `RateLimited`, `InvalidResponse` (после retry) | `caption` + «⚠ <i>Описание недоступно</i>», expandable → «⚠ <i>Описание недоступно</i>». Нейтральный тон, без упоминания Claude. |
+| Edit → `MessageIsNotModifiedException` / `MessageToEditNotFoundException` | **DEBUG**, игнор (ожидаемые исходы) |
+| Edit → прочие исключения | WARN, игнор |
 | Edit-coroutine упала (OOM/cancel) | ERROR, placeholder остаётся — допустимая деградация |
 | CLI не найден при старте (`Query.isCliInstalled() == false`) | WARN на старте: «CLI not found in PATH, all descriptions will return fallback». Приложение стартует, каждый вызов отдаёт fallback. |
 
@@ -608,10 +647,10 @@ retry → fallback. В логе — оригинальный текст, по н
 
 ### Logging
 
-- **WARN** — первый failure любого типа, edit-retry-errors (кроме `MessageIsNotModifiedException`/`MessageToEditNotFoundException` — эти DEBUG), CLI missing, OAuth expired.
+- **WARN** — первый failure любого типа, прочие edit-исключения, CLI missing, OAuth expired.
 - **ERROR** — не используем для описаний.
-- **DEBUG** — prompt (без байтов), raw Claude response (обрезанный), timing (`System.nanoTime()` вокруг `invoker.invoke`), `message is not modified`.
-- **Provider-misconfiguration:** в `AiDescriptionAutoConfiguration` при `enabled=true` и отсутствии `DescriptionAgent` бина — `@PostConstruct` / `CommandLineRunner` WARN "AI description enabled but no agent registered for provider=X; fallback will be used".
+- **DEBUG** — prompt (без байтов), raw Claude response (обрезанный), timing (`System.nanoTime()` вокруг `invoker.invoke`), `MessageIsNotModifiedException`, `MessageToEditNotFoundException`.
+- **Provider-misconfiguration:** отдельный безусловный `@Component` `DescriptionAgentSanityChecker` (§3.1) с `ObjectProvider<DescriptionAgent>` в `@PostConstruct` пишет WARN "AI description enabled but no agent registered for provider=X; fallback will be used", если `enabled=true && agentProvider.getIfAvailable() == null`. Безусловный по `enabled` — чтобы корректно работать и при `enabled=true, provider=foo`.
 
 ### Уровни логирования
 
@@ -697,8 +736,10 @@ exec java ...  # как сейчас
 # copy the value here. Long-lived OAuth token (works against your Claude subscription).
 # CLAUDE_CODE_OAUTH_TOKEN=
 # CLAUDE_MODEL=opus                          # opus | sonnet | haiku (alias)
-# CLAUDE_CLI_PATH=                           # empty = SDK uses PATH
-# CLAUDE_STARTUP_TIMEOUT=10s
+# CLAUDE_CLI_PATH=                           # empty = SDK uses PATH (which claude); non-empty = explicit binary path
+# CLAUDE_WORKING_DIR=                        # default = application.temp-folder
+# APP_AI_DESCRIPTION_MAX_FRAMES=10
+# APP_AI_DESCRIPTION_QUEUE_TIMEOUT=30s
 
 # --- Optional proxy for Claude API calls ---
 # CLAUDE_HTTP_PROXY=http://proxy:8080
@@ -764,11 +805,7 @@ HTML-escape: вход `"car <2> & person"` → проверяем `&lt;2&gt; &am
 
 ### Интеграционный тест (opt-in)
 
-`ClaudeDescriptionAgentIntegrationTest` — `@EnabledIfEnvironmentVariable(named="INTEGRATION_CLAUDE", matches="stub")`.
-Создаёт bash-скрипт в `@TempDir`, имитирующий `claude`-CLI (читает
-stdin-prompt, echoes pre-canned stream-json, exit 0). Конфигурирует
-`CLAUDE_CLI_PATH` на этот скрипт. Проверяет end-to-end prompt → subprocess
-→ parse → `DescriptionResult` без полёта к Anthropic.
+`ClaudeDescriptionAgentIntegrationTest` — **opt-in**, по умолчанию пропускается. Активируется только при `INTEGRATION_CLAUDE=stub` (через `@EnabledIfEnvironmentVariable(named="INTEGRATION_CLAUDE", matches="stub")`). Обычный `./gradlew test` его не запускает — это nice-to-have, не gate CI. Создаёт bash-скрипт в `@TempDir`, имитирующий `claude`-CLI (читает stdin-prompt, echoes pre-canned stream-json, exit 0). Конфигурирует `CLAUDE_CLI_PATH` на этот скрипт. Проверяет end-to-end prompt → subprocess → parse → `DescriptionResult` без полёта к Anthropic.
 
 ### i18n
 
@@ -796,40 +833,53 @@ ai.description.fallback.unavailable=⚠ Описание недоступно
 **Модуль `ai-description`:**
 ```
 modules/ai-description/build.gradle.kts
+modules/ai-description/src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
 modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/
 ├── api/
 │   ├── DescriptionAgent.kt
 │   ├── DescriptionRequest.kt
 │   ├── DescriptionResult.kt
-│   └── DescriptionException.kt
+│   ├── DescriptionException.kt
+│   └── TempFileWriter.kt
 ├── config/
+│   ├── AiDescriptionAutoConfiguration.kt
+│   ├── DescriptionAgentSanityChecker.kt
 │   ├── DescriptionProperties.kt
 │   └── ClaudeProperties.kt
 └── claude/
-    ├── ClaudeAgentConfig.kt
     ├── ClaudeAsyncClientFactory.kt
     ├── ClaudeDescriptionAgent.kt
+    ├── ClaudeExceptionMapper.kt
     ├── ClaudeImageStager.kt
+    ├── ClaudeInvoker.kt
     ├── ClaudePromptBuilder.kt
-    └── ClaudeResponseParser.kt
+    ├── ClaudeResponseParser.kt
+    └── DefaultClaudeInvoker.kt
 
-modules/ai-description/src/test/kotlin/.../claude/
-├── ClaudeDescriptionAgentTest.kt
-├── ClaudeImageStagerTest.kt
-├── ClaudePromptBuilderTest.kt
-├── ClaudeResponseParserTest.kt
-├── DescriptionExceptionMappingTest.kt
-└── ClaudeDescriptionAgentIntegrationTest.kt   (stub-CLI, @EnabledIfEnv)
+modules/ai-description/src/test/kotlin/.../
+├── claude/
+│   ├── ClaudeAsyncClientFactoryTest.kt
+│   ├── ClaudeDescriptionAgentTest.kt
+│   ├── ClaudeImageStagerTest.kt
+│   ├── ClaudePromptBuilderTest.kt
+│   ├── ClaudeResponseParserTest.kt
+│   ├── DescriptionExceptionMappingTest.kt
+│   └── ClaudeDescriptionAgentIntegrationTest.kt   (stub-CLI, @EnabledIfEnv)
+└── config/
+    └── AiDescriptionAutoConfigurationTest.kt
 ```
 
 **В `core`:**
 ```
-modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/DescriptionScopeConfig.kt
+modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/DescriptionCoroutineScope.kt
+modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/TempFileWriterAdapter.kt
 ```
 
 **В `telegram`:**
 ```
 modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/DescriptionMessageFormatter.kt
+modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/DescriptionEditScope.kt
+modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/DescriptionEditJobRunner.kt
 ```
 
 ### Изменённые файлы
@@ -842,9 +892,10 @@ modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl
 | `docker/deploy/docker-entrypoint.sh` | + WARN-блок при `APP_AI_DESCRIPTION_ENABLED=true` |
 | `docker/deploy/.env.example` | + секция AI-description + Claude + proxy |
 | `modules/telegram/build.gradle.kts` | + `project(":modules:ai-description")` |
-| `modules/telegram/.../queue/NotificationTask.kt` | + поле `descriptionHandle: Deferred<Result<DescriptionResult>>? = null` |
-| `modules/telegram/.../service/TelegramNotificationService.kt` | + параметр `descriptionHandle` в `sendRecordingNotification(...)` |
-| `modules/telegram/.../service/impl/TelegramNotificationServiceImpl.kt` | Проброс в NotificationTask |
+| `modules/telegram/.../queue/NotificationTask.kt` | + поле `descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)? = null` |
+| `modules/telegram/.../service/TelegramNotificationService.kt` | + параметр `descriptionSupplier` в `sendRecordingNotification(...)` |
+| `modules/telegram/.../service/impl/TelegramNotificationServiceImpl.kt` | Вызов `supplier()` **после** фильтрации подписчиков; проброс `Deferred` в NotificationTask |
+| `modules/telegram/.../service/impl/NoOpTelegramNotificationService.kt` | Обновить override под новую сигнатуру интерфейса (nullable `descriptionSupplier`) |
 | `modules/telegram/.../queue/TelegramNotificationSender.kt` | Build placeholder, захват messageId, запуск edit-job, HTML parse mode при наличии handle |
 | `modules/telegram/.../i18n/messages_ru.properties` | + 3 ключа |
 | `modules/telegram/.../i18n/messages_en.properties` | + 3 ключа |
@@ -883,6 +934,14 @@ modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl
   Anthropic требует их, но не фиксирует минимальные версии. Ставим
   `apk add --no-cache` без пина. Если CI на базовом образе `azul/zulu-openjdk-alpine:25`
   тянет несовместимые — пинуем версию явно.
+- **`ClaudeProperties` валидируется всегда.** `workingDirectory` помечен `@NotBlank`,
+  а вся секция поднимается через `AutoConfiguration.@EnableConfigurationProperties`.
+  Пока `provider=claude` — это норма (нужен рабочий config). Но добавление
+  `provider=openai` в будущем упрётся в невалидный (пустой) `workingDirectory`
+  для OpenAI-пути. Решения на тот момент: (a) снять `@NotBlank` и проверить в
+  `ClaudeDescriptionAgent.init` (уже условен по `provider=claude`); (b) сделать
+  `ClaudeProperties` условным по `provider=claude` отдельным `@Configuration`;
+  (c) сделать `workingDirectory` `Optional<String>`. Решим при добавлении второго провайдера.
 - **Изоляция от `model`/`common`.** Сознательно не делаем модуль
   зависимым от внутренних DTO проекта — конверсия `FrameData → FrameImage`
   происходит в `core`-слое (facade). Если в будущем нужна будет

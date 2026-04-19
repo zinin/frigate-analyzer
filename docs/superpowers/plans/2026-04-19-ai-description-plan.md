@@ -170,10 +170,10 @@ sealed class DescriptionException(
     class Transport(cause: Throwable? = null) : DescriptionException("Claude transport error", cause)
 
     class RateLimited(cause: Throwable? = null) : DescriptionException("Claude rate-limited (429)", cause)
-
-    class Disabled : DescriptionException("Description agent is disabled")
 }
 ```
+
+Иерархия покрывает все ошибочные исходы работающего агента. Случай "агент выключен" моделируется на уровне DI (facade получает `null` supplier, describe-job не запускается) — отдельного исключения не нужно.
 
 - [ ] **Step 4: Create DescriptionAgent.kt**
 
@@ -344,27 +344,44 @@ git commit -m "feat(ai-description): add DescriptionProperties and ClaudePropert
 ```kotlin
 package ru.zinin.frigate.analyzer.ai.description.config
 
-import io.github.oshai.kotlinlogging.KotlinLogging
-import jakarta.annotation.PostConstruct
-import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfiguration
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.ComponentScan
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
-
-private val logger = KotlinLogging.logger {}
 
 @AutoConfiguration
 @ComponentScan("ru.zinin.frigate.analyzer.ai.description")
 @EnableConfigurationProperties(DescriptionProperties::class, ClaudeProperties::class)
-@ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-open class AiDescriptionAutoConfiguration(
+open class AiDescriptionAutoConfiguration
+```
+
+**Класс без `@ConditionalOnProperty`** — `DescriptionProperties` регистрируется всегда (его безусловно инжектит `RecordingProcessingFacade`). Условность в `@ConditionalOnProperty("application.ai.description.enabled")` перенесена на сами `@Component`-бины модуля (`ClaudePromptBuilder`, `ClaudeDescriptionAgent` и т. д.) в Phase 2.
+
+**`ClaudeProperties` валидируется всегда** — но при `enabled=false` в YAML дефолты для его полей (см. Task 13 YAML): `oauth-token=""`, `model="opus"`, `working-directory="${application.temp-folder}"` — валидные, запуск не ломают. Будущая поддержка `provider=openai` потребует дополнительного условия (или снятия `@NotBlank` с Claude-специфичных полей) — см. open issue в §11 design.
+
+- [ ] **Step 1.5: Create DescriptionAgentSanityChecker**
+
+Отдельный `@Component` для WARN'а, БЕЗ `@ConditionalOnProperty`:
+
+```kotlin
+// modules/ai-description/src/main/kotlin/.../config/DescriptionAgentSanityChecker.kt
+package ru.zinin.frigate.analyzer.ai.description.config
+
+import io.github.oshai.kotlinlogging.KotlinLogging
+import jakarta.annotation.PostConstruct
+import org.springframework.beans.factory.ObjectProvider
+import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
+
+private val logger = KotlinLogging.logger {}
+
+@Component
+class DescriptionAgentSanityChecker(
     private val descriptionProperties: DescriptionProperties,
     private val agentProvider: ObjectProvider<DescriptionAgent>,
 ) {
     @PostConstruct
     fun warnIfProviderMissing() {
+        if (!descriptionProperties.enabled) return
         if (agentProvider.getIfAvailable() == null) {
             logger.warn {
                 "application.ai.description.enabled=true but no DescriptionAgent registered " +
@@ -375,7 +392,7 @@ open class AiDescriptionAutoConfiguration(
 }
 ```
 
-Важно: `@ConditionalOnProperty` на уровне `@AutoConfiguration` — при `enabled=false` ни этот класс, ни его `@ComponentScan` не активируются. Значит `@Component`-бины модуля (`ClaudePromptBuilder` etc.) не создаются и не захламляют context. `ClaudeProperties` не валидируется (тоже не регистрируется).
+Безусловный `@Component` — срабатывает и при `enabled=true, provider=foo` (когда claude-бинов нет, но autoconfig активен). При `enabled=false` метод тихо возвращается.
 
 - [ ] **Step 2: Register auto-config via imports file**
 
@@ -398,23 +415,51 @@ Create `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/desc
 ```kotlin
 package ru.zinin.frigate.analyzer.ai.description.config
 
+import io.mockk.mockk
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
+import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import kotlin.test.Test
 
 class AiDescriptionAutoConfigurationTest {
     private val runner =
         ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AiDescriptionAutoConfiguration::class.java))
+            .withUserConfiguration(TempFileWriterStubConfig::class.java)
+
+    @Configuration
+    class TempFileWriterStubConfig {
+        @Bean
+        fun tempFileWriter(): TempFileWriter = mockk(relaxed = true)
+    }
 
     @Test
-    fun `autoconfig inactive when enabled=false`() {
+    fun `DescriptionProperties registered even when enabled=false`() {
+        // Критично: facade инжектит DescriptionProperties безусловно — бин должен быть всегда.
         runner
-            .withPropertyValues("application.ai.description.enabled=false")
+            .withPropertyValues(
+                "application.ai.description.enabled=false",
+                "application.ai.description.provider=claude",
+                "application.ai.description.common.language=en",
+                "application.ai.description.common.short-max-length=200",
+                "application.ai.description.common.detailed-max-length=1500",
+                "application.ai.description.common.max-frames=10",
+                "application.ai.description.common.queue-timeout=30s",
+                "application.ai.description.common.timeout=60s",
+                "application.ai.description.common.max-concurrent=2",
+                "application.ai.description.claude.oauth-token=",
+                "application.ai.description.claude.model=opus",
+                "application.ai.description.claude.working-directory=/tmp",
+            )
             .run { ctx ->
-                assert(!ctx.containsBean("aiDescriptionAutoConfiguration")) {
-                    "autoconfig should be skipped"
+                assert(ctx.getBeansOfType(DescriptionProperties::class.java).isNotEmpty()) {
+                    "DescriptionProperties must be available when enabled=false (facade inject)"
+                }
+                assert(ctx.getBeansOfType(DescriptionAgent::class.java).isEmpty()) {
+                    "DescriptionAgent must NOT be registered when enabled=false"
                 }
             }
     }
@@ -931,6 +976,8 @@ Expected: FAIL — class not found.
 package ru.zinin.frigate.analyzer.ai.description.claude
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
@@ -956,15 +1003,23 @@ class ClaudeImageStager(
             return staged
         } catch (e: Exception) {
             logger.warn(e) { "Failed to stage frames for ${request.recordingId}; cleaning up partial set" }
-            runCatching { tempWriter.deleteFiles(staged) }
+            // NonCancellable — stage может упасть при TimeoutCancellationException,
+            // а suspend-вызов в отменённой корутине сразу бросит CancellationException.
+            withContext(NonCancellable) { runCatching { tempWriter.deleteFiles(staged) } }
             throw e
         }
     }
 
     suspend fun cleanup(paths: List<Path>) {
         if (paths.isEmpty()) return
-        runCatching { tempWriter.deleteFiles(paths) }
-            .onFailure { logger.warn(it) { "Failed to delete staged Claude frames" } }
+        // NonCancellable обязателен: cleanup() вызывается из finally в describe(),
+        // куда выполнение часто попадает через TimeoutCancellationException.
+        // Без этого suspend-вызов в отменённой корутине немедленно бросит
+        // CancellationException, runCatching его проглотит, файлы останутся.
+        withContext(NonCancellable) {
+            runCatching { tempWriter.deleteFiles(paths) }
+                .onFailure { logger.warn(it) { "Failed to delete staged Claude frames" } }
+        }
     }
 }
 ```
@@ -1415,10 +1470,21 @@ class ClaudeDescriptionAgent(
         check(claudeProperties.oauthToken.isNotBlank()) {
             "CLAUDE_CODE_OAUTH_TOKEN must be set when application.ai.description.enabled=true"
         }
-        if (!Query.isCliInstalled()) {
-            logger.warn {
-                "Claude CLI not found in PATH (Query.isCliInstalled()==false); all description " +
-                    "requests will return fallback. Check Dockerfile ENV PATH=... and claude install."
+        // CLI detection зависит от cliPath: пустой → which claude; non-empty → проверяем executable напрямую.
+        if (claudeProperties.cliPath.isBlank()) {
+            if (!Query.isCliInstalled()) {
+                logger.warn {
+                    "Claude CLI not found in PATH (Query.isCliInstalled()==false); all description " +
+                        "requests will return fallback. Check Dockerfile ENV PATH=... and claude install."
+                }
+            }
+        } else {
+            val cliFile = java.nio.file.Path.of(claudeProperties.cliPath)
+            if (!java.nio.file.Files.isExecutable(cliFile)) {
+                logger.warn {
+                    "Explicit claude.cli-path='${claudeProperties.cliPath}' not found or not executable; " +
+                        "all description requests will return fallback."
+                }
             }
         }
     }
@@ -1683,10 +1749,11 @@ class ClaudeDescriptionAgentTest {
 }
 ```
 
-Импорты для concurrency-теста:
+Импорты для concurrency-теста (добавить в шапку файла вместе с остальными):
 ```kotlin
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 ```
 
@@ -1813,7 +1880,7 @@ class ClaudeDescriptionAgent(
                 logger.warn(e) { "Claude transport error, retrying in 5s (remaining budget=$remaining)" }
                 delay(5.seconds)
             }
-            // RateLimited, Disabled pass through without retry.
+            // RateLimited пробрасывается без retry.
             // Timeout НЕ достигнет этого места — он генерируется на границе describe() после withTimeout.
         }
     }
@@ -1872,10 +1939,14 @@ import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 @ConditionalOnProperty("application.ai.description.provider", havingValue = "claude")
 class DefaultClaudeInvoker(
     private val clientFactory: ClaudeAsyncClientFactory,
-    private val descriptionProperties: DescriptionProperties,
+    descriptionProperties: DescriptionProperties,
 ) : ClaudeInvoker {
+    // Инвокер зависит только от work-timeout — берём его из properties в конструкторе,
+    // чтобы ловить конфигурационные ошибки на этапе DI, а не при первом вызове.
+    private val workTimeout: java.time.Duration = descriptionProperties.common.timeout
+
     override suspend fun invoke(prompt: String): String {
-        val client = clientFactory.create(descriptionProperties.common.timeout)
+        val client = clientFactory.create(workTimeout)
         try {
             client.connect().awaitSingleOrNull()  // Mono<Void>
             return client.query(prompt).text().awaitSingle()  // Mono<String>
@@ -1887,11 +1958,7 @@ class DefaultClaudeInvoker(
 }
 ```
 
-Принимает `DescriptionProperties` (не `CommonSection`), т.к. только root `@ConfigurationProperties` класс — бин.
-
-- [ ] **Step 1.5: Delete Task 12 (ClaudeAgentConfig) — больше не нужен**
-
-В оригинальной редакции Task 12 создавал `ClaudeAgentConfig` как `@Configuration` с `@Bean`-фабриками. Теперь `ClaudeDescriptionAgent` и `DefaultClaudeInvoker` — `@Component` с `@ConditionalOnProperty`, подхватываются `AiDescriptionAutoConfiguration.@ComponentScan` автоматически. Файл `ClaudeAgentConfig.kt` не создаём.
+Конструктор принимает `DescriptionProperties` (Spring бинит только root), но класс хранит только нужный `workTimeout: Duration` — остальная часть properties отбрасывается. Это защищает `invoke()` от неожиданных зависимостей при будущих изменениях `DescriptionProperties.common`.
 
 - [ ] **Step 2: Build (no new tests)**
 
@@ -1966,6 +2033,52 @@ class TempFileWriterAdapter {
 ```
 
 Импорт — из `api/` пакета (был `claude/`, переехал в Task 2). Adapter условен по `enabled=true` — при выключенной фиче не создаётся.
+
+- [ ] **Step 2.1: Add TempFileWriterAdapterTest**
+
+Создать `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/TempFileWriterAdapterTest.kt`:
+
+```kotlin
+package ru.zinin.frigate.analyzer.core.config
+
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.mockk
+import kotlinx.coroutines.test.runTest
+import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
+import java.nio.file.Path
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+class TempFileWriterAdapterTest {
+    private val tempFileHelper = mockk<TempFileHelper>()
+    private val writer = TempFileWriterAdapter().tempFileWriter(tempFileHelper)
+
+    @Test
+    fun `createTempFile delegates to TempFileHelper`() = runTest {
+        val expected = Path.of("/tmp/test.jpg")
+        coEvery { tempFileHelper.createTempFile("pref", ".jpg", any()) } returns expected
+
+        val result = writer.createTempFile("pref", ".jpg", ByteArray(1))
+
+        assertEquals(expected, result)
+        coVerify(exactly = 1) { tempFileHelper.createTempFile("pref", ".jpg", any()) }
+    }
+
+    @Test
+    fun `deleteFiles delegates to TempFileHelper and returns count`() = runTest {
+        val paths = listOf(Path.of("/tmp/a"), Path.of("/tmp/b"))
+        coEvery { tempFileHelper.deleteFiles(paths) } returns 2
+
+        val count = writer.deleteFiles(paths)
+
+        assertEquals(2, count)
+        coVerify(exactly = 1) { tempFileHelper.deleteFiles(paths) }
+    }
+}
+```
+
+Adapter — тонкий делегат, но без теста легко пропустить рассинхронизацию сигнатур при будущем рефакторинге `TempFileHelper`.
 
 - [ ] **Step 3: Create DescriptionScopeConfig**
 
@@ -2222,12 +2335,13 @@ Modify (create if missing) `modules/core/src/test/kotlin/ru/zinin/frigate/analyz
 package ru.zinin.frigate.analyzer.core.facade
 
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
@@ -2236,6 +2350,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
+import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
@@ -2277,7 +2392,8 @@ class RecordingProcessingFacadeTest {
     ): Pair<RecordingProcessingFacade, SaveProcessingResultRequest> {
         val provider = mockk<ObjectProvider<DescriptionAgent>>()
         every { provider.getIfAvailable() } returns agent  // non-suspend
-        val scope = DescriptionCoroutineScope(CoroutineScope(StandardTestDispatcher() + SupervisorJob()))
+        // UnconfinedTestDispatcher — корутины исполняются сразу в runTest, supplier().await() не залипнет.
+        val scope = DescriptionCoroutineScope(CoroutineScope(UnconfinedTestDispatcher() + SupervisorJob()))
         val props =
             DescriptionProperties(
                 enabled = agent != null,
@@ -2689,18 +2805,30 @@ class DescriptionMessageFormatter(
     fun captionInitialPlaceholder(
         baseText: String,
         language: String,
-    ): String = "${htmlEscape(baseText)}\n\n${msg.get(KEY_PLACEHOLDER_SHORT, language)}"
+        maxLength: Int = MAX_CAPTION_LENGTH,
+    ): String {
+        val suffix = "\n\n${msg.get(KEY_PLACEHOLDER_SHORT, language)}"
+        return "${escapeAndTrim(baseText, maxLength - suffix.length)}$suffix"
+    }
 
     fun captionSuccess(
         baseText: String,
         result: DescriptionResult,
         language: String,
-    ): String = "${htmlEscape(baseText)}\n\n${htmlEscape(result.short)}"
+        maxLength: Int = MAX_CAPTION_LENGTH,
+    ): String {
+        val suffix = "\n\n${htmlEscape(result.short)}"
+        return "${escapeAndTrim(baseText, maxLength - suffix.length)}$suffix"
+    }
 
     fun captionFallback(
         baseText: String,
         language: String,
-    ): String = "${htmlEscape(baseText)}\n\n${msg.get(KEY_FALLBACK, language)}"
+        maxLength: Int = MAX_CAPTION_LENGTH,
+    ): String {
+        val suffix = "\n\n${msg.get(KEY_FALLBACK, language)}"
+        return "${escapeAndTrim(baseText, maxLength - suffix.length)}$suffix"
+    }
 
     fun placeholderShort(language: String): String = msg.get(KEY_PLACEHOLDER_SHORT, language)
 
@@ -2733,7 +2861,29 @@ class DescriptionMessageFormatter(
             .replace("<", "&lt;")
             .replace(">", "&gt;")
 
+    /**
+     * HTML-aware truncation: escape(text) → если укладывается в budget, вернуть;
+     * иначе обрезать, не разрывая HTML-entity. Обязательно вызывать на `baseText`
+     * внутри формирования caption — обычный `substring` после escape может разорвать
+     * `&amp;`/`&lt;`/`&gt;` и превратить Telegram HTML в битый.
+     */
+    private fun escapeAndTrim(text: String, budget: Int): String {
+        if (budget <= 0) return ""
+        val escaped = htmlEscape(text)
+        if (escaped.length <= budget) return escaped
+        var cutoff = budget - 1  // резерв под ellipsis
+        val lastAmp = escaped.lastIndexOf('&', startIndex = (cutoff - 1).coerceAtLeast(0))
+        if (lastAmp >= 0) {
+            val entityEnd = escaped.indexOf(';', startIndex = lastAmp)
+            if (entityEnd < 0 || entityEnd >= cutoff) {
+                cutoff = lastAmp
+            }
+        }
+        return escaped.substring(0, cutoff.coerceAtLeast(0)) + "…"
+    }
+
     companion object {
+        private const val MAX_CAPTION_LENGTH = 1024
         private const val KEY_PLACEHOLDER_SHORT = "ai.description.placeholder.short"
         private const val KEY_PLACEHOLDER_DETAILED = "ai.description.placeholder.detailed"
         private const val KEY_FALLBACK = "ai.description.fallback.unavailable"
@@ -2978,7 +3128,39 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
 ```
 
-**Примечание по `TestDescriptionEditJobRunner`:** если проект использует `runTest`, scope внутри `DescriptionEditJobRunner` продолжает жить на реальных `Dispatchers.IO`. Для детерминированности тесты создают test-подкласс runner'а, который использует `TestCoroutineScheduler`-dispatcher через `DescriptionEditScope(CoroutineScope(TestDispatcher))` и экспонирует последний `Job` через `getEditJob()`. Точная реализация — адаптировать по сигнатуре существующего `ExportExecutorTest` в проекте (preflight: прочитать тест и скопировать паттерн).
+**Реализация `TestDescriptionEditJobRunner`** (положить в тот же test-файл, перед классом `TelegramNotificationSenderTest`, либо в отдельный helper):
+
+```kotlin
+/**
+ * Test double для DescriptionEditJobRunner. Использует UnconfinedTestDispatcher —
+ * корутины исполняются сразу, `getEditJob()?.join()` возвращается моментально.
+ * Паттерн скопирован с существующего TestExportExecutor (см. ExportExecutorTest.kt).
+ */
+private class TestDescriptionEditJobRunner(
+    bot: TelegramBot,
+    formatter: DescriptionMessageFormatter,
+) : DescriptionEditJobRunner(
+    bot = bot,
+    formatter = formatter,
+    scope = DescriptionEditScope.forTest(CoroutineScope(UnconfinedTestDispatcher() + SupervisorJob())),
+) {
+    @Volatile
+    private var lastJob: Job? = null
+
+    override fun launchEditJob(
+        targets: List<EditTarget>,
+        handleOutcome: suspend () -> Result<DescriptionResult>,
+    ): Job {
+        val job = super.launchEditJob(targets, handleOutcome)
+        lastJob = job
+        return job
+    }
+
+    fun getEditJob(): Job? = lastJob
+}
+```
+
+Для поддержки test-scope в `DescriptionEditScope` добавлен фабричный метод `companion object { fun forTest(scope: CoroutineScope) = DescriptionEditScope(scope) }` — см. Step 3a. Альтернатива — сделать `DescriptionEditScope` `open` и подкласс с override-нутым `delegate`.
 
 - [ ] **Step 2: Run test — expect failures**
 
@@ -3072,8 +3254,8 @@ data class EditTarget(
     val chatId: ChatIdentifier,
     val captionMessageId: MessageId?,
     val detailsMessageId: MessageId,
-    val baseCaption: String,
-    val baseTextForAlbum: String?,
+    val baseText: String,               // raw text — formatter сам сделает escape+trim
+    val captionBudget: Int,             // budget под итоговый HTML-caption (1024 − short overhead)
     val exportKeyboard: InlineKeyboardMarkup,
     val language: String,
     val isMediaGroup: Boolean,
@@ -3111,13 +3293,16 @@ class DescriptionEditJobRunner(
     }
 
     private suspend fun editMediaGroup(target: EditTarget, outcome: Result<DescriptionResult>) {
+        // Для media group: caption в фото не трогаем, только reply-text. Бюджет здесь не caption-лимит (1024),
+        // а Telegram text-message лимит (4096) — short+expandable детально умещаются. Используем captionBudget
+        // как прокси "разумного размера" для верхнего куска, expandable идёт следом без сжатия.
         val newText = outcome.fold(
             onSuccess = { result ->
-                val short = formatter.captionSuccess(target.baseTextForAlbum!!, result, target.language)
+                val short = formatter.captionSuccess(target.baseText, result, target.language, target.captionBudget)
                 "$short\n\n${formatter.expandableBlockquoteSuccess(result, target.language)}"
             },
             onFailure = {
-                val short = formatter.captionFallback(target.baseTextForAlbum!!, target.language)
+                val short = formatter.captionFallback(target.baseText, target.language, target.captionBudget)
                 "$short\n\n${formatter.expandableBlockquoteFallback(target.language)}"
             },
         )
@@ -3134,8 +3319,8 @@ class DescriptionEditJobRunner(
 
     private suspend fun editSinglePhotoCaption(target: EditTarget, outcome: Result<DescriptionResult>) {
         val captionText = outcome.fold(
-            onSuccess = { formatter.captionSuccess(target.baseCaption, it, target.language) },
-            onFailure = { formatter.captionFallback(target.baseCaption, target.language) },
+            onSuccess = { formatter.captionSuccess(target.baseText, it, target.language, target.captionBudget) },
+            onFailure = { formatter.captionFallback(target.baseText, target.language, target.captionBudget) },
         )
         runEdit("single-photo caption", target) {
             bot.editMessageCaption(
@@ -3163,10 +3348,10 @@ class DescriptionEditJobRunner(
         }
     }
 
-    private suspend inline fun runEdit(
+    private suspend fun runEdit(
         label: String,
         target: EditTarget,
-        block: () -> Unit,
+        block: suspend () -> Unit,
     ) {
         try {
             block()
@@ -3202,11 +3387,15 @@ import dev.inmo.tgbotapi.types.ReplyParameters
 import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
 import dev.inmo.tgbotapi.types.message.HTMLParseMode
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.Deferred
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.helper.RetryHelper
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
+import ru.zinin.frigate.analyzer.telegram.queue.DescriptionEditJobRunner
 import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
 
 private val logger = KotlinLogging.logger {}
@@ -3230,20 +3419,17 @@ class TelegramNotificationSender(
         val formatter = descriptionFormatter.getIfAvailable()
         val withDescription = task.descriptionHandle != null && formatter != null
 
-        // HTML-budget: при withDescription бюджет caption = 1024 - (placeholder overhead).
-        // Это гарантирует что финальный HTML-caption с placeholder'ом укладывается в 1024.
-        // Для edit мы ещё ужимаем baseCaption под short-лимит (см. EditTarget).
-        val hintOverhead = if (withDescription) formatter!!.captionPlaceholderOverhead(lang) else 0
-        val captionBase = task.message.toCaption(MAX_CAPTION_LENGTH - hintOverhead)
-        val captionInitial =
-            if (withDescription) formatter!!.captionInitialPlaceholder(captionBase, lang)
-            else captionBase
+        // HTML-budget: formatter'у даём raw text + budget; он сам сделает HTML-aware escape+truncate
+        // (см. DescriptionMessageFormatter.escapeAndTrim). Это гарантирует что финальный HTML-caption
+        // укладывается в 1024 символа даже при наличии &<> в camId/filePath.
         val parseMode = if (withDescription) HTMLParseMode else null
+        val captionInitial =
+            if (withDescription) formatter!!.captionInitialPlaceholder(task.message, lang, MAX_CAPTION_LENGTH)
+            else task.message.toCaption(MAX_CAPTION_LENGTH)
 
-        // Для edit case: baseCaption урезаем дополнительно на shortMaxLength (до ~200 — худший случай).
-        val editBaseCaption = if (withDescription) {
-            task.message.toCaption(MAX_CAPTION_LENGTH - SHORT_MAX_LENGTH - "\n\n".length)
-        } else captionBase
+        // Для edit case: передаём raw text, formatter сам ужмёт под оставшийся бюджет после short-хвоста.
+        // SHORT_MAX_LENGTH — pessimistic worst-case (@Max(500) из CommonSection).
+        val editBaseBudget = if (withDescription) MAX_CAPTION_LENGTH - SHORT_MAX_LENGTH - "\n\n".length else MAX_CAPTION_LENGTH
 
         val targets = mutableListOf<EditTarget>()
 
@@ -3289,8 +3475,8 @@ class TelegramNotificationSender(
                             chatId = chatIdObj,
                             captionMessageId = photoMsg.messageId,
                             detailsMessageId = detailsMsg.messageId,
-                            baseCaption = editBaseCaption,
-                            baseTextForAlbum = null,
+                            baseText = task.message,
+                            captionBudget = editBaseBudget,
                             exportKeyboard = exportKeyboard,
                             language = lang,
                             isMediaGroup = false,
@@ -3308,7 +3494,15 @@ class TelegramNotificationSender(
                                 chunk.mapIndexed { idx, frame ->
                                     TelegramMediaPhoto(
                                         file = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
-                                        text = if (chunkIndex == 0 && idx == 0) captionBase else null,
+                                        // first frame carries caption; formatter сам escape'ит если withDescription
+                                        text =
+                                            if (chunkIndex == 0 && idx == 0) {
+                                                if (withDescription) {
+                                                    formatter!!.captionInitialPlaceholder(task.message, lang, MAX_CAPTION_LENGTH)
+                                                } else {
+                                                    task.message.toCaption(MAX_CAPTION_LENGTH)
+                                                }
+                                            } else null,
                                     )
                                 }
                             @Suppress("OPT_IN_USAGE")
@@ -3346,8 +3540,8 @@ class TelegramNotificationSender(
                             chatId = chatIdObj,
                             captionMessageId = null,
                             detailsMessageId = detailsMsg.messageId,
-                            baseCaption = editBaseCaption,
-                            baseTextForAlbum = albumBaseText,
+                            baseText = albumBaseText,
+                            captionBudget = editBaseBudget,
                             exportKeyboard = exportKeyboard,
                             language = lang,
                             isMediaGroup = true,
@@ -3368,21 +3562,21 @@ class TelegramNotificationSender(
     companion object {
         private const val MAX_MEDIA_GROUP_SIZE = 10
         private const val MAX_CAPTION_LENGTH = 1024
-        // Максимум short в DescriptionProperties.CommonSection. Используется для edit budget.
+        // Pessimistic worst-case: @Max(500) из DescriptionProperties.CommonSection.
+        // Используем upper bound для edit budget — гарантирует 1024 даже при shortMaxLength=500.
+        // При реальном дефолте 200 caption space останется на ~300 символов недоиспользованным —
+        // приемлемый компромисс между простотой (без проброса реального значения в sender) и безопасностью.
         private const val SHORT_MAX_LENGTH = 500
     }
 
     private fun String.toCaption(maxLength: Int): String {
+        // Plain-text truncation (без HTML parseMode). Для HTML-сценариев используется
+        // DescriptionMessageFormatter.escapeAndTrim внутри formatter-методов.
         if (length <= maxLength) return this
         logger.warn { "Truncating caption from $length to $maxLength characters to satisfy Telegram limits" }
         return substring(0, maxLength)
     }
 }
-```
-
-Импорт `ObjectProvider`:
-```kotlin
-import org.springframework.beans.factory.ObjectProvider
 ```
 
 **Критические изменения vs исходного плана:**
@@ -3391,8 +3585,9 @@ import org.springframework.beans.factory.ObjectProvider
 - `HTMLParseMode` импорт из `dev.inmo.tgbotapi.types.message`.
 - `replyToMessageId` → `replyParameters = ReplyParameters(chatId, msgId)` — ktgbotapi v32 API.
 - `sendMediaGroup(...)` возвращает **один** `ContentMessage<MediaGroupContent<...>>`, `group.messageId` — id первого сообщения альбома. `.firstOrNull()?.messageId` убрано.
-- HTML-budget truncation: `toCaption(MAX_CAPTION_LENGTH - hintOverhead)` ДО добавления HTML.
-- `editBaseCaption` урезан ещё на `SHORT_MAX_LENGTH + 2` — гарантирует что `captionSuccess` не превысит 1024.
+- HTML-aware truncation перенесён в `DescriptionMessageFormatter.escapeAndTrim` (escape-first, не разрывает entity). Sender передаёт raw baseText + budget — formatter сам escape'ит и трим'ит.
+- `EditTarget.baseCaption` → `baseText` + `captionBudget` — передаём сырой текст с бюджетом, а не pre-trimmed.
+- Импорты `kotlinx.coroutines.Deferred`, `ObjectProvider`, `DescriptionResult`, `DescriptionEditJobRunner` добавлены в шапку файла.
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -3425,14 +3620,14 @@ YAML-секция добавляется в Task 13 Step 4.5 (перенесен
 
 - [ ] **Step 1: Add Claude CLI installation**
 
-Edit `docker/deploy/Dockerfile`. After the line `RUN apk add --no-cache ffmpeg curl fontconfig ttf-dejavu` and before `RUN mkdir -p /tmp/frigate-analyzer ...`, insert:
+Edit `docker/deploy/Dockerfile`. **Не добавляй отдельный `RUN apk add`** — существующую `RUN apk add --no-cache ffmpeg curl fontconfig ttf-dejavu` нужно расширить **в той же строке**, чтобы не дублировать apk-слой:
 
 ```dockerfile
-# Claude Code CLI (native, no Node.js): musl+ripgrep required per Anthropic docs
-RUN apk add --no-cache bash libgcc libstdc++ ripgrep
+# Runtime deps (ffmpeg/fontconfig existing + bash/libgcc/libstdc++/ripgrep for Claude CLI per Anthropic docs)
+RUN apk add --no-cache ffmpeg curl fontconfig ttf-dejavu bash libgcc libstdc++ ripgrep
 ```
 
-Then, after `USER appuser` line near the end, add (before `EXPOSE 8080`):
+Затем, после `USER appuser` line near the end, add (before `EXPOSE 8080`):
 
 ```dockerfile
 # Install Claude Code CLI under appuser (~/.local/bin)
@@ -3449,7 +3644,7 @@ RUN mkdir -p /home/appuser/.claude \
 
 Then, still as root, insert **before** the `USER appuser` line a `USER root` block (if not already root) so the subsequent `USER appuser` + native install runs under appuser context. The final ordering should be:
 
-1. `RUN apk add --no-cache bash libgcc libstdc++ ripgrep`  (as root)
+1. `RUN apk add --no-cache ffmpeg curl fontconfig ttf-dejavu bash libgcc libstdc++ ripgrep`  (as root — существующий, расширенный)
 2. (existing) setup of directories, group, user
 3. existing COPY --from=builder lines
 4. existing AOT cache build (as root) — keep
@@ -3514,7 +3709,9 @@ Run from the repo root:
 ```bash
 ./gradlew :frigate-analyzer-core:bootJar
 docker build -f docker/deploy/Dockerfile -t frigate-analyzer:ai-test .
-docker run --rm frigate-analyzer:ai-test claude --version
+# --entrypoint обязательно — образ имеет ENTRYPOINT=docker-entrypoint.sh,
+# просто аргументы "claude --version" уйдут в Java-приложение и не проверят CLI.
+docker run --rm --entrypoint claude frigate-analyzer:ai-test --version
 ```
 
 Expected: version string prints, no errors.
@@ -3553,8 +3750,15 @@ fi
 if [ "${APP_AI_DESCRIPTION_ENABLED:-false}" = "true" ]; then
     if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
         echo "WARN: APP_AI_DESCRIPTION_ENABLED=true but CLAUDE_CODE_OAUTH_TOKEN is empty; AI descriptions will return fallback." >&2
+    elif [ -n "${CLAUDE_CLI_PATH:-}" ]; then
+        # Explicit path: проверяем его, а не PATH — иначе WARN будет ложным при кастомном location.
+        if [ -x "${CLAUDE_CLI_PATH}" ]; then
+            echo "INFO: claude CLI detected at ${CLAUDE_CLI_PATH}: $(${CLAUDE_CLI_PATH} --version 2>/dev/null || echo 'unknown')"
+        else
+            echo "WARN: explicit CLAUDE_CLI_PATH=${CLAUDE_CLI_PATH} not found or not executable; AI descriptions will return fallback." >&2
+        fi
     elif ! command -v claude >/dev/null 2>&1; then
-        echo "WARN: claude CLI not found in PATH; AI descriptions will return fallback." >&2
+        echo "WARN: claude CLI not found in PATH (CLAUDE_CLI_PATH is empty); AI descriptions will return fallback." >&2
     else
         echo "INFO: claude CLI detected: $(claude --version 2>/dev/null || echo 'unknown')"
     fi
