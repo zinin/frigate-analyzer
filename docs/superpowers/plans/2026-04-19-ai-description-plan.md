@@ -1484,24 +1484,26 @@ No test — this is a thin wiring layer covered end-to-end by the integration te
 package ru.zinin.frigate.analyzer.ai.description.claude
 
 import kotlinx.coroutines.reactor.awaitSingle
+import kotlinx.coroutines.reactor.awaitSingleOrNull
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 
 class DefaultClaudeInvoker(
     private val clientFactory: ClaudeAsyncClientFactory,
     private val commonSection: DescriptionProperties.CommonSection,
 ) : ClaudeInvoker {
-    override suspend fun invoke(prompt: String): String =
-        clientFactory.create(commonSection.timeout).use { client ->
-            client.connect()
-            client.queryAndReceive(prompt).collectList().map { messages ->
-                messages
-                    .asSequence()
-                    .filterIsInstance<org.springaicommunity.claude.agent.sdk.types.AssistantMessage>()
-                    .flatMap { it.content.asSequence() }
-                    .filterIsInstance<org.springaicommunity.claude.agent.sdk.types.TextBlock>()
-                    .joinToString("") { it.text }
-            }.awaitSingle()
+    override suspend fun invoke(prompt: String): String {
+        val client = clientFactory.create(commonSection.timeout)
+        return try {
+            // connect() returns Mono<Void> and must be subscribed (awaitSingleOrNull). Use
+            // runCatching so a connect failure is surfaced by the subsequent query(), not swallowed silently.
+            client.connect().awaitSingleOrNull()
+            client.query(prompt).text().awaitSingle()
+        } finally {
+            // close() returns Mono<Void> — must be subscribed; ClaudeAsyncClient is NOT AutoCloseable
+            // so we cannot use `.use { }` in Kotlin.
+            runCatching { client.close().awaitSingleOrNull() }
         }
+    }
 }
 ```
 
@@ -1658,7 +1660,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 
 private val logger = KotlinLogging.logger {}
@@ -1671,11 +1672,9 @@ private val logger = KotlinLogging.logger {}
  * is not stalled by a hung CLI subprocess.
  */
 @Component
-@ConditionalOnProperty(
-    prefix = "application.ai.description",
-    name = ["enabled"],
-    havingValue = "true",
-)
+// NOTE: intentionally NOT @ConditionalOnProperty — RecordingProcessingFacade injects this
+// scope unconditionally. An idle SupervisorJob scope costs essentially nothing, and making
+// the scope conditional would make the facade refuse to start when enabled=false.
 open class DescriptionCoroutineScope internal constructor(
     delegate: CoroutineScope,
 ) : CoroutineScope by delegate {
@@ -1796,6 +1795,37 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 ```
 
 Also update `val task = NotificationTask(...)` inside the `usersWithZones.forEach { ... }` block — add `descriptionHandle = descriptionHandle,` as the last field. (The field will be introduced in NotificationTask in Step 4.)
+
+- [ ] **Step 3b: Update NoOpTelegramNotificationService to match new interface**
+
+Edit `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/NoOpTelegramNotificationService.kt`. Replace the override to accept the new parameter:
+
+```kotlin
+package ru.zinin.frigate.analyzer.telegram.service.impl
+
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.Deferred
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.stereotype.Service
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.model.dto.RecordingDto
+import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
+import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
+
+private val logger = KotlinLogging.logger {}
+
+@Service
+@ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "false", matchIfMissing = true)
+class NoOpTelegramNotificationService : TelegramNotificationService {
+    override suspend fun sendRecordingNotification(
+        recording: RecordingDto,
+        visualizedFrames: List<VisualizedFrameData>,
+        descriptionHandle: Deferred<Result<DescriptionResult>>?,
+    ) {
+        logger.debug { "Telegram notifications disabled, skipping notification for recording ${recording.id}" }
+    }
+}
+```
 
 - [ ] **Step 4: Update NotificationTask data class**
 
@@ -2051,7 +2081,13 @@ class RecordingProcessingFacade(
                 detailedMaxLength = common.detailedMaxLength,
             )
         return descriptionScope.async {
-            runCatching { agent.describe(descriptionRequest) }
+            try {
+                Result.success(agent.describe(descriptionRequest))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e // never swallow structured concurrency cancellation
+            } catch (e: Throwable) {
+                Result.failure(e)
+            }
         }
     }
 }
@@ -2089,7 +2125,6 @@ Edit `modules/telegram/src/main/resources/messages_en.properties`, append:
 ai.description.placeholder.short=⏳ <i>AI is analyzing frames…</i>
 ai.description.placeholder.detailed=⏳ <i>AI is preparing the detailed description…</i>
 ai.description.fallback.unavailable=⚠ <i>Description unavailable</i>
-notification.recording.export.prompt.with.description=
 ```
 
 Edit `modules/telegram/src/main/resources/messages_ru.properties`, append:
@@ -2301,13 +2336,13 @@ Append these test cases to `TelegramNotificationSenderTest.kt`:
 
             coEvery { bot.execute<ContentMessage<PhotoContent>>(any()) } returns photoMsg
             coEvery { bot.sendTextMessage(any(), any<String>(), any()) } returns textMsg
-            coEvery { bot.execute(any<EditMessageCaption>()) } returns mockk(relaxed = true)
-            coEvery { bot.execute(any<EditMessageText>()) } returns mockk(relaxed = true)
+            coEvery { bot.execute(any<EditChatMessageCaption>()) } returns mockk(relaxed = true)
+            coEvery { bot.execute(any<EditChatMessageText>()) } returns mockk(relaxed = true)
 
             sender.send(createTask(frames = frames, descriptionHandle = handle))
 
-            coVerify { bot.execute(any<EditMessageCaption>()) }
-            coVerify { bot.execute(any<EditMessageText>()) }
+            coVerify { bot.execute(any<EditChatMessageCaption>()) }
+            coVerify { bot.execute(any<EditChatMessageText>()) }
         }
 
     @Test
@@ -2330,9 +2365,9 @@ Append these test cases to `TelegramNotificationSenderTest.kt`:
             coEvery { bot.execute<ContentMessage<PhotoContent>>(any()) } returns photoMsg
             coEvery { bot.sendTextMessage(any(), any<String>(), any()) } returns textMsg
 
-            val editCaptionSlot = slot<EditMessageCaption>()
+            val editCaptionSlot = slot<EditChatMessageCaption>()
             coEvery { bot.execute(capture(editCaptionSlot)) } returns mockk(relaxed = true)
-            val editTextSlot = slot<EditMessageText>()
+            val editTextSlot = slot<EditChatMessageText>()
             coEvery { bot.execute(capture(editTextSlot)) } returns mockk(relaxed = true)
 
             sender.send(createTask(frames = frames, descriptionHandle = handle))
@@ -2360,12 +2395,12 @@ Append these test cases to `TelegramNotificationSenderTest.kt`:
             every { textMsg.messageId } returns MessageId(51L)
             every { textMsg.chat.id } returns ChatId(RawChatId(12345L))
             coEvery { bot.sendTextMessage(any(), any<String>(), any()) } returns textMsg
-            coEvery { bot.execute(any<EditMessageText>()) } returns mockk(relaxed = true)
+            coEvery { bot.execute(any<EditChatMessageText>()) } returns mockk(relaxed = true)
 
             sender.send(createTask(frames = frames, descriptionHandle = handle))
 
-            coVerify(exactly = 1) { bot.execute(any<EditMessageText>()) }
-            coVerify(exactly = 0) { bot.execute(any<EditMessageCaption>()) }
+            coVerify(exactly = 1) { bot.execute(any<EditChatMessageText>()) }
+            coVerify(exactly = 0) { bot.execute(any<EditChatMessageCaption>()) }
         }
 ```
 
@@ -2389,8 +2424,8 @@ Also update `createTask` to accept the new parameter:
 Add imports at the top of the test file:
 
 ```kotlin
-import dev.inmo.tgbotapi.requests.edit.caption.EditMessageCaption
-import dev.inmo.tgbotapi.requests.edit.text.EditMessageText
+import dev.inmo.tgbotapi.requests.edit.caption.EditChatMessageCaption
+import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
 import dev.inmo.tgbotapi.extensions.api.send.media.sendMediaGroup
 import dev.inmo.tgbotapi.types.MessageId
 import kotlinx.coroutines.CompletableDeferred
@@ -2412,11 +2447,11 @@ Create `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queu
 package ru.zinin.frigate.analyzer.telegram.queue
 
 import dev.inmo.tgbotapi.bot.TelegramBot
-import dev.inmo.tgbotapi.requests.edit.caption.EditMessageCaption
-import dev.inmo.tgbotapi.requests.edit.text.EditMessageText
+import dev.inmo.tgbotapi.requests.edit.caption.EditChatMessageCaption
+import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
 import dev.inmo.tgbotapi.types.ChatIdentifier
-import dev.inmo.tgbotapi.types.MessageIdentifier
-import dev.inmo.tgbotapi.types.ParseMode.HTMLParseMode
+import dev.inmo.tgbotapi.types.MessageId
+import dev.inmo.tgbotapi.types.message.HTMLParseMode
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
@@ -2431,8 +2466,8 @@ private val logger = KotlinLogging.logger {}
 
 data class EditTarget(
     val chatId: ChatIdentifier,
-    val captionMessageId: MessageIdentifier?,
-    val detailsMessageId: MessageIdentifier,
+    val captionMessageId: MessageId?,     // null for media-group path; photo msg id for single-photo
+    val detailsMessageId: MessageId,      // always set — reply msg with expandable blockquote
     val baseCaption: String,
     val baseTextForAlbum: String?,
     val exportKeyboard: InlineKeyboardMarkup,
@@ -2440,10 +2475,16 @@ data class EditTarget(
     val isMediaGroup: Boolean,
 )
 
+import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
+// ... other imports unchanged ...
+
+@Component
 class DescriptionEditJobRunner(
     private val bot: TelegramBot,
     private val formatter: DescriptionMessageFormatter,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+    // Reuse the core-owned scope — it already has @PreDestroy with graceful cancel.
+    private val scope: DescriptionCoroutineScope,
 ) {
     fun launchEditJob(
         targets: List<EditTarget>,
@@ -2474,7 +2515,7 @@ class DescriptionEditJobRunner(
                         },
                     )
                 bot.execute(
-                    EditMessageText(
+                    EditChatMessageText(
                         chatId = target.chatId,
                         messageId = target.detailsMessageId,
                         text = newText,
@@ -2494,7 +2535,7 @@ class DescriptionEditJobRunner(
                         onFailure = { formatter.expandableBlockquoteFallback(target.language) },
                     )
                 bot.execute(
-                    EditMessageCaption(
+                    EditChatMessageCaption(
                         chatId = target.chatId,
                         messageId = target.captionMessageId!!,
                         text = captionText,
@@ -2503,7 +2544,7 @@ class DescriptionEditJobRunner(
                     ),
                 )
                 bot.execute(
-                    EditMessageText(
+                    EditChatMessageText(
                         chatId = target.chatId,
                         messageId = target.detailsMessageId,
                         text = detailsText,
@@ -2531,8 +2572,8 @@ import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.requests.abstracts.asMultipartFile
 import dev.inmo.tgbotapi.requests.send.media.SendPhoto
 import dev.inmo.tgbotapi.types.ChatId
-import dev.inmo.tgbotapi.types.MessageIdentifier
-import dev.inmo.tgbotapi.types.ParseMode.HTMLParseMode
+import dev.inmo.tgbotapi.types.MessageId
+import dev.inmo.tgbotapi.types.message.HTMLParseMode
 import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -2552,7 +2593,7 @@ class TelegramNotificationSender(
     private val quickExportHandler: QuickExportHandler,
     private val msg: MessageResolver,
     private val descriptionFormatter: DescriptionMessageFormatter,
-    private val editJobRunner: DescriptionEditJobRunner = DescriptionEditJobRunner(bot, descriptionFormatter),
+    private val editJobRunner: DescriptionEditJobRunner,
 ) {
     suspend fun send(task: NotificationTask) {
         val chatIdObj = ChatId(RawChatId(task.chatId))
@@ -2574,15 +2615,16 @@ class TelegramNotificationSender(
 
         when {
             frames.isEmpty() -> {
+                // For frame-less messages there is nothing to attach Claude description to,
+                // so fall back to the original (plain) caption — no placeholder, no edit-job.
                 RetryHelper.retryIndefinitely("Send text message", task.chatId) {
                     bot.sendTextMessage(
                         chatId = chatIdObj,
-                        text = captionInitial,
-                        parseMode = parseMode,
+                        text = captionBase,
                         replyMarkup = exportKeyboard,
                     )
                 }
-                // no placeholders/edits for frame-less messages — nothing to attach to
+                // Intentionally skip the description flow entirely below — handled by empty `targets`.
             }
 
             frames.size == 1 -> {
@@ -2612,8 +2654,8 @@ class TelegramNotificationSender(
                     targets.add(
                         EditTarget(
                             chatId = chatIdObj,
-                            captionMessageId = photoMsg.messageId as MessageIdentifier,
-                            detailsMessageId = detailsMsg.messageId as MessageIdentifier,
+                            captionMessageId = photoMsg.messageId,
+                            detailsMessageId = detailsMsg.messageId,
                             baseCaption = captionBase,
                             baseTextForAlbum = null,
                             exportKeyboard = exportKeyboard,
@@ -2640,7 +2682,7 @@ class TelegramNotificationSender(
                             bot.sendMediaGroup(chatIdObj, media)
                         }
                     if (chunkIndex == 0) {
-                        firstAlbumMessageId = group.firstOrNull()?.messageId as? MessageIdentifier
+                        firstAlbumMessageId = group.firstOrNull()?.messageId
                     }
                 }
                 val albumBaseText = msg.get("notification.recording.export.prompt", lang)
@@ -2669,7 +2711,7 @@ class TelegramNotificationSender(
                         EditTarget(
                             chatId = chatIdObj,
                             captionMessageId = null,
-                            detailsMessageId = detailsMsg.messageId as MessageIdentifier,
+                            detailsMessageId = detailsMsg.messageId,
                             baseCaption = captionBase,
                             baseTextForAlbum = albumBaseText,
                             exportKeyboard = exportKeyboard,
@@ -2859,12 +2901,13 @@ Run from the repo root:
 ```bash
 ./gradlew :frigate-analyzer-core:bootJar
 docker build -f docker/deploy/Dockerfile -t frigate-analyzer:ai-test .
-docker run --rm frigate-analyzer:ai-test claude --version
+# Override ENTRYPOINT so we don't hit the java launcher
+docker run --rm --entrypoint claude frigate-analyzer:ai-test --version
 ```
 
 Expected: version string prints, no errors.
 
-If `claude --version` fails with missing shared libraries, re-read Anthropic Alpine docs and adjust `apk add` list.
+If `claude --version` fails with missing shared libraries (`Error loading shared libraries: libstdc++.so.6`, `ld-linux-x86-64.so.2`, etc.), try adding `gcompat` to the `apk add` list in the Dockerfile as a defensive fallback.
 
 - [ ] **Step 3: Commit**
 
