@@ -18,4 +18,5 @@ dependencies {
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.mockk)
+    testImplementation(libs.spring.boot.starter.test)
 }
