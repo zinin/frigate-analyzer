@@ -1,17 +1,24 @@
 package ru.zinin.frigate.analyzer.ai.description.claude
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withTimeout
 import org.springaicommunity.claude.agent.sdk.Query
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
+import kotlin.time.toKotlinDuration
 
 private val logger = KotlinLogging.logger {}
 
@@ -59,6 +66,69 @@ class ClaudeDescriptionAgent(
     }
 
     override suspend fun describe(request: DescriptionRequest): DescriptionResult {
-        TODO("implemented in Task 10")
+        try {
+            withTimeout(commonSection.queueTimeout.toMillis()) {
+                semaphore.acquire()
+            }
+        } catch (e: TimeoutCancellationException) {
+            throw DescriptionException.Timeout(cause = e)
+        }
+
+        val callStart = System.nanoTime()
+        try {
+            return try {
+                withTimeout(commonSection.timeout.toMillis()) {
+                    val stagedPaths = imageStager.stage(request)
+                    try {
+                        val prompt = promptBuilder.build(request, stagedPaths)
+                        executeWithRetry(prompt, request)
+                    } finally {
+                        imageStager.cleanup(stagedPaths)
+                    }
+                }
+            } catch (e: TimeoutCancellationException) {
+                throw DescriptionException.Timeout(cause = e)
+            }
+        } finally {
+            val elapsedMs = (System.nanoTime() - callStart) / 1_000_000
+            logger.debug { "Claude describe completed in ${elapsedMs}ms for recording ${request.recordingId}" }
+            semaphore.release()
+        }
+    }
+
+    private suspend fun executeWithRetry(
+        prompt: String,
+        request: DescriptionRequest,
+    ): DescriptionResult {
+        val overallStart = TimeSource.Monotonic.markNow()
+        val totalBudget = commonSection.timeout.toKotlinDuration()
+        var jsonRetries = 0
+        var transportRetries = 0
+        while (true) {
+            try {
+                val raw =
+                    try {
+                        invoker.invoke(prompt)
+                    } catch (e: Throwable) {
+                        throw exceptionMapper.map(e)
+                    }
+                return responseParser.parse(raw, request.shortMaxLength, request.detailedMaxLength)
+            } catch (e: DescriptionException.InvalidResponse) {
+                if (jsonRetries >= 1) throw e
+                jsonRetries++
+                logger.warn(e) { "Invalid JSON from Claude, retrying (attempt ${jsonRetries + 1})" }
+            } catch (e: DescriptionException.Transport) {
+                if (transportRetries >= 1) throw e
+                transportRetries++
+                val elapsed = overallStart.elapsedNow()
+                val remaining = totalBudget - elapsed
+                if (remaining <= 7.seconds) {
+                    logger.warn(e) { "Claude transport error but retry budget exhausted (remaining=$remaining); giving up" }
+                    throw e
+                }
+                logger.warn(e) { "Claude transport error, retrying in 5s (remaining budget=$remaining)" }
+                delay(5.seconds)
+            }
+        }
     }
 }
