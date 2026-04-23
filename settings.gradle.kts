@@ -7,7 +7,7 @@ pluginManagement {
 
 rootProject.name = "frigate-analyzer"
 
-val modules = listOf("common", "model", "service", "core", "telegram")
+val modules = listOf("common", "model", "service", "core", "telegram", "ai-description")
 
 include(modules)
 
