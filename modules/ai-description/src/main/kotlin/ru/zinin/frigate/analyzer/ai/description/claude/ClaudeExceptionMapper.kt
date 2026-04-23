@@ -16,6 +16,14 @@ class ClaudeExceptionMapper {
      *
      * CRITICAL: CancellationException (в т.ч. TimeoutCancellationException) НЕ оборачиваем —
      * это сломает structured concurrency. Её должен поймать сам describe() на границе withTimeout.
+     *
+     * Сигнатура обещает возврат DescriptionException, но метод может ТАК ЖЕ выбросить
+     * CancellationException — см. @throws ниже. Вызывающему коду стоит писать
+     * `throw mapper.map(e)` (как в ClaudeDescriptionAgent.executeWithRetry), тогда
+     * cancellation-path остаётся корректным, а возвращённые DescriptionException
+     * ловятся штатными catch-ами.
+     *
+     * @throws CancellationException пробрасывается AS-IS, если [throwable] — её экземпляр.
      */
     fun map(throwable: Throwable): DescriptionException {
         if (throwable is CancellationException) throw throwable

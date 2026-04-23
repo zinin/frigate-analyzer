@@ -20,5 +20,9 @@ data class DescriptionRequest(
         }
 
         override fun hashCode(): Int = 31 * frameIndex + bytes.contentHashCode()
+
+        // Generated `toString` would print ByteArray identity hash (e.g. "bytes=[B@1a2b3c4d"),
+        // which is useless in logs. Print length instead — actual bytes can't be usefully logged anyway.
+        override fun toString(): String = "FrameImage(frameIndex=$frameIndex, bytes=${bytes.size}B)"
     }
 }

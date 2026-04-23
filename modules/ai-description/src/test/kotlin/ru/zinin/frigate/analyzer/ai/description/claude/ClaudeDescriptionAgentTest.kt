@@ -28,7 +28,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
 
 class ClaudeDescriptionAgentTest {
     private val common =
@@ -227,6 +226,8 @@ class ClaudeDescriptionAgentTest {
             coroutineScope {
                 repeat(3) { launch { agent.describe(request) } }
             }
-            assertTrue(maxSeen.get() <= 2)
+            // Exactly 2 — both upper bound (cap respected) and lower bound (permits actually used).
+            // Weak `<= 2` would pass even if a regression silently capped concurrency to 1.
+            assertEquals(2, maxSeen.get())
         }
 }

@@ -54,7 +54,10 @@ class AiDescriptionAutoConfigurationTest {
     }
 
     @Test
-    @Disabled("Re-enabled after Task 9 adds ClaudeDescriptionAgent — bean does not exist yet")
+    @Disabled(
+        "Re-enabled after Task 11 adds DefaultClaudeInvoker — ClaudeDescriptionAgent " +
+            "requires a ClaudeInvoker bean which is introduced in that task",
+    )
     fun `autoconfig activates beans when enabled=true, provider=claude`() {
         runner
             .withPropertyValues(
