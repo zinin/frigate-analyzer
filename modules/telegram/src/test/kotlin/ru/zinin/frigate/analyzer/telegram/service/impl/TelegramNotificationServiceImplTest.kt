@@ -14,6 +14,7 @@ import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.NotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
+import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Instant
 import java.time.LocalDate
@@ -37,7 +38,8 @@ class TelegramNotificationServiceImplTest {
                 setDefaultLocale(Locale.forLanguageTag("en"))
             },
         )
-    private val service = TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper, msg)
+    private val service: TelegramNotificationService =
+        TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper, msg)
 
     private val taskId = UUID.randomUUID()
     private val recordingId = UUID.randomUUID()

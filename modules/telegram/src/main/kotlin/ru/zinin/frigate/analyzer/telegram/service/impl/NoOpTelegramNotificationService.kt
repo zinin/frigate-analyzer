@@ -1,8 +1,10 @@
 package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.Deferred
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Service
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
@@ -15,6 +17,7 @@ class NoOpTelegramNotificationService : TelegramNotificationService {
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
         visualizedFrames: List<VisualizedFrameData>,
+        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>?)?,
     ) {
         logger.debug { "Telegram notifications disabled, skipping notification for recording ${recording.id}" }
     }
