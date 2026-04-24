@@ -19,6 +19,16 @@ class DescriptionMessageFormatter(
         return "${escapeAndTrim(baseText, maxLength - suffix.length)}$suffix"
     }
 
+    /**
+     * HTML-escaped + entity-aware trimmed baseText WITHOUT any AI placeholder suffix.
+     * Used by album first-photo caption and the empty-frame branch — both paths have no
+     * editable caption target, so a placeholder would stay stuck forever.
+     */
+    fun captionBasePlain(
+        baseText: String,
+        maxLength: Int = MAX_CAPTION_LENGTH,
+    ): String = escapeAndTrim(baseText, maxLength)
+
     fun captionSuccess(
         baseText: String,
         result: DescriptionResult,
@@ -41,14 +51,40 @@ class DescriptionMessageFormatter(
     fun placeholderShort(language: String): String = msg.get(KEY_PLACEHOLDER_SHORT, language)
 
     fun placeholderDetailedExpandable(language: String): String =
-        "<blockquote expandable>${msg.get(KEY_PLACEHOLDER_DETAILED, language)}</blockquote>"
+        "$BLOCKQUOTE_OPEN${msg.get(KEY_PLACEHOLDER_DETAILED, language)}$BLOCKQUOTE_CLOSE"
 
     fun expandableBlockquoteSuccess(
         result: DescriptionResult,
         language: String,
-    ): String = "<blockquote expandable>${htmlEscape(result.detailed)}</blockquote>"
+    ): String = "$BLOCKQUOTE_OPEN${htmlEscape(result.detailed)}$BLOCKQUOTE_CLOSE"
 
-    fun expandableBlockquoteFallback(language: String): String = "<blockquote expandable>${msg.get(KEY_FALLBACK, language)}</blockquote>"
+    fun expandableBlockquoteFallback(language: String): String = "$BLOCKQUOTE_OPEN${msg.get(KEY_FALLBACK, language)}$BLOCKQUOTE_CLOSE"
+
+    /**
+     * Builds the combined media-group reply text (short + expandable blockquote with detailed),
+     * bounded to Telegram's 4096-char `editMessageText` limit. When the detailed portion does
+     * not fit, it is entity-aware truncated so the `<blockquote>` wrapper is never broken.
+     */
+    fun mediaGroupText(
+        baseText: String,
+        outcome: Result<DescriptionResult>,
+        language: String,
+    ): String {
+        val short =
+            outcome.fold(
+                onSuccess = { captionSuccess(baseText, it, language) },
+                onFailure = { captionFallback(baseText, language) },
+            )
+        val detailedRaw =
+            outcome.fold(
+                onSuccess = { it.detailed },
+                onFailure = { msg.get(KEY_FALLBACK, language) },
+            )
+        val wrapperOverhead = BLOCKQUOTE_OPEN.length + BLOCKQUOTE_CLOSE.length
+        val detailedBudget = (MAX_EDIT_TEXT_LENGTH - short.length - "\n\n".length - wrapperOverhead).coerceAtLeast(0)
+        val detailedEscaped = escapeAndTrim(detailedRaw, detailedBudget)
+        return "$short\n\n$BLOCKQUOTE_OPEN$detailedEscaped$BLOCKQUOTE_CLOSE"
+    }
 
     /**
      * Returns HTML-overhead length for caption when description placeholder is enabled.
@@ -93,6 +129,9 @@ class DescriptionMessageFormatter(
 
     companion object {
         private const val MAX_CAPTION_LENGTH = 1024
+        private const val MAX_EDIT_TEXT_LENGTH = 4096
+        private const val BLOCKQUOTE_OPEN = "<blockquote expandable>"
+        private const val BLOCKQUOTE_CLOSE = "</blockquote>"
         private const val KEY_PLACEHOLDER_SHORT = "ai.description.placeholder.short"
         private const val KEY_PLACEHOLDER_DETAILED = "ai.description.placeholder.detailed"
         private const val KEY_FALLBACK = "ai.description.fallback.unavailable"

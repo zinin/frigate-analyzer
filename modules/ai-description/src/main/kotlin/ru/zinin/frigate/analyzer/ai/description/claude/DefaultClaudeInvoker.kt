@@ -4,6 +4,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.coroutines.withContext
+import org.springaicommunity.claude.agent.sdk.exceptions.ClaudeSDKException
+import org.springaicommunity.claude.agent.sdk.types.AssistantMessage
+import org.springaicommunity.claude.agent.sdk.types.ResultMessage
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
@@ -18,13 +21,45 @@ class DefaultClaudeInvoker(
 ) : ClaudeInvoker {
     // Invoker depends only on work-timeout — pull it out of properties at DI time
     // so configuration errors surface as startup failure, not at first call.
-    private val workTimeout: Duration = descriptionProperties.common.timeout
+    //
+    // SDK timeout is intentionally given a small buffer on top of the agent's `withTimeout`
+    // so Kotlin's coroutine timeout always fires first. Otherwise, if both triggered at the
+    // same value, whichever raced first would produce a different exception type (SDK →
+    // Transport → retry with delay(5s) vs Kotlin → Timeout → no retry), making behaviour
+    // non-deterministic near the budget boundary. The SDK side then acts as a safety net.
+    private val workTimeout: Duration = descriptionProperties.common.timeout.plus(SDK_TIMEOUT_BUFFER)
 
     override suspend fun invoke(prompt: String): String {
         val client = clientFactory.create(workTimeout)
         try {
             client.connect().awaitSingleOrNull() // Mono<Void>
-            return client.query(prompt).text().awaitSingle() // Mono<String>
+            // We use `.messages()` instead of `.text()` because `text()` silently drops non-assistant
+            // messages — including `ResultMessage` with `isError=true`, which is how the CLI signals
+            // in-band rate-limit / auth / execution errors. With `.text()` those errors surface as
+            // an empty string and are mis-classified as `InvalidResponse`, costing an extra retry
+            // and hiding the real cause (e.g. a 429 → Transport instead of RateLimited).
+            val messages =
+                client
+                    .query(prompt)
+                    .messages()
+                    .collectList()
+                    .awaitSingle()
+
+            val result = messages.filterIsInstance<ResultMessage>().firstOrNull()
+            if (result != null && result.isError) {
+                val detail =
+                    buildString {
+                        append("Claude returned error result")
+                        result.subtype()?.takeIf { it.isNotBlank() }?.let { append(" (subtype=$it)") }
+                        result.result()?.takeIf { it.isNotBlank() }?.let { append(": $it") }
+                    }
+                // ClaudeExceptionMapper decides RateLimited vs Transport from the exception message.
+                throw ClaudeSDKException(detail)
+            }
+
+            return messages
+                .filterIsInstance<AssistantMessage>()
+                .joinToString(separator = "") { it.text() }
         } finally {
             // ClaudeAsyncClient is NOT AutoCloseable — .use not usable. Close explicitly.
             // NonCancellable required: invoke() runs under withTimeout in
@@ -36,5 +71,9 @@ class DefaultClaudeInvoker(
                 runCatching { client.close().awaitSingleOrNull() }
             }
         }
+    }
+
+    companion object {
+        private val SDK_TIMEOUT_BUFFER: Duration = Duration.ofSeconds(5)
     }
 }

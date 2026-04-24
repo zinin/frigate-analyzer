@@ -30,12 +30,10 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
-import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
-import java.time.Duration
 import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
@@ -59,7 +57,6 @@ class TelegramNotificationSenderTest {
     private val quickExportHandler = mockk<QuickExportHandler>()
     private val formatterProvider = mockk<ObjectProvider<DescriptionMessageFormatter>>()
     private val runnerProvider = mockk<ObjectProvider<DescriptionEditJobRunner>>()
-    private val propertiesProvider = mockk<ObjectProvider<DescriptionProperties>>()
     private val formatter = DescriptionMessageFormatter(msg)
 
     // runner is built per-test from the runTest scope so its dispatcher shares the
@@ -72,7 +69,6 @@ class TelegramNotificationSenderTest {
             msg,
             formatterProvider,
             runnerProvider,
-            propertiesProvider,
         )
 
     private val recordingId = UUID.randomUUID()
@@ -97,11 +93,10 @@ class TelegramNotificationSenderTest {
                     ),
             )
         }
-        // By default, neither the formatter nor the runner nor the properties provider is available
-        // — this mimics application.ai.description.enabled=false (old plain-text path).
+        // By default, neither the formatter nor the runner is available — this mimics
+        // application.ai.description.enabled=false (old plain-text path).
         every { formatterProvider.getIfAvailable() } returns null
         every { runnerProvider.getIfAvailable() } returns null
-        every { propertiesProvider.getIfAvailable() } returns null
     }
 
     /**
@@ -121,21 +116,6 @@ class TelegramNotificationSenderTest {
             )
         every { formatterProvider.getIfAvailable() } returns formatter
         every { runnerProvider.getIfAvailable() } returns runner
-        every { propertiesProvider.getIfAvailable() } returns
-            DescriptionProperties(
-                enabled = true,
-                provider = "claude",
-                common =
-                    DescriptionProperties.CommonSection(
-                        language = "ru",
-                        shortMaxLength = 200,
-                        detailedMaxLength = 1500,
-                        maxFrames = 10,
-                        queueTimeout = Duration.ofSeconds(30),
-                        timeout = Duration.ofSeconds(60),
-                        maxConcurrent = 2,
-                    ),
-            )
     }
 
     private fun createTask(

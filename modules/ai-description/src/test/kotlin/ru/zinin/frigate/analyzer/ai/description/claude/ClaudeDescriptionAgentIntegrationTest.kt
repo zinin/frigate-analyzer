@@ -5,7 +5,6 @@ import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
@@ -46,14 +45,13 @@ import kotlin.test.assertEquals
  * then block until stdin closes. This is non-trivial in pure sh and doesn't really buy us
  * coverage beyond what [ClaudeDescriptionAgentTest] already provides with a fake
  * [ClaudeInvoker]. Leaving the scaffolding here as a starting point if we later need a
- * real CLI compatibility test; flip from `@Disabled` to `@EnabledIfEnvironmentVariable`
- * once the stub properly participates in the streaming protocol.
+ * real CLI compatibility test; to re-enable, remove `@Disabled` and gate on
+ * `@EnabledIfEnvironmentVariable` once the stub properly participates in the streaming protocol.
  */
 @Disabled(
     "Stub CLI does not implement the SDK's bidirectional stream-json protocol; " +
         "ClaudeDescriptionAgentTest covers the describe() pipeline via ClaudeInvoker.",
 )
-@EnabledIfEnvironmentVariable(named = "INTEGRATION_CLAUDE", matches = "stub")
 class ClaudeDescriptionAgentIntegrationTest {
     @Test
     fun `end-to-end prompt to parsed result with stub CLI`(

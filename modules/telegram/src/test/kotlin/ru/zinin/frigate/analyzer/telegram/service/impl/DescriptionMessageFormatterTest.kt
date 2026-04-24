@@ -89,4 +89,35 @@ class DescriptionMessageFormatterTest {
         assertTrue(caption.startsWith("base\n\n"))
         assertTrue(caption.contains("analyzing"))
     }
+
+    @Test
+    fun `captionBasePlain returns HTML-escaped baseText with no placeholder suffix`() {
+        val caption = formatter.captionBasePlain(baseText = "Zone <A> & gate")
+        assertEquals("Zone &lt;A&gt; &amp; gate", caption)
+    }
+
+    @Test
+    fun `mediaGroupText combines short and expandable blockquote on success`() {
+        val result = DescriptionResult(short = "two cars", detailed = "two cars approaching gate")
+        val text = formatter.mediaGroupText(baseText = "base", outcome = Result.success(result), language = "en")
+        assertEquals("base\n\ntwo cars\n\n<blockquote expandable>two cars approaching gate</blockquote>", text)
+    }
+
+    @Test
+    fun `mediaGroupText uses fallback text on failure`() {
+        val text = formatter.mediaGroupText(baseText = "base", outcome = Result.failure(RuntimeException()), language = "en")
+        assertTrue(text.contains("Description unavailable"))
+        assertTrue(text.contains("<blockquote expandable>"))
+        assertTrue(text.contains("</blockquote>"))
+    }
+
+    @Test
+    fun `mediaGroupText trims detailed to honour 4096-char editMessageText limit`() {
+        // Worst-case short (1024 chars of base+short) + 2 newline + 35 blockquote overhead → detailed must fit in ~3035.
+        val longDetailed = "d".repeat(5000)
+        val result = DescriptionResult(short = "s", detailed = longDetailed)
+        val text = formatter.mediaGroupText(baseText = "base", outcome = Result.success(result), language = "en")
+        assertTrue(text.length <= 4096, "Combined text must fit 4096 limit, got ${text.length}")
+        assertTrue(text.endsWith("</blockquote>"), "Wrapper must remain intact after truncation: $text")
+    }
 }

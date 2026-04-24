@@ -36,10 +36,10 @@ class ClaudeExceptionMapper {
                 DescriptionException.InvalidResponse(throwable)
             }
 
-            is TransportException -> {
-                DescriptionException.Transport(throwable)
-            }
-
+            // Rate-limit check goes BEFORE the TransportException branch: CLI-side 429 errors
+            // arrive from the SDK as TransportException (which extends ClaudeSDKException), and
+            // without this order swap they would be re-tried as generic transport failures
+            // instead of surfaced as RateLimited (which skips retry).
             is ClaudeSDKException -> {
                 if (isRateLimit(throwable)) {
                     DescriptionException.RateLimited(throwable)
@@ -57,11 +57,11 @@ class ClaudeExceptionMapper {
     private fun isRateLimit(throwable: Throwable): Boolean {
         val message = throwable.message?.lowercase() ?: return false
         // "rate limit" — однозначный hit.
-        // "429" без контекста даст false positive (например, "code 429 offset"),
-        // поэтому требуем либо HTTP/status-context, либо явного слова rate.
         if ("rate limit" in message) return true
+        // "429" плюс любое слово, характерное для HTTP/API-контекста, чтобы избежать
+        // false positive на произвольных строках вроде "code 429 offset".
         if (Regex("\\b429\\b").containsMatchIn(message) &&
-            ("http" in message || "status" in message)
+            ("http" in message || "status" in message || "api" in message || "anthropic" in message)
         ) {
             return true
         }

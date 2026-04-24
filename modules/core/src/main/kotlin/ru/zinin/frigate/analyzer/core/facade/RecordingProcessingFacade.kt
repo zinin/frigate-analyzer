@@ -113,7 +113,13 @@ class RecordingProcessingFacade(
 
         return {
             descriptionScope.async {
-                runCatching { agent.describe(descriptionRequest) }
+                try {
+                    Result.success(agent.describe(descriptionRequest))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    Result.failure(e)
+                }
             }
         }
     }

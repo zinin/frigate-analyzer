@@ -20,7 +20,7 @@ data class DescriptionProperties(
     val common: CommonSection,
 ) {
     data class CommonSection(
-        @field:Pattern(regexp = "ru|en")
+        @field:Pattern(regexp = "ru|en", message = "must be 'ru' or 'en'")
         val language: String,
         @field:Min(50) @field:Max(500)
         val shortMaxLength: Int,

@@ -16,6 +16,11 @@ private val logger = KotlinLogging.logger {}
 class ClaudeImageStager(
     private val tempWriter: TempFileWriter,
 ) {
+    /**
+     * Writes `request.frames` (ordered by `frameIndex`) to temp files via [TempFileWriter].
+     * Returns paths in the SAME ordering — `ClaudePromptBuilder` relies on this contract
+     * (`sortedFrames.zip(framePaths)` is only correct when the order matches).
+     */
     suspend fun stage(request: DescriptionRequest): List<Path> {
         val sorted = request.frames.sortedBy { it.frameIndex }
         val staged = mutableListOf<Path>()
@@ -30,7 +35,11 @@ class ClaudeImageStager(
             logger.warn(e) { "Failed to stage frames for ${request.recordingId}; cleaning up partial set" }
             // NonCancellable — stage может упасть при TimeoutCancellationException,
             // а suspend-вызов в отменённой корутине сразу бросит CancellationException.
-            withContext(NonCancellable) { runCatching { tempWriter.deleteFiles(staged) } }
+            withContext(NonCancellable) {
+                runCatching { tempWriter.deleteFiles(staged) }
+                    .exceptionOrNull()
+                    ?.let { e.addSuppressed(it) }
+            }
             throw e
         }
     }

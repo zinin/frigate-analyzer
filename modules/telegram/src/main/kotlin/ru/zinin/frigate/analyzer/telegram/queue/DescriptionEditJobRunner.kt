@@ -34,8 +34,6 @@ data class EditTarget(
     val detailsMessageId: MessageId,
     /** Raw (un-escaped) base text. The formatter handles HTML escape + truncation. */
     val baseText: String,
-    /** Budget for the final HTML caption (1024 − placeholder overhead). */
-    val captionBudget: Int,
     val exportKeyboard: InlineKeyboardMarkup,
     val language: String,
     val isMediaGroup: Boolean,
@@ -91,17 +89,8 @@ class DescriptionEditJobRunner(
         target: EditTarget,
         outcome: Result<DescriptionResult>,
     ) {
-        val newText =
-            outcome.fold(
-                onSuccess = { result ->
-                    val short = formatter.captionSuccess(target.baseText, result, target.language, target.captionBudget)
-                    "$short\n\n${formatter.expandableBlockquoteSuccess(result, target.language)}"
-                },
-                onFailure = {
-                    val short = formatter.captionFallback(target.baseText, target.language, target.captionBudget)
-                    "$short\n\n${formatter.expandableBlockquoteFallback(target.language)}"
-                },
-            )
+        // Formatter owns the 4096-char editMessageText limit internally (trims `detailed` to fit).
+        val newText = formatter.mediaGroupText(target.baseText, outcome, target.language)
         runEdit("media group details", target) {
             bot.editMessageText(
                 chatId = target.chatId,
@@ -119,8 +108,8 @@ class DescriptionEditJobRunner(
     ) {
         val captionText =
             outcome.fold(
-                onSuccess = { formatter.captionSuccess(target.baseText, it, target.language, target.captionBudget) },
-                onFailure = { formatter.captionFallback(target.baseText, target.language, target.captionBudget) },
+                onSuccess = { formatter.captionSuccess(target.baseText, it, target.language) },
+                onFailure = { formatter.captionFallback(target.baseText, target.language) },
             )
         runEdit("single-photo caption", target) {
             bot.editMessageCaption(

@@ -122,13 +122,24 @@ class ClaudeDescriptionAgent(
                 transportRetries++
                 val elapsed = overallStart.elapsedNow()
                 val remaining = totalBudget - elapsed
-                if (remaining <= 7.seconds) {
+                if (remaining <= TRANSPORT_RETRY_MIN_BUDGET) {
                     logger.warn(e) { "Claude transport error but retry budget exhausted (remaining=$remaining); giving up" }
                     throw e
                 }
-                logger.warn(e) { "Claude transport error, retrying in 5s (remaining budget=$remaining)" }
-                delay(5.seconds)
+                logger.warn(e) { "Claude transport error, retrying in $TRANSPORT_RETRY_DELAY (remaining budget=$remaining)" }
+                delay(TRANSPORT_RETRY_DELAY)
             }
         }
+    }
+
+    companion object {
+        private val TRANSPORT_RETRY_DELAY = 5.seconds
+
+        // Minimum remaining time-budget before we even attempt a retry:
+        // TRANSPORT_RETRY_DELAY (pre-call sleep) + margin for one realistic Claude invocation.
+        // If `remaining` is less than this, the outer `withTimeout(commonSection.timeout)` would
+        // cancel mid-retry — giving up early produces a clean `Transport` error instead of
+        // a misleading `Timeout`.
+        private val TRANSPORT_RETRY_MIN_BUDGET = 10.seconds
     }
 }

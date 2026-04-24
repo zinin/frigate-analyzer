@@ -17,7 +17,6 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.helper.RetryHelper
@@ -35,7 +34,6 @@ class TelegramNotificationSender(
     // ObjectProvider — the description beans are absent when application.ai.description.enabled=false.
     private val descriptionFormatter: ObjectProvider<DescriptionMessageFormatter>,
     private val editJobRunner: ObjectProvider<DescriptionEditJobRunner>,
-    private val descriptionPropertiesProvider: ObjectProvider<DescriptionProperties>,
 ) {
     /**
      * Sends notification task to Telegram with infinite retry on failure.
@@ -59,39 +57,40 @@ class TelegramNotificationSender(
             if (task.descriptionHandle != null) descriptionFormatter.getIfAvailable() else null
 
         val parseMode: ParseMode? = if (formatter != null) HTMLParseMode else null
-        val captionInitial =
-            if (formatter != null) {
-                formatter.captionInitialPlaceholder(task.message, lang, MAX_CAPTION_LENGTH)
-            } else {
-                task.message.toCaption(MAX_CAPTION_LENGTH)
-            }
-
-        // Edit-stage caption budget. In the HTML-placeholder flow reserve space for the worst-case
-        // short description (bounded by DescriptionProperties.CommonSection.shortMaxLength, defined
-        // in config with @Max(500)) plus the "\n\n" separator. When formatter is null the budget is
-        // unused; MAX_CAPTION_LENGTH is just a sane non-zero default.
-        val shortMaxLength = descriptionPropertiesProvider.getIfAvailable()?.common?.shortMaxLength ?: MAX_CAPTION_LENGTH
-        val editBaseBudget =
-            if (formatter != null) MAX_CAPTION_LENGTH - shortMaxLength - "\n\n".length else MAX_CAPTION_LENGTH
 
         val target: EditTarget? =
             when {
                 task.visualizedFrames.isEmpty() -> {
-                    sendEmptyText(chatIdObj, captionInitial, parseMode, exportKeyboard, task.chatId)
+                    // No photo → no editable target. Send baseText WITHOUT the AI placeholder
+                    // (a stuck "⏳" would never get replaced) and cancel the in-flight describe job
+                    // so tokens are not wasted.
+                    val emptyCaption =
+                        if (formatter != null) {
+                            formatter.captionBasePlain(task.message, MAX_CAPTION_LENGTH)
+                        } else {
+                            task.message.toCaption(MAX_CAPTION_LENGTH)
+                        }
+                    sendEmptyText(chatIdObj, emptyCaption, parseMode, exportKeyboard, task.chatId)
+                    if (formatter != null) task.descriptionHandle?.cancel()
                     null
                 }
 
                 task.visualizedFrames.size == 1 -> {
+                    val singleCaptionInitial =
+                        if (formatter != null) {
+                            formatter.captionInitialPlaceholder(task.message, lang, MAX_CAPTION_LENGTH)
+                        } else {
+                            task.message.toCaption(MAX_CAPTION_LENGTH)
+                        }
                     sendSinglePhoto(
                         chatIdObj = chatIdObj,
                         frame = task.visualizedFrames.first(),
-                        captionInitial = captionInitial,
+                        captionInitial = singleCaptionInitial,
                         parseMode = parseMode,
                         exportKeyboard = exportKeyboard,
                         formatter = formatter,
                         lang = lang,
                         task = task,
-                        editBaseBudget = editBaseBudget,
                     )
                 }
 
@@ -104,7 +103,6 @@ class TelegramNotificationSender(
                         formatter = formatter,
                         lang = lang,
                         task = task,
-                        editBaseBudget = editBaseBudget,
                     )
                 }
             }
@@ -146,7 +144,6 @@ class TelegramNotificationSender(
         formatter: DescriptionMessageFormatter?,
         lang: String,
         task: NotificationTask,
-        editBaseBudget: Int,
     ): EditTarget? {
         val photoMsg =
             RetryHelper.retryIndefinitely("Send photo message", task.chatId) {
@@ -175,7 +172,6 @@ class TelegramNotificationSender(
             captionMessageId = photoMsg.messageId,
             detailsMessageId = detailsMsg.messageId,
             baseText = task.message,
-            captionBudget = editBaseBudget,
             exportKeyboard = exportKeyboard,
             language = lang,
             isMediaGroup = false,
@@ -191,7 +187,6 @@ class TelegramNotificationSender(
         formatter: DescriptionMessageFormatter?,
         lang: String,
         task: NotificationTask,
-        editBaseBudget: Int,
     ): EditTarget? {
         // Only capture the first-album id when description is enabled — the disabled path must
         // not turn the export button into a reply (preserves pre-Task-16 behaviour).
@@ -203,10 +198,14 @@ class TelegramNotificationSender(
                         chunk.mapIndexed { idx, frame ->
                             TelegramMediaPhoto(
                                 file = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
+                                // Media-group photos have no editable caption target (the edit flow
+                                // only rewrites the reply-text message). An AI placeholder here would
+                                // stay stuck forever, so the first photo carries plain baseText and
+                                // the placeholder lives in the reply text below.
                                 text =
                                     if (chunkIndex == 0 && idx == 0) {
                                         if (formatter != null) {
-                                            formatter.captionInitialPlaceholder(task.message, lang, MAX_CAPTION_LENGTH)
+                                            formatter.captionBasePlain(task.message, MAX_CAPTION_LENGTH)
                                         } else {
                                             task.message.toCaption(MAX_CAPTION_LENGTH)
                                         }
@@ -251,7 +250,6 @@ class TelegramNotificationSender(
             captionMessageId = null,
             detailsMessageId = detailsMsg.messageId,
             baseText = albumBaseText,
-            captionBudget = editBaseBudget,
             exportKeyboard = exportKeyboard,
             language = lang,
             isMediaGroup = true,

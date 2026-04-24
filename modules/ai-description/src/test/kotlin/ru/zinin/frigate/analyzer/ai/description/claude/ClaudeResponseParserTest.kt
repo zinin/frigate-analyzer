@@ -67,4 +67,20 @@ class ClaudeResponseParserTest {
         assertEquals(1500, result.detailed.length)
         assertEquals("…", result.detailed.last().toString())
     }
+
+    @Test
+    fun `throws InvalidResponse on blank detailed value`() {
+        assertFailsWith<DescriptionException.InvalidResponse> { parse("""{"short": "foo", "detailed": ""}""") }
+    }
+
+    @Test
+    fun `prose with multiple JSON-looking blocks grabs span between first and last brace`() {
+        // Known limitation of extractJsonBlock: `indexOf('{')` .. `lastIndexOf('}')` grabs both
+        // groups and their connective prose, so Jackson rejects it as InvalidResponse. Claude is
+        // instructed to return a bare JSON object (no prose), so this is a fail-closed safety test
+        // — if someone ever rewrites extractJsonBlock to be more lenient, this test guards against
+        // silently accepting malformed input.
+        val raw = """Example: {"foo":"bar"} Now the real answer: {"short":"X","detailed":"Y"}"""
+        assertFailsWith<DescriptionException.InvalidResponse> { parse(raw) }
+    }
 }

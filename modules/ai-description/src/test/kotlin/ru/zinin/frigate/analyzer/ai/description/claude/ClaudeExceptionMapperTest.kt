@@ -19,8 +19,23 @@ class ClaudeExceptionMapperTest {
     }
 
     @Test
+    fun `TransportException carrying rate-limit text maps to RateLimited`() {
+        // CLI-side 429 errors arrive from the SDK as TransportException (subclass of
+        // ClaudeSDKException). The mapper must recognise rate-limit regardless of which
+        // concrete subclass the SDK picked.
+        val e = mapper.map(TransportException("Anthropic API error 429: rate limit exceeded"))
+        assertIs<DescriptionException.RateLimited>(e)
+    }
+
+    @Test
     fun `429 with http context maps to RateLimited`() {
         val e = mapper.map(ClaudeSDKException("HTTP 429 rate limit exceeded"))
+        assertIs<DescriptionException.RateLimited>(e)
+    }
+
+    @Test
+    fun `429 with anthropic-api context maps to RateLimited`() {
+        val e = mapper.map(ClaudeSDKException("Anthropic API returned 429"))
         assertIs<DescriptionException.RateLimited>(e)
     }
 

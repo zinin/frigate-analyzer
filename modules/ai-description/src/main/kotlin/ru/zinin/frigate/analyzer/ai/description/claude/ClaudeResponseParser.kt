@@ -60,10 +60,12 @@ class ClaudeResponseParser(
     private fun truncate(
         text: String,
         maxLength: Int,
-    ): String =
-        if (text.length <= maxLength) {
-            text
-        } else {
-            text.substring(0, maxLength - 1) + "…"
-        }
+    ): String {
+        if (text.length <= maxLength) return text
+        // Avoid splitting a UTF-16 surrogate pair — substring(…, maxLength-1) could land
+        // between a high- and low-surrogate char (astral-plane codepoints like emoji, rare CJK).
+        val rawCut = maxLength - 1
+        val cut = if (rawCut > 0 && text[rawCut - 1].isHighSurrogate()) rawCut - 1 else rawCut
+        return text.substring(0, cut) + "…"
+    }
 }
