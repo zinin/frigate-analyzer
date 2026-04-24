@@ -2,29 +2,74 @@ package ru.zinin.frigate.analyzer.telegram.queue
 
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.requests.abstracts.Request
+import dev.inmo.tgbotapi.requests.edit.caption.EditChatMessageCaption
+import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
 import dev.inmo.tgbotapi.requests.send.SendTextMessage
+import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.buttons.KeyboardMarkup
 import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
+import dev.inmo.tgbotapi.types.message.content.MediaGroupContent
+import dev.inmo.tgbotapi.types.message.content.MediaGroupPartContent
 import dev.inmo.tgbotapi.types.message.content.PhotoContent
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
+import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
 import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+
+/**
+ * Test double for [DescriptionEditJobRunner]. Uses [UnconfinedTestDispatcher] so coroutines
+ * execute eagerly in-place — `getEditJob()?.join()` returns once the body completes without
+ * requiring virtual-time advance. Pattern mirrors the TestExportExecutor shape in
+ * ExportExecutorTest.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+private class TestDescriptionEditJobRunner(
+    bot: TelegramBot,
+    formatter: DescriptionMessageFormatter,
+) : DescriptionEditJobRunner(
+        bot = bot,
+        formatter = formatter,
+        scope = DescriptionEditScope.forTest(CoroutineScope(UnconfinedTestDispatcher() + SupervisorJob())),
+    ) {
+    @Volatile
+    private var lastJob: Job? = null
+
+    override fun launchEditJob(
+        targets: List<EditTarget>,
+        handleOutcome: suspend () -> Result<DescriptionResult>,
+    ): Job {
+        val job = super.launchEditJob(targets, handleOutcome)
+        lastJob = job
+        return job
+    }
+
+    fun getEditJob(): Job? = lastJob
+}
 
 class TelegramNotificationSenderTest {
     private val bot = mockk<TelegramBot>()
@@ -38,7 +83,11 @@ class TelegramNotificationSenderTest {
             },
         )
     private val quickExportHandler = mockk<QuickExportHandler>()
-    private val sender = TelegramNotificationSender(bot, quickExportHandler, msg)
+    private val formatterProvider = mockk<ObjectProvider<DescriptionMessageFormatter>>()
+    private val runnerProvider = mockk<ObjectProvider<DescriptionEditJobRunner>>()
+    private val formatter = DescriptionMessageFormatter(msg)
+    private val runner = TestDescriptionEditJobRunner(bot, formatter)
+    private val sender = TelegramNotificationSender(bot, quickExportHandler, msg, formatterProvider, runnerProvider)
 
     private val recordingId = UUID.randomUUID()
 
@@ -62,17 +111,29 @@ class TelegramNotificationSenderTest {
                     ),
             )
         }
+        // By default, neither the formatter nor the runner is available (mimics
+        // application.ai.description.enabled=false — old plain-text path).
+        every { formatterProvider.getIfAvailable() } returns null
+        every { runnerProvider.getIfAvailable() } returns null
     }
 
-    private fun createTask(frames: List<VisualizedFrameData> = emptyList()) =
-        NotificationTask(
-            id = UUID.randomUUID(),
-            chatId = 12345L,
-            message = "Test notification",
-            visualizedFrames = frames,
-            recordingId = recordingId,
-            language = "ru",
-        )
+    private fun enableDescriptionBeans() {
+        every { formatterProvider.getIfAvailable() } returns formatter
+        every { runnerProvider.getIfAvailable() } returns runner
+    }
+
+    private fun createTask(
+        frames: List<VisualizedFrameData> = emptyList(),
+        descriptionHandle: Deferred<Result<DescriptionResult>>? = null,
+    ) = NotificationTask(
+        id = UUID.randomUUID(),
+        chatId = 12345L,
+        message = "Test notification",
+        visualizedFrames = frames,
+        recordingId = recordingId,
+        language = "ru",
+        descriptionHandle = descriptionHandle,
+    )
 
     private fun assertExportKeyboard(keyboard: InlineKeyboardMarkup) {
         assertEquals(1, keyboard.keyboard.size, "Should have one row")
@@ -92,7 +153,7 @@ class TelegramNotificationSenderTest {
      * Needed because the photo request is wrapped in an internal CommonMultipartFileRequest,
      * so we first extract the inner `data` (SendPhotoData) then read its replyMarkup.
      *
-     * Coupled to tgbotapi 30.0.2 internals — if the library changes its wrapping
+     * Coupled to tgbotapi 32.0.0 internals — if the library changes its wrapping
      * mechanism, this method will fail at runtime. Review after version upgrades.
      */
     private fun extractReplyMarkup(request: Request<*>): KeyboardMarkup? {
@@ -168,8 +229,22 @@ class TelegramNotificationSenderTest {
                 )
             val task = createTask(frames = frames)
 
+            // Media-group path: sender now reads `group.messageId` off the sendMediaGroup result,
+            // so the return value must be a typed ContentMessage<MediaGroupContent<...>> rather than
+            // a generic relaxed mock (which would fail a checkcast at runtime).
+            val groupMsg =
+                mockk<ContentMessage<MediaGroupContent<MediaGroupPartContent>>>(relaxed = true) {
+                    every { messageId } returns MessageId(1L)
+                }
             val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
+                val req = firstArg<Request<*>>()
+                when {
+                    req is SendTextMessage -> mockk<ContentMessage<TextContent>>(relaxed = true)
+                    inner(req)?.contains("MediaGroup") == true -> groupMsg
+                    else -> mockk(relaxed = true)
+                }
+            }
 
             sender.send(task)
 
@@ -197,8 +272,20 @@ class TelegramNotificationSenderTest {
             assertEquals(20, frames.size, "Test requires 20 frames to trigger 2-chunk sending")
             val task = createTask(frames = frames)
 
+            // See companion test above — sender reads `group.messageId` and needs a typed mock.
+            val groupMsg =
+                mockk<ContentMessage<MediaGroupContent<MediaGroupPartContent>>>(relaxed = true) {
+                    every { messageId } returns MessageId(1L)
+                }
             val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
+                val req = firstArg<Request<*>>()
+                when {
+                    req is SendTextMessage -> mockk<ContentMessage<TextContent>>(relaxed = true)
+                    inner(req)?.contains("MediaGroup") == true -> groupMsg
+                    else -> mockk(relaxed = true)
+                }
+            }
 
             sender.send(task)
 
@@ -212,5 +299,190 @@ class TelegramNotificationSenderTest {
             assertNotNull(replyMarkup, "Export button message should have replyMarkup")
             assertIs<InlineKeyboardMarkup>(replyMarkup)
             assertExportKeyboard(replyMarkup)
+        }
+
+    /**
+     * Returns the simple name of the inner `SendXxxData` / `EditXxxData` class, unwrapping the
+     * `CommonMultipartFileRequest` shell used by photo + media-group requests. Returns the
+     * request's own simple name for unwrapped requests (SendTextMessage, EditChatMessageText,
+     * EditChatMessageCaption).
+     */
+    private fun inner(request: Request<*>): String? {
+        if (request is SendTextMessage || request is EditChatMessageText || request is EditChatMessageCaption) {
+            return request::class.simpleName
+        }
+        return runCatching {
+            val data =
+                request::class.java.methods
+                    .find { it.name == "getData" }
+                    ?.invoke(request)
+            data?.let { it::class.simpleName }
+        }.getOrNull()
+    }
+
+    // --- NEW TESTS (Task 16): placeholder + edit flow ---
+
+    @Test
+    fun `disabled path with null descriptionHandle preserves current single-photo behavior`() =
+        runTest {
+            // Description beans absent (default setup) AND task.descriptionHandle = null.
+            // Sender must emit only the photo — no edit call, no runner invocation.
+            val frames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1), detectionsCount = 1),
+                )
+            val capturedRequests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(capturedRequests)) } returns mockk<ContentMessage<PhotoContent>>(relaxed = true)
+
+            sender.send(createTask(frames = frames))
+
+            // Exactly one request: the photo send. No edit messages dispatched.
+            assertEquals(1, capturedRequests.size, "Expected only the photo send, got ${capturedRequests.size}")
+            assertTrue(
+                capturedRequests.none { it is EditChatMessageCaption || it is EditChatMessageText },
+                "No edit calls should happen when description is disabled",
+            )
+        }
+
+    @Test
+    fun `single photo with description handle sends placeholder then edits on success`() =
+        runTest {
+            enableDescriptionBeans()
+            val frames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1), detectionsCount = 1),
+                )
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            handle.complete(Result.success(DescriptionResult("two cars", "two cars approaching gate")))
+
+            val photoMsg =
+                mockk<ContentMessage<PhotoContent>> {
+                    every { messageId } returns MessageId(42L)
+                }
+            val textMsg =
+                mockk<ContentMessage<TextContent>> {
+                    every { messageId } returns MessageId(43L)
+                }
+
+            val capturedRequests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
+                val req = firstArg<Request<*>>()
+                when {
+                    req is SendTextMessage -> textMsg
+                    req is EditChatMessageCaption || req is EditChatMessageText -> mockk(relaxed = true)
+                    inner(req)?.contains("Photo") == true -> photoMsg
+                    else -> mockk(relaxed = true)
+                }
+            }
+
+            sender.send(createTask(frames = frames, descriptionHandle = handle))
+            runner.getEditJob()?.join()
+
+            // Post-edit: both caption (photo) and text (reply) must be rewritten.
+            assertTrue(
+                capturedRequests.any { it is EditChatMessageCaption },
+                "Expected EditChatMessageCaption for photo caption rewrite, " +
+                    "got: ${capturedRequests.map { it::class.simpleName }}",
+            )
+            assertTrue(
+                capturedRequests.any { it is EditChatMessageText },
+                "Expected EditChatMessageText for details rewrite, " +
+                    "got: ${capturedRequests.map { it::class.simpleName }}",
+            )
+        }
+
+    @Test
+    fun `single photo with description handle uses fallback on failure`() =
+        runTest {
+            enableDescriptionBeans()
+            val frames = listOf(VisualizedFrameData(0, byteArrayOf(1), 1))
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            handle.complete(Result.failure(RuntimeException("boom")))
+
+            val photoMsg =
+                mockk<ContentMessage<PhotoContent>> {
+                    every { messageId } returns MessageId(42L)
+                }
+            val textMsg =
+                mockk<ContentMessage<TextContent>> {
+                    every { messageId } returns MessageId(43L)
+                }
+
+            val capturedRequests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
+                val req = firstArg<Request<*>>()
+                when {
+                    req is SendTextMessage -> textMsg
+                    req is EditChatMessageCaption || req is EditChatMessageText -> mockk(relaxed = true)
+                    inner(req)?.contains("Photo") == true -> photoMsg
+                    else -> mockk(relaxed = true)
+                }
+            }
+
+            sender.send(createTask(frames = frames, descriptionHandle = handle))
+            runner.getEditJob()?.join()
+
+            val captionEdit = capturedRequests.filterIsInstance<EditChatMessageCaption>().lastOrNull()
+            val detailsEdit = capturedRequests.filterIsInstance<EditChatMessageText>().lastOrNull()
+            assertNotNull(captionEdit, "Expected EditChatMessageCaption for fallback caption")
+            assertNotNull(detailsEdit, "Expected EditChatMessageText for fallback details")
+            // Both fallback texts come from the "ai.description.fallback.unavailable" message,
+            // which is "Описание недоступно" in ru. Verify the fallback token is present.
+            assertTrue(
+                captionEdit.text.contains("недоступно", ignoreCase = true) ||
+                    captionEdit.text.contains("unavailable", ignoreCase = true),
+                "Expected fallback token in caption, got: ${captionEdit.text}",
+            )
+            assertTrue(
+                detailsEdit.text.contains("недоступно", ignoreCase = true) ||
+                    detailsEdit.text.contains("unavailable", ignoreCase = true),
+                "Expected fallback token in details, got: ${detailsEdit.text}",
+            )
+        }
+
+    @Test
+    fun `media group with description handle sends albums and single edit on success`() =
+        runTest {
+            enableDescriptionBeans()
+            val frames = (0..2).map { VisualizedFrameData(it, byteArrayOf(1), 1) }
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            handle.complete(Result.success(DescriptionResult("two cars", "two cars approaching gate")))
+
+            val groupMsg =
+                mockk<ContentMessage<MediaGroupContent<MediaGroupPartContent>>> {
+                    every { messageId } returns MessageId(50L)
+                }
+            val textMsg =
+                mockk<ContentMessage<TextContent>> {
+                    every { messageId } returns MessageId(51L)
+                }
+
+            val capturedRequests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
+                val req = firstArg<Request<*>>()
+                when {
+                    req is SendTextMessage -> textMsg
+                    req is EditChatMessageCaption || req is EditChatMessageText -> mockk(relaxed = true)
+                    inner(req)?.contains("MediaGroup") == true -> groupMsg
+                    else -> mockk(relaxed = true)
+                }
+            }
+
+            sender.send(createTask(frames = frames, descriptionHandle = handle))
+            runner.getEditJob()?.join()
+
+            // Media group path: exactly one edit-text for the reply message, no caption edits.
+            val captionEdits = capturedRequests.filterIsInstance<EditChatMessageCaption>()
+            val textEdits = capturedRequests.filterIsInstance<EditChatMessageText>()
+            assertEquals(
+                0,
+                captionEdits.size,
+                "Media group path must not edit photo captions, got: ${captionEdits.size}",
+            )
+            assertEquals(
+                1,
+                textEdits.size,
+                "Media group path must edit exactly one details message, got: ${textEdits.size}",
+            )
         }
 }
