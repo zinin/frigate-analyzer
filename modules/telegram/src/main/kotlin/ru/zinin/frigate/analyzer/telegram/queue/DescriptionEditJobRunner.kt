@@ -15,6 +15,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.context.annotation.DependsOn
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
@@ -47,9 +48,15 @@ data class EditTarget(
  *
  * Uses [DescriptionEditScope] (conditional on `application.ai.description.enabled=true`)
  * for structured concurrency — its `@PreDestroy` cancels in-flight edits on shutdown.
+ *
+ * `@DependsOn("aiDescriptionTelegramGuard")` forces [AiDescriptionTelegramGuard] to validate the
+ * AI+Telegram flag combination before Spring attempts to autowire [TelegramBot] here; on
+ * `telegram.enabled=false` the guard throws with an actionable message rather than letting Spring
+ * surface a bare `NoSuchBeanDefinitionException` for `TelegramBot`.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
+@DependsOn("aiDescriptionTelegramGuard")
 class DescriptionEditJobRunner(
     private val bot: TelegramBot,
     private val formatter: DescriptionMessageFormatter,
