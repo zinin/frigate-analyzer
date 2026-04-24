@@ -38,6 +38,9 @@ class ClaudeDescriptionAgent(
     private val imageStager: ClaudeImageStager,
     private val invoker: ClaudeInvoker,
     private val exceptionMapper: ClaudeExceptionMapper,
+    // Defaults to wall-clock; tests inject `runTest` virtual-time `TestTimeSource` so the retry
+    // time-budget check behaves consistently with the outer `withTimeout` (also virtual-time).
+    private val timeSource: TimeSource = TimeSource.Monotonic,
 ) : DescriptionAgent {
     private val commonSection: DescriptionProperties.CommonSection = descriptionProperties.common
     private val semaphore = Semaphore(commonSection.maxConcurrent)
@@ -100,7 +103,7 @@ class ClaudeDescriptionAgent(
         prompt: String,
         request: DescriptionRequest,
     ): DescriptionResult {
-        val overallStart = TimeSource.Monotonic.markNow()
+        val overallStart = timeSource.markNow()
         val totalBudget = commonSection.timeout.toKotlinDuration()
         var jsonRetries = 0
         var transportRetries = 0
@@ -116,7 +119,13 @@ class ClaudeDescriptionAgent(
             } catch (e: DescriptionException.InvalidResponse) {
                 if (jsonRetries >= 1) throw e
                 jsonRetries++
-                logger.warn(e) { "Invalid JSON from Claude, retrying (attempt ${jsonRetries + 1})" }
+                val elapsed = overallStart.elapsedNow()
+                val remaining = totalBudget - elapsed
+                if (remaining <= INVALID_RESPONSE_RETRY_MIN_BUDGET) {
+                    logger.warn(e) { "Invalid JSON from Claude but retry budget exhausted (remaining=$remaining); giving up" }
+                    throw e
+                }
+                logger.warn(e) { "Invalid JSON from Claude, retrying (attempt ${jsonRetries + 1}, remaining budget=$remaining)" }
             } catch (e: DescriptionException.Transport) {
                 if (transportRetries >= 1) throw e
                 transportRetries++
@@ -141,5 +150,9 @@ class ClaudeDescriptionAgent(
         // cancel mid-retry — giving up early produces a clean `Transport` error instead of
         // a misleading `Timeout`.
         private val TRANSPORT_RETRY_MIN_BUDGET = 10.seconds
+
+        // Same rationale for InvalidResponse, minus TRANSPORT_RETRY_DELAY — we retry immediately
+        // (no pre-call sleep), so the minimum is just "time for one realistic Claude invocation".
+        private val INVALID_RESPONSE_RETRY_MIN_BUDGET = 5.seconds
     }
 }

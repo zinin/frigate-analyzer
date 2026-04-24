@@ -9,13 +9,16 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.testTimeSource
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
@@ -28,6 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.time.TimeSource
 
 class ClaudeDescriptionAgentTest {
     private val common =
@@ -76,6 +80,7 @@ class ClaudeDescriptionAgentTest {
     private fun build(
         invoker: ClaudeInvoker,
         customCommon: DescriptionProperties.CommonSection = common,
+        timeSource: TimeSource = TimeSource.Monotonic,
     ) = ClaudeDescriptionAgent(
         claudeProps,
         DescriptionProperties(enabled = true, provider = "claude", common = customCommon),
@@ -84,6 +89,7 @@ class ClaudeDescriptionAgentTest {
         imageStager,
         invoker,
         exceptionMapper,
+        timeSource,
     )
 
     @Test
@@ -114,6 +120,30 @@ class ClaudeDescriptionAgentTest {
         runTest {
             val agent = build(ClaudeInvoker { "not json" })
             assertFailsWith<DescriptionException.InvalidResponse> { agent.describe(request) }
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `InvalidResponse retry gives up when budget exhausted (avoids mid-retry Timeout)`() =
+        runTest {
+            // timeout=10s, budget-check threshold INVALID_RESPONSE_RETRY_MIN_BUDGET=5s.
+            // First call sleeps 8s virtual-time → ~2s remaining < 5s → agent throws InvalidResponse
+            // right away (no second invoke), instead of retrying and getting caught by the outer
+            // withTimeout → Timeout (the bug this fix addresses).
+            val shortTimeoutCommon = common.copy(timeout = Duration.ofSeconds(10))
+            var calls = 0
+            val agent =
+                build(
+                    ClaudeInvoker {
+                        calls++
+                        delay(8_000)
+                        "not json"
+                    },
+                    customCommon = shortTimeoutCommon,
+                    timeSource = (this as TestScope).testTimeSource,
+                )
+            assertFailsWith<DescriptionException.InvalidResponse> { agent.describe(request) }
+            assertEquals(1, calls, "second invoke must be skipped when remaining budget < threshold")
         }
 
     @Test
