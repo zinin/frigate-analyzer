@@ -89,14 +89,17 @@ class RecordingProcessingFacadeTest {
         coEvery { recordingEntityService.getRecording(recordingId) } returns recording
     }
 
-    private fun frameWithDetection(idx: Int): FrameData =
+    private fun frameWithDetection(
+        idx: Int,
+        confidence: Double = 0.9,
+    ): FrameData =
         FrameData(
             recordId = recordingId,
             frameIndex = idx,
             frameBytes = ByteArray(1),
             detectResponse =
                 DetectResponse(
-                    detections = listOf(Detection(0, "person", 0.9, BBox(0.0, 0.0, 1.0, 1.0))),
+                    detections = listOf(Detection(0, "person", confidence, BBox(0.0, 0.0, 1.0, 1.0))),
                     processingTime = 0,
                     imageSize = ImageSize(1, 1),
                     model = "x",
@@ -106,6 +109,7 @@ class RecordingProcessingFacadeTest {
     private fun TestScope.facade(
         agent: DescriptionAgent?,
         framesForRequest: List<FrameData> = listOf(frameWithDetection(0)),
+        maxFrames: Int = 10,
     ): Pair<RecordingProcessingFacade, SaveProcessingResultRequest> {
         val provider = mockk<ObjectProvider<DescriptionAgent>>()
         every { provider.getIfAvailable() } returns agent
@@ -124,7 +128,7 @@ class RecordingProcessingFacadeTest {
                         language = "en",
                         shortMaxLength = 200,
                         detailedMaxLength = 1500,
-                        maxFrames = 10,
+                        maxFrames = maxFrames,
                         queueTimeout = Duration.ofSeconds(30),
                         timeout = Duration.ofSeconds(60),
                         maxConcurrent = 2,
@@ -218,6 +222,31 @@ class RecordingProcessingFacadeTest {
 
             assertEquals(10, captured.captured.frames.size)
             assertEquals((0..9).toList(), captured.captured.frames.map { it.frameIndex })
+        }
+
+    @Test
+    fun `frame selection matches visualization ranking (confidence then count), then chronological in prompt`() =
+        runTest {
+            // 5 frames with mixed confidence; with maxFrames=3 the AI must receive the top-3 by
+            // confidence (same ranking as FrameVisualizationService), ordered chronologically in prompt.
+            val frames =
+                listOf(
+                    frameWithDetection(0, confidence = 0.5),
+                    frameWithDetection(1, confidence = 0.9),
+                    frameWithDetection(2, confidence = 0.3),
+                    frameWithDetection(3, confidence = 0.7),
+                    frameWithDetection(4, confidence = 0.1),
+                )
+            val agent = mockk<DescriptionAgent>()
+            val captured = slot<DescriptionRequest>()
+            coEvery { agent.describe(capture(captured)) } coAnswers { DescriptionResult("s", "d") }
+
+            val (f, req) = facade(agent, framesForRequest = frames, maxFrames = 3)
+            val supplier = captureSupplierDuring { f.processAndNotify(req) }
+            supplier!!.invoke()!!.await()
+
+            // Top-3 by confidence: indices 1 (0.9), 3 (0.7), 0 (0.5). Then sorted chronologically: 0, 1, 3.
+            assertEquals(listOf(0, 1, 3), captured.captured.frames.map { it.frameIndex })
         }
 
     @Test
