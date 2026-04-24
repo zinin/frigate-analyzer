@@ -87,12 +87,6 @@ class DescriptionMessageFormatter(
     }
 
     /**
-     * Returns HTML-overhead length for caption when description placeholder is enabled.
-     * Used by the sender for truncation budget (see design §6 "Caption 1024-лимит").
-     */
-    fun captionPlaceholderOverhead(language: String): Int = "\n\n".length + msg.get(KEY_PLACEHOLDER_SHORT, language).length
-
-    /**
      * HTML-escape for Telegram HTML parse mode. Escapes `<`, `>`, `&`.
      * `"` and `'` in text content do NOT need escaping (Telegram HTML only requires it
      * for attribute values, which we never construct).
@@ -123,6 +117,10 @@ class DescriptionMessageFormatter(
             if (entityEnd < 0 || entityEnd >= cutoff) {
                 cutoff = lastAmp
             }
+        }
+        // Avoid splitting a UTF-16 surrogate pair (astral-plane chars like emoji or rare CJK).
+        if (cutoff > 0 && escaped[cutoff - 1].isHighSurrogate()) {
+            cutoff -= 1
         }
         return escaped.substring(0, cutoff.coerceAtLeast(0)) + "…"
     }

@@ -120,4 +120,25 @@ class DescriptionMessageFormatterTest {
         assertTrue(text.length <= 4096, "Combined text must fit 4096 limit, got ${text.length}")
         assertTrue(text.endsWith("</blockquote>"), "Wrapper must remain intact after truncation: $text")
     }
+
+    @Test
+    fun `mediaGroupText does not split UTF-16 surrogate pairs when trimming detailed`() {
+        // Force the entity-unaware truncation path to land exactly on a high-surrogate boundary:
+        // build `detailed` so that its length is just over the budget, and the character at the
+        // budget boundary is a high-surrogate (🚗 = U+1F697 = two UTF-16 chars).
+        val filler = "a".repeat(3000)
+        val longDetailed = filler + "🚗".repeat(500)
+        val result = DescriptionResult(short = "s", detailed = longDetailed)
+        val text = formatter.mediaGroupText(baseText = "base", outcome = Result.success(result), language = "en")
+        assertTrue(text.length <= 4096)
+        // No isolated surrogate anywhere in the output.
+        text.forEachIndexed { i, ch ->
+            if (ch.isHighSurrogate()) {
+                assertTrue(i + 1 < text.length && text[i + 1].isLowSurrogate(), "isolated high-surrogate at $i")
+            }
+            if (ch.isLowSurrogate()) {
+                assertTrue(i > 0 && text[i - 1].isHighSurrogate(), "isolated low-surrogate at $i")
+            }
+        }
+    }
 }
