@@ -37,6 +37,9 @@ RUN chmod +x /application/docker-entrypoint.sh && \
 # Install Claude Code CLI as appuser (native installer puts the binary in ~/.local/bin).
 # Also drop a settings.json disabling the built-in ripgrep (use the apk one above) and the
 # auto-updater (deterministic image — new CLI arrives only through a rebuilt image).
+# NB: WORKDIR /tmp during install — Anthropic docs note the installer's filesystem scan
+# can hang or OOM if WORKDIR has a large tree (e.g. our /application with JAR + AOT cache).
+WORKDIR /tmp
 USER appuser
 RUN curl -fsSL https://claude.ai/install.sh | bash && \
     mkdir -p /home/appuser/.claude && \
@@ -53,6 +56,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash && \
 USER root
 ENV PATH="/home/appuser/.local/bin:${PATH}"
 USER appuser
+WORKDIR /application
 
 EXPOSE 8080
 
