@@ -5,6 +5,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.spyk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -22,9 +23,14 @@ import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
 import ru.zinin.frigate.analyzer.core.config.properties.LocalVisualizationProperties
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
+import ru.zinin.frigate.analyzer.core.service.LocalVisualizationService
 import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
+import ru.zinin.frigate.analyzer.model.response.BBox
+import ru.zinin.frigate.analyzer.model.response.DetectResponse
+import ru.zinin.frigate.analyzer.model.response.Detection
+import ru.zinin.frigate.analyzer.model.response.ImageSize
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.time.Duration
@@ -44,12 +50,17 @@ class RecordingProcessingFacadeTest {
     // Real service is used instead of a mock because `FrameVisualizationService.visualizeFrames`
     // has a default parameter `maxFrames = visualizationProperties.maxFrames`; the synthetic
     // `$default` bridge reads the `visualizationProperties` field directly (getfield, not a getter)
-    // and would NPE on a mockk subclass mock. Real service with a mocked LocalVisualizationService
-    // and real `LocalVisualizationProperties` sidesteps that entirely: when `request.frames` contain
-    // no detections, `visualizeFrames` returns an empty list without ever calling the visualizer.
+    // and would NPE on a mockk subclass mock. Same pitfall applies to `LocalVisualizationService.visualize`
+    // (`lineWidth`/`quality` default to `properties.*`), so we use `spyk` over a real instance with
+    // real properties and stub out the `visualize` method to skip the actual Java2D rendering path.
+    private val localVisualizationService =
+        spyk(LocalVisualizationService(LocalVisualizationProperties())).also {
+            every { it.visualize(any(), any(), any(), any(), any(), any()) } returns ByteArray(0)
+        }
+
     private val frameVisualizationService =
         FrameVisualizationService(
-            localVisualizationService = mockk(relaxed = true),
+            localVisualizationService = localVisualizationService,
             visualizationProperties = LocalVisualizationProperties(),
         )
 
@@ -78,9 +89,23 @@ class RecordingProcessingFacadeTest {
         coEvery { recordingEntityService.getRecording(recordingId) } returns recording
     }
 
+    private fun frameWithDetection(idx: Int): FrameData =
+        FrameData(
+            recordId = recordingId,
+            frameIndex = idx,
+            frameBytes = ByteArray(1),
+            detectResponse =
+                DetectResponse(
+                    detections = listOf(Detection(0, "person", 0.9, BBox(0.0, 0.0, 1.0, 1.0))),
+                    processingTime = 0,
+                    imageSize = ImageSize(1, 1),
+                    model = "x",
+                ),
+        )
+
     private fun TestScope.facade(
         agent: DescriptionAgent?,
-        framesForRequest: List<FrameData> = listOf(FrameData(recordingId, 0, ByteArray(1))),
+        framesForRequest: List<FrameData> = listOf(frameWithDetection(0)),
     ): Pair<RecordingProcessingFacade, SaveProcessingResultRequest> {
         val provider = mockk<ObjectProvider<DescriptionAgent>>()
         every { provider.getIfAvailable() } returns agent
@@ -182,7 +207,7 @@ class RecordingProcessingFacadeTest {
     @Test
     fun `frame limit 10 is applied when more frames present`() =
         runTest {
-            val manyFrames = (0..49).map { FrameData(recordingId, it, ByteArray(1)) }
+            val manyFrames = (0..49).map { frameWithDetection(it) }
             val agent = mockk<DescriptionAgent>()
             val captured = slot<DescriptionRequest>()
             coEvery { agent.describe(capture(captured)) } coAnswers { DescriptionResult("s", "d") }
@@ -193,5 +218,27 @@ class RecordingProcessingFacadeTest {
 
             assertEquals(10, captured.captured.frames.size)
             assertEquals((0..9).toList(), captured.captured.frames.map { it.frameIndex })
+        }
+
+    @Test
+    fun `frames without detections are filtered out for description`() =
+        runTest {
+            val framesMix =
+                listOf(
+                    FrameData(recordingId, 0, ByteArray(1)), // no detections — filtered
+                    frameWithDetection(1),
+                    FrameData(recordingId, 2, ByteArray(1)), // no detections — filtered
+                    frameWithDetection(3),
+                )
+            val agent = mockk<DescriptionAgent>()
+            val captured = slot<DescriptionRequest>()
+            coEvery { agent.describe(capture(captured)) } coAnswers { DescriptionResult("s", "d") }
+
+            val (f, req) = facade(agent, framesForRequest = framesMix)
+            val supplier = captureSupplierDuring { f.processAndNotify(req) }
+            supplier!!.invoke()!!.await()
+
+            assertEquals(2, captured.captured.frames.size)
+            assertEquals(listOf(1, 3), captured.captured.frames.map { it.frameIndex })
         }
 }

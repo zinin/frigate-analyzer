@@ -91,14 +91,19 @@ class RecordingProcessingFacade(
         val agent = descriptionAgentProvider.getIfAvailable() ?: return null
 
         val common = descriptionProperties.common
+        // Mirror FrameVisualizationService filtering: Claude must see exactly the frames
+        // the user sees in Telegram. Without this filter `request.frames` includes
+        // analyzed-but-empty frames, and Claude produces "on the first frame …, on the second …"
+        // descriptions that reference images the user never received.
         val trimmedFrames =
             request.frames
+                .filter { it.detectResponse?.detections?.isNotEmpty() == true }
                 .sortedBy { it.frameIndex }
                 .take(common.maxFrames)
                 .map { DescriptionRequest.FrameImage(it.frameIndex, it.frameBytes) }
 
         if (trimmedFrames.isEmpty()) {
-            logger.debug { "No frames for recording $recordingId; skipping describe-job" }
+            logger.debug { "No frames with detections for recording $recordingId; skipping describe-job" }
             return null
         }
 
