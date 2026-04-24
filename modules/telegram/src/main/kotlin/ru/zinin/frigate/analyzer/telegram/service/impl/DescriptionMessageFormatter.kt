@@ -56,7 +56,14 @@ class DescriptionMessageFormatter(
     fun expandableBlockquoteSuccess(
         result: DescriptionResult,
         language: String,
-    ): String = "$BLOCKQUOTE_OPEN${htmlEscape(result.detailed)}$BLOCKQUOTE_CLOSE"
+    ): String {
+        // Bound to Telegram's 4096-char `editMessageText` limit. Even with detailedMaxLength=3500
+        // (@Max) an HTML-dense detailed (& < >) can exceed 4096 after escape; mediaGroupText has
+        // the same guard — keep single-photo path consistent.
+        val budget = (MAX_EDIT_TEXT_LENGTH - BLOCKQUOTE_OPEN.length - BLOCKQUOTE_CLOSE.length).coerceAtLeast(0)
+        val detailed = escapeAndTrim(result.detailed, budget)
+        return "$BLOCKQUOTE_OPEN$detailed$BLOCKQUOTE_CLOSE"
+    }
 
     fun expandableBlockquoteFallback(language: String): String = "$BLOCKQUOTE_OPEN${msg.get(KEY_FALLBACK, language)}$BLOCKQUOTE_CLOSE"
 

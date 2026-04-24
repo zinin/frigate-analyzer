@@ -122,6 +122,36 @@ class DescriptionMessageFormatterTest {
     }
 
     @Test
+    fun `expandableBlockquoteSuccess trims detailed to honour 4096-char editMessageText limit`() {
+        // HTML-dense input that blows up after escape: 3500 ampersands → 3500×5 = 17500 chars > 4096.
+        // Result must fit under 4096 and the blockquote wrapper must stay intact.
+        val longDetailed = "&".repeat(3500)
+        val result = DescriptionResult(short = "s", detailed = longDetailed)
+        val block = formatter.expandableBlockquoteSuccess(result, "en")
+        assertTrue(block.length <= 4096, "expandableBlockquoteSuccess must fit 4096 limit, got ${block.length}")
+        assertTrue(block.startsWith("<blockquote expandable>"))
+        assertTrue(block.endsWith("</blockquote>"), "Wrapper must remain intact after truncation: $block")
+    }
+
+    @Test
+    fun `expandableBlockquoteSuccess does not split UTF-16 surrogate pairs when trimming detailed`() {
+        // Pack with astral-plane chars (🚗 = U+1F697 = 2 UTF-16 chars) past the budget so the naive
+        // cutoff could land on a high-surrogate; verify no isolated surrogate in the output.
+        val longDetailed = "a".repeat(3000) + "🚗".repeat(700)
+        val result = DescriptionResult(short = "s", detailed = longDetailed)
+        val block = formatter.expandableBlockquoteSuccess(result, "en")
+        assertTrue(block.length <= 4096)
+        block.forEachIndexed { i, ch ->
+            if (ch.isHighSurrogate()) {
+                assertTrue(i + 1 < block.length && block[i + 1].isLowSurrogate(), "isolated high-surrogate at $i")
+            }
+            if (ch.isLowSurrogate()) {
+                assertTrue(i > 0 && block[i - 1].isHighSurrogate(), "isolated low-surrogate at $i")
+            }
+        }
+    }
+
+    @Test
     fun `mediaGroupText does not split UTF-16 surrogate pairs when trimming detailed`() {
         // Force the entity-unaware truncation path to land exactly on a high-surrogate boundary:
         // build `detailed` so that its length is just over the budget, and the character at the
