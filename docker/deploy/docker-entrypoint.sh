@@ -10,7 +10,10 @@ fi
 
 if [ "${APP_AI_DESCRIPTION_ENABLED:-false}" = "true" ]; then
     if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-        echo "WARN: APP_AI_DESCRIPTION_ENABLED=true but CLAUDE_CODE_OAUTH_TOKEN is empty; AI descriptions will return fallback." >&2
+        # ClaudeDescriptionAgent.init fails fast with IllegalStateException when the token is
+        # missing (design §4 — avoid a silently broken feature). Advisory WARN here so the hint
+        # reaches stderr before the JVM stack trace drowns it out.
+        echo "WARN: APP_AI_DESCRIPTION_ENABLED=true but CLAUDE_CODE_OAUTH_TOKEN is empty; application will FAIL at startup." >&2
     elif [ -n "${CLAUDE_CLI_PATH:-}" ]; then
         # Explicit path override — check it directly; falling back to PATH would give a false negative.
         if [ -x "${CLAUDE_CLI_PATH}" ]; then
