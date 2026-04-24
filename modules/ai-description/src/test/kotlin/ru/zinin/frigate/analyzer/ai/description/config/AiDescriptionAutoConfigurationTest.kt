@@ -1,7 +1,8 @@
 package ru.zinin.frigate.analyzer.ai.description.config
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.mockk.mockk
-import org.junit.jupiter.api.Disabled
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
@@ -14,12 +15,19 @@ class AiDescriptionAutoConfigurationTest {
     private val runner =
         ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AiDescriptionAutoConfiguration::class.java))
-            .withUserConfiguration(TempFileWriterStubConfig::class.java)
+            .withUserConfiguration(TestStubConfig::class.java)
 
     @Configuration
-    class TempFileWriterStubConfig {
+    class TestStubConfig {
+        // TempFileWriter is an SPI — in production provided by the core module.
         @Bean
         fun tempFileWriter(): TempFileWriter = mockk(relaxed = true)
+
+        // ObjectMapper is provided by Spring Boot's JacksonAutoConfiguration in production
+        // (via spring-boot-jackson on the runtime classpath of the main application).
+        // This module does not depend on spring-boot-jackson, so we supply a plain mapper here.
+        @Bean
+        fun objectMapper(): ObjectMapper = ObjectMapper().registerKotlinModule()
     }
 
     @Test
@@ -54,10 +62,6 @@ class AiDescriptionAutoConfigurationTest {
     }
 
     @Test
-    @Disabled(
-        "Re-enabled after Task 11 adds DefaultClaudeInvoker — ClaudeDescriptionAgent " +
-            "requires a ClaudeInvoker bean which is introduced in that task",
-    )
     fun `autoconfig activates beans when enabled=true, provider=claude`() {
         runner
             .withPropertyValues(
