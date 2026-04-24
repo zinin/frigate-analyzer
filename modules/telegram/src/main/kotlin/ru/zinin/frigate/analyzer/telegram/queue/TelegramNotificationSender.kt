@@ -124,6 +124,11 @@ class TelegramNotificationSender(
             }
 
             else -> {
+                // Only capture the first-album message ID when description is enabled — we only
+                // need it to turn the export-button text message into a reply to the album, which
+                // anchors the AI-description details block under the album. When description is
+                // disabled, the pre-Task-16 behaviour is a standalone export-button message (no
+                // replyParameters); preserve that byte-for-byte.
                 var firstAlbumMessageId: MessageId? = null
                 frames.chunked(MAX_MEDIA_GROUP_SIZE).forEachIndexed { chunkIndex, chunk ->
                     val group =
@@ -149,7 +154,7 @@ class TelegramNotificationSender(
                             @Suppress("OPT_IN_USAGE")
                             bot.sendMediaGroup(chatIdObj, media)
                         }
-                    if (chunkIndex == 0) {
+                    if (withDescription && chunkIndex == 0) {
                         firstAlbumMessageId = group.messageId
                     }
                 }
