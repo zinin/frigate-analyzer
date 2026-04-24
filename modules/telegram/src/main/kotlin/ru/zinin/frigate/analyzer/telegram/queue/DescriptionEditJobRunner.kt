@@ -12,6 +12,7 @@ import dev.inmo.tgbotapi.types.message.HTMLParseMode
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
@@ -142,29 +143,59 @@ class DescriptionEditJobRunner(
     }
 
     /**
-     * Wraps a single edit call in the expected-failure-tolerant try/catch.
+     * Wraps a single edit call in the expected-failure-tolerant try/catch with bounded retry.
      *
      * - `CancellationException` is re-thrown (structured concurrency — never swallow).
-     * - `MessageIsNotModifiedException` / `MessageToEditNotFoundException` are logged as DEBUG
-     *   because they are normal (message already has this text / user deleted it).
-     * - Any other failure is logged at WARN and swallowed so a failing caption edit does NOT
-     *   block a subsequent details edit on the same target.
+     * - `MessageIsNotModifiedException` / `MessageToEditNotFoundException` are terminal — logged
+     *   as DEBUG and NOT retried (message already has this text / user deleted it).
+     * - Any other failure retries with backoff up to [EDIT_MAX_ATTEMPTS]. This symmetrises the
+     *   initial-send path (which uses `RetryHelper.retryIndefinitely`) so a transient 429 or
+     *   network blip on the edit call does not leave the user stuck with the hourglass.
+     *   Bounded (not indefinite) because edit is best-effort: after ~5 minutes of retries the
+     *   job gives up so scope shutdown completes and the placeholder stays as fallback.
      */
     private suspend fun runEdit(
         label: String,
         target: EditTarget,
         block: suspend () -> Unit,
     ) {
-        try {
-            block()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: MessageIsNotModifiedException) {
-            logger.debug { "Edit skipped for $label (chat=${target.chatId}): message is not modified — ${e.message}" }
-        } catch (e: MessageToEditNotFoundException) {
-            logger.debug { "Edit skipped for $label (chat=${target.chatId}): message not found — ${e.message}" }
-        } catch (e: Exception) {
-            logger.warn(e) { "Failed to edit $label for chat=${target.chatId}; continuing" }
+        var attempt = 0
+        while (true) {
+            try {
+                block()
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: MessageIsNotModifiedException) {
+                logger.debug { "Edit skipped for $label (chat=${target.chatId}): message is not modified — ${e.message}" }
+                return
+            } catch (e: MessageToEditNotFoundException) {
+                logger.debug { "Edit skipped for $label (chat=${target.chatId}): message not found — ${e.message}" }
+                return
+            } catch (e: Exception) {
+                attempt++
+                if (attempt >= EDIT_MAX_ATTEMPTS) {
+                    logger.warn(e) { "Failed to edit $label for chat=${target.chatId} after $attempt attempts; giving up" }
+                    return
+                }
+                val delayMs = editBackoffMs(attempt)
+                logger.warn(e) { "Edit $label failed for chat=${target.chatId} (attempt $attempt); retrying in ${delayMs / 1000}s" }
+                delay(delayMs)
+            }
+        }
+    }
+
+    companion object {
+        private const val EDIT_MAX_ATTEMPTS = 5
+
+        // Backoff schedule for edit retries: 15s, 30s, 60s, 120s → ~3.75 min total before giving up.
+        // Tighter than `RetryHelper.calculateBackoff` because edit is best-effort and we do not
+        // want the describe-edit-job to linger past reasonable notification freshness.
+        internal fun editBackoffMs(attempt: Int): Long {
+            val baseMs = 15_000L
+            val maxMs = 120_000L
+            val d = baseMs * (1L shl minOf(attempt - 1, 4))
+            return minOf(d, maxMs)
         }
     }
 }

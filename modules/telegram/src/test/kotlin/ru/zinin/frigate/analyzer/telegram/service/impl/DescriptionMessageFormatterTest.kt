@@ -77,6 +77,18 @@ class DescriptionMessageFormatterTest {
     }
 
     @Test
+    fun `captionSuccess caps dense HTML short so caption never exceeds 1024`() {
+        // Worst-case: result.short full of `&` (5× inflation after escape). Without the cap,
+        // suffix alone would be ~2500 chars → caption > 1024 → Telegram rejects editMessageCaption.
+        val denseShort = "&".repeat(500) // @Max(500) on shortMaxLength
+        val result = DescriptionResult(short = denseShort, detailed = "ignored")
+        val caption = formatter.captionSuccess(baseText = "base", result = result, language = "en")
+        assertTrue(caption.length <= 1024, "caption must fit 1024-char cap, got ${caption.length}")
+        // baseText must retain at least a minimum identifying fragment.
+        assertTrue(caption.startsWith("base"), "baseText slot must survive: $caption")
+    }
+
+    @Test
     fun `captionFallback appends fallback text under base`() {
         val caption = formatter.captionFallback(baseText = "base", language = "en")
         assertTrue(caption.startsWith("base\n\n"))

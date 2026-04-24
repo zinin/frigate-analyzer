@@ -35,7 +35,13 @@ class DescriptionMessageFormatter(
         language: String,
         maxLength: Int = MAX_CAPTION_LENGTH,
     ): String {
-        val suffix = "\n\n${htmlEscape(result.short)}"
+        // Cap `short` first so it can never consume the entire caption budget. Without this,
+        // a dense HTML-special `result.short` could inflate up to 5× after escape, `suffix.length`
+        // could exceed `maxLength`, `escapeAndTrim(baseText, negative)` would return "", and the
+        // final caption would be just `suffix` — itself longer than 1024 → Telegram rejects the edit.
+        // Reserve a minimum slot for baseText so there's always *something* identifying the recording.
+        val shortBudget = (maxLength - BASE_TEXT_MIN_RESERVE - "\n\n".length).coerceAtLeast(0)
+        val suffix = "\n\n${escapeAndTrim(result.short, shortBudget)}"
         return "${escapeAndTrim(baseText, maxLength - suffix.length)}$suffix"
     }
 
@@ -137,6 +143,12 @@ class DescriptionMessageFormatter(
         private const val MAX_EDIT_TEXT_LENGTH = 4096
         private const val BLOCKQUOTE_OPEN = "<blockquote expandable>"
         private const val BLOCKQUOTE_CLOSE = "</blockquote>"
+
+        // Minimum characters reserved for baseText (camId/filePath) when capping `short` in
+        // `captionSuccess`. A tiny identifying fragment is better than a caption that would
+        // overflow the 1024 cap and fail the Telegram edit.
+        private const val BASE_TEXT_MIN_RESERVE = 64
+
         private const val KEY_PLACEHOLDER_SHORT = "ai.description.placeholder.short"
         private const val KEY_PLACEHOLDER_DETAILED = "ai.description.placeholder.detailed"
         private const val KEY_FALLBACK = "ai.description.fallback.unavailable"
