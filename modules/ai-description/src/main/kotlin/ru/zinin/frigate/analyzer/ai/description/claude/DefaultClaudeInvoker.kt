@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.ai.description.claude
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
@@ -11,6 +12,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import java.time.Duration
+
+private val logger = KotlinLogging.logger {}
 
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -30,9 +33,14 @@ class DefaultClaudeInvoker(
     private val workTimeout: Duration = descriptionProperties.common.timeout.plus(SDK_TIMEOUT_BUFFER)
 
     override suspend fun invoke(prompt: String): String {
+        logger.debug { "Claude prompt (${prompt.length} chars):\n$prompt" }
         val client = clientFactory.create(workTimeout)
         try {
-            client.connect().awaitSingleOrNull() // Mono<Void>
+            // We send the prompt as the FIRST user message via `connect(prompt)`.
+            // The no-arg `connect()` would inject a default "Hello" message before ours, and the
+            // bidirectional stream then closes the turn on the ResultMessage produced for that
+            // "Hello" — so the assistant's response to our real prompt would never be read.
+            //
             // We use `.messages()` instead of `.text()` because `text()` silently drops non-assistant
             // messages — including `ResultMessage` with `isError=true`, which is how the CLI signals
             // in-band rate-limit / auth / execution errors. With `.text()` those errors surface as
@@ -40,7 +48,7 @@ class DefaultClaudeInvoker(
             // and hiding the real cause (e.g. a 429 → Transport instead of RateLimited).
             val messages =
                 client
-                    .query(prompt)
+                    .connect(prompt)
                     .messages()
                     .collectList()
                     .awaitSingle()
@@ -57,9 +65,12 @@ class DefaultClaudeInvoker(
                 throw ClaudeSDKException(detail)
             }
 
-            return messages
-                .filterIsInstance<AssistantMessage>()
-                .joinToString(separator = "") { it.text() }
+            val rawText =
+                messages
+                    .filterIsInstance<AssistantMessage>()
+                    .joinToString(separator = "") { it.text() }
+            logger.debug { "Claude raw response (${rawText.length} chars):\n$rawText" }
+            return rawText
         } finally {
             // ClaudeAsyncClient is NOT AutoCloseable — .use not usable. Close explicitly.
             // NonCancellable required: invoke() runs under withTimeout in
