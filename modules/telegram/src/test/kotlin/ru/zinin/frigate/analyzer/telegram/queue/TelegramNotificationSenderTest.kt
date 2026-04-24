@@ -22,55 +22,29 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
+import java.time.Duration
 import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Test double for [DescriptionEditJobRunner]. Uses [UnconfinedTestDispatcher] so coroutines
- * execute eagerly in-place — `getEditJob()?.join()` returns once the body completes without
- * requiring virtual-time advance. Pattern mirrors the TestExportExecutor shape in
- * ExportExecutorTest.
- */
 @OptIn(ExperimentalCoroutinesApi::class)
-private class TestDescriptionEditJobRunner(
-    bot: TelegramBot,
-    formatter: DescriptionMessageFormatter,
-) : DescriptionEditJobRunner(
-        bot = bot,
-        formatter = formatter,
-        scope = DescriptionEditScope.forTest(CoroutineScope(UnconfinedTestDispatcher() + SupervisorJob())),
-    ) {
-    @Volatile
-    private var lastJob: Job? = null
-
-    override fun launchEditJob(
-        targets: List<EditTarget>,
-        handleOutcome: suspend () -> Result<DescriptionResult>,
-    ): Job {
-        val job = super.launchEditJob(targets, handleOutcome)
-        lastJob = job
-        return job
-    }
-
-    fun getEditJob(): Job? = lastJob
-}
-
 class TelegramNotificationSenderTest {
     private val bot = mockk<TelegramBot>()
     private val msg =
@@ -85,9 +59,21 @@ class TelegramNotificationSenderTest {
     private val quickExportHandler = mockk<QuickExportHandler>()
     private val formatterProvider = mockk<ObjectProvider<DescriptionMessageFormatter>>()
     private val runnerProvider = mockk<ObjectProvider<DescriptionEditJobRunner>>()
+    private val propertiesProvider = mockk<ObjectProvider<DescriptionProperties>>()
     private val formatter = DescriptionMessageFormatter(msg)
-    private val runner = TestDescriptionEditJobRunner(bot, formatter)
-    private val sender = TelegramNotificationSender(bot, quickExportHandler, msg, formatterProvider, runnerProvider)
+
+    // runner is built per-test from the runTest scope so its dispatcher shares the
+    // TestCoroutineScheduler — required if any test ever introduces `delay(...)` in the edit job.
+    private lateinit var runner: DescriptionEditJobRunner
+    private val sender =
+        TelegramNotificationSender(
+            bot,
+            quickExportHandler,
+            msg,
+            formatterProvider,
+            runnerProvider,
+            propertiesProvider,
+        )
 
     private val recordingId = UUID.randomUUID()
 
@@ -111,15 +97,45 @@ class TelegramNotificationSenderTest {
                     ),
             )
         }
-        // By default, neither the formatter nor the runner is available (mimics
-        // application.ai.description.enabled=false — old plain-text path).
+        // By default, neither the formatter nor the runner nor the properties provider is available
+        // — this mimics application.ai.description.enabled=false (old plain-text path).
         every { formatterProvider.getIfAvailable() } returns null
         every { runnerProvider.getIfAvailable() } returns null
+        every { propertiesProvider.getIfAvailable() } returns null
     }
 
-    private fun enableDescriptionBeans() {
+    /**
+     * Builds the runner backed by runTest's scheduler and flips the providers to "available".
+     * Must be called inside a `runTest { ... }` block before [sender.send] for the description
+     * path to be active.
+     */
+    private fun TestScope.enableDescriptionBeans() {
+        runner =
+            DescriptionEditJobRunner(
+                bot = bot,
+                formatter = formatter,
+                scope =
+                    DescriptionEditScope.forTest(
+                        CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob()),
+                    ),
+            )
         every { formatterProvider.getIfAvailable() } returns formatter
         every { runnerProvider.getIfAvailable() } returns runner
+        every { propertiesProvider.getIfAvailable() } returns
+            DescriptionProperties(
+                enabled = true,
+                provider = "claude",
+                common =
+                    DescriptionProperties.CommonSection(
+                        language = "ru",
+                        shortMaxLength = 200,
+                        detailedMaxLength = 1500,
+                        maxFrames = 10,
+                        queueTimeout = Duration.ofSeconds(30),
+                        timeout = Duration.ofSeconds(60),
+                        maxConcurrent = 2,
+                    ),
+            )
     }
 
     private fun createTask(
@@ -376,7 +392,7 @@ class TelegramNotificationSenderTest {
             }
 
             sender.send(createTask(frames = frames, descriptionHandle = handle))
-            runner.getEditJob()?.join()
+            runner.lastLaunchedJobForTests()?.join()
 
             // Post-edit: both caption (photo) and text (reply) must be rewritten.
             assertTrue(
@@ -420,23 +436,20 @@ class TelegramNotificationSenderTest {
             }
 
             sender.send(createTask(frames = frames, descriptionHandle = handle))
-            runner.getEditJob()?.join()
+            runner.lastLaunchedJobForTests()?.join()
 
             val captionEdit = capturedRequests.filterIsInstance<EditChatMessageCaption>().lastOrNull()
             val detailsEdit = capturedRequests.filterIsInstance<EditChatMessageText>().lastOrNull()
             assertNotNull(captionEdit, "Expected EditChatMessageCaption for fallback caption")
             assertNotNull(detailsEdit, "Expected EditChatMessageText for fallback details")
-            // Both fallback texts come from the "ai.description.fallback.unavailable" message,
-            // which is "Описание недоступно" in ru. Verify the fallback token is present.
+            // The task's language = "ru" — only the Russian fallback ("Описание недоступно") is valid.
             assertTrue(
-                captionEdit.text.contains("недоступно", ignoreCase = true) ||
-                    captionEdit.text.contains("unavailable", ignoreCase = true),
-                "Expected fallback token in caption, got: ${captionEdit.text}",
+                captionEdit.text.contains("недоступно"),
+                "Expected Russian fallback in caption, got: ${captionEdit.text}",
             )
             assertTrue(
-                detailsEdit.text.contains("недоступно", ignoreCase = true) ||
-                    detailsEdit.text.contains("unavailable", ignoreCase = true),
-                "Expected fallback token in details, got: ${detailsEdit.text}",
+                detailsEdit.text.contains("недоступно"),
+                "Expected Russian fallback in details, got: ${detailsEdit.text}",
             )
         }
 
@@ -469,7 +482,7 @@ class TelegramNotificationSenderTest {
             }
 
             sender.send(createTask(frames = frames, descriptionHandle = handle))
-            runner.getEditJob()?.join()
+            runner.lastLaunchedJobForTests()?.join()
 
             // Media group path: exactly one edit-text for the reply message, no caption edits.
             val captionEdits = capturedRequests.filterIsInstance<EditChatMessageCaption>()
@@ -483,6 +496,25 @@ class TelegramNotificationSenderTest {
                 1,
                 textEdits.size,
                 "Media group path must edit exactly one details message, got: ${textEdits.size}",
+            )
+        }
+
+    @Test
+    fun `empty frames with description handle skips edit job — no photo target to edit`() =
+        runTest {
+            enableDescriptionBeans()
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            handle.complete(Result.success(DescriptionResult("s", "d")))
+
+            val textMsg = mockk<ContentMessage<TextContent>>(relaxed = true)
+            coEvery { bot.execute(any<Request<*>>()) } returns textMsg
+
+            sender.send(createTask(frames = emptyList(), descriptionHandle = handle))
+
+            // No edit job should have been launched — there's no photo/album to edit.
+            assertNull(
+                runner.lastLaunchedJobForTests(),
+                "Empty-frames path must not launch an edit job even with description enabled",
             )
         }
 }

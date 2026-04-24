@@ -17,6 +17,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
+import java.util.concurrent.atomic.AtomicReference
 
 private val logger = KotlinLogging.logger {}
 
@@ -50,21 +51,29 @@ data class EditTarget(
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-open class DescriptionEditJobRunner(
+class DescriptionEditJobRunner(
     private val bot: TelegramBot,
     private val formatter: DescriptionMessageFormatter,
     private val scope: DescriptionEditScope,
 ) {
-    open fun launchEditJob(
+    // Tests observe the most-recently launched job via [lastLaunchedJobForTests]. Production code
+    // never reads this — it's a write-only side-effect from the runner's own launches.
+    private val lastJob = AtomicReference<Job?>(null)
+
+    /** Test-only hook. Returns the most recently launched edit job (may be null if none yet). */
+    internal fun lastLaunchedJobForTests(): Job? = lastJob.get()
+
+    fun launchEditJob(
         targets: List<EditTarget>,
         handleOutcome: suspend () -> Result<DescriptionResult>,
     ): Job =
-        scope.launch {
-            val outcome = handleOutcome()
-            targets.forEach { target ->
-                editOne(target, outcome)
-            }
-        }
+        scope
+            .launch {
+                val outcome = handleOutcome()
+                targets.forEach { target ->
+                    editOne(target, outcome)
+                }
+            }.also { lastJob.set(it) }
 
     private suspend fun editOne(
         target: EditTarget,

@@ -9,12 +9,16 @@ import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.ReplyParameters
+import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
 import dev.inmo.tgbotapi.types.message.HTMLParseMode
+import dev.inmo.tgbotapi.types.message.ParseMode
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.helper.RetryHelper
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
@@ -31,6 +35,7 @@ class TelegramNotificationSender(
     // ObjectProvider — the description beans are absent when application.ai.description.enabled=false.
     private val descriptionFormatter: ObjectProvider<DescriptionMessageFormatter>,
     private val editJobRunner: ObjectProvider<DescriptionEditJobRunner>,
+    private val descriptionPropertiesProvider: ObjectProvider<DescriptionProperties>,
 ) {
     /**
      * Sends notification task to Telegram with infinite retry on failure.
@@ -44,178 +49,218 @@ class TelegramNotificationSender(
      * Note: If the calling coroutine is cancelled, this method will propagate
      * CancellationException and the task may not be delivered.
      */
-    @Suppress("LongMethod")
     suspend fun send(task: NotificationTask) {
         val chatIdObj = ChatId(RawChatId(task.chatId))
-        val frames = task.visualizedFrames
         val lang = task.language ?: "en"
         val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
-        val formatter = descriptionFormatter.getIfAvailable()
-        val withDescription = task.descriptionHandle != null && formatter != null
+        // formatter != null acts as the description-enabled gate downstream — helpers treat null
+        // as "disabled path" and take the original plain-text branch without any extra flags.
+        val formatter =
+            if (task.descriptionHandle != null) descriptionFormatter.getIfAvailable() else null
 
-        // When description is active, the initial caption is `{message}\n\n{placeholder.short}`
-        // rendered as HTML. Without description the original plain-text path is preserved.
-        val parseMode = if (withDescription) HTMLParseMode else null
+        val parseMode: ParseMode? = if (formatter != null) HTMLParseMode else null
         val captionInitial =
-            if (withDescription) {
-                // Smart-cast: `withDescription` implies `formatter != null` via the conjunction above.
+            if (formatter != null) {
                 formatter.captionInitialPlaceholder(task.message, lang, MAX_CAPTION_LENGTH)
             } else {
                 task.message.toCaption(MAX_CAPTION_LENGTH)
             }
 
-        // Caption budget for the EDIT stage: in the HTML-placeholder flow we reserve space for
-        // the worst-case short description (bounded by DescriptionProperties.CommonSection @Max)
-        // plus the `\n\n` separator. Without description we use the full 1024 budget.
+        // Edit-stage caption budget. In the HTML-placeholder flow reserve space for the worst-case
+        // short description (bounded by DescriptionProperties.CommonSection.shortMaxLength, defined
+        // in config with @Max(500)) plus the "\n\n" separator. When formatter is null the budget is
+        // unused; MAX_CAPTION_LENGTH is just a sane non-zero default.
+        val shortMaxLength = descriptionPropertiesProvider.getIfAvailable()?.common?.shortMaxLength ?: MAX_CAPTION_LENGTH
         val editBaseBudget =
-            if (withDescription) MAX_CAPTION_LENGTH - SHORT_MAX_LENGTH - "\n\n".length else MAX_CAPTION_LENGTH
+            if (formatter != null) MAX_CAPTION_LENGTH - shortMaxLength - "\n\n".length else MAX_CAPTION_LENGTH
 
-        val targets = mutableListOf<EditTarget>()
+        val target: EditTarget? =
+            when {
+                task.visualizedFrames.isEmpty() -> {
+                    sendEmptyText(chatIdObj, captionInitial, parseMode, exportKeyboard, task.chatId)
+                    null
+                }
 
-        when {
-            frames.isEmpty() -> {
-                RetryHelper.retryIndefinitely("Send text message", task.chatId) {
-                    bot.sendTextMessage(
+                task.visualizedFrames.size == 1 -> {
+                    sendSinglePhoto(
+                        chatIdObj = chatIdObj,
+                        frame = task.visualizedFrames.first(),
+                        captionInitial = captionInitial,
+                        parseMode = parseMode,
+                        exportKeyboard = exportKeyboard,
+                        formatter = formatter,
+                        lang = lang,
+                        task = task,
+                        editBaseBudget = editBaseBudget,
+                    )
+                }
+
+                else -> {
+                    sendMediaGroupMessages(
+                        chatIdObj = chatIdObj,
+                        frames = task.visualizedFrames,
+                        parseMode = parseMode,
+                        exportKeyboard = exportKeyboard,
+                        formatter = formatter,
+                        lang = lang,
+                        task = task,
+                        editBaseBudget = editBaseBudget,
+                    )
+                }
+            }
+
+        if (formatter != null && target != null) {
+            val runner = editJobRunner.getIfAvailable() ?: return
+            val handle =
+                requireNotNull(task.descriptionHandle) {
+                    "formatter != null implies descriptionHandle != null (gated on task.descriptionHandle at line ~57)"
+                }
+            runner.launchEditJob(listOf(target)) { handle.await() }
+        }
+    }
+
+    private suspend fun sendEmptyText(
+        chatIdObj: ChatId,
+        captionInitial: String,
+        parseMode: ParseMode?,
+        exportKeyboard: InlineKeyboardMarkup,
+        chatId: Long,
+    ) {
+        RetryHelper.retryIndefinitely("Send text message", chatId) {
+            bot.sendTextMessage(
+                chatId = chatIdObj,
+                text = captionInitial,
+                parseMode = parseMode,
+                replyMarkup = exportKeyboard,
+            )
+        }
+    }
+
+    @Suppress("LongParameterList")
+    private suspend fun sendSinglePhoto(
+        chatIdObj: ChatId,
+        frame: VisualizedFrameData,
+        captionInitial: String,
+        parseMode: ParseMode?,
+        exportKeyboard: InlineKeyboardMarkup,
+        formatter: DescriptionMessageFormatter?,
+        lang: String,
+        task: NotificationTask,
+        editBaseBudget: Int,
+    ): EditTarget? {
+        val photoMsg =
+            RetryHelper.retryIndefinitely("Send photo message", task.chatId) {
+                bot.execute(
+                    SendPhoto(
                         chatId = chatIdObj,
+                        photo = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
                         text = captionInitial,
                         parseMode = parseMode,
                         replyMarkup = exportKeyboard,
-                    )
-                }
+                    ),
+                )
             }
+        if (formatter == null) return null
+        val detailsMsg =
+            RetryHelper.retryIndefinitely("Send details placeholder", task.chatId) {
+                bot.sendTextMessage(
+                    chatId = chatIdObj,
+                    text = formatter.placeholderDetailedExpandable(lang),
+                    parseMode = HTMLParseMode,
+                    replyParameters = ReplyParameters(chatIdObj, photoMsg.messageId),
+                )
+            }
+        return EditTarget(
+            chatId = chatIdObj,
+            captionMessageId = photoMsg.messageId,
+            detailsMessageId = detailsMsg.messageId,
+            baseText = task.message,
+            captionBudget = editBaseBudget,
+            exportKeyboard = exportKeyboard,
+            language = lang,
+            isMediaGroup = false,
+        )
+    }
 
-            frames.size == 1 -> {
-                val frame = frames.first()
-                val photoMsg =
-                    RetryHelper.retryIndefinitely("Send photo message", task.chatId) {
-                        bot.execute(
-                            SendPhoto(
-                                chatId = chatIdObj,
-                                photo = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
-                                text = captionInitial,
-                                parseMode = parseMode,
-                                replyMarkup = exportKeyboard,
-                            ),
-                        )
-                    }
-                if (withDescription) {
-                    val detailsMsg =
-                        RetryHelper.retryIndefinitely("Send details placeholder", task.chatId) {
-                            bot.sendTextMessage(
-                                chatId = chatIdObj,
-                                text = formatter.placeholderDetailedExpandable(lang),
-                                parseMode = HTMLParseMode,
-                                replyParameters = ReplyParameters(chatIdObj, photoMsg.messageId),
+    @Suppress("LongParameterList", "LongMethod")
+    private suspend fun sendMediaGroupMessages(
+        chatIdObj: ChatId,
+        frames: List<VisualizedFrameData>,
+        parseMode: ParseMode?,
+        exportKeyboard: InlineKeyboardMarkup,
+        formatter: DescriptionMessageFormatter?,
+        lang: String,
+        task: NotificationTask,
+        editBaseBudget: Int,
+    ): EditTarget? {
+        // Only capture the first-album id when description is enabled — the disabled path must
+        // not turn the export button into a reply (preserves pre-Task-16 behaviour).
+        var firstAlbumMessageId: MessageId? = null
+        frames.chunked(MAX_MEDIA_GROUP_SIZE).forEachIndexed { chunkIndex, chunk ->
+            val group =
+                RetryHelper.retryIndefinitely("Send media group", task.chatId) {
+                    val media =
+                        chunk.mapIndexed { idx, frame ->
+                            TelegramMediaPhoto(
+                                file = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
+                                text =
+                                    if (chunkIndex == 0 && idx == 0) {
+                                        if (formatter != null) {
+                                            formatter.captionInitialPlaceholder(task.message, lang, MAX_CAPTION_LENGTH)
+                                        } else {
+                                            task.message.toCaption(MAX_CAPTION_LENGTH)
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                parseMode = if (chunkIndex == 0 && idx == 0) parseMode else null,
                             )
                         }
-                    targets.add(
-                        EditTarget(
-                            chatId = chatIdObj,
-                            captionMessageId = photoMsg.messageId,
-                            detailsMessageId = detailsMsg.messageId,
-                            baseText = task.message,
-                            captionBudget = editBaseBudget,
-                            exportKeyboard = exportKeyboard,
-                            language = lang,
-                            isMediaGroup = false,
-                        ),
-                    )
+                    // sendMediaGroup is @BetaApi in tgbotapi — stable enough for production use here
+                    @Suppress("OPT_IN_USAGE")
+                    bot.sendMediaGroup(chatIdObj, media)
                 }
-            }
-
-            else -> {
-                // Only capture the first-album message ID when description is enabled — we only
-                // need it to turn the export-button text message into a reply to the album, which
-                // anchors the AI-description details block under the album. When description is
-                // disabled, the pre-Task-16 behaviour is a standalone export-button message (no
-                // replyParameters); preserve that byte-for-byte.
-                var firstAlbumMessageId: MessageId? = null
-                frames.chunked(MAX_MEDIA_GROUP_SIZE).forEachIndexed { chunkIndex, chunk ->
-                    val group =
-                        RetryHelper.retryIndefinitely("Send media group", task.chatId) {
-                            val media =
-                                chunk.mapIndexed { idx, frame ->
-                                    TelegramMediaPhoto(
-                                        file = frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg"),
-                                        text =
-                                            if (chunkIndex == 0 && idx == 0) {
-                                                if (withDescription) {
-                                                    formatter.captionInitialPlaceholder(task.message, lang, MAX_CAPTION_LENGTH)
-                                                } else {
-                                                    task.message.toCaption(MAX_CAPTION_LENGTH)
-                                                }
-                                            } else {
-                                                null
-                                            },
-                                        parseMode = if (chunkIndex == 0 && idx == 0) parseMode else null,
-                                    )
-                                }
-                            // sendMediaGroup is @BetaApi in tgbotapi — stable enough for production use here
-                            @Suppress("OPT_IN_USAGE")
-                            bot.sendMediaGroup(chatIdObj, media)
-                        }
-                    if (withDescription && chunkIndex == 0) {
-                        firstAlbumMessageId = group.messageId
-                    }
-                }
-                val albumBaseText = msg.get("notification.recording.export.prompt", lang)
-                val promptInitial =
-                    if (withDescription) {
-                        albumBaseText +
-                            "\n\n" +
-                            formatter.placeholderShort(lang) +
-                            "\n\n" +
-                            formatter.placeholderDetailedExpandable(lang)
-                    } else {
-                        albumBaseText
-                    }
-                val detailsMsg =
-                    RetryHelper.retryIndefinitely("Send export button", task.chatId) {
-                        bot.sendTextMessage(
-                            chatId = chatIdObj,
-                            text = promptInitial,
-                            parseMode = if (withDescription) HTMLParseMode else null,
-                            replyParameters = firstAlbumMessageId?.let { ReplyParameters(chatIdObj, it) },
-                            replyMarkup = exportKeyboard,
-                        )
-                    }
-                if (withDescription) {
-                    targets.add(
-                        EditTarget(
-                            chatId = chatIdObj,
-                            captionMessageId = null,
-                            detailsMessageId = detailsMsg.messageId,
-                            baseText = albumBaseText,
-                            captionBudget = editBaseBudget,
-                            exportKeyboard = exportKeyboard,
-                            language = lang,
-                            isMediaGroup = true,
-                        ),
-                    )
-                }
+            if (formatter != null && chunkIndex == 0) {
+                firstAlbumMessageId = group.messageId
             }
         }
-
-        if (withDescription && targets.isNotEmpty()) {
-            val runner = editJobRunner.getIfAvailable()
-            if (runner != null) {
-                // task.descriptionHandle is non-null here (withDescription guards it).
-                val handle = task.descriptionHandle
-                if (handle != null) {
-                    runner.launchEditJob(targets) { handle.await() }
-                }
+        val albumBaseText = msg.get("notification.recording.export.prompt", lang)
+        val promptInitial =
+            if (formatter != null) {
+                albumBaseText +
+                    "\n\n" +
+                    formatter.placeholderShort(lang) +
+                    "\n\n" +
+                    formatter.placeholderDetailedExpandable(lang)
+            } else {
+                albumBaseText
             }
-        }
+        val detailsMsg =
+            RetryHelper.retryIndefinitely("Send export button", task.chatId) {
+                bot.sendTextMessage(
+                    chatId = chatIdObj,
+                    text = promptInitial,
+                    parseMode = if (formatter != null) HTMLParseMode else null,
+                    replyParameters = firstAlbumMessageId?.let { ReplyParameters(chatIdObj, it) },
+                    replyMarkup = exportKeyboard,
+                )
+            }
+        if (formatter == null) return null
+        return EditTarget(
+            chatId = chatIdObj,
+            captionMessageId = null,
+            detailsMessageId = detailsMsg.messageId,
+            baseText = albumBaseText,
+            captionBudget = editBaseBudget,
+            exportKeyboard = exportKeyboard,
+            language = lang,
+            isMediaGroup = true,
+        )
     }
 
     companion object {
         private const val MAX_MEDIA_GROUP_SIZE = 10
         private const val MAX_CAPTION_LENGTH = 1024
-
-        // Pessimistic worst-case short-description length, matching @Max(500) on
-        // DescriptionProperties.CommonSection.maxShortCharacters. Used as the reserved
-        // slice of the caption budget so the final edit never overflows Telegram's 1024 limit.
-        private const val SHORT_MAX_LENGTH = 500
     }
 
     private fun String.toCaption(maxLength: Int): String {
