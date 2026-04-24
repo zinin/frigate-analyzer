@@ -49,9 +49,9 @@ class ClaudePromptBuilder {
 
     private fun languageNameFor(code: String): String =
         when (code.lowercase()) {
-            "ru" -> "in Russian"
+            "ru" -> "Russian"
 
-            "en" -> "in English"
+            "en" -> "English"
 
             // @Pattern на property-уровне уже отсеивает неверные коды.
             // Если сюда пришло что-то другое — это баг конфига/валидации.
