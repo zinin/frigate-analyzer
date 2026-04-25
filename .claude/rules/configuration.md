@@ -143,8 +143,8 @@ Settings under `application.signal-loss` in `application.yaml`. The detector pol
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SIGNAL_LOSS_ENABLED` | true | Master flag. `@ConditionalOnProperty(matchIfMissing=false)` — production has it on by default via `application.yaml`, but missing-property test contexts won't activate the task. |
+| `SIGNAL_LOSS_ENABLED` | true | Master flag. Off when missing — production turns it on via this YAML; tests that omit the property do not activate the task. |
 | `SIGNAL_LOSS_THRESHOLD` | 3m | If `now - lastRecording > THRESHOLD` (strict) the signal is considered lost. |
 | `SIGNAL_LOSS_POLL_INTERVAL` | 30s | Detector tick period. Must be smaller than `SIGNAL_LOSS_THRESHOLD`. |
 | `SIGNAL_LOSS_ACTIVE_WINDOW` | 24h | Window of "active" cameras. **Must be set to at least Frigate's recording retention.** Cameras whose last recording is older are not monitored. |
-| `SIGNAL_LOSS_STARTUP_GRACE` | 5m | After startup, alerts are deferred (state seeded as `SignalLost(notificationSent=false)`). The first tick after grace ends fires any pending late LOSS alert if the gap still holds. |
+| `SIGNAL_LOSS_STARTUP_GRACE` | 5m | After startup, alerts are deferred for this duration. If a camera was already dark at boot, the first tick after grace ends fires a (late) LOSS alert provided the gap still holds. Shorten to surface boot-time outages faster; lengthen if Frigate restarts and you want to avoid spurious LOSS during its own warm-up. |
