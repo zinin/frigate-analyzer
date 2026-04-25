@@ -38,7 +38,7 @@ class TelegramNotificationServiceImpl(
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
         visualizedFrames: List<VisualizedFrameData>,
-        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>?)?,
+        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)?,
     ) {
         if (recording.detectionsCount == 0) {
             logger.debug { "No detections found, skipping notification for ${recording.filePath}" }
@@ -56,9 +56,14 @@ class TelegramNotificationServiceImpl(
         // limit is exceeded, the recording goes out as a plain notification — no placeholder, no
         // second message, no edit job, no Claude call. ObjectProvider is used because the limiter
         // bean only exists when application.ai.description.enabled=true.
+        //
+        // When visualizedFrames is empty, TelegramNotificationSender takes the no-photo branch
+        // and would cancel descriptionHandle anyway. Short-circuiting here avoids a wasted slot
+        // in the rate limiter (defensive against future drift between visualizeFrames and
+        // selectTopFrames filters in the facade).
         val descriptionHandle =
             when {
-                descriptionSupplier == null -> {
+                descriptionSupplier == null || visualizedFrames.isEmpty() -> {
                     null
                 }
 
@@ -75,7 +80,8 @@ class TelegramNotificationServiceImpl(
 
                         else -> {
                             logger.warn {
-                                "AI description rate limit reached, skipping description for recording ${recording.id}"
+                                "AI description rate limit reached, skipping description for recording " +
+                                    "${recording.id} (cam=${recording.camId})"
                             }
                             null
                         }

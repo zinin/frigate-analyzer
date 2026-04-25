@@ -43,6 +43,9 @@ class DescriptionRateLimiter(
             val now = clock.instant()
             val cutoff = now.minus(rateLimit.window)
 
+            // Drop timestamps where timestamp <= cutoff (i.e. !isAfter(cutoff)).
+            // A timestamp exactly at the cutoff (now − window) is treated as OUT of the window —
+            // boundary tests in DescriptionRateLimiterTest pin this contract.
             while (timestamps.isNotEmpty() && !timestamps.first().isAfter(cutoff)) {
                 timestamps.removeFirst()
             }

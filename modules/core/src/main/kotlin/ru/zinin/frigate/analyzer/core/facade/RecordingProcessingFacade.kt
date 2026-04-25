@@ -80,14 +80,15 @@ class RecordingProcessingFacade(
     }
 
     /**
-     * Returns a supplier that lazily kicks off a describe-job. Supplier is null when
-     * the agent is absent (feature disabled / provider mismatch) OR no frames are available.
-     * The supplier itself may still return null if it decides not to start at invocation time.
+     * Returns a supplier that lazily kicks off a describe-job. Returns null when the agent is
+     * absent (feature disabled / provider mismatch) OR no frames with detections are available.
+     * When non-null, the supplier returns a non-null Deferred when invoked — the rate limiter
+     * has already consumed a slot at the call site, and a null return would silently waste it.
      */
     private fun buildDescriptionSupplier(
         recordingId: UUID,
         request: SaveProcessingResultRequest,
-    ): (() -> Deferred<Result<DescriptionResult>>?)? {
+    ): (() -> Deferred<Result<DescriptionResult>>)? {
         val agent = descriptionAgentProvider.getIfAvailable() ?: return null
 
         val common = descriptionProperties.common

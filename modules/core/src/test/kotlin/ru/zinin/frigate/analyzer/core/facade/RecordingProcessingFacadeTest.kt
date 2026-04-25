@@ -146,13 +146,13 @@ class RecordingProcessingFacadeTest {
         return facade to SaveProcessingResultRequest(recordingId = recordingId, frames = framesForRequest)
     }
 
-    private suspend fun captureSupplierDuring(block: suspend () -> Unit): (() -> Deferred<Result<DescriptionResult>>?)? {
-        var captured: (() -> Deferred<Result<DescriptionResult>>?)? = null
+    private suspend fun captureSupplierDuring(block: suspend () -> Unit): (() -> Deferred<Result<DescriptionResult>>)? {
+        var captured: (() -> Deferred<Result<DescriptionResult>>)? = null
         coEvery {
             telegramNotificationService.sendRecordingNotification(any(), any(), any())
         } answers {
             @Suppress("UNCHECKED_CAST")
-            captured = thirdArg<Any?>() as? (() -> Deferred<Result<DescriptionResult>>?)
+            captured = thirdArg<Any?>() as? (() -> Deferred<Result<DescriptionResult>>)
             Unit
         }
         block()

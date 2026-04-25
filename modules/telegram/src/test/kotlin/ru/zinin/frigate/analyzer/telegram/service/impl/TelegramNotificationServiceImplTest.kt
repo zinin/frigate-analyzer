@@ -174,9 +174,9 @@ class TelegramNotificationServiceImplTest {
                 )
             val taskSlot = slot<RecordingNotificationTask>()
             var supplierInvocations = 0
-            val supplier: () -> Deferred<Result<DescriptionResult>>? = {
+            val supplier: () -> Deferred<Result<DescriptionResult>> = {
                 supplierInvocations++
-                null
+                mockk()
             }
 
             val limiter = mockk<DescriptionRateLimiter>()
@@ -206,7 +206,7 @@ class TelegramNotificationServiceImplTest {
             var supplierInvocations = 0
             // Return a real (mock) Deferred so we can assert identity-sharing across recipients.
             val sharedHandle = mockk<Deferred<Result<DescriptionResult>>>()
-            val supplier: () -> Deferred<Result<DescriptionResult>>? = {
+            val supplier: () -> Deferred<Result<DescriptionResult>> = {
                 supplierInvocations++
                 sharedHandle
             }
@@ -273,9 +273,9 @@ class TelegramNotificationServiceImplTest {
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
                 )
             var supplierInvocations = 0
-            val supplier: () -> Deferred<Result<DescriptionResult>>? = {
+            val supplier: () -> Deferred<Result<DescriptionResult>> = {
                 supplierInvocations++
-                null
+                mockk()
             }
 
             every { rateLimiterProvider.getIfAvailable() } returns null
@@ -288,5 +288,32 @@ class TelegramNotificationServiceImplTest {
             service.sendRecordingNotification(recording, visualizedFrames, supplier)
 
             assertEquals(1, supplierInvocations, "supplier must fire when limiter is absent (fail-open)")
+        }
+
+    @Test
+    fun `sendRecordingNotification with empty visualizedFrames skips supplier and rate limiter`() =
+        runTest {
+            // Defensive guard: if facade-side filters ever drift and yield supplier != null while
+            // visualizedFrames is empty, the downstream sender cancels descriptionHandle anyway
+            // (TelegramNotificationSender no-photo branch). Short-circuiting here keeps the slot.
+            val recording = createRecording()
+            val visualizedFrames = emptyList<VisualizedFrameData>()
+            var supplierInvocations = 0
+            val supplier: () -> Deferred<Result<DescriptionResult>> = {
+                supplierInvocations++
+                mockk()
+            }
+
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC"), language = "ru"))
+            val taskSlot = slot<RecordingNotificationTask>()
+            coEvery { notificationQueue.enqueue(capture(taskSlot)) } returns Unit
+
+            service.sendRecordingNotification(recording, visualizedFrames, supplier)
+
+            assertEquals(0, supplierInvocations, "supplier must not fire when visualizedFrames is empty")
+            assertEquals(null, taskSlot.captured.descriptionHandle)
+            verify(exactly = 0) { rateLimiterProvider.getIfAvailable() }
         }
 }
