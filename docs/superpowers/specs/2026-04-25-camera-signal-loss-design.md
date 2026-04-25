@@ -44,8 +44,9 @@ The latency cost of polling vs. event-driven is bounded by `pollInterval` (~30s)
 |---|---|---|
 | `SignalLossMonitorTask` | `core/task/` | Spring `@Scheduled` tick driver; holds in-memory `Map<camId, CameraSignalState>`; detects transitions; calls `TelegramNotificationService` for loss/recovery |
 | `CameraSignalState` (sealed class) | `core/task/` | `Healthy(lastSeenAt)` / `SignalLost(lastSeenAt, notifiedAt)` |
-| `SignalLossProperties` | `core/config/properties/` | Holds `enabled`, `threshold`, `pollInterval`, `activeWindow`, `startupGrace`; validates on construction |
-| `RecordingEntityRepository.findLastRecordingPerCamera(activeSince)` | `service/repository/` | New query: `SELECT cam_id, MAX(record_timestamp) FROM recordings WHERE record_timestamp >= :activeSince AND cam_id IS NOT NULL GROUP BY cam_id` |
+| `SignalLossProperties` | `core/config/properties/` | Holds `enabled`, `threshold`, `pollInterval`, `activeWindow`, `startupGrace`; validates in `@PostConstruct` |
+| `LastRecordingPerCameraDto` | `model/dto/` | New projection DTO: `(camId: String, lastRecordTimestamp: Instant)` — matches the existing `CameraRecordingCountDto` style |
+| `RecordingEntityRepository.findLastRecordingPerCamera(activeSince)` | `service/repository/` | New query returning `List<LastRecordingPerCameraDto>`: `SELECT cam_id, MAX(record_timestamp) FROM recordings WHERE record_timestamp >= :activeSince AND cam_id IS NOT NULL GROUP BY cam_id` |
 | `TelegramNotificationService.sendCameraSignalLost(...)` | `telegram/service/` | New interface method, plus impl + NoOp impl |
 | `TelegramNotificationService.sendCameraSignalRecovered(...)` | `telegram/service/` | New interface method, plus impl + NoOp impl |
 | New `NotificationTask` subtypes | `telegram/queue/` | Carry the loss/recovery payloads through the existing queue |
@@ -140,7 +141,7 @@ For each tick (running every `pollInterval`):
 
 ### Concurrency
 
-Single Spring `@Scheduled(fixedDelay = pollInterval)` worker — at most one tick at a time. The `Map<camId, CameraSignalState>` does not need extra synchronization because all access is from the scheduler's single worker thread. (No external readers — the map is private.)
+`@Scheduled(fixedDelay = pollInterval)` guarantees at-most-one tick at a time (no overlap). However, Spring `TaskScheduler` is backed by a thread pool (`spring.task.scheduling.pool.size`), so consecutive ticks may execute on different threads. The state map therefore lives in a `ConcurrentHashMap<String, CameraSignalState>` to guarantee memory visibility across ticks. No external readers — the map is private to the task.
 
 ## Configuration
 
@@ -166,7 +167,7 @@ application:
 
 ### Validation (in `SignalLossProperties`)
 
-Validate on construction (or `@PostConstruct`); fail fast with clear messages:
+Validate in `@PostConstruct`; fail fast with clear messages:
 
 - `threshold > 0`
 - `pollInterval > 0`
@@ -218,7 +219,7 @@ The new `sendCameraSignalLost` and `sendCameraSignalRecovered` methods build a n
 | Telegram queue full (`Channel.trySend` returned failure) | `logger.warn { "Failed to enqueue signal-loss notification for $camId: queue full" }`. The state transition has already been applied — we will NOT re-attempt on subsequent ticks (the state is now `SignalLost`, the next tick falls into the `(SignalLost, lost)` no-op branch). Trade-off: one notification can be lost under queue pressure, but the detector cannot become a runaway alert source. |
 | `TelegramNotificationService` threw on enqueue | Same as above: log warn, transition stays applied. |
 | Camera deleted from DB between ticks | `cleanup` step removes it on the next tick, no notification. |
-| Conflict at startup (signal-loss=true, telegram=false) | Application fails to start — caught at `@PostConstruct` or via `BeanFactoryPostProcessor`, exception names both env-vars. |
+| Conflict at startup (signal-loss=true, telegram=false) | Application fails to start — checked in `SignalLossMonitorTask.@PostConstruct` (the task is only constructed when `signal-loss.enabled=true`, so detecting `telegram.enabled=false` there is the cleanest single point). Exception names both env-vars. |
 
 ### Logging Levels
 
