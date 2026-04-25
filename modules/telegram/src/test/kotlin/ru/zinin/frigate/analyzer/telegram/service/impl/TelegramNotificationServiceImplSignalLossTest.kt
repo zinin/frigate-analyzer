@@ -7,6 +7,8 @@ import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
+import org.springframework.beans.factory.ObjectProvider
+import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
@@ -34,6 +36,7 @@ class TelegramNotificationServiceImplSignalLossTest {
             every { buildLossMessage(any(), any(), any(), any(), any()) } returns "loss-msg"
             every { buildRecoveryMessage(any(), any(), any()) } returns "recovery-msg"
         }
+    private val rateLimiterProvider = mockk<ObjectProvider<DescriptionRateLimiter>>(relaxed = true)
     private val service =
         TelegramNotificationServiceImpl(
             userService = userService,
@@ -41,6 +44,7 @@ class TelegramNotificationServiceImplSignalLossTest {
             uuidGeneratorHelper = uuid,
             msg = msg,
             signalLossFormatter = formatter,
+            rateLimiterProvider = rateLimiterProvider,
         )
 
     @Test

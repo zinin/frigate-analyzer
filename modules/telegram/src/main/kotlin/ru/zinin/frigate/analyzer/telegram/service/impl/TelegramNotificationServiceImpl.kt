@@ -2,9 +2,11 @@ package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Deferred
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Service
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
@@ -31,6 +33,7 @@ class TelegramNotificationServiceImpl(
     private val uuidGeneratorHelper: UUIDGeneratorHelper,
     private val msg: MessageResolver,
     private val signalLossFormatter: SignalLossMessageFormatter,
+    private val rateLimiterProvider: ObjectProvider<DescriptionRateLimiter>,
 ) : TelegramNotificationService {
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
@@ -49,7 +52,36 @@ class TelegramNotificationServiceImpl(
         }
 
         // Lazy start of describe-job: invoked ONCE, shared across all recipients of the same recording.
-        val descriptionHandle = descriptionSupplier?.invoke()
+        // Rate limiter (when AI description is enabled) gates the invocation: if the sliding-window
+        // limit is exceeded, the recording goes out as a plain notification — no placeholder, no
+        // second message, no edit job, no Claude call. ObjectProvider is used because the limiter
+        // bean only exists when application.ai.description.enabled=true.
+        val descriptionHandle =
+            when {
+                descriptionSupplier == null -> {
+                    null
+                }
+
+                else -> {
+                    val limiter = rateLimiterProvider.getIfAvailable()
+                    when {
+                        limiter == null -> {
+                            descriptionSupplier.invoke()
+                        }
+
+                        limiter.tryAcquire() -> {
+                            descriptionSupplier.invoke()
+                        }
+
+                        else -> {
+                            logger.warn {
+                                "AI description rate limit reached, skipping description for recording ${recording.id}"
+                            }
+                            null
+                        }
+                    }
+                }
+            }
 
         usersWithZones.forEach { userZone ->
             val lang = userZone.language ?: "en"
