@@ -129,18 +129,18 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `APP_AI_DESCRIPTION_ENABLED` | `false` | Master flag for AI description. When `false`, no Claude calls, no placeholders, no edit jobs. |
-| `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Provider implementation. Currently only `claude` is supported. |
-| `APP_AI_DESCRIPTION_LANGUAGE` | `en` | Reply language. `ru` or `en`. |
-| `APP_AI_DESCRIPTION_SHORT_MAX` | `200` | Max characters of the short description (caption suffix). |
-| `APP_AI_DESCRIPTION_DETAILED_MAX` | `1500` | Max characters of the detailed description (expandable blockquote). |
-| `APP_AI_DESCRIPTION_MAX_FRAMES` | `10` | Max frames forwarded to the model per recording. |
-| `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | `30s` | Max wait for a free concurrency slot. |
-| `APP_AI_DESCRIPTION_TIMEOUT` | `60s` | Per-call describe timeout (including internal retries). |
-| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous Claude requests. |
-| `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED` | `true` | Enable sliding-window throttle on AI description invocations. When `false`, every recording with AI enabled gets a description request. |
-| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `10` | Max invocations within the sliding window. Counter increments when a slot is granted; failed Claude calls (transport errors, retries) do not refund the slot. |
-| `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length (Spring Boot `Duration`: `1h`, `30m`, `2h30m`, ...). When the limit is exceeded, the recording goes to Telegram as a plain notification — no caption placeholder, no second reply message, no edit-job, no Claude call. |
+| `APP_AI_DESCRIPTION_ENABLED` | false | Master flag for AI description. When `false`, no Claude calls, no placeholders, no edit jobs. |
+| `APP_AI_DESCRIPTION_PROVIDER` | claude | Provider implementation. Currently only `claude` is supported. |
+| `APP_AI_DESCRIPTION_LANGUAGE` | en | Reply language. `ru` or `en`. |
+| `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (caption suffix). |
+| `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (expandable blockquote). |
+| `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. |
+| `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | 30s | Max wait for a free concurrency slot. |
+| `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). |
+| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous Claude requests. |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED` | true | Enable sliding-window throttle on AI description invocations. When `false`, every recording with AI enabled gets a description request. |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 10 | Max invocations within the sliding window. Counter increments when a slot is granted; failed Claude calls (transport errors, retries) do not refund the slot. |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length (Spring Boot `Duration`: `1h`, `30m`, `2h30m`, ...). When the limit is exceeded, the recording goes to Telegram as a plain notification — no caption placeholder, no second reply message, no edit-job, no Claude call. |
 
 ## Telegram
 
