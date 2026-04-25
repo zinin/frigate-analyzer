@@ -41,6 +41,27 @@ application:
     enabled: false
     bot-token: 123
     owner: username
+  ai:
+    description:
+      enabled: false
+      provider: claude
+      common:
+        language: en
+        short-max-length: 200
+        detailed-max-length: 1500
+        max-frames: 10
+        queue-timeout: 30s
+        timeout: 60s
+        max-concurrent: 2
+      claude:
+        oauth-token: ""
+        model: opus
+        cli-path: ""
+        working-directory: /tmp/frigate-analyzer/
+        proxy:
+          http: ""
+          https: ""
+          no-proxy: ""
   detection-filter:
     enabled: true
     allowed-classes:

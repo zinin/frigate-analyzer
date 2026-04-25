@@ -21,6 +21,7 @@ liquibase = "5.0.2"
 picocli = "4.7.7"
 ktlint-tool = "1.8.0"
 jacoco = "0.8.14"
+spring-ai-claude-code-sdk = "1.0.0"
 
 [libraries]
 # Kotlin & Coroutines
@@ -40,6 +41,7 @@ spring-boot-starter-log4j2 = { module = "org.springframework.boot:spring-boot-st
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
 spring-boot-starter-webclient-test = { module = "org.springframework.boot:spring-boot-starter-webclient-test" }
 spring-boot-starter-webflux-test = { module = "org.springframework.boot:spring-boot-starter-webflux-test" }
+spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure" }
 spring-data-r2dbc = { module = "org.springframework.data:spring-data-r2dbc" }
 
 # Jackson (versions managed by Spring BOM)
@@ -75,6 +77,9 @@ openapi-starter-common = { module = "org.springdoc:springdoc-openapi-starter-com
 # Telegram
 ktgbotapi = { module = "dev.inmo:tgbotapi", version.ref = "ktgbotapi" }
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
+
+# AI agents
+spring-ai-claude-code-sdk = { module = "org.springaicommunity:claude-code-sdk", version.ref = "spring-ai-claude-code-sdk" }
 
 # Testing
 testcontainers-bom = { module = "org.testcontainers:testcontainers-bom", version.ref = "testcontainers" }

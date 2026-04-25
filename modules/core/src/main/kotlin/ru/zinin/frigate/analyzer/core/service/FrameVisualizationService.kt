@@ -15,6 +15,36 @@ class FrameVisualizationService(
     private val visualizationProperties: LocalVisualizationProperties,
 ) {
     /**
+     * Upper bound on frames ever shown to the user in a single notification.
+     * Exposed so siblings that must stay consistent with the visualized set
+     * (e.g. AI-description input) can cap their own limits against it.
+     */
+    val maxFrames: Int get() = visualizationProperties.maxFrames
+
+    /**
+     * Filters and ranks frames by detection quality for visualization/description use.
+     * Ranking: max confidence across the frame's detections, then detection count.
+     * Cap is `min(maxFrames, visualizationProperties.maxFrames)` — this guarantees the returned
+     * subset is always contained in the user-visible media group, so downstream consumers
+     * (e.g. Claude description) never reference frames the user did not receive.
+     */
+    fun selectTopFrames(
+        frames: List<FrameData>,
+        maxFrames: Int = visualizationProperties.maxFrames,
+    ): List<FrameData> {
+        val cap = minOf(maxFrames, visualizationProperties.maxFrames).coerceAtLeast(0)
+        return frames
+            .filter { it.detectResponse?.detections?.isNotEmpty() == true }
+            .sortedWith(
+                compareByDescending<FrameData> { frame ->
+                    frame.detectResponse?.detections?.maxOfOrNull { it.confidence } ?: 0.0
+                }.thenByDescending { frame ->
+                    frame.detectResponse?.detections?.size ?: 0
+                },
+            ).take(cap)
+    }
+
+    /**
      * Visualizes frames with detections.
      * Selects up to maxFrames frames with the highest confidence, then by number of detections.
      *
@@ -27,18 +57,7 @@ class FrameVisualizationService(
         frames: List<FrameData>,
         maxFrames: Int = visualizationProperties.maxFrames,
     ): List<VisualizedFrameData> {
-        val framesWithDetections =
-            frames
-                .filter { it.detectResponse?.detections?.isNotEmpty() == true }
-                .sortedWith(
-                    compareByDescending<FrameData> { frame ->
-                        // First by maximum confidence among all detections in the frame
-                        frame.detectResponse?.detections?.maxOfOrNull { it.confidence } ?: 0.0
-                    }.thenByDescending { frame ->
-                        // Then by number of detections
-                        frame.detectResponse?.detections?.size ?: 0
-                    },
-                ).take(maxFrames)
+        val framesWithDetections = selectTopFrames(frames, maxFrames)
 
         if (framesWithDetections.isEmpty()) {
             logger.debug { "No frames with detections to visualize" }

@@ -1,8 +1,10 @@
 package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.Deferred
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Service
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
@@ -29,6 +31,7 @@ class TelegramNotificationServiceImpl(
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
         visualizedFrames: List<VisualizedFrameData>,
+        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>?)?,
     ) {
         if (recording.detectionsCount == 0) {
             logger.debug { "No detections found, skipping notification for ${recording.filePath}" }
@@ -41,6 +44,9 @@ class TelegramNotificationServiceImpl(
             return
         }
 
+        // Lazy start of describe-job: invoked ONCE, shared across all recipients of the same recording.
+        val descriptionHandle = descriptionSupplier?.invoke()
+
         usersWithZones.forEach { userZone ->
             val lang = userZone.language ?: "en"
             val message = formatRecordingMessage(recording, userZone.zone, lang)
@@ -52,6 +58,7 @@ class TelegramNotificationServiceImpl(
                     visualizedFrames = visualizedFrames,
                     recordingId = recording.id,
                     language = userZone.language,
+                    descriptionHandle = descriptionHandle,
                 )
             notificationQueue.enqueue(task)
         }

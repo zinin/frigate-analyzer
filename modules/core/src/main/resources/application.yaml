@@ -45,6 +45,27 @@ application:
     proxy:
       host: ${TELEGRAM_PROXY_HOST:}
       port: ${TELEGRAM_PROXY_PORT:1080}
+  ai:
+    description:
+      enabled: ${APP_AI_DESCRIPTION_ENABLED:false}
+      provider: ${APP_AI_DESCRIPTION_PROVIDER:claude}
+      common:
+        language: ${APP_AI_DESCRIPTION_LANGUAGE:en}
+        short-max-length: ${APP_AI_DESCRIPTION_SHORT_MAX:200}
+        detailed-max-length: ${APP_AI_DESCRIPTION_DETAILED_MAX:1500}
+        max-frames: ${APP_AI_DESCRIPTION_MAX_FRAMES:10}
+        queue-timeout: ${APP_AI_DESCRIPTION_QUEUE_TIMEOUT:30s}
+        timeout: ${APP_AI_DESCRIPTION_TIMEOUT:60s}
+        max-concurrent: ${APP_AI_DESCRIPTION_MAX_CONCURRENT:2}
+      claude:
+        oauth-token: ${CLAUDE_CODE_OAUTH_TOKEN:}
+        model: ${CLAUDE_MODEL:opus}
+        cli-path: ${CLAUDE_CLI_PATH:}
+        working-directory: ${CLAUDE_WORKING_DIR:${application.temp-folder}}
+        proxy:
+          http: ${CLAUDE_HTTP_PROXY:}
+          https: ${CLAUDE_HTTPS_PROXY:}
+          no-proxy: ${CLAUDE_NO_PROXY:}
   detection-filter:
     enabled: ${DETECTION_FILTER_ENABLED:true}
     allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe}
