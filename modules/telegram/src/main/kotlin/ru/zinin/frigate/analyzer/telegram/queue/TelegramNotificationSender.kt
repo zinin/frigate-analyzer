@@ -38,7 +38,7 @@ class TelegramNotificationSender(
     /**
      * Sends notification task to Telegram with infinite retry on failure.
      *
-     * When [NotificationTask.descriptionHandle] is non-null AND the description beans are
+     * When [RecordingNotificationTask.descriptionHandle] is non-null AND the description beans are
      * present, the initial message carries a placeholder rendered with HTML parse mode;
      * a background edit job (launched via [DescriptionEditJobRunner]) rewrites the caption
      * and details block once the AI call resolves. If the handle is null or the beans are
@@ -48,6 +48,20 @@ class TelegramNotificationSender(
      * CancellationException and the task may not be delivered.
      */
     suspend fun send(task: NotificationTask) {
+        when (task) {
+            is RecordingNotificationTask -> {
+                sendRecording(task)
+            }
+
+            is SimpleTextNotificationTask -> {
+                error(
+                    "SimpleTextNotificationTask not yet supported in Sender (will be added in Task 6)",
+                )
+            }
+        }
+    }
+
+    private suspend fun sendRecording(task: RecordingNotificationTask) {
         val chatIdObj = ChatId(RawChatId(task.chatId))
         val lang = task.language ?: "en"
         val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
@@ -143,7 +157,7 @@ class TelegramNotificationSender(
         exportKeyboard: InlineKeyboardMarkup,
         formatter: DescriptionMessageFormatter?,
         lang: String,
-        task: NotificationTask,
+        task: RecordingNotificationTask,
     ): EditTarget? {
         val photoMsg =
             RetryHelper.retryIndefinitely("Send photo message", task.chatId) {
@@ -186,7 +200,7 @@ class TelegramNotificationSender(
         exportKeyboard: InlineKeyboardMarkup,
         formatter: DescriptionMessageFormatter?,
         lang: String,
-        task: NotificationTask,
+        task: RecordingNotificationTask,
     ): EditTarget? {
         // Only capture the first-album id when description is enabled — the disabled path must
         // not turn the export button into a reply (preserves pre-Task-16 behaviour).

@@ -9,7 +9,7 @@ import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
-import ru.zinin.frigate.analyzer.telegram.queue.NotificationTask
+import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -51,7 +51,7 @@ class TelegramNotificationServiceImpl(
             val lang = userZone.language ?: "en"
             val message = formatRecordingMessage(recording, userZone.zone, lang)
             val task =
-                NotificationTask(
+                RecordingNotificationTask(
                     id = uuidGeneratorHelper.generateV1(),
                     chatId = userZone.chatId,
                     message = message,

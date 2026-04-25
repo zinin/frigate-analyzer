@@ -121,7 +121,7 @@ class TelegramNotificationSenderTest {
     private fun createTask(
         frames: List<VisualizedFrameData> = emptyList(),
         descriptionHandle: Deferred<Result<DescriptionResult>>? = null,
-    ) = NotificationTask(
+    ) = RecordingNotificationTask(
         id = UUID.randomUUID(),
         chatId = 12345L,
         message = "Test notification",
