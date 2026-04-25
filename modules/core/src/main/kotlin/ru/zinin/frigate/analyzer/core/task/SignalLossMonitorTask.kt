@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CancellationException
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.context.annotation.DependsOn
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.SignalLossProperties
@@ -40,6 +41,7 @@ private val logger = KotlinLogging.logger {}
     havingValue = "true",
     matchIfMissing = false,
 )
+@DependsOn("signalLossTelegramGuard")
 class SignalLossMonitorTask(
     private val properties: SignalLossProperties,
     private val repository: RecordingEntityRepository,
