@@ -32,8 +32,12 @@ data class DescriptionProperties(
         val timeout: Duration,
         @field:Min(1) @field:Max(10)
         val maxConcurrent: Int,
+        // Дефолт RateLimit() (enabled=false) нужен для unit-тестов, которые
+        // конструируют CommonSection(...) напрямую без YAML-binding-а — лимитер
+        // при этом «прозрачен» (tryAcquire() всегда true). В production binding
+        // всегда перезаписывает через application.yaml.
         @field:Valid
-        val rateLimit: RateLimit,
+        val rateLimit: RateLimit = RateLimit(),
     ) {
         init {
             require(queueTimeout.toMillis() > 0) { "queue-timeout must be positive" }
