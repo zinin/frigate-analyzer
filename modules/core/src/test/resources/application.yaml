@@ -62,6 +62,13 @@ application:
         model: opus
         cli-path: ""
         working-directory: /tmp/frigate-analyzer/
+        anthropic:
+          auth-token: ""
+          base-url: ""
+          model-override: ""
+          default-opus-model: ""
+          default-sonnet-model: ""
+          default-haiku-model: ""
         proxy:
           http: ""
           https: ""

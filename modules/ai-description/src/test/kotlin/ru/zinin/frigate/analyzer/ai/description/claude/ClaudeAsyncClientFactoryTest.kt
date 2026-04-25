@@ -1,12 +1,12 @@
 package ru.zinin.frigate.analyzer.ai.description.claude
 
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import java.time.Duration
 
 class ClaudeAsyncClientFactoryTest {
     private fun factory(props: ClaudeProperties) = ClaudeAsyncClientFactory(props)

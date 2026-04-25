@@ -17,7 +17,7 @@ data class ClaudeProperties(
     @field:Valid
     val proxy: ProxySection,
     @field:Valid
-    val anthropic: AnthropicSection,
+    val anthropic: AnthropicSection = AnthropicSection(),
 ) {
     data class ProxySection(
         val http: String,
