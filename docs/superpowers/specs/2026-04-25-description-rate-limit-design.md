@@ -137,37 +137,47 @@ val descriptionHandle = descriptionSupplier?.invoke()
 
 // СТАНЕТ:
 val descriptionHandle =
-    if (descriptionSupplier != null && (rateLimiter.getIfAvailable()?.tryAcquire() != false)) {
-        descriptionSupplier.invoke()
-    } else {
-        logger.warn {
-            "AI description rate limit reached, skipping description for recording ${recording.id}"
+    when {
+        descriptionSupplier == null -> null
+        else -> {
+            val limiter = rateLimiterProvider.getIfAvailable()
+            when {
+                limiter == null -> descriptionSupplier.invoke()      // (a) лимитера нет → fail-open
+                limiter.tryAcquire() -> descriptionSupplier.invoke() // (b) слот выдан
+                else -> {                                            // (c) лимит исчерпан
+                    logger.warn {
+                        "AI description rate limit reached, skipping description for recording ${recording.id}"
+                    }
+                    null
+                }
+            }
         }
-        null
     }
 ```
 
-Логика выражения `(rateLimiter.getIfAvailable()?.tryAcquire() != false)`:
-- `getIfAvailable() == null` (AI выключен — бина нет) → `?.tryAcquire()` = `null` → `null != false` = **true** (но `descriptionSupplier == null` в этой же ветке `&&`, поэтому до этого условия не доходим);
-- `tryAcquire() == true` (есть слот) → `true != false` = **true** → запускаем supplier;
-- `tryAcquire() == false` (лимит) → `false != false` = **false** → не запускаем.
-
-WARN-лог пишется только в третьем случае: когда AI включён, был бы вызов,
-но лимитер отказал. Лог делаем здесь (а не в самом `DescriptionRateLimiter`),
-потому что call site знает `recording.id`, а лимитер по принципу SRP не
-должен зависеть от доменных типов уведомления.
+Три ветки внутреннего `when` явно покрывают все случаи:
+- **(a) `limiter == null`** — `DescriptionRateLimiter` бина нет в контексте.
+  В нормальной конфигурации этого быть не должно (бин гейтится тем же
+  `application.ai.description.enabled=true`, что и сам `DescriptionAgent`),
+  но если бин по какой-то причине отсутствует, выбираем fail-open: лучше
+  выпустить описание чем тихо пропустить из-за misconfiguration. WARN не
+  пишется (это не «лимит исчерпан»).
+- **(b) `tryAcquire() == true`** — лимит не достигнут, запускаем supplier.
+- **(c) `tryAcquire() == false`** — лимит достигнут, пишем WARN с
+  `recording.id`, supplier не запускается. Лог делаем здесь (а не в самом
+  `DescriptionRateLimiter`), потому что call site знает `recording.id`, а
+  лимитер по принципу SRP остаётся доменно-независимым.
 
 **Конструктор сервиса:** добавляется `ObjectProvider<DescriptionRateLimiter>`.
 Используем `ObjectProvider` (а не прямой инжект), потому что сервис
 `TelegramNotificationServiceImpl` создаётся при `application.telegram.enabled=true`,
-а лимитер — при `application.ai.description.enabled=true`. Когда AI-описание
-выключено, лимитера в контексте нет, но и `descriptionSupplier` тоже null —
-мы до `tryAcquire()` не дойдём (короткий-circuit `&&`).
+а лимитер — при `application.ai.description.enabled=true`. Это позволяет
+им сосуществовать в любых комбинациях флагов.
 
 ```kotlin
 class TelegramNotificationServiceImpl(
     ...existing deps...,
-    private val rateLimiter: ObjectProvider<DescriptionRateLimiter>,
+    private val rateLimiterProvider: ObjectProvider<DescriptionRateLimiter>,
 )
 ```
 
@@ -223,16 +233,27 @@ data class CommonSection(
 }
 
 data class RateLimit(                     // ← НОВЫЙ data class
-    val enabled: Boolean,
+    val enabled: Boolean = false,
     @field:Min(1) @field:Max(10000)
-    val maxRequests: Int,
-    val window: Duration,
+    val maxRequests: Int = 10,
+    val window: Duration = Duration.ofHours(1),
 ) {
     init {
         require(window.toMillis() > 0) { "rate-limit.window must be positive" }
     }
 }
 ```
+
+**Дефолты в data class:** `enabled = false, maxRequests = 10, window = 1h`.
+Это последний фоллбэк, если `rate-limit` секция в YAML отсутствует
+(например, в тестовых контекстах, не загружающих production-`application.yaml`).
+В production-конфиге YAML переопределяет `enabled` на `true` — см. §4.2.
+
+Зачем это нужно: тесты, которые конструируют `DescriptionProperties.CommonSection(...)`
+напрямую (а не через `@ConfigurationProperties` binder), не должны беспокоиться о
+параметре, никак не относящемся к их сценарию. Дефолтное `enabled = false`
+у `RateLimit` обеспечивает «прозрачное» поведение (`tryAcquire()` всегда
+возвращает `true`).
 
 Валидация: `maxRequests` ограничен сверху 10000 (защита от опечатки —
 больше не имеет смысла для нашего use-case), `window` обязан быть строго
@@ -332,15 +353,16 @@ Clock на каждую фазу теста (`Clock.fixed(...)` immutable).
 Тесты используют unit-стиль (без `@SpringBootTest`), т.к. класс не
 требует контекста.
 
-### 6.2 Интеграционный тест
+### 6.2 Интеграционные тесты в `TelegramNotificationServiceImplTest`
 
-Один тест в стиле существующих `TelegramNotificationServiceImplTest`:
+Четыре теста (стиль существующих `TelegramNotificationServiceImplTest`):
 
 | Сценарий | Setup | Ожидание |
 |---|---|---|
-| Skip при превышении не запускает supplier и не передаёт handle | mock `descriptionSupplier`, mock `rateLimiter.tryAcquire()` returns `false` | `supplier` НЕ вызывается; `RecordingNotificationTask.descriptionHandle == null` |
-| Под лимитом supplier вызывается ровно один раз для всех получателей | mock `tryAcquire()` returns `true`, 3 user-zone | `supplier.invoke()` вызвано 1 раз; во всех 3 task-ах одинаковый handle |
-| AI выключен → rate limiter не запрашивается | Без бина `DescriptionRateLimiter` (моделируем `ObjectProvider.getIfAvailable() == null`) | `descriptionSupplier == null` уже сверху → ветка не активируется; testverify-ит что `getIfAvailable` вызвался 0 или 1 раз без ошибок |
+| **(1) Skip при отказе лимитера** | `descriptionSupplier != null`, `rateLimiter.tryAcquire() == false` | `supplier` НЕ вызывается; `RecordingNotificationTask.descriptionHandle == null`; WARN-лог содержит recordingId |
+| **(2) Один invoke на recording для нескольких получателей** | `tryAcquire() == true`, 3 user-zone | `supplier.invoke()` вызвано **ровно 1 раз**; во всех 3 task-ах **тот же** handle (assert через `===` или distinct().size) |
+| **(3) AI выключен → лимитер не запрашивается** | `descriptionSupplier == null` (имитирует `application.ai.description.enabled=false`) | `rateLimiterProvider.getIfAvailable()` вызвался ноль или один раз без бросков; `descriptionHandle == null`; WARN не пишется |
+| **(4) AI включён, но лимитер не зарегистрирован → fail-open** | `descriptionSupplier != null`, `rateLimiterProvider.getIfAvailable()` returns `null` | `supplier.invoke()` вызывается; `descriptionHandle != null`; WARN не пишется (это не лимит-исчерпан, а отсутствие бина) |
 
 ### 6.3 Smoke-сценарий вручную
 
@@ -359,12 +381,23 @@ Clock на каждую фазу теста (`Clock.fixed(...)` immutable).
 | Файл | Действие | Описание |
 |---|---|---|
 | `modules/ai-description/.../ratelimit/DescriptionRateLimiter.kt` | NEW | Класс выше |
-| `modules/ai-description/.../config/DescriptionProperties.kt` | EDIT | Добавить `RateLimit` data class и поле `rateLimit: RateLimit` в `CommonSection` |
-| `modules/core/src/main/resources/application.yaml` | EDIT | Добавить блок `rate-limit` под `application.ai.description.common` |
-| `modules/telegram/.../TelegramNotificationServiceImpl.kt` | EDIT | Добавить `ObjectProvider<DescriptionRateLimiter>`, обернуть `descriptionSupplier?.invoke()` |
+| `modules/ai-description/.../config/DescriptionProperties.kt` | EDIT | Добавить `RateLimit` data class (с дефолтами `enabled=false, max=10, window=1h`) и поле `rateLimit: RateLimit` в `CommonSection` |
+| `modules/core/src/main/resources/application.yaml` | EDIT | Добавить блок `rate-limit` под `application.ai.description.common` (production: `enabled=true`) |
+| `modules/core/src/test/resources/application.yaml` | EDIT | Добавить тот же блок (тестовые контексты грузят этот YAML; binder ожидает поля даже если `enabled=false`) |
+| `modules/telegram/.../TelegramNotificationServiceImpl.kt` | EDIT | Добавить `ObjectProvider<DescriptionRateLimiter>`, переписать `descriptionSupplier?.invoke()` через `when` |
 | `modules/ai-description/src/test/.../ratelimit/DescriptionRateLimiterTest.kt` | NEW | Unit-тесты по таблице §6.1 |
-| `modules/telegram/src/test/.../TelegramNotificationServiceImplTest.kt` | EDIT | 2 новых теста по §6.2 |
-| `.claude/rules/configuration.md` | EDIT | Документировать новые env-переменные |
+| `modules/ai-description/src/test/.../config/AiDescriptionAutoConfigurationTest.kt` | EDIT | Добавить три новых property values (`rate-limit.enabled/max-requests/window`) в оба `withPropertyValues(...)` блока |
+| `modules/telegram/src/test/.../TelegramNotificationServiceImplTest.kt` | EDIT | 4 новых теста по §6.2; добавить `rateLimiterProvider` mock в setup |
+| `modules/telegram/src/test/.../TelegramNotificationServiceImplSignalLossTest.kt` | EDIT | Добавить `rateLimiterProvider = mockk(relaxed = true)` в именованный конструктор `TelegramNotificationServiceImpl(...)` |
+| `.claude/rules/configuration.md` | EDIT | Добавить секцию `## AI Description` со всеми env-переменными |
+
+**Тесты, которые конструируют `DescriptionProperties.CommonSection(...)` напрямую (без YAML binding):** благодаря дефолтам в `RateLimit` data class
+(`enabled = false, ...`) их **не нужно править** — binding-тесты получат отключённый
+лимитер автоматически. Это:
+- `modules/ai-description/src/test/.../claude/ClaudeDescriptionAgentTest.kt`
+- `modules/ai-description/src/test/.../claude/ClaudeDescriptionAgentIntegrationTest.kt`
+- `modules/ai-description/src/test/.../claude/ClaudeDescriptionAgentValidationTest.kt`
+- `modules/core/src/test/.../facade/RecordingProcessingFacadeTest.kt`
 
 Никаких миграций БД, gradle-зависимостей, новых модулей.
 
@@ -375,6 +408,12 @@ Clock на каждую фазу теста (`Clock.fixed(...)` immutable).
   не оставить пользователей без защиты. Если у кого-то была настройка с
   большим объёмом описаний — поднимут `APP_AI_DESCRIPTION_RATE_LIMIT_MAX`
   явно. WARN-лог при первом срабатывании сразу подскажет переменную.
+- **In-memory лимитер per-instance.** При деплое нескольких реплик каждая
+  реплика держит свой счётчик — суммарный лимит будет умножен на число
+  реплик. Frigate Analyzer обычно single-instance (homelab tool, один
+  Frigate-источник), так что это приемлемо. Если когда-то понадобится
+  multi-replica — нужен distributed limiter (например, Redis), что
+  выходит за рамки этого дизайна.
 - **Spring Boot binding для nested data class.** `RateLimit` — `data class`
   с фиксированными полями (нужны дефолты только в `application.yaml`,
   не в самом классе, т.к. `@ConfigurationProperties` создаёт инстанс через

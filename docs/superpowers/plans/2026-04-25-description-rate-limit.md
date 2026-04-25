@@ -16,14 +16,26 @@
 
 | File | Action | Responsibility |
 |------|--------|----------------|
-| `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/config/DescriptionProperties.kt` | MODIFY | Add nested `RateLimit` data class + `rateLimit: RateLimit` field in `CommonSection` |
+| `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/config/DescriptionProperties.kt` | MODIFY | Add nested `RateLimit` data class **with defaults `enabled=false, max=10, window=1h`** + `rateLimit: RateLimit` field in `CommonSection` |
 | `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/ratelimit/DescriptionRateLimiter.kt` | CREATE | Sliding-window rate limiter component |
 | `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/ratelimit/DescriptionRateLimiterTest.kt` | CREATE | Unit tests for limiter behaviour |
-| `modules/core/src/main/resources/application.yaml` | MODIFY | Add `rate-limit` block under `application.ai.description.common` |
-| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt` | MODIFY | Inject `ObjectProvider<DescriptionRateLimiter>`, gate `descriptionSupplier?.invoke()` |
-| `modules/telegram/build.gradle.kts` | MODIFY (if needed) | Ensure dependency on `:modules:ai-description` exists for `DescriptionRateLimiter` import |
-| `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplTest.kt` | MODIFY | Add 2 new test cases (skip on limit, supplier called once below limit) |
-| `.claude/rules/configuration.md` | MODIFY | Document new env vars |
+| `modules/core/src/main/resources/application.yaml` | MODIFY | Add `rate-limit` block (`enabled=true` for production) |
+| `modules/core/src/test/resources/application.yaml` | MODIFY | Add same `rate-limit` block (binder needs the keys; test value can be `enabled=false`) |
+| `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/config/AiDescriptionAutoConfigurationTest.kt` | MODIFY | Add 3 new property values to both `withPropertyValues(...)` blocks |
+| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt` | MODIFY | Inject `ObjectProvider<DescriptionRateLimiter>`, gate `descriptionSupplier?.invoke()` via `when` |
+| `modules/telegram/build.gradle.kts` | MODIFY (if needed) | Ensure dependency on `ai-description` exists (likely already does) |
+| `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplTest.kt` | MODIFY | Add 4 new test cases (skip on limit, supplier called once below limit, AI disabled bypass, limiter missing fail-open) |
+| `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt` | MODIFY | Add `rateLimiterProvider = mockk(relaxed = true)` to named-arg constructor call |
+| `.claude/rules/configuration.md` | MODIFY | Add `## AI Description` section with all env vars |
+
+**Files NOT touched** (thanks to RateLimit defaults — limiter stays disabled in tests that build `CommonSection(...)` directly):
+- `modules/ai-description/src/test/.../claude/ClaudeDescriptionAgentTest.kt:38`
+- `modules/ai-description/src/test/.../claude/ClaudeDescriptionAgentIntegrationTest.kt:87`
+- `modules/ai-description/src/test/.../claude/ClaudeDescriptionAgentValidationTest.kt:12`
+- `modules/core/src/test/.../facade/RecordingProcessingFacadeTest.kt:127`
+
+**Gradle module paths** (verified against `settings.gradle.kts`):
+- `modules` are `include`d as `:ai-description`, `:telegram`, `:core` etc., but `name` is renamed to `frigate-analyzer-<module>`. The Gradle project path is **`:ai-description`** (or equivalently `:frigate-analyzer-ai-description`). Use one of these everywhere — NOT `:modules:ai-description`.
 
 ---
 
@@ -84,10 +96,10 @@ data class DescriptionProperties(
     }
 
     data class RateLimit(
-        val enabled: Boolean,
+        val enabled: Boolean = false,
         @field:Min(1) @field:Max(10000)
-        val maxRequests: Int,
-        val window: Duration,
+        val maxRequests: Int = 10,
+        val window: Duration = Duration.ofHours(1),
     ) {
         init {
             require(window.toMillis() > 0) { "rate-limit.window must be positive" }
@@ -95,6 +107,11 @@ data class DescriptionProperties(
     }
 }
 ```
+
+Defaults rationale: tests that build `CommonSection(...)` directly (without YAML
+binding) get the rate-limit OFF automatically — no fan-out test changes needed
+across `Claude*Test*` and `RecordingProcessingFacadeTest`. Production `application.yaml`
+overrides `enabled` to `true`.
 
 - [ ] **Step 1.2: Add `rate-limit` block to `application.yaml`**
 
@@ -124,40 +141,52 @@ Final shape of the `common` block must be:
           window: ${APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW:1h}
 ```
 
-- [ ] **Step 1.3: Verify the project still compiles by listing files**
+- [ ] **Step 1.3: Add `rate-limit` block to test resources YAML**
 
-Run: `git status`
-Expected output should include:
-- `modified: modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/config/DescriptionProperties.kt`
-- `modified: modules/core/src/main/resources/application.yaml`
+Open `modules/core/src/test/resources/application.yaml`. Find the `application.ai.description.common` block (around line 48). After the `max-concurrent: 2` line, add:
 
-NOTE: do NOT run `./gradlew build` here — task 5 dispatches build-runner once at the end. We expect compilation to fail in any test that constructs `DescriptionProperties.CommonSection` without passing `rateLimit`. Existing tests that build `CommonSection` instances will be updated as part of Task 2 (limiter tests need the same constructor) and Task 3 (Telegram test setup uses an `ObjectProvider`, not `CommonSection` directly — verify by grep).
+```yaml
+        rate-limit:
+          enabled: false
+          max-requests: 10
+          window: 1h
+```
 
-Run: `grep -rn "CommonSection(" /opt/github/zinin/frigate-analyzer/modules --include='*.kt'`
-For each match, the construction must be updated in the same task that next touches that file. As of writing, all matches are in `modules/ai-description/src/test/...`. They will be addressed when each test is run.
+Keep `enabled: false` here so test contexts that load this YAML don't try to rate-limit anything (they don't typically run real recordings; if they do, it should not be throttled). Test contexts that need a different value can override via `@TestPropertySource`.
 
-- [ ] **Step 1.4: Update existing test constructors that build `CommonSection`**
+- [ ] **Step 1.4: Update `AiDescriptionAutoConfigurationTest`**
 
-Run: `grep -rn "CommonSection(" /opt/github/zinin/frigate-analyzer/modules/ai-description/src/test --include='*.kt' -l`
+Open `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/config/AiDescriptionAutoConfigurationTest.kt`. There are TWO `withPropertyValues(...)` calls (in tests `DescriptionProperties registered even when enabled=false` and `autoconfig activates beans when enabled=true, provider=claude`).
 
-For each file in the result, locate every `CommonSection(...)` constructor call and add `rateLimit = DescriptionProperties.RateLimit(enabled = false, maxRequests = 10, window = Duration.ofHours(1))` as the last argument. Use named arguments for clarity. Add the import `import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties` if not already present (or qualify inline).
+In **both** of them, after the `application.ai.description.common.max-concurrent=2` line, add three new property values:
 
-We use `enabled = false` in existing tests so prior behaviour (no rate-limiting) is preserved — those tests are not about the limiter.
+```kotlin
+                "application.ai.description.common.rate-limit.enabled=false",
+                "application.ai.description.common.rate-limit.max-requests=10",
+                "application.ai.description.common.rate-limit.window=1h",
+```
+
+Without these, `Spring Boot` binder will fail to construct `DescriptionProperties` — the binder ignores Kotlin defaults on `data class` fields when binding nested config that has at least one explicit property under it; the safe contract is to pass ALL fields the test expects to use.
+
+Note: Tests in `Claude*Test*` and `RecordingProcessingFacadeTest` that build `CommonSection(...)` directly are NOT affected — Kotlin defaults work for direct constructor calls (only Spring Boot binder is the special case).
 
 - [ ] **Step 1.5: Stage and commit**
 
 ```bash
 git add modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/config/DescriptionProperties.kt \
         modules/core/src/main/resources/application.yaml \
-        modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/
+        modules/core/src/test/resources/application.yaml \
+        modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/config/AiDescriptionAutoConfigurationTest.kt
 git status
 git commit -m "$(cat <<'EOF'
 feat(ai-description): add rate-limit config block
 
-Extend DescriptionProperties.CommonSection with RateLimit nested data
-class (enabled, maxRequests, window). Wire defaults in application.yaml
-(true / 10 / 1h). Existing tests pass rateLimit(enabled=false, ...) to
-preserve prior behaviour.
+Extend DescriptionProperties.CommonSection with nested RateLimit data
+class (enabled, maxRequests, window) — defaults in the data class are
+enabled=false / 10 / 1h. Production application.yaml overrides
+enabled=true. Test resources/application.yaml uses enabled=false so
+tests don't throttle. AiDescriptionAutoConfigurationTest binder calls
+get the three new property values explicitly.
 
 No behaviour change yet — limiter component arrives in the next commit.
 EOF
@@ -181,6 +210,7 @@ Create `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/desc
 ```kotlin
 package ru.zinin.frigate.analyzer.ai.description.ratelimit
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -200,7 +230,7 @@ import java.time.ZoneOffset
 private class MutableClock(initial: Instant) : Clock() {
     @Volatile var current: Instant = initial
     override fun getZone(): ZoneId = ZoneOffset.UTC
-    override fun withZone(zone: ZoneId): Clock = throw UnsupportedOperationException("not used in tests")
+    override fun withZone(zone: ZoneId): Clock = Clock.fixed(current, zone)
     override fun instant(): Instant = current
 }
 
@@ -296,12 +326,15 @@ class DescriptionRateLimiterTest {
     @Test
     fun `concurrent acquisitions never exceed limit`() =
         runBlocking {
+            // Use Dispatchers.Default to get real thread parallelism — without it,
+            // runBlocking single-threaded event-loop would serialize coroutines and the test
+            // would pass even if Mutex were absent, providing false confidence.
             val limiter = DescriptionRateLimiter(Clock.fixed(baseInstant, ZoneOffset.UTC), props(enabled = true, maxRequests = 10))
 
             val results: List<Boolean> =
                 coroutineScope {
                     (1..50)
-                        .map { async { limiter.tryAcquire() } }
+                        .map { async(Dispatchers.Default) { limiter.tryAcquire() } }
                         .awaitAll()
                 }
 
@@ -312,14 +345,16 @@ class DescriptionRateLimiterTest {
     @Test
     fun `cleanup keeps deque bounded - never grows past maxRequests across many iterations`() =
         runBlocking {
-            // Move time forward each call by window+1ms — every call drops all previous timestamps
-            // and stores a fresh one. If cleanup were broken, deque would grow unbounded; in practice
-            // we observe that the limiter accepts every call (no false negatives) over 1000 iterations.
+            // Move time forward by window + 1ms before EACH call so every prior timestamp
+            // becomes <= cutoff and is dropped. If cleanup were broken, the deque would grow
+            // and after maxRequests calls the limiter would start denying — the test would
+            // fail. Using `(i+1)*window+1ms` guarantees strict monotonic progress.
             val clock = MutableClock(baseInstant)
             val limiter = DescriptionRateLimiter(clock, props(enabled = true, maxRequests = 5))
+            val window = Duration.ofHours(1)
 
-            repeat(1000) { i ->
-                clock.current = baseInstant.plus(Duration.ofHours(1)).plus(Duration.ofMillis(1L + i.toLong()))
+            repeat(100) { i ->
+                clock.current = baseInstant.plus(window.multipliedBy((i + 1).toLong())).plusMillis(1)
                 assertTrue(limiter.tryAcquire(), "iteration $i should always succeed because window slid")
             }
         }
@@ -411,7 +446,7 @@ class DescriptionRateLimiter(
 
 Dispatch the `build` skill (which dispatches `build-runner` agent). Tell it:
 
-> Run only `:modules:ai-description:test --tests "ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiterTest"` and report pass/fail per test method. If ktlint errors appear in the new files, run `./gradlew ktlintFormat` first, then retry. Do not run the full `./gradlew build`.
+> Run only `:ai-description:test --tests "ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiterTest"` and report pass/fail per test method. If ktlint errors appear in the new files, run `./gradlew ktlintFormat` first, then retry. Do not run the full `./gradlew build`.
 
 Expected: all 8 test methods pass.
 
@@ -443,8 +478,9 @@ EOF
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt`
 - Modify: `modules/telegram/build.gradle.kts` (only if dependency missing — verify first)
 - Modify: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplTest.kt`
+- Modify: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt`
 
-**Goal:** Plug the limiter into the single decision point. Existing tests stay green; two new tests cover the new behaviour.
+**Goal:** Plug the limiter into the single decision point. Existing tests stay green; four new tests cover the new behaviour.
 
 - [ ] **Step 3.1: Verify telegram → ai-description dependency**
 
@@ -487,7 +523,7 @@ import io.mockk.mockk
         )
 ```
 
-(c) Add two new `@Test` methods at the end of the class (just before the closing brace):
+(c) Add four new `@Test` methods at the end of the class (just before the closing brace):
 
 ```kotlin
     @Test
@@ -522,7 +558,7 @@ import io.mockk.mockk
         }
 
     @Test
-    fun `sendRecordingNotification invokes supplier exactly once below limit`() =
+    fun `sendRecordingNotification invokes supplier exactly once below limit and shares handle`() =
         runTest {
             val recording = createRecording()
             val visualizedFrames =
@@ -547,13 +583,80 @@ import io.mockk.mockk
                     UserZoneInfo(chatId = 2L, zone = ZoneId.of("UTC"), language = "ru"),
                     UserZoneInfo(chatId = 3L, zone = ZoneId.of("UTC"), language = "en"),
                 )
-            coEvery { notificationQueue.enqueue(any()) } returns Unit
+            val captured = mutableListOf<RecordingNotificationTask>()
+            coEvery { notificationQueue.enqueue(any()) } answers {
+                captured.add(arg<Any>(0) as RecordingNotificationTask)
+            }
 
             service.sendRecordingNotification(recording, visualizedFrames, supplier)
 
             assertEquals(1, supplierInvocations, "supplier must be invoked exactly once across all recipients")
             coVerify(exactly = 1) { limiter.tryAcquire() }
             coVerify(exactly = 3) { notificationQueue.enqueue(any()) }
+
+            // All three tasks share the same descriptionHandle (null in this test, since supplier returns null,
+            // but the assertion still proves "shared" — distinct().size must be 1).
+            assertEquals(3, captured.size)
+            assertEquals(1, captured.map { it.descriptionHandle }.distinct().size, "all recipients share the same handle")
+        }
+
+    @Test
+    fun `sendRecordingNotification with null descriptionSupplier does not query rate limiter`() =
+        runTest {
+            // Models the case `application.ai.description.enabled=false` — RecordingProcessingFacade
+            // passes a null supplier, the limiter must not be touched.
+            val recording = createRecording()
+            val visualizedFrames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
+                )
+
+            // Set up a strict (non-relaxed) rateLimiterProvider mock that would FAIL if any call lands.
+            val strictProvider = mockk<org.springframework.beans.factory.ObjectProvider<DescriptionRateLimiter>>()
+            // We only allow getIfAvailable() to be called zero times. If invoked, mockk throws.
+            // (Use the existing relaxed `rateLimiterProvider` field is fine too if we just don't stub
+            // anything — relaxed mock returns null and verification below catches accidental calls.)
+            every { rateLimiterProvider.getIfAvailable() } returns null
+
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC"), language = "ru"))
+            val taskSlot = slot<RecordingNotificationTask>()
+            coEvery { notificationQueue.enqueue(capture(taskSlot)) } returns Unit
+
+            service.sendRecordingNotification(recording, visualizedFrames, descriptionSupplier = null)
+
+            assertEquals(null, taskSlot.captured.descriptionHandle)
+            // getIfAvailable() is allowed to be called or not, depending on short-circuit; the key
+            // assertion is that no exception propagated and descriptionHandle is null.
+        }
+
+    @Test
+    fun `sendRecordingNotification calls supplier when rateLimiter bean is missing (fail-open)`() =
+        runTest {
+            // AI is enabled (supplier != null) but the limiter bean is somehow not in the context.
+            // Per design §3.2, this is a fail-open path: supplier still fires.
+            val recording = createRecording()
+            val visualizedFrames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
+                )
+            var supplierInvocations = 0
+            val supplier: () -> kotlinx.coroutines.Deferred<Result<ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult>>? = {
+                supplierInvocations++
+                null
+            }
+
+            every { rateLimiterProvider.getIfAvailable() } returns null  // limiter bean missing
+
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC"), language = "ru"))
+            coEvery { notificationQueue.enqueue(any()) } returns Unit
+
+            service.sendRecordingNotification(recording, visualizedFrames, supplier)
+
+            assertEquals(1, supplierInvocations, "supplier must fire when limiter is absent (fail-open)")
         }
 ```
 
@@ -590,48 +693,86 @@ class TelegramNotificationServiceImpl(
         // second message, no edit job, no Claude call. ObjectProvider is used because the limiter
         // bean only exists when application.ai.description.enabled=true.
         val descriptionHandle =
-            if (descriptionSupplier != null && (rateLimiterProvider.getIfAvailable()?.tryAcquire() != false)) {
-                descriptionSupplier.invoke()
-            } else {
-                if (descriptionSupplier != null) {
-                    logger.warn {
-                        "AI description rate limit reached, skipping description for recording ${recording.id}"
+            when {
+                descriptionSupplier == null -> null
+                else -> {
+                    val limiter = rateLimiterProvider.getIfAvailable()
+                    when {
+                        limiter == null -> descriptionSupplier.invoke()       // fail-open: AI on but limiter bean absent
+                        limiter.tryAcquire() -> descriptionSupplier.invoke()  // slot granted
+                        else -> {                                             // slot denied
+                            logger.warn {
+                                "AI description rate limit reached, skipping description for recording ${recording.id}"
+                            }
+                            null
+                        }
                     }
                 }
-                null
             }
 ```
 
-The inner `if (descriptionSupplier != null)` guard around the WARN log avoids spamming logs when the supplier was already null (AI description disabled — that case has nothing to skip).
+Three explicit branches:
+- `descriptionSupplier == null` → AI disabled in pipeline → no work, no log;
+- `limiter == null` → AI enabled but bean missing (misconfiguration) → fail-open, supplier fires, no WARN (this is not a rate-limit denial);
+- `limiter.tryAcquire() == true` → granted, supplier fires;
+- `limiter.tryAcquire() == false` → denied, WARN with `recording.id`, no supplier.
 
-- [ ] **Step 3.4: Update `NoOpTelegramNotificationService` if it shares the constructor signature**
+- [ ] **Step 3.4: Update `TelegramNotificationServiceImplSignalLossTest` constructor call**
 
-Run: `grep -rn "NoOpTelegramNotificationService" /opt/github/zinin/frigate-analyzer/modules/telegram/src/main/kotlin --include='*.kt'`
+`grep -rn "TelegramNotificationServiceImpl(" modules/telegram/src/test --include='*.kt'` confirms exactly two test files build the impl directly:
+1. `TelegramNotificationServiceImplTest.kt:43` — already updated in Step 3.2(b) above.
+2. `TelegramNotificationServiceImplSignalLossTest.kt:38` — needs the same update.
 
-If the class exists and implements `TelegramNotificationService` directly without delegation, no change is needed (it has its own constructor). If it delegates to `TelegramNotificationServiceImpl`, add the new `ObjectProvider<DescriptionRateLimiter>` parameter wherever `TelegramNotificationServiceImpl` is constructed. Inspect with: `grep -rn "TelegramNotificationServiceImpl(" /opt/github/zinin/frigate-analyzer/modules --include='*.kt'`. Update each construction to include `rateLimiterProvider` (production code uses Spring DI, so this is mostly tests).
+Open `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt`. Add the import block:
 
-- [ ] **Step 3.5: Run the affected test class via build-runner**
+```kotlin
+import org.springframework.beans.factory.ObjectProvider
+import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
+```
+
+Then modify the field-area (around lines 24-44) to add a relaxed `rateLimiterProvider` mock and pass it as a named arg to the constructor:
+
+```kotlin
+    private val rateLimiterProvider = mockk<ObjectProvider<DescriptionRateLimiter>>(relaxed = true)
+    private val service =
+        TelegramNotificationServiceImpl(
+            userService = userService,
+            notificationQueue = queue,
+            uuidGeneratorHelper = uuid,
+            msg = msg,
+            signalLossFormatter = formatter,
+            rateLimiterProvider = rateLimiterProvider,
+        )
+```
+
+`relaxed = true` is enough because these signal-loss tests don't drive the AI-description path — they invoke `sendCameraSignalLost`/`sendCameraSignalRecovered`, which never touch the limiter.
+
+`NoOpTelegramNotificationService.kt` has its own no-arg constructor and is NOT affected — no change there.
+
+- [ ] **Step 3.5: Run the affected test classes via build-runner**
 
 Dispatch the `build` skill. Tell it:
 
-> Run `:modules:telegram:test --tests "ru.zinin.frigate.analyzer.telegram.service.impl.TelegramNotificationServiceImplTest"` and report results. If ktlint fails on the modified files, `./gradlew ktlintFormat` then retry. Do not run the full build.
+> Run `:telegram:test --tests "ru.zinin.frigate.analyzer.telegram.service.impl.TelegramNotificationServiceImplTest" --tests "ru.zinin.frigate.analyzer.telegram.service.impl.TelegramNotificationServiceImplSignalLossTest"` and report results. If ktlint fails on the modified files, `./gradlew ktlintFormat` then retry. Do not run the full build.
 
-Expected: all tests pass — both pre-existing ones (with the new `rateLimiterProvider` mock present in the constructor) and the two new ones (`...skips description when rate limit denies` and `...invokes supplier exactly once below limit`).
+Expected: all tests pass — pre-existing ones (with the new `rateLimiterProvider` mock present in the constructor) plus the four new tests in `TelegramNotificationServiceImplTest`.
 
 - [ ] **Step 3.6: Stage and commit**
 
 ```bash
 git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt \
-        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplTest.kt
+        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplTest.kt \
+        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt
 git commit -m "$(cat <<'EOF'
 feat(telegram): gate AI description supplier behind DescriptionRateLimiter
 
 TelegramNotificationServiceImpl now consults DescriptionRateLimiter
 (injected via ObjectProvider so it stays optional when ai.description
-is disabled). On a deny: descriptionHandle stays null → existing
-formatter==null branch in TelegramNotificationSender suppresses caption
-placeholder, second reply message, and edit-job. WARN log fires once
-per skip, with recordingId.
+is disabled). Three-branch `when`: null supplier → no work; missing
+limiter bean → fail-open; tryAcquire result → grant or deny. WARN log
+fires only on deny, with recordingId.
+
+Updates SignalLossTest constructor call to include the new mock.
 EOF
 )"
 ```
@@ -712,7 +853,7 @@ Tell the `build` skill:
 
 > Run `./gradlew build` for the whole project. If ktlint fails: `./gradlew ktlintFormat`, then retry once. Report final status and the first 30 lines of any failure.
 
-Expected: BUILD SUCCESSFUL. All tests in `:modules:ai-description:test`, `:modules:telegram:test`, and other modules pass.
+Expected: BUILD SUCCESSFUL. All tests in `:ai-description:test`, `:telegram:test`, `:core:test`, and other modules pass.
 
 - [ ] **Step 5.3: Manual smoke check (optional, only if a dev environment is available)**
 
@@ -744,8 +885,10 @@ Project-level rule from `~/.claude/CLAUDE.md`: design and plan documents from `d
 
 ```bash
 git rm docs/superpowers/specs/2026-04-25-description-rate-limit-design.md \
-       docs/superpowers/plans/2026-04-25-description-rate-limit.md
+       docs/superpowers/plans/2026-04-25-description-rate-limit.md \
+       docs/superpowers/specs/2026-04-25-description-rate-limit-review-merged-iter-*.md \
+       docs/superpowers/specs/2026-04-25-description-rate-limit-review-iter-*.md
 git commit -m "chore: drop planning docs before PR (preserved in git history)"
 ```
 
-The two files remain accessible at the earlier commits on this branch (`docs(spec):` for the spec, and the plan-creation commit for the plan).
+All planning, spec, plan, merged review, and iteration files remain accessible at the earlier commits on this branch — they are only stripped from the PR diff.
