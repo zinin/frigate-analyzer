@@ -2,11 +2,17 @@ package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.verify
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
@@ -23,6 +29,7 @@ import java.time.ZoneId
 import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class TelegramNotificationServiceImplTest {
@@ -39,8 +46,16 @@ class TelegramNotificationServiceImplTest {
             },
         )
     private val signalLossFormatter = mockk<SignalLossMessageFormatter>(relaxed = true)
+    private val rateLimiterProvider = mockk<ObjectProvider<DescriptionRateLimiter>>(relaxed = true)
     private val service: TelegramNotificationService =
-        TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper, msg, signalLossFormatter)
+        TelegramNotificationServiceImpl(
+            userService,
+            notificationQueue,
+            uuidGeneratorHelper,
+            msg,
+            signalLossFormatter,
+            rateLimiterProvider,
+        )
 
     private val taskId = UUID.randomUUID()
     private val recordingId = UUID.randomUUID()
@@ -147,5 +162,158 @@ class TelegramNotificationServiceImplTest {
             assertEquals(200L, tasks[1].chatId)
             assertEquals("ru", tasks[0].language)
             assertEquals("en", tasks[1].language)
+        }
+
+    @Test
+    fun `sendRecordingNotification skips description when rate limit denies`() =
+        runTest {
+            val recording = createRecording()
+            val visualizedFrames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
+                )
+            val taskSlot = slot<RecordingNotificationTask>()
+            var supplierInvocations = 0
+            val supplier: () -> Deferred<Result<DescriptionResult>> = {
+                supplierInvocations++
+                mockk()
+            }
+
+            val limiter = mockk<DescriptionRateLimiter>()
+            coEvery { limiter.tryAcquire() } returns false
+            every { rateLimiterProvider.getIfAvailable() } returns limiter
+
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC"), language = "ru"))
+            coEvery { notificationQueue.enqueue(capture(taskSlot)) } returns Unit
+
+            service.sendRecordingNotification(recording, visualizedFrames, supplier)
+
+            assertEquals(0, supplierInvocations, "supplier must not be invoked when rate-limit denies")
+            assertEquals(null, taskSlot.captured.descriptionHandle)
+            coVerify(exactly = 1) { limiter.tryAcquire() }
+        }
+
+    @Test
+    fun `sendRecordingNotification invokes supplier exactly once below limit and shares handle`() =
+        runTest {
+            val recording = createRecording()
+            val visualizedFrames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
+                )
+            var supplierInvocations = 0
+            // Return a real (mock) Deferred so we can assert identity-sharing across recipients.
+            val sharedHandle = mockk<Deferred<Result<DescriptionResult>>>()
+            val supplier: () -> Deferred<Result<DescriptionResult>> = {
+                supplierInvocations++
+                sharedHandle
+            }
+
+            val limiter = mockk<DescriptionRateLimiter>()
+            coEvery { limiter.tryAcquire() } returns true
+            every { rateLimiterProvider.getIfAvailable() } returns limiter
+
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(
+                    UserZoneInfo(chatId = 1L, zone = ZoneId.of("UTC"), language = "ru"),
+                    UserZoneInfo(chatId = 2L, zone = ZoneId.of("UTC"), language = "ru"),
+                    UserZoneInfo(chatId = 3L, zone = ZoneId.of("UTC"), language = "en"),
+                )
+            val captured = mutableListOf<RecordingNotificationTask>()
+            coEvery { notificationQueue.enqueue(any()) } answers {
+                captured.add(arg<RecordingNotificationTask>(0))
+            }
+
+            service.sendRecordingNotification(recording, visualizedFrames, supplier)
+
+            assertEquals(1, supplierInvocations, "supplier must be invoked exactly once across all recipients")
+            coVerify(exactly = 1) { limiter.tryAcquire() }
+            coVerify(exactly = 3) { notificationQueue.enqueue(any()) }
+
+            assertEquals(3, captured.size)
+            captured.forEach { task ->
+                assertSame(sharedHandle, task.descriptionHandle, "all recipients must share the same Deferred instance")
+            }
+        }
+
+    @Test
+    fun `sendRecordingNotification with null descriptionSupplier does not query rate limiter`() =
+        runTest {
+            // Models the case `application.ai.description.enabled=false` — RecordingProcessingFacade
+            // passes a null supplier, the limiter must not be touched.
+            val recording = createRecording()
+            val visualizedFrames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
+                )
+
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC"), language = "ru"))
+            val taskSlot = slot<RecordingNotificationTask>()
+            coEvery { notificationQueue.enqueue(capture(taskSlot)) } returns Unit
+
+            service.sendRecordingNotification(recording, visualizedFrames, descriptionSupplier = null)
+
+            assertEquals(null, taskSlot.captured.descriptionHandle)
+            verify(exactly = 0) { rateLimiterProvider.getIfAvailable() }
+        }
+
+    @Test
+    fun `sendRecordingNotification calls supplier when rateLimiter bean is missing (fail-open)`() =
+        runTest {
+            // AI is enabled (supplier != null) but the limiter bean is somehow not in the context.
+            // Per design §3.2, this is a fail-open path: supplier still fires.
+            val recording = createRecording()
+            val visualizedFrames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
+                )
+            var supplierInvocations = 0
+            val supplier: () -> Deferred<Result<DescriptionResult>> = {
+                supplierInvocations++
+                mockk()
+            }
+
+            every { rateLimiterProvider.getIfAvailable() } returns null
+
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC"), language = "ru"))
+            coEvery { notificationQueue.enqueue(any()) } returns Unit
+
+            service.sendRecordingNotification(recording, visualizedFrames, supplier)
+
+            assertEquals(1, supplierInvocations, "supplier must fire when limiter is absent (fail-open)")
+        }
+
+    @Test
+    fun `sendRecordingNotification with empty visualizedFrames skips supplier and rate limiter`() =
+        runTest {
+            // Defensive guard: if facade-side filters ever drift and yield supplier != null while
+            // visualizedFrames is empty, the downstream sender cancels descriptionHandle anyway
+            // (TelegramNotificationSender no-photo branch). Short-circuiting here keeps the slot.
+            val recording = createRecording()
+            val visualizedFrames = emptyList<VisualizedFrameData>()
+            var supplierInvocations = 0
+            val supplier: () -> Deferred<Result<DescriptionResult>> = {
+                supplierInvocations++
+                mockk()
+            }
+
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = chatId, zone = ZoneId.of("UTC"), language = "ru"))
+            val taskSlot = slot<RecordingNotificationTask>()
+            coEvery { notificationQueue.enqueue(capture(taskSlot)) } returns Unit
+
+            service.sendRecordingNotification(recording, visualizedFrames, supplier)
+
+            assertEquals(0, supplierInvocations, "supplier must not fire when visualizedFrames is empty")
+            assertEquals(null, taskSlot.captured.descriptionHandle)
+            verify(exactly = 0) { rateLimiterProvider.getIfAvailable() }
         }
 }

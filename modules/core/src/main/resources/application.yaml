@@ -63,6 +63,10 @@ application:
         queue-timeout: ${APP_AI_DESCRIPTION_QUEUE_TIMEOUT:30s}
         timeout: ${APP_AI_DESCRIPTION_TIMEOUT:60s}
         max-concurrent: ${APP_AI_DESCRIPTION_MAX_CONCURRENT:2}
+        rate-limit:
+          enabled: ${APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED:true}
+          max-requests: ${APP_AI_DESCRIPTION_RATE_LIMIT_MAX:10}
+          window: ${APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW:1h}
       claude:
         oauth-token: ${CLAUDE_CODE_OAUTH_TOKEN:}
         model: ${CLAUDE_MODEL:opus}

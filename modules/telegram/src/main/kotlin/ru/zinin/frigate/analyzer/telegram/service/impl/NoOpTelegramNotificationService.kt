@@ -19,7 +19,7 @@ class NoOpTelegramNotificationService : TelegramNotificationService {
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
         visualizedFrames: List<VisualizedFrameData>,
-        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>?)?,
+        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)?,
     ) {
         logger.debug { "Telegram notifications disabled, skipping notification for recording ${recording.id}" }
     }

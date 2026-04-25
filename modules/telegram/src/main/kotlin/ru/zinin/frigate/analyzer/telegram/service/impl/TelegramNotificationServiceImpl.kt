@@ -2,9 +2,11 @@ package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Deferred
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Service
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
@@ -31,11 +33,12 @@ class TelegramNotificationServiceImpl(
     private val uuidGeneratorHelper: UUIDGeneratorHelper,
     private val msg: MessageResolver,
     private val signalLossFormatter: SignalLossMessageFormatter,
+    private val rateLimiterProvider: ObjectProvider<DescriptionRateLimiter>,
 ) : TelegramNotificationService {
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
         visualizedFrames: List<VisualizedFrameData>,
-        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>?)?,
+        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)?,
     ) {
         if (recording.detectionsCount == 0) {
             logger.debug { "No detections found, skipping notification for ${recording.filePath}" }
@@ -49,7 +52,42 @@ class TelegramNotificationServiceImpl(
         }
 
         // Lazy start of describe-job: invoked ONCE, shared across all recipients of the same recording.
-        val descriptionHandle = descriptionSupplier?.invoke()
+        // Rate limiter (when AI description is enabled) gates the invocation: if the sliding-window
+        // limit is exceeded, the recording goes out as a plain notification — no placeholder, no
+        // second message, no edit job, no Claude call. ObjectProvider is used because the limiter
+        // bean only exists when application.ai.description.enabled=true.
+        //
+        // When visualizedFrames is empty, TelegramNotificationSender takes the no-photo branch
+        // and would cancel descriptionHandle anyway. Short-circuiting here avoids a wasted slot
+        // in the rate limiter (defensive against future drift between visualizeFrames and
+        // selectTopFrames filters in the facade).
+        val descriptionHandle =
+            when {
+                descriptionSupplier == null || visualizedFrames.isEmpty() -> {
+                    null
+                }
+
+                else -> {
+                    val limiter = rateLimiterProvider.getIfAvailable()
+                    when {
+                        limiter == null -> {
+                            descriptionSupplier.invoke()
+                        }
+
+                        limiter.tryAcquire() -> {
+                            descriptionSupplier.invoke()
+                        }
+
+                        else -> {
+                            logger.warn {
+                                "AI description rate limit reached, skipping description for recording " +
+                                    "${recording.id} (cam=${recording.camId})"
+                            }
+                            null
+                        }
+                    }
+                }
+            }
 
         usersWithZones.forEach { userZone ->
             val lang = userZone.language ?: "en"

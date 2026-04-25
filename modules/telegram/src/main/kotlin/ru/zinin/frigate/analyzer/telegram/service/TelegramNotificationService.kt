@@ -16,10 +16,12 @@ interface TelegramNotificationService {
          * confirms at least one subscriber will receive the notification. Otherwise
          * AI tokens would be wasted on recordings with no recipients.
          *
-         * null — feature is disabled or there are no frames (supplier itself may also
-         * return null if it decides not to start at invocation time).
+         * null — feature is disabled or there are no frames. When non-null, the
+         * supplier MUST return a non-null Deferred when invoked: the rate limiter
+         * has already consumed a slot at the call site, and a null return would
+         * silently waste it.
          */
-        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>?)? = null,
+        descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)? = null,
     )
 
     /** Notify all active subscribers that camera [camId] has stopped writing recordings. */
