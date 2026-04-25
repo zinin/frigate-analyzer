@@ -29,6 +29,7 @@ import java.time.ZoneId
 import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class TelegramNotificationServiceImplTest {
@@ -203,9 +204,11 @@ class TelegramNotificationServiceImplTest {
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
                 )
             var supplierInvocations = 0
+            // Return a real (mock) Deferred so we can assert identity-sharing across recipients.
+            val sharedHandle = mockk<Deferred<Result<DescriptionResult>>>()
             val supplier: () -> Deferred<Result<DescriptionResult>>? = {
                 supplierInvocations++
-                null
+                sharedHandle
             }
 
             val limiter = mockk<DescriptionRateLimiter>()
@@ -230,10 +233,10 @@ class TelegramNotificationServiceImplTest {
             coVerify(exactly = 1) { limiter.tryAcquire() }
             coVerify(exactly = 3) { notificationQueue.enqueue(any()) }
 
-            // All three tasks share the same descriptionHandle (null in this test, since supplier returns null,
-            // but the assertion still proves "shared" — distinct().size must be 1).
             assertEquals(3, captured.size)
-            assertEquals(1, captured.map { it.descriptionHandle }.distinct().size, "all recipients share the same handle")
+            captured.forEach { task ->
+                assertSame(sharedHandle, task.descriptionHandle, "all recipients must share the same Deferred instance")
+            }
         }
 
     @Test
@@ -246,8 +249,6 @@ class TelegramNotificationServiceImplTest {
                 listOf(
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
                 )
-
-            every { rateLimiterProvider.getIfAvailable() } returns null
 
             coEvery { uuidGeneratorHelper.generateV1() } returns taskId
             coEvery { userService.getAuthorizedUsersWithZones() } returns

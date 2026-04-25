@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
+import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import java.time.Clock
 import kotlin.test.Test
 
@@ -96,6 +97,36 @@ class AiDescriptionAutoConfigurationTest {
             ).run { ctx ->
                 assert(ctx.getBeansOfType(DescriptionAgent::class.java).isNotEmpty()) {
                     "DescriptionAgent should be registered"
+                }
+            }
+    }
+
+    @Test
+    fun `DescriptionRateLimiter bean registered when ai-description and rate-limit both enabled`() {
+        runner
+            .withPropertyValues(
+                "application.ai.description.enabled=true",
+                "application.ai.description.provider=claude",
+                "application.ai.description.common.language=en",
+                "application.ai.description.common.short-max-length=200",
+                "application.ai.description.common.detailed-max-length=1500",
+                "application.ai.description.common.max-frames=10",
+                "application.ai.description.common.queue-timeout=30s",
+                "application.ai.description.common.timeout=60s",
+                "application.ai.description.common.max-concurrent=2",
+                "application.ai.description.common.rate-limit.enabled=true",
+                "application.ai.description.common.rate-limit.max-requests=10",
+                "application.ai.description.common.rate-limit.window=1h",
+                "application.ai.description.claude.oauth-token=fake",
+                "application.ai.description.claude.model=opus",
+                "application.ai.description.claude.cli-path=",
+                "application.ai.description.claude.working-directory=/tmp",
+                "application.ai.description.claude.proxy.http=",
+                "application.ai.description.claude.proxy.https=",
+                "application.ai.description.claude.proxy.no-proxy=",
+            ).run { ctx ->
+                assert(ctx.getBeansOfType(DescriptionRateLimiter::class.java).isNotEmpty()) {
+                    "DescriptionRateLimiter must be registered when ai-description.enabled=true (regardless of rate-limit.enabled)"
                 }
             }
     }
