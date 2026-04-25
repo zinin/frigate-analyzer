@@ -52,6 +52,7 @@ class ClaudeDescriptionAgentTest {
             cliPath = "",
             workingDirectory = "/tmp",
             proxy = ClaudeProperties.ProxySection("", "", ""),
+            anthropic = ClaudeProperties.AnthropicSection(),
         )
 
     private val promptBuilder = mockk<ClaudePromptBuilder>()
