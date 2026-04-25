@@ -92,6 +92,20 @@ class SignalLossDeciderTest {
     }
 
     @Test
+    fun `SignalLost(sent=false) + healthy gap returns Healthy without Recovery (silent — no orphan recovery)`() {
+        // Critical-bug guard: if the original Loss was never user-visible (suppressed during
+        // startupGrace), the Recovery must also be silent. Otherwise the user receives a "Camera
+        // back online" message without ever seeing a "Camera lost signal" — confusing UX that
+        // would defeat the entire startupGrace deferred-alert design.
+        val prevSeen = now.minusSeconds(600)
+        val maxRec = now.minusSeconds(10)
+        val prev = CameraSignalState.SignalLost(prevSeen, notificationSent = false)
+        val d = decide("cam_a", prev = prev, obs = obs(maxRec), cfg = cfg())
+        assertThat(d.newState).isEqualTo(CameraSignalState.Healthy(maxRec))
+        assertThat(d.event).isNull()
+    }
+
+    @Test
     fun `SignalLost(sent=true) + still lost is no-op without event`() {
         val prev = CameraSignalState.SignalLost(now.minusSeconds(600), notificationSent = true)
         val maxRec = now.minus(threshold).minusSeconds(60)

@@ -34,7 +34,12 @@ class SignalLossMonitorTaskTest {
     private val baseInstant: Instant = Instant.parse("2026-04-25T10:00:00Z")
 
     private fun mutableClockTask(initial: Instant): Pair<SignalLossMonitorTask, MutableClock> {
-        val mutableClock = MutableClock(initial)
+        // The task's `init()` captures `startedAt = clock.instant()`. We always seed `startedAt` at
+        // [baseInstant] and then advance the clock to `initial` AFTER init, so the first tick can
+        // land before, exactly at, or past the grace window depending on caller intent — without
+        // pinning `startedAt` to the same wall-clock value as the first tick (which would always
+        // make `inGrace=true` regardless of `initial`).
+        val mutableClock = MutableClock(baseInstant)
         val task =
             SignalLossMonitorTask(
                 properties = properties,
@@ -42,6 +47,7 @@ class SignalLossMonitorTaskTest {
                 notificationService = notifier,
                 clock = mutableClock,
             ).also { it.init() }
+        mutableClock.advance(Duration.between(baseInstant, initial))
         return task to mutableClock
     }
 

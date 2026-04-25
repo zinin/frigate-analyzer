@@ -120,13 +120,20 @@ fun decide(
         is CameraSignalState.SignalLost -> {
             when {
                 !overThreshold -> {
+                    // Suppress Recovery if the prior Loss was never user-visible (still in grace,
+                    // or grace ended without ever producing a late alert): a "back online" message
+                    // without a preceding "lost signal" is confusing UX. Spec "Restart Behavior" §4.
                     Decision(
                         newState = CameraSignalState.Healthy(obs.maxRecordTs),
                         event =
-                            SignalLossEvent.Recovery(
-                                camId,
-                                Duration.between(prev.lastSeenAt, obs.maxRecordTs),
-                            ),
+                            if (prev.notificationSent) {
+                                SignalLossEvent.Recovery(
+                                    camId,
+                                    Duration.between(prev.lastSeenAt, obs.maxRecordTs),
+                                )
+                            } else {
+                                null
+                            },
                     )
                 }
 
