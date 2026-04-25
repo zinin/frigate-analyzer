@@ -16,10 +16,21 @@ data class ClaudeProperties(
     val workingDirectory: String, // обязателен для SDK 1.0.0
     @field:Valid
     val proxy: ProxySection,
+    @field:Valid
+    val anthropic: AnthropicSection,
 ) {
     data class ProxySection(
         val http: String,
         val https: String,
         val noProxy: String,
+    )
+
+    data class AnthropicSection(
+        val authToken: String = "",
+        val baseUrl: String = "",
+        val modelOverride: String = "",
+        val defaultOpusModel: String = "",
+        val defaultSonnetModel: String = "",
+        val defaultHaikuModel: String = "",
     )
 }
