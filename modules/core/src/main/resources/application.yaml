@@ -45,6 +45,12 @@ application:
     proxy:
       host: ${TELEGRAM_PROXY_HOST:}
       port: ${TELEGRAM_PROXY_PORT:1080}
+  signal-loss:
+    enabled: ${SIGNAL_LOSS_ENABLED:true}
+    threshold: ${SIGNAL_LOSS_THRESHOLD:3m}
+    poll-interval: ${SIGNAL_LOSS_POLL_INTERVAL:30s}
+    active-window: ${SIGNAL_LOSS_ACTIVE_WINDOW:24h}
+    startup-grace: ${SIGNAL_LOSS_STARTUP_GRACE:5m}
   ai:
     description:
       enabled: ${APP_AI_DESCRIPTION_ENABLED:false}
