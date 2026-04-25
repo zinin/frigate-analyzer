@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param
 import org.springframework.stereotype.Repository
 import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.model.dto.CameraStatisticsDto
+import ru.zinin.frigate.analyzer.model.dto.LastRecordingPerCameraDto
 import ru.zinin.frigate.analyzer.model.persistent.RecordingEntity
 import java.time.Instant
 import java.util.UUID
@@ -156,6 +157,21 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         @Param("startInstant") startInstant: Instant,
         @Param("endInstant") endInstant: Instant,
     ): List<CameraRecordingCountDto>
+
+    @Query(
+        """
+        SELECT cam_id AS cam_id,
+               MAX(record_timestamp) AS last_record_timestamp
+        FROM recordings
+        WHERE record_timestamp >= :activeSince
+          AND cam_id IS NOT NULL
+        GROUP BY cam_id
+        ORDER BY cam_id
+        """,
+    )
+    suspend fun findLastRecordingPerCamera(
+        @Param("activeSince") activeSince: Instant,
+    ): List<LastRecordingPerCameraDto>
 
     @Query(
         """

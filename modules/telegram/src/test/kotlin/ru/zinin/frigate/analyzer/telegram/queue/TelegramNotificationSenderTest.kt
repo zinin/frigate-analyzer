@@ -5,6 +5,7 @@ import dev.inmo.tgbotapi.requests.abstracts.Request
 import dev.inmo.tgbotapi.requests.edit.caption.EditChatMessageCaption
 import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
 import dev.inmo.tgbotapi.requests.send.SendTextMessage
+import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
@@ -121,7 +122,7 @@ class TelegramNotificationSenderTest {
     private fun createTask(
         frames: List<VisualizedFrameData> = emptyList(),
         descriptionHandle: Deferred<Result<DescriptionResult>>? = null,
-    ) = NotificationTask(
+    ) = RecordingNotificationTask(
         id = UUID.randomUUID(),
         chatId = 12345L,
         message = "Test notification",
@@ -496,5 +497,32 @@ class TelegramNotificationSenderTest {
                 runner.lastLaunchedJobForTests(),
                 "Empty-frames path must not launch an edit job even with description enabled",
             )
+        }
+
+    @Test
+    fun `send dispatches SimpleTextNotificationTask to bot sendTextMessage`() =
+        runTest {
+            // sendTextMessage is a top-level extension that ultimately calls bot.execute(SendTextMessage(...)),
+            // so we capture the request through bot.execute (matching the existing test convention) and assert
+            // on the resulting SendTextMessage's chatId + text. This also implicitly verifies that no
+            // SendPhoto / sendMediaGroup variant is dispatched (only one execute call, of type SendTextMessage).
+            val task =
+                SimpleTextNotificationTask(
+                    id = UUID.randomUUID(),
+                    chatId = 12345L,
+                    text = "Camera \"front_door\" lost signal",
+                )
+            val capturedRequests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(capturedRequests)) } returns mockk<ContentMessage<TextContent>>(relaxed = true)
+
+            sender.send(task)
+
+            assertEquals(1, capturedRequests.size, "Expected exactly one execute() call, got ${capturedRequests.size}")
+            val request = capturedRequests.single()
+            assertIs<SendTextMessage>(request)
+            assertEquals("Camera \"front_door\" lost signal", request.text)
+            val chatId = request.chatId
+            assertIs<ChatId>(chatId)
+            assertEquals(12345L, chatId.chatId.long)
         }
 }

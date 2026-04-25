@@ -6,9 +6,15 @@ import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import java.time.Instant
 import java.util.UUID
 
-data class NotificationTask(
-    val id: UUID,
-    val chatId: Long,
+sealed interface NotificationTask {
+    val id: UUID
+    val chatId: Long
+    val createdAt: Instant
+}
+
+data class RecordingNotificationTask(
+    override val id: UUID,
+    override val chatId: Long,
     val message: String,
     val visualizedFrames: List<VisualizedFrameData>,
     /** ID of the recording, used for callback data in inline export buttons. */
@@ -22,5 +28,12 @@ data class NotificationTask(
      * null — feature disabled / no frames / no subscribers.
      */
     val descriptionHandle: Deferred<Result<DescriptionResult>>? = null,
-    val createdAt: Instant = Instant.now(),
-)
+    override val createdAt: Instant = Instant.now(),
+) : NotificationTask
+
+data class SimpleTextNotificationTask(
+    override val id: UUID,
+    override val chatId: Long,
+    val text: String,
+    override val createdAt: Instant = Instant.now(),
+) : NotificationTask

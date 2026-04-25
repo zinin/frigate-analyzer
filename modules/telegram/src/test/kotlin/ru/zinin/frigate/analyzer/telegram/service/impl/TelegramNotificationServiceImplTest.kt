@@ -12,7 +12,7 @@ import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
-import ru.zinin.frigate.analyzer.telegram.queue.NotificationTask
+import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -38,8 +38,9 @@ class TelegramNotificationServiceImplTest {
                 setDefaultLocale(Locale.forLanguageTag("en"))
             },
         )
+    private val signalLossFormatter = mockk<SignalLossMessageFormatter>(relaxed = true)
     private val service: TelegramNotificationService =
-        TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper, msg)
+        TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper, msg, signalLossFormatter)
 
     private val taskId = UUID.randomUUID()
     private val recordingId = UUID.randomUUID()
@@ -72,7 +73,7 @@ class TelegramNotificationServiceImplTest {
                 listOf(
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
                 )
-            val taskSlot = slot<NotificationTask>()
+            val taskSlot = slot<RecordingNotificationTask>()
 
             coEvery { uuidGeneratorHelper.generateV1() } returns taskId
             coEvery { userService.getAuthorizedUsersWithZones() } returns
@@ -122,7 +123,7 @@ class TelegramNotificationServiceImplTest {
                 listOf(
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1), detectionsCount = 1),
                 )
-            val tasks = mutableListOf<NotificationTask>()
+            val tasks = mutableListOf<RecordingNotificationTask>()
             val taskId1 = UUID.randomUUID()
             val taskId2 = UUID.randomUUID()
 

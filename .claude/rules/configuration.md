@@ -136,3 +136,15 @@ Settings under `application.records-watcher` in `application.yaml`.
 | `TELEGRAM_PROXY_PORT` | 1080 | SOCKS5 proxy port |
 
 See `.claude/rules/telegram.md` for full Telegram module details.
+
+## Signal Loss Detection
+
+Settings under `application.signal-loss` in `application.yaml`. The detector polls the database for the most recent recording timestamp per camera and notifies Telegram on signal loss / recovery. Active when `SIGNAL_LOSS_ENABLED=true`; requires `TELEGRAM_ENABLED=true` (enforced at startup by `SignalLossTelegramGuard`).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SIGNAL_LOSS_ENABLED` | true | Master flag. Default `true` is set by this YAML — production has the feature on. The bean is gated by `@ConditionalOnProperty(matchIfMissing=false)`, so test contexts that don't load this YAML and leave the property unset keep the feature off (existing integration tests are unaffected). |
+| `SIGNAL_LOSS_THRESHOLD` | 3m | If `now - lastRecording > THRESHOLD` (strict) the signal is considered lost. |
+| `SIGNAL_LOSS_POLL_INTERVAL` | 30s | Detector tick period. Must be smaller than `SIGNAL_LOSS_THRESHOLD`. |
+| `SIGNAL_LOSS_ACTIVE_WINDOW` | 24h | Window of "active" cameras. **Must be set to at least Frigate's recording retention.** Cameras whose last recording is older are not monitored. Validation at startup also enforces `activeWindow > threshold + startupGrace` so a camera lost just before boot does not fall out of the window before the late-alert tick fires. |
+| `SIGNAL_LOSS_STARTUP_GRACE` | 5m | After startup, alerts are deferred for this duration. If a camera was already dark at boot, the first tick after grace ends fires a (late) LOSS alert provided the gap still holds. Shorten to surface boot-time outages faster; lengthen if Frigate restarts and you want to avoid spurious LOSS during its own warm-up. |

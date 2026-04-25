@@ -36,18 +36,45 @@ class TelegramNotificationSender(
     private val editJobRunner: ObjectProvider<DescriptionEditJobRunner>,
 ) {
     /**
-     * Sends notification task to Telegram with infinite retry on failure.
+     * Dispatches a notification to a single recipient. Two branches:
+     * - [RecordingNotificationTask]: full recording-with-frames flow, with optional AI description
+     *   handle that may edit the message after delivery.
+     * - [SimpleTextNotificationTask]: plain localized text message (used by signal-loss / recovery
+     *   alerts). No video, no inline export buttons.
      *
-     * When [NotificationTask.descriptionHandle] is non-null AND the description beans are
-     * present, the initial message carries a placeholder rendered with HTML parse mode;
-     * a background edit job (launched via [DescriptionEditJobRunner]) rewrites the caption
-     * and details block once the AI call resolves. If the handle is null or the beans are
-     * absent, the original plain-text single-send flow is preserved untouched.
+     * For the recording branch: when [RecordingNotificationTask.descriptionHandle] is non-null AND
+     * the description beans are present, the initial message carries a placeholder rendered with
+     * HTML parse mode; a background edit job (launched via [DescriptionEditJobRunner]) rewrites
+     * the caption and details block once the AI call resolves. If the handle is null or the beans
+     * are absent, the original plain-text single-send flow is preserved untouched.
      *
-     * Note: If the calling coroutine is cancelled, this method will propagate
+     * Both branches use [RetryHelper.retryIndefinitely] for per-recipient infinite retry on
+     * transient failures. Note: If the calling coroutine is cancelled, this method will propagate
      * CancellationException and the task may not be delivered.
      */
     suspend fun send(task: NotificationTask) {
+        when (task) {
+            is RecordingNotificationTask -> {
+                sendRecording(task)
+            }
+
+            is SimpleTextNotificationTask -> {
+                sendSimpleText(task)
+            }
+        }
+    }
+
+    private suspend fun sendSimpleText(task: SimpleTextNotificationTask) {
+        val chatIdObj = ChatId(RawChatId(task.chatId))
+        RetryHelper.retryIndefinitely("Send simple text", task.chatId) {
+            bot.sendTextMessage(
+                chatId = chatIdObj,
+                text = task.text,
+            )
+        }
+    }
+
+    private suspend fun sendRecording(task: RecordingNotificationTask) {
         val chatIdObj = ChatId(RawChatId(task.chatId))
         val lang = task.language ?: "en"
         val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
@@ -143,7 +170,7 @@ class TelegramNotificationSender(
         exportKeyboard: InlineKeyboardMarkup,
         formatter: DescriptionMessageFormatter?,
         lang: String,
-        task: NotificationTask,
+        task: RecordingNotificationTask,
     ): EditTarget? {
         val photoMsg =
             RetryHelper.retryIndefinitely("Send photo message", task.chatId) {
@@ -186,7 +213,7 @@ class TelegramNotificationSender(
         exportKeyboard: InlineKeyboardMarkup,
         formatter: DescriptionMessageFormatter?,
         lang: String,
-        task: NotificationTask,
+        task: RecordingNotificationTask,
     ): EditTarget? {
         // Only capture the first-album id when description is enabled — the disabled path must
         // not turn the export button into a reply (preserves pre-Task-16 behaviour).

@@ -8,6 +8,8 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
+import java.time.Duration
+import java.time.Instant
 
 private val logger = KotlinLogging.logger {}
 
@@ -20,5 +22,20 @@ class NoOpTelegramNotificationService : TelegramNotificationService {
         descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>?)?,
     ) {
         logger.debug { "Telegram notifications disabled, skipping notification for recording ${recording.id}" }
+    }
+
+    override suspend fun sendCameraSignalLost(
+        camId: String,
+        lastSeenAt: Instant,
+        now: Instant,
+    ) {
+        logger.debug { "Telegram notifications disabled, skipping signal-loss for camera $camId" }
+    }
+
+    override suspend fun sendCameraSignalRecovered(
+        camId: String,
+        downtime: Duration,
+    ) {
+        logger.debug { "Telegram notifications disabled, skipping signal-recovery for camera $camId" }
     }
 }
