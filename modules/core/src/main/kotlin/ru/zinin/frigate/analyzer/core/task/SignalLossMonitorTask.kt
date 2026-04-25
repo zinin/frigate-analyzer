@@ -108,11 +108,12 @@ class SignalLossMonitorTask(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.warn { "Signal-loss tick failed: ${e.message}" }
+            logger.warn(e) { "Signal-loss tick failed" }
         }
     }
 
     private suspend fun emitLoss(event: SignalLossEvent.Loss) {
+        // Per-emit try/catch keeps the tick's for-loop progressing for other cameras when a single dispatch fails.
         try {
             notificationService.sendCameraSignalLost(event.camId, event.lastSeenAt, Instant.now(clock))
             logger.info {
@@ -121,7 +122,7 @@ class SignalLossMonitorTask(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.warn { "Failed to dispatch signal-loss notification for camera ${event.camId}: ${e.message}" }
+            logger.warn(e) { "Failed to dispatch signal-loss notification for camera ${event.camId}" }
         }
     }
 
@@ -132,7 +133,7 @@ class SignalLossMonitorTask(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.warn { "Failed to dispatch signal-recovery notification for camera ${event.camId}: ${e.message}" }
+            logger.warn(e) { "Failed to dispatch signal-recovery notification for camera ${event.camId}" }
         }
     }
 }
