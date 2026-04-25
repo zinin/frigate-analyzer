@@ -2,6 +2,8 @@ package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import io.mockk.every
 import io.mockk.mockk
+import org.junit.jupiter.api.Assertions.assertAll
+import org.junit.jupiter.api.function.Executable
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import java.time.Duration
 import java.time.Instant
@@ -62,10 +64,18 @@ class SignalLossMessageFormatterTest {
                 86400L to "1 d 0 h",
                 90000L to "1 d 1 h",
             )
-        for ((seconds, expected) in cases) {
-            val result = formatter.formatDuration(Duration.ofSeconds(seconds), language = "en")
-            assertEquals(expected, result, message = "input=${seconds}s")
-        }
+        // assertAll reports every failing row in a single test run rather than stopping at the first.
+        assertAll(
+            cases.map { (seconds, expected) ->
+                Executable {
+                    assertEquals(
+                        expected,
+                        formatter.formatDuration(Duration.ofSeconds(seconds), language = "en"),
+                        "input=${seconds}s",
+                    )
+                }
+            },
+        )
     }
 
     @Test
