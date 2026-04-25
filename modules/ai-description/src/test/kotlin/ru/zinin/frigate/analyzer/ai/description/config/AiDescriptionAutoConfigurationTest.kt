@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
+import java.time.Clock
 import kotlin.test.Test
 
 class AiDescriptionAutoConfigurationTest {
@@ -28,6 +29,11 @@ class AiDescriptionAutoConfigurationTest {
         // This module does not depend on spring-boot-jackson, so we supply a plain mapper here.
         @Bean
         fun objectMapper(): ObjectMapper = ObjectMapper().registerKotlinModule()
+
+        // Clock is provided in production by `:frigate-analyzer-common`'s ClockConfig.
+        // DescriptionRateLimiter (active when enabled=true) requires it via constructor.
+        @Bean
+        fun clock(): Clock = Clock.systemUTC()
     }
 
     @Test
