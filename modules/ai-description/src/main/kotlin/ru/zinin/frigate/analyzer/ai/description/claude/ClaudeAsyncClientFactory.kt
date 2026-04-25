@@ -19,13 +19,15 @@ class ClaudeAsyncClientFactory(
             "At least one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN must be set " +
                 "when application.ai.description.enabled=true"
         }
-        val options =
+        val optionsBuilder =
             CLIOptions
                 .builder()
-                .model(claudeProperties.model)
                 .timeout(workTimeout)
                 .env(buildEnvMap())
-                .build()
+        if (claudeProperties.anthropic.modelOverride.isBlank()) {
+            optionsBuilder.model(claudeProperties.model)
+        }
+        val options = optionsBuilder.build()
 
         // workingDirectory ОБЯЗАТЕЛЕН для SDK 1.0.0 (AsyncSpec#build бросает
         // IllegalArgumentException("workingDirectory is required")).

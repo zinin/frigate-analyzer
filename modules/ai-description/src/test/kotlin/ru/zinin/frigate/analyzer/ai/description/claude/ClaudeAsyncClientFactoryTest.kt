@@ -3,8 +3,10 @@ package ru.zinin.frigate.analyzer.ai.description.claude
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import java.time.Duration
 
 class ClaudeAsyncClientFactoryTest {
     private fun factory(props: ClaudeProperties) = ClaudeAsyncClientFactory(props)
@@ -105,5 +107,22 @@ class ClaudeAsyncClientFactoryTest {
         assertEquals("qwen3.5-plus", env["ANTHROPIC_DEFAULT_OPUS_MODEL"])
         assertEquals("qwen3.5-plus", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
         assertEquals("qwen3.5-plus", env["ANTHROPIC_DEFAULT_HAIKU_MODEL"])
+    }
+
+    @Test
+    fun `create throws when no token configured`() {
+        assertFailsWith<IllegalStateException> {
+            factory(props(token = "", authToken = "")).create(Duration.ofMinutes(2))
+        }
+    }
+
+    @Test
+    fun `create passes validation with only oauth token`() {
+        factory(props(token = "oauth-token", authToken = "")).create(Duration.ofMinutes(2))
+    }
+
+    @Test
+    fun `create passes validation with only anthropic auth token`() {
+        factory(props(token = "", authToken = "sk-sp-xxx")).create(Duration.ofMinutes(2))
     }
 }
