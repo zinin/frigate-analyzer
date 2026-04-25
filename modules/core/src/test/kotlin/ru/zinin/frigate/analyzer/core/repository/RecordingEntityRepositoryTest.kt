@@ -601,4 +601,96 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
     }
 
     // endregion
+
+    // region findLastRecordingPerCamera
+
+    @Test
+    fun `should return max record_timestamp per camera`() {
+        runBlocking {
+            // given
+            val now = Instant.parse("2026-04-25T10:00:00Z")
+            repository.save(
+                createRecordingEntity(filePath = "/recordings/cam_a_1.mp4", camId = "cam_a")
+                    .copy(recordTimestamp = now.minusSeconds(120)),
+            )
+            repository.save(
+                createRecordingEntity(filePath = "/recordings/cam_a_2.mp4", camId = "cam_a")
+                    .copy(recordTimestamp = now.minusSeconds(60)),
+            ) // newest cam_a
+            repository.save(
+                createRecordingEntity(filePath = "/recordings/cam_b_1.mp4", camId = "cam_b")
+                    .copy(recordTimestamp = now.minusSeconds(30)),
+            ) // newest cam_b
+            repository.save(
+                createRecordingEntity(filePath = "/recordings/cam_b_2.mp4", camId = "cam_b")
+                    .copy(recordTimestamp = now.minusSeconds(300)),
+            )
+
+            // when
+            val result = repository.findLastRecordingPerCamera(now.minusSeconds(3600))
+
+            // then
+            assertEquals(2, result.size)
+            val byCamId = result.associateBy { it.camId }
+            assertEquals(now.minusSeconds(60), byCamId["cam_a"]?.lastRecordTimestamp)
+            assertEquals(now.minusSeconds(30), byCamId["cam_b"]?.lastRecordTimestamp)
+        }
+    }
+
+    @Test
+    fun `should exclude recordings with null cam_id from findLastRecordingPerCamera`() {
+        runBlocking {
+            // given
+            val now = Instant.parse("2026-04-25T10:00:00Z")
+            repository.save(
+                createRecordingEntity(filePath = "/recordings/null_cam.mp4", camId = null)
+                    .copy(recordTimestamp = now.minusSeconds(60)),
+            )
+            repository.save(
+                createRecordingEntity(filePath = "/recordings/cam_a.mp4", camId = "cam_a")
+                    .copy(recordTimestamp = now.minusSeconds(30)),
+            )
+
+            // when
+            val result = repository.findLastRecordingPerCamera(now.minusSeconds(3600))
+
+            // then
+            assertEquals(1, result.size)
+            assertEquals("cam_a", result[0].camId)
+        }
+    }
+
+    @Test
+    fun `should exclude recordings older than activeSince from findLastRecordingPerCamera`() {
+        runBlocking {
+            // given
+            val now = Instant.parse("2026-04-25T10:00:00Z")
+            val activeSince = now.minusSeconds(3600)
+            repository.save(
+                createRecordingEntity(filePath = "/recordings/old.mp4", camId = "old_cam")
+                    .copy(recordTimestamp = activeSince.minusSeconds(1)),
+            )
+            repository.save(
+                createRecordingEntity(filePath = "/recordings/fresh.mp4", camId = "fresh_cam")
+                    .copy(recordTimestamp = activeSince.plusSeconds(1)),
+            )
+
+            // when
+            val result = repository.findLastRecordingPerCamera(activeSince)
+
+            // then
+            assertEquals(1, result.size)
+            assertEquals("fresh_cam", result[0].camId)
+        }
+    }
+
+    @Test
+    fun `should return empty list from findLastRecordingPerCamera when table is empty`() {
+        runBlocking {
+            val result = repository.findLastRecordingPerCamera(Instant.parse("2026-04-25T10:00:00Z"))
+            assertTrue(result.isEmpty())
+        }
+    }
+
+    // endregion
 }
