@@ -122,6 +122,10 @@ class RecordingProcessingFacade(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
+                    // Without this, the exception is swallowed into Result.failure and the user
+                    // sees only the localized "Описание недоступно" fallback in Telegram with
+                    // nothing in the logs explaining why — making AI failures invisible to ops.
+                    logger.warn(e) { "AI description failed for recording $recordingId; users will see fallback" }
                     Result.failure(e)
                 }
             }
