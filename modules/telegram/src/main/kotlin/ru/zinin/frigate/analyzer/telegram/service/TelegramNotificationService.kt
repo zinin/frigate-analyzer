@@ -4,6 +4,8 @@ import kotlinx.coroutines.Deferred
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
+import java.time.Duration
+import java.time.Instant
 
 interface TelegramNotificationService {
     suspend fun sendRecordingNotification(
@@ -18,5 +20,18 @@ interface TelegramNotificationService {
          * return null if it decides not to start at invocation time).
          */
         descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>?)? = null,
+    )
+
+    /** Notify all active subscribers that camera [camId] has stopped writing recordings. */
+    suspend fun sendCameraSignalLost(
+        camId: String,
+        lastSeenAt: Instant,
+        now: Instant,
+    )
+
+    /** Notify all active subscribers that camera [camId] is writing recordings again. */
+    suspend fun sendCameraSignalRecovered(
+        camId: String,
+        downtime: Duration,
     )
 }

@@ -10,9 +10,12 @@ import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
+import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import java.time.Duration
+import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
@@ -27,6 +30,7 @@ class TelegramNotificationServiceImpl(
     private val notificationQueue: TelegramNotificationQueue,
     private val uuidGeneratorHelper: UUIDGeneratorHelper,
     private val msg: MessageResolver,
+    private val signalLossFormatter: SignalLossMessageFormatter,
 ) : TelegramNotificationService {
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
@@ -104,5 +108,64 @@ class TelegramNotificationServiceImpl(
             appendLine(msg.get("notification.recording.timestamp", language, recordTimestampFormatted))
             appendLine(msg.get("notification.recording.processed", language, timestampFormatted))
         }
+    }
+
+    override suspend fun sendCameraSignalLost(
+        camId: String,
+        lastSeenAt: Instant,
+        now: Instant,
+    ) {
+        val usersWithZones = userService.getAuthorizedUsersWithZones()
+        if (usersWithZones.isEmpty()) {
+            logger.debug { "No active subscribers for signal-loss alert (cam=$camId)" }
+            return
+        }
+        usersWithZones.forEach { userZone ->
+            val lang = userZone.language ?: "en"
+            val text =
+                signalLossFormatter.buildLossMessage(
+                    camId = camId,
+                    lastSeenAt = lastSeenAt,
+                    now = now,
+                    zone = userZone.zone,
+                    language = lang,
+                )
+            notificationQueue.enqueue(
+                SimpleTextNotificationTask(
+                    id = uuidGeneratorHelper.generateV1(),
+                    chatId = userZone.chatId,
+                    text = text,
+                ),
+            )
+        }
+        logger.info { "Enqueued signal-loss alert for camera $camId to ${usersWithZones.size} recipients" }
+    }
+
+    override suspend fun sendCameraSignalRecovered(
+        camId: String,
+        downtime: Duration,
+    ) {
+        val usersWithZones = userService.getAuthorizedUsersWithZones()
+        if (usersWithZones.isEmpty()) {
+            logger.debug { "No active subscribers for signal-recovery alert (cam=$camId)" }
+            return
+        }
+        usersWithZones.forEach { userZone ->
+            val lang = userZone.language ?: "en"
+            val text =
+                signalLossFormatter.buildRecoveryMessage(
+                    camId = camId,
+                    downtime = downtime,
+                    language = lang,
+                )
+            notificationQueue.enqueue(
+                SimpleTextNotificationTask(
+                    id = uuidGeneratorHelper.generateV1(),
+                    chatId = userZone.chatId,
+                    text = text,
+                ),
+            )
+        }
+        logger.info { "Enqueued signal-recovery alert for camera $camId to ${usersWithZones.size} recipients" }
     }
 }

@@ -38,8 +38,9 @@ class TelegramNotificationServiceImplTest {
                 setDefaultLocale(Locale.forLanguageTag("en"))
             },
         )
+    private val signalLossFormatter = mockk<SignalLossMessageFormatter>(relaxed = true)
     private val service: TelegramNotificationService =
-        TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper, msg)
+        TelegramNotificationServiceImpl(userService, notificationQueue, uuidGeneratorHelper, msg, signalLossFormatter)
 
     private val taskId = UUID.randomUUID()
     private val recordingId = UUID.randomUUID()

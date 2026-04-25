@@ -54,10 +54,18 @@ class TelegramNotificationSender(
             }
 
             is SimpleTextNotificationTask -> {
-                error(
-                    "SimpleTextNotificationTask not yet supported in Sender (will be added in Task 6)",
-                )
+                sendSimpleText(task)
             }
+        }
+    }
+
+    private suspend fun sendSimpleText(task: SimpleTextNotificationTask) {
+        val chatIdObj = ChatId(RawChatId(task.chatId))
+        RetryHelper.retryIndefinitely("Send simple text", task.chatId) {
+            bot.sendTextMessage(
+                chatId = chatIdObj,
+                text = task.text,
+            )
         }
     }
 
