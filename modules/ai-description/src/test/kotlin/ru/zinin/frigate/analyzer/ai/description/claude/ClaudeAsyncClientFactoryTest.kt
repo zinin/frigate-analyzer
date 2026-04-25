@@ -27,14 +27,15 @@ class ClaudeAsyncClientFactoryTest {
         cliPath = "",
         workingDirectory = "/tmp/frigate-analyzer",
         proxy = ClaudeProperties.ProxySection(http, https, noProxy),
-        anthropic = ClaudeProperties.AnthropicSection(
-            authToken = authToken,
-            baseUrl = baseUrl,
-            modelOverride = modelOverride,
-            defaultOpusModel = defaultOpusModel,
-            defaultSonnetModel = defaultSonnetModel,
-            defaultHaikuModel = defaultHaikuModel,
-        ),
+        anthropic =
+            ClaudeProperties.AnthropicSection(
+                authToken = authToken,
+                baseUrl = baseUrl,
+                modelOverride = modelOverride,
+                defaultOpusModel = defaultOpusModel,
+                defaultSonnetModel = defaultSonnetModel,
+                defaultHaikuModel = defaultHaikuModel,
+            ),
     )
 
     @Test
