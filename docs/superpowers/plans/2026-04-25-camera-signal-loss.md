@@ -4,7 +4,15 @@
 
 **Goal:** Add a polling-based detector that notifies Telegram subscribers when a Frigate camera stops writing recordings (signal loss) and when it resumes (recovery).
 
-**Architecture:** A Spring `@Scheduled` task wakes every `pollInterval` (default 30s), queries `MAX(record_timestamp) per cam_id` from the `recordings` table for cameras active in the last 24h, and runs each through an in-memory state machine (`Healthy` ↔ `SignalLost`). State transitions enqueue text-only notifications via the existing `TelegramNotificationQueue`. State is in-memory; restart safety comes from a `startupGrace` window during which alerts are suppressed.
+**Architecture:** A Spring `@Scheduled` task with a `suspend fun tick()` (Spring 6.1+ supports suspend in `@Scheduled`, no `runBlocking` required) wakes every `pollInterval` (default 30s), queries `MAX(record_timestamp) per cam_id` from the `recordings` table for cameras active in the last 24h, and runs each through a pure `decide()` state-machine function (`Healthy` ↔ `SignalLost`, with `notificationSent` flag for late-alert flow). State transitions enqueue text-only notifications via the existing `TelegramNotificationQueue` (suspend backpressure). State is in-memory; restart safety comes from a `startupGrace` window during which alerts are deferred (state seeded as `SignalLost(notificationSent=false)`); a late LOSS alert fires on the first tick after grace ends.
+
+**IMPORTANT — review feedback applied:** Iter-1 review consolidated several decisions into this plan; if you read an earlier draft, note these changes:
+- `tick()` is `suspend fun` (no `runBlocking` anywhere).
+- Cleanup keeps `SignalLost` entries (only `Healthy` are removed).
+- Conflict-fail check lives in a separate `SignalLossTelegramGuard` (mirrors `AiDescriptionTelegramGuard`).
+- `@ConditionalOnProperty(matchIfMissing = false)` (default `true` in `application.yaml`, but missing-property contexts don't activate).
+- `decide()` is a pure function for testability without mocks.
+- `NotificationTask` sealed interface refactor includes an explicit audit step.
 
 **Tech Stack:** Kotlin 2.3.10, Spring Boot 4.0.3, Coroutines, R2DBC/PostgreSQL, JUnit 5, MockK, Testcontainers.
 
@@ -33,12 +41,17 @@
 | Modify | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/TelegramNotificationService.kt` | Add 2 new interface methods |
 | Modify | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/NoOpTelegramNotificationService.kt` | No-op implementations |
 | Create | `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt` | Tests for new methods |
-| Create | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/CameraSignalState.kt` | Sealed state class |
-| Create | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTask.kt` | Main scheduled task |
-| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTaskTest.kt` | Parameterized state-machine + behavior tests |
-| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossConfigConflictIntegrationTest.kt` | `@SpringBootTest` conflict-fail test |
+| Create | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/CameraSignalState.kt` | Sealed state class with `notificationSent` flag |
+| Create | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDecider.kt` | Pure `decide()` function: `(prev, observation, config) -> Decision(newState, event?)` |
+| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDeciderTest.kt` | Parameterized table-driven tests for every row of the decision table |
+| Create | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTask.kt` | Main scheduled task: `suspend fun tick()`, holds state map, calls `decide()` and `TelegramNotificationService` |
+| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTaskTest.kt` | Behavior/integration tests: cleanup, grace, late-alert, repo throws, cancellation, skew |
+| Create | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/config/SignalLossTelegramGuard.kt` | `@Component` mirroring `AiDescriptionTelegramGuard`: throws `IllegalStateException` if `signal-loss.enabled=true && telegram.enabled=false` |
+| Create | `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/config/SignalLossTelegramGuardTest.kt` | Unit tests for the guard |
+| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossConfigConflictIntegrationTest.kt` | `@SpringBootTest` conflict-fail test (signal-loss=true + telegram=false → context fails) |
+| Modify | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/FrigateAnalyzerApplication.kt` | Add `SignalLossProperties::class` to `@EnableConfigurationProperties` (verify file location first) |
 | Modify | `modules/core/src/main/resources/application.yaml` | New `application.signal-loss` block |
-| Modify | `.claude/rules/configuration.md` | Document new env-vars |
+| Modify | `.claude/rules/configuration.md` | Document new env-vars (incl. `SIGNAL_LOSS_ACTIVE_WINDOW >= Frigate retention` guidance) |
 
 ---
 
@@ -51,14 +64,19 @@
 
 - [ ] **Step 1: Create the projection DTO**
 
+Look at the existing `CameraRecordingCountDto` first to confirm the `@Column` annotation style — mirror it exactly.
+
 ```kotlin
 // modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/LastRecordingPerCameraDto.kt
 package ru.zinin.frigate.analyzer.model.dto
 
+import org.springframework.data.relational.core.mapping.Column
 import java.time.Instant
 
 data class LastRecordingPerCameraDto(
+    @Column("cam_id")
     val camId: String,
+    @Column("last_record_timestamp")
     val lastRecordTimestamp: Instant,
 )
 ```
@@ -150,8 +168,8 @@ Add to `RecordingEntityRepository.kt` (place near `findCamerasWithRecordings`):
 ```kotlin
 @Query(
     """
-    SELECT cam_id as cam_id,
-           MAX(record_timestamp) as last_record_timestamp
+    SELECT cam_id AS cam_id,
+           MAX(record_timestamp) AS last_record_timestamp
     FROM recordings
     WHERE record_timestamp >= :activeSince
       AND cam_id IS NOT NULL
@@ -162,6 +180,10 @@ Add to `RecordingEntityRepository.kt` (place near `findCamerasWithRecordings`):
 suspend fun findLastRecordingPerCamera(
     @Param("activeSince") activeSince: Instant,
 ): List<LastRecordingPerCameraDto>
+
+// Note (per iter-1 review): existing idx_recordings_record_timestamp covers the WHERE range scan.
+// No new index migration is needed. Composite (cam_id, record_timestamp DESC) is deferred until
+// measured to be necessary at scale (50+ cameras).
 ```
 
 Add the import: `import ru.zinin.frigate.analyzer.model.dto.LastRecordingPerCameraDto`.
@@ -214,14 +236,14 @@ class SignalLossPropertiesTest {
             activeWindow = Duration.ofHours(24),
             startupGrace = Duration.ofMinutes(5),
         )
-        props.validate()  // no exception
+        props.validateCrossField()  // no exception
         assertThat(props.threshold).isEqualTo(Duration.ofMinutes(3))
     }
 
     @ParameterizedTest
     @MethodSource("invalidConfigs")
     fun `invalid properties fail validation`(invalid: InvalidCase) {
-        assertThatThrownBy { invalid.props.validate() }
+        assertThatThrownBy { invalid.props.validateCrossField() }
             .isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining(invalid.expectedFragment)
     }
@@ -281,22 +303,30 @@ Expected: compile error on `SignalLossProperties` (class does not yet exist).
 
 - [ ] **Step 3: Create the properties class**
 
+Style mirror: read `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/config/TelegramProperties.kt` first to see how `@Validated` + `@field:NotBlank/@field:Min` are applied. Apply the same per-field annotations here, plus a `@PostConstruct` for cross-field invariants (Bean Validation cannot express `pollInterval < threshold` concisely).
+
 ```kotlin
 // modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/properties/SignalLossProperties.kt
 package ru.zinin.frigate.analyzer.core.config.properties
 
+import jakarta.annotation.PostConstruct
+import jakarta.validation.constraints.NotNull
+import jakarta.validation.constraints.PositiveOrZero
 import org.springframework.boot.context.properties.ConfigurationProperties
+import org.springframework.validation.annotation.Validated
 import java.time.Duration
 
+@Validated
 @ConfigurationProperties(prefix = "application.signal-loss")
 data class SignalLossProperties(
-    val enabled: Boolean = true,
-    val threshold: Duration = Duration.ofMinutes(3),
-    val pollInterval: Duration = Duration.ofSeconds(30),
-    val activeWindow: Duration = Duration.ofHours(24),
-    val startupGrace: Duration = Duration.ofMinutes(5),
+    @field:NotNull val enabled: Boolean = true,
+    @field:NotNull val threshold: Duration = Duration.ofMinutes(3),
+    @field:NotNull val pollInterval: Duration = Duration.ofSeconds(30),
+    @field:NotNull val activeWindow: Duration = Duration.ofHours(24),
+    @field:NotNull @field:PositiveOrZero val startupGrace: Duration = Duration.ofMinutes(5),
 ) {
-    fun validate() {
+    @PostConstruct
+    fun validateCrossField() {
         check(!threshold.isZero && !threshold.isNegative) {
             "application.signal-loss.threshold must be positive, got $threshold"
         }
@@ -309,12 +339,11 @@ data class SignalLossProperties(
         check(activeWindow > threshold) {
             "application.signal-loss.activeWindow ($activeWindow) must be greater than threshold ($threshold)"
         }
-        check(!startupGrace.isNegative) {
-            "application.signal-loss.startupGrace must be non-negative, got $startupGrace"
-        }
     }
 }
 ```
+
+Note: `@Positive` on `Duration` works in Spring Boot 3+ but version-fragile. Using `@PositiveOrZero` only for `startupGrace` (the only field where zero is meaningful) and falling back to imperative `check(...)` for the others is the safest path. Adjust if `@Positive` works in this project's stack.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -346,6 +375,26 @@ git commit -m "feat(config): SignalLossProperties with validation"
 - Modify: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/queue/TelegramNotificationSenderTest.kt`
 
 This task is a **type-rename refactor** that must keep all existing tests green. No new behavior. We add the new `SimpleTextNotificationTask` subtype but `Sender` will still throw for it (we add the simple-text branch in Task 6, after we have a use case).
+
+- [ ] **Step 0 (audit, BEFORE editing): enumerate every `NotificationTask` callsite**
+
+Run:
+
+```bash
+grep -rn "NotificationTask" modules/ --include="*.kt" | grep -v "/build/"
+```
+
+Confirm the result matches the expected file list below. If you find additional usages NOT listed (e.g., a serializer, a JSON binding, a reflection helper), stop and ask — the refactor scope may be larger than this task assumes.
+
+Expected callsites (from iter-1 review verification):
+- `modules/telegram/src/main/kotlin/.../queue/NotificationTask.kt` (the type itself)
+- `modules/telegram/src/main/kotlin/.../queue/TelegramNotificationQueue.kt:25,40`
+- `modules/telegram/src/main/kotlin/.../queue/TelegramNotificationSender.kt:41,50,146,189`
+- `modules/telegram/src/main/kotlin/.../service/impl/TelegramNotificationServiceImpl.kt:12,54`
+- `modules/telegram/src/test/kotlin/.../service/impl/TelegramNotificationServiceImplTest.kt:15,68,75,125`
+- `modules/telegram/src/test/kotlin/.../queue/TelegramNotificationSenderTest.kt:124`
+
+If the audit matches, proceed to Step 1. If it doesn't, the refactor scope must be re-evaluated before continuing.
 
 - [ ] **Step 1: Refactor `NotificationTask` into sealed interface**
 
@@ -669,9 +718,11 @@ class SignalLossMessageFormatter(
         zone: ZoneId,
         language: String,
     ): String {
-        val gap = Duration.between(lastSeenAt, now)
+        // Clamp negative gap to zero (clock skew where Frigate's record_timestamp is in the future).
+        val gap = Duration.between(lastSeenAt, now).coerceAtLeast(Duration.ZERO)
+        // Explicit pattern (NOT FormatStyle.MEDIUM) to avoid container-locale surprises.
         val timeFormatter = DateTimeFormatter
-            .ofLocalizedTime(FormatStyle.MEDIUM)
+            .ofPattern(TIME_PATTERN)
             .withLocale(Locale.forLanguageTag(language))
         val lastSeenFormatted = lastSeenAt.atZone(zone).format(timeFormatter)
         val gapFormatted = formatDuration(gap, language)
@@ -698,9 +749,12 @@ class SignalLossMessageFormatter(
         private const val SECONDS_PER_MINUTE = 60L
         private const val SECONDS_PER_HOUR = 3600L
         private const val SECONDS_PER_DAY = 86400L
+        private const val TIME_PATTERN = "HH:mm:ss"
     }
 }
 ```
+
+Note on `formatDuration`: the bucketing already skips zero components implicitly — `< SECONDS_PER_MINUTE` shows seconds only, `< SECONDS_PER_HOUR` shows minutes only, etc. There is no "5 min 0 sec" output by construction. The `0 sec` case (downtime exactly 0) is rare/degenerate but the test below documents the behavior. If desired later, suppress it with a `< 1` check returning a "<1 sec" literal — out of scope for this iteration.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -743,7 +797,7 @@ import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
-import ru.zinin.frigate.analyzer.model.dto.UserZoneDto
+import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
@@ -775,8 +829,8 @@ class TelegramNotificationServiceImplSignalLossTest {
     @Test
     fun `sendCameraSignalLost enqueues one SimpleTextNotificationTask per active user`() = runBlocking {
         coEvery { userService.getAuthorizedUsersWithZones() } returns listOf(
-            UserZoneDto(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"),
-            UserZoneDto(chatId = 200L, zone = ZoneId.of("Europe/Moscow"), language = "ru"),
+            UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"),
+            UserZoneInfo(chatId = 200L, zone = ZoneId.of("Europe/Moscow"), language = "ru"),
         )
         val tasks = mutableListOf<SimpleTextNotificationTask>()
         coEvery { queue.enqueue(capture(tasks as MutableList<Any>)) } answers { /* unused */ }
@@ -810,7 +864,7 @@ class TelegramNotificationServiceImplSignalLossTest {
     @Test
     fun `sendCameraSignalRecovered enqueues one SimpleTextNotificationTask per active user`() = runBlocking {
         coEvery { userService.getAuthorizedUsersWithZones() } returns listOf(
-            UserZoneDto(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"),
+            UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"),
         )
         val tasks = mutableListOf<SimpleTextNotificationTask>()
         coEvery { queue.enqueue(capture(tasks as MutableList<Any>)) } answers { /* unused */ }
@@ -827,7 +881,7 @@ class TelegramNotificationServiceImplSignalLossTest {
 }
 ```
 
-Note on `UserZoneDto`: the existing code returns objects with at least `chatId`, `zone`, and `language` fields. If the actual class name or constructor differs, adapt the test (open `TelegramUserService.kt` and `getAuthorizedUsersWithZones()` definition before writing the test). The same caveat applies to all `userZone.X` accessors used in `TelegramNotificationServiceImpl`.
+Note on `UserZoneInfo` (verified by iter-1 review): the actual class is `ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo` (NOT `UserZoneDto` as an earlier draft incorrectly stated) with fields `(chatId: Long, zone: ZoneId, language: String?)`. Open `TelegramUserService.kt` and `getAuthorizedUsersWithZones()` definition before writing the test to reconfirm the constructor signature.
 
 - [ ] **Step 2: Add interface methods**
 
@@ -1042,8 +1096,12 @@ sealed class CameraSignalState {
     data class SignalLost(
         /** Last recording BEFORE the loss — used to compute downtime on recovery. */
         override val lastSeenAt: Instant,
-        /** When we emitted the loss notification. */
-        val notifiedAt: Instant,
+        /**
+         * False during startup grace (deferred alert path). Flipped to true once the
+         * LOSS notification has been dispatched. Used by the late-alert flow:
+         * cameras dead before startup get alerted on the first tick AFTER grace ends.
+         */
+        val notificationSent: Boolean,
     ) : CameraSignalState()
 }
 ```
@@ -1065,19 +1123,273 @@ git commit -m "feat(core): CameraSignalState sealed class for signal-loss detect
 
 ---
 
-### Task 8: `SignalLossMonitorTask` scaffold + state machine + tests
+### Task 8a: Pure `decide()` function + parameterized table-driven tests
+
+The state-machine logic is extracted as a pure function so it can be unit-tested without any mocks, clock injection, or coroutine machinery. This is one of the iter-1 review consolidation decisions.
+
+**Files:**
+- Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDecider.kt`
+- Create: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDeciderTest.kt`
+
+- [ ] **Step 1: Define the data types and pure function**
+
+```kotlin
+// modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDecider.kt
+package ru.zinin.frigate.analyzer.core.task
+
+import io.github.oshai.kotlinlogging.KotlinLogging
+import java.time.Duration
+import java.time.Instant
+
+private val logger = KotlinLogging.logger {}
+
+data class Observation(val maxRecordTs: Instant, val now: Instant)
+
+data class Config(val threshold: Duration, val inGrace: Boolean)
+
+sealed class SignalLossEvent {
+    data class Loss(val camId: String, val lastSeenAt: Instant, val gap: Duration) : SignalLossEvent()
+    data class Recovery(val camId: String, val downtime: Duration) : SignalLossEvent()
+}
+
+data class Decision(val newState: CameraSignalState, val event: SignalLossEvent?)
+
+/**
+ * Pure state-machine decision. No I/O, no mutation, no clock.
+ *
+ * See spec section "decide() Decision Table" for the full transition matrix.
+ */
+fun decide(
+    camId: String,
+    prev: CameraSignalState?,
+    obs: Observation,
+    cfg: Config,
+): Decision {
+    val rawGap = Duration.between(obs.maxRecordTs, obs.now)
+    val gap = if (rawGap.isNegative) {
+        logger.warn { "Clock skew for camera $camId: maxRecordTs=${obs.maxRecordTs} > now=${obs.now}; treating gap as 0" }
+        Duration.ZERO
+    } else {
+        rawGap
+    }
+    val overThreshold = gap > cfg.threshold
+
+    return when {
+        prev == null && !overThreshold -> Decision(
+            newState = CameraSignalState.Healthy(obs.maxRecordTs),
+            event = null,
+        )
+
+        prev == null && overThreshold && cfg.inGrace -> Decision(
+            newState = CameraSignalState.SignalLost(obs.maxRecordTs, notificationSent = false),
+            event = null,
+        )
+
+        prev == null && overThreshold && !cfg.inGrace -> Decision(
+            newState = CameraSignalState.SignalLost(obs.maxRecordTs, notificationSent = true),
+            event = SignalLossEvent.Loss(camId, obs.maxRecordTs, gap),
+        )
+
+        prev is CameraSignalState.Healthy && !overThreshold -> Decision(
+            newState = CameraSignalState.Healthy(obs.maxRecordTs),
+            event = null,
+        )
+
+        prev is CameraSignalState.Healthy && overThreshold && cfg.inGrace -> Decision(
+            newState = CameraSignalState.SignalLost(obs.maxRecordTs, notificationSent = false),
+            event = null,
+        )
+
+        prev is CameraSignalState.Healthy && overThreshold && !cfg.inGrace -> Decision(
+            newState = CameraSignalState.SignalLost(obs.maxRecordTs, notificationSent = true),
+            event = SignalLossEvent.Loss(camId, obs.maxRecordTs, gap),
+        )
+
+        prev is CameraSignalState.SignalLost && !overThreshold -> Decision(
+            newState = CameraSignalState.Healthy(obs.maxRecordTs),
+            event = SignalLossEvent.Recovery(camId, Duration.between(prev.lastSeenAt, obs.maxRecordTs)),
+        )
+
+        prev is CameraSignalState.SignalLost && overThreshold && !prev.notificationSent && !cfg.inGrace -> Decision(
+            // LATE ALERT: deferred during grace, fires on first tick after grace ends
+            newState = CameraSignalState.SignalLost(prev.lastSeenAt, notificationSent = true),
+            event = SignalLossEvent.Loss(camId, prev.lastSeenAt, gap),
+        )
+
+        prev is CameraSignalState.SignalLost && overThreshold && !prev.notificationSent && cfg.inGrace -> Decision(
+            // Still in grace, keep deferred
+            newState = CameraSignalState.SignalLost(prev.lastSeenAt, notificationSent = false),
+            event = null,
+        )
+
+        prev is CameraSignalState.SignalLost && overThreshold && prev.notificationSent -> Decision(
+            // Already notified, no spam
+            newState = prev,
+            event = null,
+        )
+
+        else -> error("Unreachable: prev=$prev, overThreshold=$overThreshold, inGrace=${cfg.inGrace}")
+    }
+}
+```
+
+- [ ] **Step 2: Write parameterized table-driven tests**
+
+```kotlin
+// modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDeciderTest.kt
+package ru.zinin.frigate.analyzer.core.task
+
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.MethodSource
+import java.time.Duration
+import java.time.Instant
+
+class SignalLossDeciderTest {
+    private val now = Instant.parse("2026-04-25T10:00:00Z")
+    private val threshold = Duration.ofMinutes(3)
+
+    private fun cfg(inGrace: Boolean = false) = Config(threshold = threshold, inGrace = inGrace)
+
+    @Test
+    fun `null + healthy gap → Healthy, no event`() {
+        val d = decide("cam_a", prev = null, obs = obs(now.minusSeconds(60)), cfg = cfg())
+        assertThat(d.newState).isEqualTo(CameraSignalState.Healthy(now.minusSeconds(60)))
+        assertThat(d.event).isNull()
+    }
+
+    @Test
+    fun `null + lost gap + in grace → SignalLost(sent=false), no event`() {
+        val maxRec = now.minus(threshold).minusSeconds(30)
+        val d = decide("cam_a", prev = null, obs = obs(maxRec), cfg = cfg(inGrace = true))
+        assertThat(d.newState).isEqualTo(CameraSignalState.SignalLost(maxRec, notificationSent = false))
+        assertThat(d.event).isNull()
+    }
+
+    @Test
+    fun `null + lost gap + not in grace → SignalLost(sent=true), Loss event`() {
+        val maxRec = now.minus(threshold).minusSeconds(30)
+        val d = decide("cam_a", prev = null, obs = obs(maxRec), cfg = cfg(inGrace = false))
+        assertThat(d.newState).isEqualTo(CameraSignalState.SignalLost(maxRec, notificationSent = true))
+        assertThat(d.event).isInstanceOf(SignalLossEvent.Loss::class.java)
+        assertThat((d.event as SignalLossEvent.Loss).lastSeenAt).isEqualTo(maxRec)
+    }
+
+    @Test
+    fun `Healthy + healthy gap → Healthy advanced, no event`() {
+        val prev = CameraSignalState.Healthy(now.minusSeconds(120))
+        val d = decide("cam_a", prev = prev, obs = obs(now.minusSeconds(10)), cfg = cfg())
+        assertThat(d.newState).isEqualTo(CameraSignalState.Healthy(now.minusSeconds(10)))
+        assertThat(d.event).isNull()
+    }
+
+    @Test
+    fun `Healthy + lost gap + not in grace → SignalLost(sent=true) using maxRecordTs, Loss event with maxRecordTs`() {
+        // KEY ASSERTION: lastSeenAt is the fresh maxRecordTs, not the stale prev.lastSeenAt
+        val prevSeen = now.minusSeconds(600)  // 10 min ago
+        val maxRec = now.minus(threshold).minusSeconds(30)  // 3min30s ago — newer than prev
+        val prev = CameraSignalState.Healthy(prevSeen)
+        val d = decide("cam_a", prev = prev, obs = obs(maxRec), cfg = cfg(inGrace = false))
+        assertThat(d.newState).isEqualTo(CameraSignalState.SignalLost(maxRec, notificationSent = true))
+        assertThat((d.event as SignalLossEvent.Loss).lastSeenAt).isEqualTo(maxRec)
+        assertThat((d.event as SignalLossEvent.Loss).lastSeenAt).isNotEqualTo(prevSeen)
+    }
+
+    @Test
+    fun `Healthy + lost gap + in grace → SignalLost(sent=false), no event`() {
+        val prev = CameraSignalState.Healthy(now.minusSeconds(600))
+        val maxRec = now.minus(threshold).minusSeconds(30)
+        val d = decide("cam_a", prev = prev, obs = obs(maxRec), cfg = cfg(inGrace = true))
+        assertThat(d.newState).isEqualTo(CameraSignalState.SignalLost(maxRec, notificationSent = false))
+        assertThat(d.event).isNull()
+    }
+
+    @Test
+    fun `SignalLost(sent=true) + healthy gap → Healthy, Recovery event with downtime from prev_lastSeenAt`() {
+        val prevSeen = now.minusSeconds(600)
+        val maxRec = now.minusSeconds(10)
+        val prev = CameraSignalState.SignalLost(prevSeen, notificationSent = true)
+        val d = decide("cam_a", prev = prev, obs = obs(maxRec), cfg = cfg())
+        assertThat(d.newState).isEqualTo(CameraSignalState.Healthy(maxRec))
+        assertThat((d.event as SignalLossEvent.Recovery).downtime)
+            .isEqualTo(Duration.between(prevSeen, maxRec))
+    }
+
+    @Test
+    fun `SignalLost(sent=true) + lost gap → no-op, no event`() {
+        val prev = CameraSignalState.SignalLost(now.minusSeconds(600), notificationSent = true)
+        val maxRec = now.minus(threshold).minusSeconds(60)
+        val d = decide("cam_a", prev = prev, obs = obs(maxRec), cfg = cfg())
+        assertThat(d.newState).isEqualTo(prev)  // unchanged
+        assertThat(d.event).isNull()
+    }
+
+    @Test
+    fun `LATE ALERT: SignalLost(sent=false) + lost gap + not in grace → SignalLost(sent=true) + Loss`() {
+        val prevSeen = now.minusSeconds(600)
+        val prev = CameraSignalState.SignalLost(prevSeen, notificationSent = false)
+        val maxRec = now.minus(threshold).minusSeconds(60)
+        val d = decide("cam_a", prev = prev, obs = obs(maxRec), cfg = cfg(inGrace = false))
+        assertThat(d.newState).isEqualTo(CameraSignalState.SignalLost(prevSeen, notificationSent = true))
+        assertThat(d.event).isInstanceOf(SignalLossEvent.Loss::class.java)
+        assertThat((d.event as SignalLossEvent.Loss).lastSeenAt).isEqualTo(prevSeen)
+    }
+
+    @Test
+    fun `SignalLost(sent=false) + lost gap + in grace → still deferred, no event`() {
+        val prev = CameraSignalState.SignalLost(now.minusSeconds(600), notificationSent = false)
+        val maxRec = now.minus(threshold).minusSeconds(60)
+        val d = decide("cam_a", prev = prev, obs = obs(maxRec), cfg = cfg(inGrace = true))
+        assertThat(d.newState).isEqualTo(prev)  // unchanged
+        assertThat(d.event).isNull()
+    }
+
+    @Test
+    fun `boundary: gap exactly == threshold → considered healthy (strict greater-than)`() {
+        val maxRec = now.minus(threshold)  // exactly threshold
+        val d = decide("cam_a", prev = null, obs = obs(maxRec), cfg = cfg())
+        assertThat(d.newState).isEqualTo(CameraSignalState.Healthy(maxRec))
+        assertThat(d.event).isNull()
+    }
+
+    @Test
+    fun `clock skew: maxRecordTs in the future → gap clamped to 0, healthy`() {
+        val maxRec = now.plusSeconds(5)
+        val d = decide("cam_a", prev = null, obs = obs(maxRec), cfg = cfg())
+        assertThat(d.newState).isEqualTo(CameraSignalState.Healthy(maxRec))
+        assertThat(d.event).isNull()
+    }
+
+    private fun obs(maxRec: Instant) = Observation(maxRecordTs = maxRec, now = now)
+}
+```
+
+- [ ] **Step 3: Run tests to verify they pass**
+
+```bash
+./gradlew :frigate-analyzer-core:test --tests "*SignalLossDeciderTest*"
+```
+
+Expected: 12 tests pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDecider.kt \
+        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDeciderTest.kt
+git commit -m "feat(core): pure decide() state-machine for signal-loss with table-driven tests"
+```
+
+---
+
+### Task 8b: `SignalLossMonitorTask` (suspend tick) + behavior tests
 
 **Files:**
 - Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTask.kt`
 - Create: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTaskTest.kt`
 
-This is the largest task. We do TDD covering: 6 state-machine branches, cleanup, startup grace, repo-throw resilience, enqueue-throw idempotence.
-
-The task is built atomically — there is no clean way to ship "half a state machine". Each test added below is one step; final implementation comes after all tests are red.
-
-- [ ] **Step 1: Stub out `SignalLossMonitorTask` so tests can compile**
-
-Create the file with the bare class skeleton — no logic:
+- [ ] **Step 1: Implement `SignalLossMonitorTask` with suspend `tick()`**
 
 ```kotlin
 // modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTask.kt
@@ -1085,12 +1397,12 @@ package ru.zinin.frigate.analyzer.core.task
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import jakarta.annotation.PostConstruct
+import kotlinx.coroutines.CancellationException
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.SignalLossProperties
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.time.Clock
 import java.time.Instant
@@ -1099,10 +1411,14 @@ import java.util.concurrent.ConcurrentHashMap
 private val logger = KotlinLogging.logger {}
 
 @Component
-@ConditionalOnProperty(prefix = "application.signal-loss", name = ["enabled"], havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(
+    prefix = "application.signal-loss",
+    name = ["enabled"],
+    havingValue = "true",
+    matchIfMissing = false,  // important: do not activate in test contexts that omit the property
+)
 class SignalLossMonitorTask(
     private val properties: SignalLossProperties,
-    private val telegramProperties: TelegramProperties,
     private val repository: RecordingEntityRepository,
     private val notificationService: TelegramNotificationService,
     private val clock: Clock,
@@ -1112,28 +1428,93 @@ class SignalLossMonitorTask(
 
     @PostConstruct
     fun init() {
-        check(telegramProperties.enabled) {
-            "application.signal-loss.enabled=true requires application.telegram.enabled=true " +
-                "(SIGNAL_LOSS_ENABLED + TELEGRAM_ENABLED). Signal-loss alerts have nowhere to be sent."
-        }
-        properties.validate()
         startedAt = Instant.now(clock)
         logger.info {
-            "SignalLossMonitorTask started: threshold=${properties.threshold}, pollInterval=${properties.pollInterval}, " +
-                "activeWindow=${properties.activeWindow}, startupGrace=${properties.startupGrace}"
+            "SignalLossMonitorTask started: threshold=${properties.threshold}, " +
+                "pollInterval=${properties.pollInterval}, activeWindow=${properties.activeWindow}, " +
+                "startupGrace=${properties.startupGrace}"
         }
     }
 
-    @Scheduled(fixedDelayString = "#{@signalLossProperties.pollInterval.toMillis()}")
-    fun tick() {
-        // implemented in subsequent steps
+    @Scheduled(fixedDelayString = "\${application.signal-loss.poll-interval}")
+    suspend fun tick() {
+        try {
+            val now = Instant.now(clock)
+            val inGrace = now.isBefore(startedAt.plus(properties.startupGrace))
+            val activeSince = now.minus(properties.activeWindow)
+
+            val stats = repository.findLastRecordingPerCamera(activeSince)
+            val seenCamIds = stats.mapTo(mutableSetOf()) { it.camId }
+            val cfg = Config(threshold = properties.threshold, inGrace = inGrace)
+
+            for (stat in stats) {
+                val prev = state[stat.camId]
+                val decision = decide(
+                    camId = stat.camId,
+                    prev = prev,
+                    obs = Observation(stat.lastRecordTimestamp, now),
+                    cfg = cfg,
+                )
+                state[stat.camId] = decision.newState
+
+                when (val event = decision.event) {
+                    is SignalLossEvent.Loss -> emitLoss(event)
+                    is SignalLossEvent.Recovery -> emitRecovery(event)
+                    null -> Unit
+                }
+            }
+
+            // Cleanup: remove only Healthy entries that fell out of activeWindow.
+            // SignalLost entries are KEPT so an eventual recovery can still be emitted.
+            val removed = state.entries
+                .filter { it.key !in seenCamIds && it.value is CameraSignalState.Healthy }
+                .map { it.key }
+            removed.forEach { state.remove(it) }
+
+            val currentlyLost = state.values.count { it is CameraSignalState.SignalLost }
+            val healthy = state.values.count { it is CameraSignalState.Healthy }
+            logger.debug {
+                "Signal-loss tick (inGrace=$inGrace): scanned=${stats.size}, " +
+                    "currentlyLost=$currentlyLost, healthy=$healthy, removed=${removed.size}"
+            }
+        } catch (e: CancellationException) {
+            throw e  // propagate cancellation; never swallowed
+        } catch (e: Exception) {
+            logger.warn { "Signal-loss tick failed: ${e.message}" }
+        }
+    }
+
+    private suspend fun emitLoss(event: SignalLossEvent.Loss) {
+        try {
+            notificationService.sendCameraSignalLost(event.camId, event.lastSeenAt, Instant.now(clock))
+            logger.info { "Signal lost: camera=${event.camId}, lastSeen=${event.lastSeenAt}, gap=${event.gap}" }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn { "Failed to dispatch signal-loss notification for camera ${event.camId}: ${e.message}" }
+        }
+    }
+
+    private suspend fun emitRecovery(event: SignalLossEvent.Recovery) {
+        try {
+            notificationService.sendCameraSignalRecovered(event.camId, event.downtime)
+            logger.info { "Signal recovered: camera=${event.camId}, downtime=${event.downtime}" }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn { "Failed to dispatch signal-recovery notification for camera ${event.camId}: ${e.message}" }
+        }
     }
 }
 ```
 
-Note on `@Scheduled(fixedDelayString = ...)`: Spring needs the value resolvable at startup. Using a SpEL expression `#{@signalLossProperties.pollInterval.toMillis()}` lets us reference the bean's resolved Duration; alternatively we can hard-code `fixedDelayString = "\${application.signal-loss.poll-interval}"` and let Spring's `Duration` parser do the work. Use the SpEL form unless the project already has another pattern (grep `@Scheduled` in `modules/core` — `ServerHealthMonitor` is the canonical example; mirror what it does for consistency).
+Notes:
+- `@Scheduled(fixedDelayString = "\${application.signal-loss.poll-interval}")` — Spring Boot parses the `Duration` value (e.g. `30s`) automatically. Mirrors `ServerHealthMonitor.kt`.
+- `suspend fun tick()` — requires Spring 6.1+ / Boot 3.2+. The project is on Boot 4.0.3, so this is supported. NO `runBlocking` anywhere.
+- `emitLoss`/`emitRecovery` are member functions (they need `notificationService` and `clock`).
+- `currentlyLost` is a gauge metric (count of cameras currently in `SignalLost` state), not new losses this tick — the rename clarifies the misleading `lostCount` from the earlier draft.
 
-- [ ] **Step 2: Write the failing test scaffold**
+- [ ] **Step 2: Write the failing behavior tests**
 
 ```kotlin
 // modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTaskTest.kt
@@ -1142,14 +1523,16 @@ package ru.zinin.frigate.analyzer.core.task
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
-import kotlinx.coroutines.runBlocking
+import io.mockk.clearMocks
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.test.runTest
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.core.config.properties.SignalLossProperties
 import ru.zinin.frigate.analyzer.model.dto.LastRecordingPerCameraDto
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.time.Clock
 import java.time.Duration
@@ -1164,194 +1547,87 @@ class SignalLossMonitorTaskTest {
         activeWindow = Duration.ofHours(24),
         startupGrace = Duration.ofMinutes(5),
     )
-    private val telegramProperties = TelegramProperties().apply { /* enabled defaults to true */ }
     private val repository = mockk<RecordingEntityRepository>()
     private val notifier = mockk<TelegramNotificationService>(relaxed = true)
     private val baseInstant = Instant.parse("2026-04-25T10:00:00Z")
 
-    private fun task(now: Instant): SignalLossMonitorTask {
-        val clock = Clock.fixed(now, ZoneOffset.UTC)
-        return SignalLossMonitorTask(properties, telegramProperties, repository, notifier, clock).also { it.init() }
-    }
-
     private fun mutableClockTask(initial: Instant): Pair<SignalLossMonitorTask, MutableClock> {
         val mutableClock = MutableClock(initial)
-        val task = SignalLossMonitorTask(properties, telegramProperties, repository, notifier, mutableClock).also { it.init() }
+        val task = SignalLossMonitorTask(properties, repository, notifier, mutableClock).also { it.init() }
         return task to mutableClock
     }
 
     @BeforeEach
     fun setUp() {
-        io.mockk.clearMocks(repository, notifier)
+        clearMocks(repository, notifier)
     }
 
-    // --- Branch (null, false): first sighting, healthy. No notification. ---
     @Test
-    fun `first sighting healthy seeds state and emits no notification`() = runBlocking {
-        val now = baseInstant.plus(properties.startupGrace).plusSeconds(1)
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", now.minusSeconds(10)),
-        )
-
-        val (task, _) = mutableClockTask(now)
-        task.tick()
-
-        coVerify(exactly = 0) { notifier.sendCameraSignalLost(any(), any(), any()) }
-        coVerify(exactly = 0) { notifier.sendCameraSignalRecovered(any(), any()) }
-    }
-
-    // --- Branch (null, true): first sighting, lost. LOSS notification (after grace). ---
-    @Test
-    fun `first sighting lost emits loss notification`() = runBlocking {
-        val now = baseInstant.plus(properties.startupGrace).plusSeconds(1)
-        val lastSeen = now.minus(properties.threshold).minusSeconds(10)  // gap > threshold
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", lastSeen),
-        )
-
-        val (task, _) = mutableClockTask(now)
-        task.tick()
-
-        coVerify(exactly = 1) { notifier.sendCameraSignalLost("cam_a", lastSeen, now) }
-    }
-
-    // --- Branch (Healthy, false): keep healthy, advance lastSeenAt. ---
-    @Test
-    fun `healthy stays healthy when new recording arrives within threshold`() = runBlocking {
+    fun `cleanup keeps SignalLost but removes Healthy when camera falls out of activeWindow`() = runTest {
         val (task, clock) = mutableClockTask(baseInstant.plus(properties.startupGrace).plusSeconds(1))
 
-        // Tick 1: seed as Healthy
+        // Tick 1: seed cam_a Healthy, cam_b will be SignalLost
+        val cam_b_lastSeen = clock.instant().minus(properties.threshold).minusSeconds(60)
         coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
             LastRecordingPerCameraDto("cam_a", clock.instant().minusSeconds(10)),
+            LastRecordingPerCameraDto("cam_b", cam_b_lastSeen),
         )
         task.tick()
 
-        // Tick 2: 30s later, new recording 5s ago — still healthy
-        clock.advance(Duration.ofSeconds(30))
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", clock.instant().minusSeconds(5)),
-        )
-        task.tick()
-
-        coVerify(exactly = 0) { notifier.sendCameraSignalLost(any(), any(), any()) }
-        coVerify(exactly = 0) { notifier.sendCameraSignalRecovered(any(), any()) }
-    }
-
-    // --- Branch (Healthy, true): transition to lost + emit. ---
-    @Test
-    fun `healthy transitions to lost and emits loss notification`() = runBlocking {
-        val (task, clock) = mutableClockTask(baseInstant.plus(properties.startupGrace).plusSeconds(1))
-        val firstSeen = clock.instant().minusSeconds(10)
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", firstSeen),
-        )
-        task.tick()  // Healthy seeded
-
-        // Skip past threshold; same lastSeenAt — gap now exceeds threshold
-        clock.advance(properties.threshold.plusSeconds(30))
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", firstSeen),
-        )
-        task.tick()
-
-        coVerify(exactly = 1) { notifier.sendCameraSignalLost("cam_a", firstSeen, clock.instant()) }
-        coVerify(exactly = 0) { notifier.sendCameraSignalRecovered(any(), any()) }
-    }
-
-    // --- Branch (SignalLost, false): recovery. ---
-    @Test
-    fun `signal lost transitions back to healthy and emits recovery with downtime`() = runBlocking {
-        val (task, clock) = mutableClockTask(baseInstant.plus(properties.startupGrace).plusSeconds(1))
-        val firstSeen = clock.instant().minusSeconds(10)
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", firstSeen),
-        )
-        task.tick()  // Healthy seeded
-
-        // Force loss
-        clock.advance(properties.threshold.plusSeconds(30))
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", firstSeen),
-        )
-        task.tick()  // Now SignalLost
-
-        // New recording arrives
-        clock.advance(Duration.ofMinutes(5))
-        val newRec = clock.instant().minusSeconds(2)
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", newRec),
-        )
-        task.tick()
-
-        // Downtime = newRec - firstSeen
-        coVerify(exactly = 1) { notifier.sendCameraSignalRecovered("cam_a", Duration.between(firstSeen, newRec)) }
-    }
-
-    // --- Branch (SignalLost, true): no-op. No repeat alerts. ---
-    @Test
-    fun `signal lost stays lost without repeat notification`() = runBlocking {
-        val (task, clock) = mutableClockTask(baseInstant.plus(properties.startupGrace).plusSeconds(1))
-        val lastSeen = clock.instant().minus(properties.threshold).minusSeconds(30)
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", lastSeen),
-        )
-        task.tick()  // emits loss
-        clock.advance(Duration.ofMinutes(2))
-        task.tick()  // would re-emit if buggy
-
-        coVerify(exactly = 1) { notifier.sendCameraSignalLost(any(), any(), any()) }
-    }
-
-    // --- Cleanup: camera fell out of activeWindow. ---
-    @Test
-    fun `camera removed from state when it falls out of active window`() = runBlocking {
-        val (task, clock) = mutableClockTask(baseInstant.plus(properties.startupGrace).plusSeconds(1))
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", clock.instant().minusSeconds(10)),
-        )
-        task.tick()  // Healthy
-
-        // Subsequent tick: cam_a no longer in result (e.g., fell out of activeWindow)
+        // Tick 2: both cameras absent from stats (fell out of activeWindow)
         clock.advance(Duration.ofMinutes(1))
         coEvery { repository.findLastRecordingPerCamera(any()) } returns emptyList()
         task.tick()
 
-        coVerify(exactly = 0) { notifier.sendCameraSignalLost(any(), any(), any()) }
-        coVerify(exactly = 0) { notifier.sendCameraSignalRecovered(any(), any()) }
-
-        // Now cam_a comes back as new — should re-seed silently (null, false).
+        // cam_a (Healthy) → removed; cam_b (SignalLost) → KEPT
+        // Public state inspection: expose private state via internal/test helper, OR re-tick with returning data
+        // Here we verify behavior: cam_a re-entry triggers (null,false) silent init; cam_b recovery still works
         clock.advance(Duration.ofMinutes(1))
+        val cam_b_recovered = clock.instant().minusSeconds(5)
         coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", clock.instant().minusSeconds(5)),
+            LastRecordingPerCameraDto("cam_a", clock.instant().minusSeconds(5)),  // back, healthy
+            LastRecordingPerCameraDto("cam_b", cam_b_recovered),                    // back, healthy
         )
+        clearMocks(notifier)
+        coEvery { notifier.sendCameraSignalRecovered(any(), any()) } returns Unit
+        coEvery { notifier.sendCameraSignalLost(any(), any(), any()) } returns Unit
         task.tick()
-        coVerify(exactly = 0) { notifier.sendCameraSignalLost(any(), any(), any()) }
+
+        // cam_a re-entered as fresh (null, false) → silent
+        coVerify(exactly = 0) { notifier.sendCameraSignalLost("cam_a", any(), any()) }
+        // cam_b re-entered with prev=SignalLost (preserved!) → Recovery emitted with correct downtime
+        coVerify(exactly = 1) {
+            notifier.sendCameraSignalRecovered("cam_b", Duration.between(cam_b_lastSeen, cam_b_recovered))
+        }
     }
 
-    // --- Startup grace: no notifications during grace, state seeded. ---
     @Test
-    fun `during startup grace state is seeded but no notifications are emitted`() = runBlocking {
+    fun `late alert after grace ends for camera that was lost during grace`() = runTest {
         val (task, clock) = mutableClockTask(baseInstant)  // exactly at start
-        val lastSeen = clock.instant().minus(properties.threshold).minusSeconds(30)  // would be lost
+        val lastSeen = clock.instant().minus(properties.threshold).minusSeconds(60)
         coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
             LastRecordingPerCameraDto("cam_a", lastSeen),
         )
-        task.tick()  // inside grace
 
+        // Tick during grace: state seeded as SignalLost(sent=false), no notification
+        task.tick()
         coVerify(exactly = 0) { notifier.sendCameraSignalLost(any(), any(), any()) }
 
-        // After grace, with the SAME data: now we should see the loss
+        // Advance past grace; same data
         clock.advance(properties.startupGrace.plusSeconds(1))
-        coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
-            LastRecordingPerCameraDto("cam_a", lastSeen),
-        )
         task.tick()
+
+        // LATE ALERT fires
         coVerify(exactly = 1) { notifier.sendCameraSignalLost("cam_a", lastSeen, clock.instant()) }
+
+        // Subsequent tick (still lost) → no repeat
+        clock.advance(Duration.ofMinutes(1))
+        task.tick()
+        coVerify(exactly = 1) { notifier.sendCameraSignalLost("cam_a", any(), any()) }
     }
 
-    // --- Resilience: repo throws. State unchanged, no propagation. ---
     @Test
-    fun `tick swallows repository exception and leaves state unchanged`() = runBlocking {
+    fun `tick swallows repository exception and leaves state unchanged`() = runTest {
         val (task, clock) = mutableClockTask(baseInstant.plus(properties.startupGrace).plusSeconds(1))
         coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
             LastRecordingPerCameraDto("cam_a", clock.instant().minusSeconds(10)),
@@ -1362,7 +1638,7 @@ class SignalLossMonitorTaskTest {
         coEvery { repository.findLastRecordingPerCamera(any()) } throws RuntimeException("DB exploded")
         task.tick()  // must not throw
 
-        // Subsequent successful tick continues from the prior state
+        // Subsequent tick continues from prior state
         clock.advance(Duration.ofMinutes(1))
         coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
             LastRecordingPerCameraDto("cam_a", clock.instant().minusSeconds(5)),
@@ -1372,26 +1648,34 @@ class SignalLossMonitorTaskTest {
         coVerify(exactly = 0) { notifier.sendCameraSignalRecovered(any(), any()) }
     }
 
-    // --- Idempotence: enqueue throws. State stays in SignalLost; no repeat on next tick. ---
     @Test
-    fun `tick keeps SignalLost state even when notifier throws on emit`() = runBlocking {
+    fun `tick re-throws CancellationException`() = runTest {
+        val (task, _) = mutableClockTask(baseInstant.plus(properties.startupGrace).plusSeconds(1))
+        coEvery { repository.findLastRecordingPerCamera(any()) } throws CancellationException("shutdown")
+
+        assertThatThrownBy { kotlinx.coroutines.runBlocking { task.tick() } }
+            .isInstanceOf(CancellationException::class.java)
+    }
+
+    @Test
+    fun `enqueue throw retains transition (no repeat next tick)`() = runTest {
         val (task, clock) = mutableClockTask(baseInstant.plus(properties.startupGrace).plusSeconds(1))
-        val lastSeen = clock.instant().minus(properties.threshold).minusSeconds(30)
+        val lastSeen = clock.instant().minus(properties.threshold).minusSeconds(60)
         coEvery { repository.findLastRecordingPerCamera(any()) } returns listOf(
             LastRecordingPerCameraDto("cam_a", lastSeen),
         )
         coEvery { notifier.sendCameraSignalLost(any(), any(), any()) } throws RuntimeException("queue full")
-        task.tick()  // attempts emit, swallows
+        task.tick()  // attempts emit, swallows; state is now SignalLost(sent=true)
 
-        // Next tick — same data — must NOT re-attempt notify
         clock.advance(Duration.ofSeconds(30))
-        io.mockk.clearMocks(notifier)
+        clearMocks(notifier)
         coEvery { notifier.sendCameraSignalLost(any(), any(), any()) } returns Unit
         task.tick()
+        // sent=true was set despite the throw → next tick is no-op → no retry
         coVerify(exactly = 0) { notifier.sendCameraSignalLost(any(), any(), any()) }
     }
 
-    /** Simple mutable clock for tests; not thread-safe but we run tests serially. */
+    /** Simple mutable clock for tests; not thread-safe but tests are serial. */
     private class MutableClock(private var current: Instant) : Clock() {
         override fun getZone() = ZoneOffset.UTC
         override fun withZone(zone: java.time.ZoneId) = this
@@ -1401,138 +1685,116 @@ class SignalLossMonitorTaskTest {
 }
 ```
 
-A few notes for the implementer:
+Notes:
+- The bulk of state-machine correctness is covered by `SignalLossDeciderTest` (Task 8a). This file focuses on the IO surfaces: cleanup, late-alert flow, error resilience, cancellation, idempotence on enqueue failure.
+- Tests use `runTest` (kotlinx-coroutines-test) for proper coroutine support.
 
-- `TelegramProperties()` no-arg call — the actual class likely has required fields; if so, build it via the existing test-helper or directly with `TelegramProperties(enabled = true, ...)`. Open `TelegramProperties.kt` and adapt. The test only needs `enabled = true`.
-- The test relies on `notifier.sendCameraSignalLost(camId, lastSeen, now)` and `sendCameraSignalRecovered(camId, downtime)` — these signatures match Task 6.
-
-- [ ] **Step 3: Run tests to verify they fail**
-
-```bash
-./gradlew :frigate-analyzer-core:test --tests "*SignalLossMonitorTaskTest*"
-```
-
-Expected: 9 failures (the `tick` body is empty).
-
-- [ ] **Step 4: Implement `tick()` to make all tests pass**
-
-Replace the `tick()` body in `SignalLossMonitorTask.kt`:
-
-```kotlin
-@Scheduled(fixedDelayString = "#{@signalLossProperties.pollInterval.toMillis()}")
-fun tick() {
-    try {
-        val now = Instant.now(clock)
-        val inGrace = now.isBefore(startedAt.plus(properties.startupGrace))
-        val activeSince = now.minus(properties.activeWindow)
-
-        val stats: List<LastRecordingPerCameraDto> = kotlinx.coroutines.runBlocking {
-            repository.findLastRecordingPerCamera(activeSince)
-        }
-        val seenCamIds = stats.mapTo(mutableSetOf()) { it.camId }
-
-        var lostCount = 0
-        var healthyCount = 0
-
-        for (stat in stats) {
-            val gap = Duration.between(stat.lastRecordTimestamp, now)
-            val overThreshold = gap > properties.threshold
-            val prev = state[stat.camId]
-
-            when {
-                prev == null && !overThreshold -> {
-                    state[stat.camId] = CameraSignalState.Healthy(stat.lastRecordTimestamp)
-                    healthyCount++
-                }
-
-                prev == null && overThreshold -> {
-                    state[stat.camId] = CameraSignalState.SignalLost(stat.lastRecordTimestamp, now)
-                    lostCount++
-                    if (!inGrace) emitLoss(stat.camId, stat.lastRecordTimestamp, now)
-                }
-
-                prev is CameraSignalState.Healthy && !overThreshold -> {
-                    state[stat.camId] = CameraSignalState.Healthy(stat.lastRecordTimestamp)
-                    healthyCount++
-                }
-
-                prev is CameraSignalState.Healthy && overThreshold -> {
-                    state[stat.camId] = CameraSignalState.SignalLost(prev.lastSeenAt, now)
-                    lostCount++
-                    if (!inGrace) emitLoss(stat.camId, prev.lastSeenAt, now)
-                }
-
-                prev is CameraSignalState.SignalLost && !overThreshold -> {
-                    val downtime = Duration.between(prev.lastSeenAt, stat.lastRecordTimestamp)
-                    state[stat.camId] = CameraSignalState.Healthy(stat.lastRecordTimestamp)
-                    healthyCount++
-                    if (!inGrace) emitRecovery(stat.camId, downtime)
-                }
-
-                prev is CameraSignalState.SignalLost && overThreshold -> {
-                    lostCount++
-                    // no-op, no emit, keep notifiedAt
-                }
-            }
-        }
-
-        // Cleanup: cameras no longer in stats (fell out of activeWindow)
-        val removed = state.keys.filter { it !in seenCamIds }
-        removed.forEach { state.remove(it) }
-
-        if (inGrace) {
-            logger.debug { "Signal-loss tick (in grace): scanned ${stats.size}, lost=$lostCount, healthy=$healthyCount, removed=${removed.size}" }
-        } else {
-            logger.debug { "Signal-loss tick: scanned ${stats.size}, lost=$lostCount, healthy=$healthyCount, removed=${removed.size}" }
-        }
-    } catch (e: Exception) {
-        logger.warn { "Signal-loss tick failed: ${e.message}" }
-    }
-}
-
-private fun emitLoss(camId: String, lastSeen: Instant, now: Instant) {
-    try {
-        kotlinx.coroutines.runBlocking {
-            notificationService.sendCameraSignalLost(camId, lastSeen, now)
-        }
-        logger.info { "Signal lost: camera=$camId, lastSeen=$lastSeen, gap=${Duration.between(lastSeen, now)}" }
-    } catch (e: Exception) {
-        logger.warn { "Failed to dispatch signal-loss notification for camera $camId: ${e.message}" }
-    }
-}
-
-private fun emitRecovery(camId: String, downtime: Duration) {
-    try {
-        kotlinx.coroutines.runBlocking {
-            notificationService.sendCameraSignalRecovered(camId, downtime)
-        }
-        logger.info { "Signal recovered: camera=$camId, downtime=$downtime" }
-    } catch (e: Exception) {
-        logger.warn { "Failed to dispatch signal-recovery notification for camera $camId: ${e.message}" }
-    }
-}
-```
-
-Add the import: `import ru.zinin.frigate.analyzer.model.dto.LastRecordingPerCameraDto` and `import java.time.Duration`.
-
-Note on `runBlocking` inside a Spring `@Scheduled`: this IS the project pattern — `WatchRecordsTask.run()` uses `runBlocking { ... }` for the same reason (the underlying API is `suspend` but Spring's scheduler is not coroutine-aware). Mirror that style.
-
-- [ ] **Step 5: Run all tests in the test class**
+- [ ] **Step 3: Run tests to verify they pass**
 
 ```bash
 ./gradlew :frigate-analyzer-core:test --tests "*SignalLossMonitorTaskTest*"
 ```
 
-Expected: all 9 tests pass.
+Expected: all 5 tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTask.kt \
         modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTaskTest.kt
-git commit -m "feat(core): SignalLossMonitorTask with state machine, grace period, error resilience"
+git commit -m "feat(core): SignalLossMonitorTask with suspend tick, late-alert flow, error resilience"
 ```
 
+---
+
+### Task 8c: `SignalLossTelegramGuard` (conflict-fail)
+
+Mirrors the existing `AiDescriptionTelegramGuard` (commit `ee5d925`). Single-purpose `@Component` that fails application context startup with a clear message when `signal-loss.enabled=true` AND `telegram.enabled=false`.
+
+**Files:**
+- Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/config/SignalLossTelegramGuard.kt`
+- Create: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/config/SignalLossTelegramGuardTest.kt`
+
+- [ ] **Step 1: Open `AiDescriptionTelegramGuard.kt` and mirror its structure**
+
+Read `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/queue/AiDescriptionTelegramGuard.kt` (the location is the existing one — adapt path if different). Copy its structure. The new guard's logic: if `application.signal-loss.enabled=true` and `application.telegram.enabled=false` → throw `IllegalStateException` from `@PostConstruct`.
+
+Suggested skeleton (adapt to match the actual `AiDescriptionTelegramGuard` style — read it first):
+
+```kotlin
+// modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/config/SignalLossTelegramGuard.kt
+package ru.zinin.frigate.analyzer.telegram.config
+
+import jakarta.annotation.PostConstruct
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.stereotype.Component
+
+@Component
+@ConditionalOnProperty(
+    prefix = "application.signal-loss",
+    name = ["enabled"],
+    havingValue = "true",
+    matchIfMissing = false,
+)
+class SignalLossTelegramGuard(
+    @Value("\${application.telegram.enabled:false}") private val telegramEnabled: Boolean,
+) {
+    @PostConstruct
+    fun verify() {
+        check(telegramEnabled) {
+            "application.signal-loss.enabled=true requires application.telegram.enabled=true " +
+                "(SIGNAL_LOSS_ENABLED + TELEGRAM_ENABLED). Signal-loss alerts have nowhere to be sent."
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Write tests**
+
+```kotlin
+// modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/config/SignalLossTelegramGuardTest.kt
+package ru.zinin.frigate.analyzer.telegram.config
+
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Test
+import org.assertj.core.api.Assertions.assertThatCode
+
+class SignalLossTelegramGuardTest {
+    @Test
+    fun `verify throws when telegram disabled`() {
+        val guard = SignalLossTelegramGuard(telegramEnabled = false)
+        assertThatThrownBy { guard.verify() }
+            .isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("application.signal-loss.enabled=true")
+            .hasMessageContaining("application.telegram.enabled=true")
+    }
+
+    @Test
+    fun `verify accepts when telegram enabled`() {
+        val guard = SignalLossTelegramGuard(telegramEnabled = true)
+        assertThatCode { guard.verify() }.doesNotThrowAnyException()
+    }
+}
+```
+
+- [ ] **Step 3: Run tests**
+
+```bash
+./gradlew :frigate-analyzer-telegram:test --tests "*SignalLossTelegramGuardTest*"
+```
+
+Expected: 2 tests pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/config/SignalLossTelegramGuard.kt \
+        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/config/SignalLossTelegramGuardTest.kt
+git commit -m "feat(telegram): SignalLossTelegramGuard mirroring AiDescriptionTelegramGuard"
+```
+
+---
 ---
 
 ### Task 9: Configuration — `application.yaml` and `.claude/rules/configuration.md`
@@ -1554,11 +1816,11 @@ Insert after the existing `application.telegram:` block (or anywhere in `applica
     startup-grace: ${SIGNAL_LOSS_STARTUP_GRACE:5m}
 ```
 
-- [ ] **Step 2: Register `SignalLossProperties` for binding**
+- [ ] **Step 2: Register `SignalLossProperties` in `@EnableConfigurationProperties`**
 
-The project must enable `@ConfigurationProperties` discovery. Check whether the project uses `@EnableConfigurationProperties(...)` somewhere (grep `@EnableConfigurationProperties` in `modules/core`). If yes, add `SignalLossProperties::class` to the existing list. If the project relies on `@ConfigurationPropertiesScan`, no change is needed (`SignalLossProperties` will be picked up by package scan).
+Open `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/FrigateAnalyzerApplication.kt` (or wherever `@EnableConfigurationProperties(...)` is declared in this project — verified by iter-1 review that this annotation is used explicitly with a list). Add `SignalLossProperties::class` to the existing list. Without this Spring won't bind the YAML block to the bean, and `SignalLossMonitorTask` won't construct.
 
-If neither is in use, annotate `SignalLossProperties` itself with `@ConstructorBinding @ConfigurationProperties("application.signal-loss")` and add `@EnableConfigurationProperties(SignalLossProperties::class)` to the main `@Configuration` class (look for the main `@SpringBootApplication` class in `modules/core`).
+If `@EnableConfigurationProperties` is NOT used and `@ConfigurationPropertiesScan` covers the package, no change needed — but verify by reading the existing wiring first.
 
 - [ ] **Step 3: Update `.claude/rules/configuration.md`**
 
@@ -1569,11 +1831,11 @@ The `paths:` frontmatter for that rule loads when working with `**/application.y
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SIGNAL_LOSS_ENABLED` | `true` | Master flag for the camera-signal-loss detector. Requires `TELEGRAM_ENABLED=true`. |
-| `SIGNAL_LOSS_THRESHOLD` | `3m` | If `now - lastRecording > THRESHOLD` the signal is considered lost. |
+| `SIGNAL_LOSS_ENABLED` | `true` | Master flag. `@ConditionalOnProperty(matchIfMissing=false)` — production has it on by default via `application.yaml`, but missing-property test contexts won't activate the task. Requires `TELEGRAM_ENABLED=true` (enforced by `SignalLossTelegramGuard`). |
+| `SIGNAL_LOSS_THRESHOLD` | `3m` | If `now - lastRecording > THRESHOLD` (strict) the signal is considered lost. |
 | `SIGNAL_LOSS_POLL_INTERVAL` | `30s` | Detector tick period. Must be smaller than `SIGNAL_LOSS_THRESHOLD`. |
-| `SIGNAL_LOSS_ACTIVE_WINDOW` | `24h` | Window of "active" cameras. Cameras whose last recording is older are not monitored. |
-| `SIGNAL_LOSS_STARTUP_GRACE` | `5m` | After startup, only seed state — no notifications. |
+| `SIGNAL_LOSS_ACTIVE_WINDOW` | `24h` | Window of "active" cameras. **Must be set to at least Frigate's recording retention.** Cameras whose last recording is older are not monitored. |
+| `SIGNAL_LOSS_STARTUP_GRACE` | `5m` | After startup, alerts are deferred (state seeded as `SignalLost(notificationSent=false)`). The next tick after grace ends fires the late LOSS alert if the gap still holds. |
 ```
 
 (Open `.claude/rules/configuration.md` first to mirror the existing section style; if the file uses headings like `### Signal Loss` instead, follow that.)
@@ -1586,9 +1848,8 @@ No standalone command — context loading is verified in the integration test ad
 
 ```bash
 git add modules/core/src/main/resources/application.yaml \
-        .claude/rules/configuration.md
-# Plus any file edited in Step 2 if you needed @EnableConfigurationProperties wiring:
-# git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/<wiring file>.kt
+        .claude/rules/configuration.md \
+        modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/FrigateAnalyzerApplication.kt
 git commit -m "feat(config): wire signal-loss properties + document env-vars"
 ```
 
@@ -1599,24 +1860,26 @@ git commit -m "feat(config): wire signal-loss properties + document env-vars"
 **Files:**
 - Create: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossConfigConflictIntegrationTest.kt`
 
-This test confirms that `application.signal-loss.enabled=true && application.telegram.enabled=false` makes the application fail at startup with an actionable message (per the `ee5d925` pattern).
+This is the Spring-context-level integration test. The unit-level test for the guard is already in Task 8c; this one verifies that the guard actually fails the full Spring context startup with the configured property values.
 
-- [ ] **Step 1: Write the failing integration test**
+- [ ] **Step 1: Write the integration test**
+
+Look at how the project's existing `IntegrationTestBase` is set up (`modules/*/src/test/kotlin/.../IntegrationTestBase.kt`) before writing this. The project uses Testcontainers + Compose, which may make spinning up a full context heavy. If full context fails for unrelated reasons (DB requirement, etc.), use `@SpringBootTest(classes = [SignalLossTelegramGuard::class])` with explicit slice — we only need the guard bean and the two property values.
 
 ```kotlin
 // modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossConfigConflictIntegrationTest.kt
 package ru.zinin.frigate.analyzer.core.task
 
-import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.springframework.boot.SpringApplication
 import org.springframework.boot.autoconfigure.SpringBootApplication
+import ru.zinin.frigate.analyzer.telegram.config.SignalLossTelegramGuard
 
 class SignalLossConfigConflictIntegrationTest {
     /**
      * When signal-loss is enabled but telegram is disabled, the application context
-     * MUST fail to start because there is no recipient for the alerts.
+     * MUST fail to start because SignalLossTelegramGuard's @PostConstruct throws.
      */
     @Test
     fun `context fails to start when signal-loss is enabled and telegram is disabled`() {
@@ -1625,44 +1888,22 @@ class SignalLossConfigConflictIntegrationTest {
             mapOf(
                 "application.signal-loss.enabled" to "true",
                 "application.telegram.enabled" to "false",
-                // Provide minimum required props so other beans don't blow up first;
-                // mirror what other @SpringBootTest tests in the project provide.
             ),
         )
 
         assertThatThrownBy { app.run() }
             .rootCause()
+            .isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("application.signal-loss.enabled=true")
             .hasMessageContaining("application.telegram.enabled=true")
     }
 
-    @SpringBootApplication
+    @SpringBootApplication(scanBasePackageClasses = [SignalLossTelegramGuard::class])
     class StubApp
 }
 ```
 
-If the actual `@SpringBootApplication` of the project is a more complex setup (DB, external services), instead use `@SpringBootTest(classes = [StubApp::class])` with `@TestPropertySource(properties = [...])` and `@Disabled`-style hooks — see how `IntegrationTestBase` is built in the project for reference, but try the lightweight `SpringApplication.run()` form first because it isolates the context to the conflict check only.
-
-If using `SpringApplication.run()` causes issues with autoconfig that requires DB, fall back to a unit-style test that creates `SignalLossMonitorTask` directly:
-
-```kotlin
-@Test
-fun `init throws when telegram is disabled`() {
-    val task = SignalLossMonitorTask(
-        properties = SignalLossProperties(),
-        telegramProperties = TelegramProperties(enabled = false),
-        repository = mockk(),
-        notificationService = mockk(),
-        clock = Clock.systemUTC(),
-    )
-    assertThatThrownBy { task.init() }
-        .isInstanceOf(IllegalStateException::class.java)
-        .hasMessageContaining("application.signal-loss.enabled=true")
-        .hasMessageContaining("application.telegram.enabled=true")
-}
-```
-
-The unit-style test is sufficient because `init()` is the actual choke point. Pick the form that runs reliably in this codebase. Both verify the same invariant.
+If `SpringApplication.run()` cannot construct the minimal context (auto-config trying to wire DB, etc.), fall back to a manual context approach using `AnnotationConfigApplicationContext` + explicit `register(SignalLossTelegramGuard::class.java)` and a `MockEnvironment`. The unit-level guard test in Task 8c is the primary regression guard; this integration test provides confidence that the wiring is correct.
 
 - [ ] **Step 2: Run the test**
 
@@ -1670,13 +1911,13 @@ The unit-style test is sufficient because `init()` is the actual choke point. Pi
 ./gradlew :frigate-analyzer-core:test --tests "*SignalLossConfigConflictIntegrationTest*"
 ```
 
-Expected: PASS (the `init()` already throws because Task 8 implemented the check).
+Expected: PASS — guard throws, root cause names both env-vars.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossConfigConflictIntegrationTest.kt
-git commit -m "test(core): conflict-fail when signal-loss enabled with telegram disabled"
+git commit -m "test(core): integration test for signal-loss + telegram-disabled conflict-fail"
 ```
 
 ---
@@ -1695,8 +1936,9 @@ Expected: BUILD SUCCESSFUL, all tests green, no lint warnings.
 
 ## Definition of Done
 
-- All 10 tasks committed.
+- All 12 tasks committed (1, 2, 3, 4, 5, 6, 7, 8a, 8b, 8c, 9, 10).
 - All listed unit + integration tests pass.
 - `ktlintCheck` passes.
 - `./gradlew build` passes.
 - The full feature works end-to-end (manual smoke test if possible: with a running Frigate instance, stop one camera and observe the Telegram message after ~3 minutes; restart it and observe the recovery message).
+- Existing test suites (`core` and `service` integration tests) remain green WITHOUT any patches to their `application.yaml` — verified by `matchIfMissing = false` semantics and the test config compatibility check from the spec.

@@ -42,14 +42,16 @@ The latency cost of polling vs. event-driven is bounded by `pollInterval` (~30s)
 
 | Component | Module | Responsibility |
 |---|---|---|
-| `SignalLossMonitorTask` | `core/task/` | Spring `@Scheduled` tick driver; holds in-memory `Map<camId, CameraSignalState>`; detects transitions; calls `TelegramNotificationService` for loss/recovery |
-| `CameraSignalState` (sealed class) | `core/task/` | `Healthy(lastSeenAt)` / `SignalLost(lastSeenAt, notifiedAt)` |
-| `SignalLossProperties` | `core/config/properties/` | Holds `enabled`, `threshold`, `pollInterval`, `activeWindow`, `startupGrace`; validates in `@PostConstruct` |
-| `LastRecordingPerCameraDto` | `model/dto/` | New projection DTO: `(camId: String, lastRecordTimestamp: Instant)` — matches the existing `CameraRecordingCountDto` style |
-| `RecordingEntityRepository.findLastRecordingPerCamera(activeSince)` | `service/repository/` | New query returning `List<LastRecordingPerCameraDto>`: `SELECT cam_id, MAX(record_timestamp) FROM recordings WHERE record_timestamp >= :activeSince AND cam_id IS NOT NULL GROUP BY cam_id` |
+| `SignalLossMonitorTask` | `core/task/` | Spring `@Scheduled` tick driver as `suspend fun tick()` (Spring 6.1+ supports suspend in `@Scheduled`); holds in-memory `Map<camId, CameraSignalState>`; runs the pure state-machine `decide(...)` function and dispatches loss/recovery via `TelegramNotificationService` |
+| `decide(prev, observation, config) -> Decision` (pure function) | `core/task/` | State-machine decision logic extracted as a pure function `(prev: CameraSignalState?, observation: Observation, config: SignalLossConfig) -> Decision(newState, event?)` for testability without mocks |
+| `CameraSignalState` (sealed class) | `core/task/` | `Healthy(lastSeenAt)` / `SignalLost(lastSeenAt, notificationSent: Boolean)` — `notificationSent` flag enables the late-alert-after-grace flow described in "Restart Behavior" |
+| `SignalLossProperties` | `core/config/properties/` | Holds `enabled`, `threshold`, `pollInterval`, `activeWindow`, `startupGrace`; uses Jakarta `@Validated` + `@field:NotNull/@field:Positive` for per-field checks plus a `@PostConstruct` for cross-field invariants (`pollInterval < threshold`, `activeWindow > threshold`) |
+| `SignalLossTelegramGuard` | `telegram/config/` (or similar, mirroring `AiDescriptionTelegramGuard`) | Single-purpose `@Component` that fails application startup with a clear actionable message when `application.signal-loss.enabled=true` AND `application.telegram.enabled=false`. Mirrors the existing `AiDescriptionTelegramGuard` pattern (see commit `ee5d925`). |
+| `LastRecordingPerCameraDto` | `model/dto/` | New projection DTO mirroring `CameraRecordingCountDto` style: explicit `@Column("cam_id")` and `@Column("last_record_timestamp")` annotations |
+| `RecordingEntityRepository.findLastRecordingPerCamera(activeSince)` | `service/repository/` | New query returning `List<LastRecordingPerCameraDto>`: `SELECT cam_id AS cam_id, MAX(record_timestamp) AS last_record_timestamp FROM recordings WHERE record_timestamp >= :activeSince AND cam_id IS NOT NULL GROUP BY cam_id ORDER BY cam_id` |
 | `TelegramNotificationService.sendCameraSignalLost(...)` | `telegram/service/` | New interface method, plus impl + NoOp impl |
 | `TelegramNotificationService.sendCameraSignalRecovered(...)` | `telegram/service/` | New interface method, plus impl + NoOp impl |
-| New `NotificationTask` subtypes | `telegram/queue/` | Carry the loss/recovery payloads through the existing queue |
+| New `NotificationTask` subtypes | `telegram/queue/` | Carry the loss/recovery payloads through the existing queue. **Note:** the refactor of `NotificationTask` from `data class` to `sealed interface` requires an explicit audit step (see plan Task 3) of all 5 production + 2 test usages identified by `grep "NotificationTask"`. |
 
 ### Untouched
 
@@ -59,8 +61,8 @@ The latency cost of polling vs. event-driven is bounded by `pollInterval` (~30s)
 
 ### Feature Flag
 
-- Master flag: `application.signal-loss.enabled` (default `true`), gated via `@ConditionalOnProperty`.
-- **Conflict-fail at startup** (matches commit `ee5d925` pattern): if `application.signal-loss.enabled=true` AND `application.telegram.enabled=false`, the application must fail to start with a clear actionable message naming both env-vars in conflict — signal-loss alerts have nowhere to be sent.
+- Master flag: `application.signal-loss.enabled` — gated via `@ConditionalOnProperty(matchIfMissing = false)`. The `application.yaml` default is `true` (so production has the feature on by default), but `matchIfMissing = false` means existing test contexts (which omit the property) will NOT activate the task — preventing breakage of existing integration tests where `application.telegram.enabled=false`.
+- **Conflict-fail at startup** is delegated to a dedicated `SignalLossTelegramGuard` `@Component` that mirrors the existing `AiDescriptionTelegramGuard` (commit `ee5d925`). When `application.signal-loss.enabled=true` AND `application.telegram.enabled=false`, the guard throws an `IllegalStateException` with a clear actionable message naming both env-vars in conflict. Putting the check in a dedicated bean (rather than `SignalLossMonitorTask.@PostConstruct`) avoids race conditions with bean initialization order and keeps the task focused on its single responsibility.
 
 ## State Machine
 
@@ -71,11 +73,13 @@ sealed class CameraSignalState {
     data class Healthy(override val lastSeenAt: Instant) : CameraSignalState()
 
     data class SignalLost(
-        override val lastSeenAt: Instant,   // last recording BEFORE the loss
-        val notifiedAt: Instant,            // when we emitted the loss notification
+        override val lastSeenAt: Instant,   // last recording BEFORE the loss (used to compute downtime on recovery)
+        val notificationSent: Boolean,      // false during startup grace; flipped to true after late-alert dispatch
     ) : CameraSignalState()
 }
 ```
+
+The `notificationSent` flag is the mechanism that fixes the "camera dead before startup never gets alerted" hole: during `startupGrace` we may transition to `SignalLost(notificationSent = false)`. After grace ends, the next tick checks each `SignalLost` entry and dispatches the late alert for any that still have `notificationSent = false`.
 
 ```
                            gap = now - lastSeenAt > threshold
@@ -91,57 +95,71 @@ sealed class CameraSignalState {
 
 ### Tick Algorithm
 
+`tick()` is a `suspend fun` (Spring 6.1+ supports `suspend` in `@Scheduled`), so it does NOT block any TaskScheduler thread. The DB call and notification enqueue use natural coroutine `suspend` semantics; backpressure on the Telegram queue (which uses `channel.send()`) suspends the tick coroutine without blocking platform threads.
+
 For each tick (running every `pollInterval`):
 
 ```
-1. If now < startedAt + startupGrace:
-     run steps 2-3 to seed state, but DO NOT emit notifications
-     return
-
-2. activeSince = now - activeWindow                             // default: 24h
+1. now = clock.instant()
+   inGrace = now < startedAt + startupGrace
+   activeSince = now - activeWindow                             // default: 24h
    stats: List<(camId, maxRecordTs)> = repo.findLastRecordingPerCamera(activeSince)
+   seenCamIds = stats.map { it.camId }.toSet()
 
-3. For each (camId, maxRecordTs):
-     gap = now - maxRecordTs
+2. For each (camId, maxRecordTs):
      prev = state[camId]
-     overThreshold = gap > threshold
+     observation = Observation(maxRecordTs = maxRecordTs, now = now)
+     decision = decide(prev, observation, config(threshold = threshold, inGrace = inGrace))
+     state[camId] = decision.newState
+     if (decision.event != null) emit decision.event
+   // Pure decide() function semantics — see "decide() decision table" below.
 
-     case (prev, overThreshold):
-       (null,            false) -> state[camId] = Healthy(maxRecordTs)
-                                   // first sighting, healthy: silent init
-
-       (null,            true)  -> state[camId] = SignalLost(maxRecordTs, now)
-                                   emit LOSS(camId, lastSeen=maxRecordTs, gap)
-                                   // skipped during startup grace
-
-       (Healthy h,       false) -> state[camId] = Healthy(maxRecordTs)
-
-       (Healthy h,       true)  -> state[camId] = SignalLost(h.lastSeenAt, now)
-                                   emit LOSS(camId, lastSeen=h.lastSeenAt, gap)
-
-       (SignalLost sl,   false) -> state[camId] = Healthy(maxRecordTs)
-                                   emit RECOVERY(camId,
-                                                 downtime = maxRecordTs - sl.lastSeenAt)
-
-       (SignalLost sl,   true)  -> no-op, no emit (do not spam; keep notifiedAt)
-
-4. Cleanup: for camId in state but NOT in stats (camera fell out of activeWindow):
-     remove state[camId]
-     no notification
-     // The camera's last recording is older than activeWindow — treated as
-     // out-of-service. If it ever comes back, it re-enters via the (null, _)
-     // branches as a fresh sighting.
+3. Cleanup: for camId in state but NOT in stats (camera fell out of activeWindow):
+     - If state[camId] is Healthy → remove silently.
+     - If state[camId] is SignalLost → KEEP. We MUST retain SignalLost entries
+       that fell out of activeWindow so that an eventual recovery can still
+       emit a RECOVERY notification with the correct downtime.
+     // Rationale: the cleanup-only-Healthy rule fixes the "user got loss alert
+     // but never got recovery" gap that pure activeWindow-based cleanup created.
 ```
+
+### `decide()` Decision Table
+
+Pure function `decide(prev: CameraSignalState?, obs: Observation, cfg: Config) -> Decision(newState, event?)`. No side effects, no I/O — fully unit-testable without mocks.
+
+Inputs per call: `prev`, `obs.maxRecordTs`, `obs.now`, `cfg.threshold`, `cfg.inGrace`.
+
+Computed: `gap = max(Duration.ZERO, now - maxRecordTs)` (the `max` clamps clock skew where Frigate's recording timestamp is in the future relative to our `now`; we log a warn in that case but treat gap as zero), `overThreshold = gap > cfg.threshold` (strict inequality — at exactly `threshold` we consider it healthy; this is the conservative choice).
+
+| `prev` | `overThreshold` | `inGrace` | `newState` | `event` |
+|---|---|---|---|---|
+| `null` | false | any | `Healthy(maxRecordTs)` | none |
+| `null` | true | true | `SignalLost(maxRecordTs, notificationSent = false)` | none (deferred) |
+| `null` | true | false | `SignalLost(maxRecordTs, notificationSent = true)` | `Loss(camId, maxRecordTs, gap)` |
+| `Healthy(_)` | false | any | `Healthy(maxRecordTs)` | none |
+| `Healthy(h)` | true | true | `SignalLost(maxRecordTs, notificationSent = false)` | none (deferred) |
+| `Healthy(h)` | true | false | `SignalLost(maxRecordTs, notificationSent = true)` | `Loss(camId, maxRecordTs, gap)` |
+| `SignalLost(s)` | false | any | `Healthy(maxRecordTs)` | `Recovery(camId, downtime = maxRecordTs - s.lastSeenAt)` |
+| `SignalLost(s, sent=false)` | true | false | `SignalLost(s.lastSeenAt, notificationSent = true)` | `Loss(camId, s.lastSeenAt, gap)` *(LATE ALERT)* |
+| `SignalLost(s, sent=true)` | true | any | `SignalLost(s.lastSeenAt, notificationSent = true)` | none (no-op) |
+| `SignalLost(s, sent=false)` | true | true | `SignalLost(s.lastSeenAt, notificationSent = false)` | none (still in grace) |
+
+Two key changes from earlier draft:
+
+1. **Healthy → SignalLost uses `maxRecordTs`** as the new `lastSeenAt`, not the prior `Healthy.lastSeenAt`. Rationale: `maxRecordTs` is the actual last recording the DB has; the prior `Healthy.lastSeenAt` is staler. The emitted `Loss.lastSeen` is `maxRecordTs` correspondingly.
+
+2. **Late-alert row** (`SignalLost(sent=false)`, overThreshold, NOT inGrace): this is the new flow that ensures cameras dead before startup get an alert after grace ends. Previously they were silently stuck.
 
 ### Restart Behavior
 
-- State is in-memory and lost on restart. The startup grace period (default 5min) gives Frigate and cameras time to settle before the detector starts emitting alerts.
-- A camera that is genuinely dead at restart time will be re-detected as `SignalLost` after the grace period (correct: it really is down, the user should know).
-- A camera that recovers during grace period gets a silent state seed — no recovery notification, because we never observed a loss. This is acceptable: recovery alerts for events the user never saw a loss for would be confusing.
+- State is in-memory and lost on restart. The startup grace period (default 5min) gives Frigate and cameras time to settle before the detector emits user-facing alerts.
+- During grace, cameras with `gap > threshold` are still tracked as `SignalLost(notificationSent = false)` — the alert is *deferred*, not lost.
+- After grace ends, on the next tick any `SignalLost` entry with `notificationSent = false` whose `gap` still exceeds `threshold` triggers a late LOSS alert. The flag is then flipped to `true`.
+- A camera that recovers during grace period gets a silent state seed (`Healthy`) — no recovery alert, because no loss was ever observed.
 
 ### Concurrency
 
-`@Scheduled(fixedDelay = pollInterval)` guarantees at-most-one tick at a time (no overlap). However, Spring `TaskScheduler` is backed by a thread pool (`spring.task.scheduling.pool.size`), so consecutive ticks may execute on different threads. The state map therefore lives in a `ConcurrentHashMap<String, CameraSignalState>` to guarantee memory visibility across ticks. No external readers — the map is private to the task.
+`@Scheduled(fixedDelay = pollInterval)` with a `suspend fun tick()` guarantees at-most-one in-flight tick (Spring serializes consecutive invocations of the same scheduled method, even when the method suspends). The state map is therefore accessed serially. We use `ConcurrentHashMap<String, CameraSignalState>` defensively — the cost is negligible and it protects against future changes (e.g., if anyone adds parallel access via JMX exposure or test instrumentation). The map is private to the task; there are no external readers today.
 
 ## Configuration
 
@@ -159,25 +177,32 @@ application:
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `SIGNAL_LOSS_ENABLED` | `true` | Master flag. `@ConditionalOnProperty`. |
-| `SIGNAL_LOSS_THRESHOLD` | `3m` | If `now - lastRecording > THRESHOLD` then signal is considered lost. |
-| `SIGNAL_LOSS_POLL_INTERVAL` | `30s` | Tick period. Must be meaningfully smaller than threshold. |
-| `SIGNAL_LOSS_ACTIVE_WINDOW` | `24h` | "Active camera" window. Cameras whose last recording is older are not monitored. |
-| `SIGNAL_LOSS_STARTUP_GRACE` | `5m` | After startup, only seed state — no notifications. |
+| `SIGNAL_LOSS_ENABLED` | `true` | Master flag. `@ConditionalOnProperty(matchIfMissing = false)` — feature ON by default in production via `application.yaml`, but missing-property contexts (e.g., test contexts that don't set the key) won't activate the task. |
+| `SIGNAL_LOSS_THRESHOLD` | `3m` | If `now - lastRecording > THRESHOLD` (strict) then signal is considered lost. |
+| `SIGNAL_LOSS_POLL_INTERVAL` | `30s` | Tick period. Must be smaller than threshold. |
+| `SIGNAL_LOSS_ACTIVE_WINDOW` | `24h` | "Active camera" window. Cameras whose last recording is older are not monitored. **Must be set to at least Frigate's recording retention** to avoid losing track of normally-recording cameras. |
+| `SIGNAL_LOSS_STARTUP_GRACE` | `5m` | After startup, alerts are deferred (state still seeded as `SignalLost(notificationSent = false)`). After grace ends, deferred alerts fire on the next tick if the gap still holds. |
 
-### Validation (in `SignalLossProperties`)
+### Validation
 
-Validate in `@PostConstruct`; fail fast with clear messages:
+Per-field validation uses Jakarta `@Validated` + `@field:NotNull` / `@field:Positive` (or equivalent) on `SignalLossProperties`, mirroring the existing `TelegramProperties` style. Cross-field invariants are checked in `@PostConstruct` because Bean Validation cannot express them concisely:
 
-- `threshold > 0`
-- `pollInterval > 0`
-- `pollInterval < threshold` (otherwise the detector's resolution is degenerate)
-- `activeWindow > threshold`
-- `startupGrace >= 0`
+- (per-field, via annotations) `enabled` not null
+- (per-field, via annotations) `threshold`, `pollInterval`, `activeWindow` positive (`@Positive` on `Duration` works in Spring Boot 3+)
+- (per-field, via annotations) `startupGrace` non-negative
+- (cross-field, in `@PostConstruct`) `pollInterval < threshold` (otherwise the detector's resolution is degenerate)
+- (cross-field, in `@PostConstruct`) `activeWindow > threshold`
+- (cross-field, in `@PostConstruct`) **The user MUST set `activeWindow` to be `>=` Frigate's recording retention.** Otherwise active cameras can fall out of the activeWindow during normal operation. We cannot validate this automatically (we don't know Frigate's retention), but the constraint is documented in the `.claude/rules/configuration.md` entry for `SIGNAL_LOSS_ACTIVE_WINDOW`.
+
+All `@PostConstruct` failures throw `IllegalStateException` with a message naming both the offending property and the conflicting value.
+
+### Database Indexes
+
+The query `SELECT cam_id, MAX(record_timestamp) FROM recordings WHERE record_timestamp >= :activeSince AND cam_id IS NOT NULL GROUP BY cam_id` is satisfied by the existing `idx_recordings_record_timestamp` (single-column btree on `record_timestamp`). PostgreSQL performs a range scan on the 24h window followed by hash aggregation. **No new index migration is required.** For very large deployments (50+ cameras, > 1M rows in 24h), a composite `(cam_id, record_timestamp DESC)` would enable a loose index scan; this is deferred until measured to be necessary.
 
 ### Documentation
 
-Update `.claude/rules/configuration.md` to register the five new env vars.
+Update `.claude/rules/configuration.md` to register the five new env vars (with the explicit activeWindow >= retention guidance for `SIGNAL_LOSS_ACTIVE_WINDOW`). Update `.claude/rules/database.md` ONLY IF a new index is added (per the decision above, none is added in this iteration).
 
 ## Telegram Notifications
 
@@ -215,42 +240,50 @@ The new `sendCameraSignalLost` and `sendCameraSignalRecovered` methods build a n
 
 | Scenario | Behavior |
 |---|---|
-| Repo query failed (DB timeout, network) | `logger.warn { "Signal-loss tick failed: ${e.message}" }`. State unchanged. Next tick retries. |
-| Telegram queue full (`Channel.trySend` returned failure) | `logger.warn { "Failed to enqueue signal-loss notification for $camId: queue full" }`. The state transition has already been applied — we will NOT re-attempt on subsequent ticks (the state is now `SignalLost`, the next tick falls into the `(SignalLost, lost)` no-op branch). Trade-off: one notification can be lost under queue pressure, but the detector cannot become a runaway alert source. |
-| `TelegramNotificationService` threw on enqueue | Same as above: log warn, transition stays applied. |
-| Camera deleted from DB between ticks | `cleanup` step removes it on the next tick, no notification. |
-| Conflict at startup (signal-loss=true, telegram=false) | Application fails to start — checked in `SignalLossMonitorTask.@PostConstruct` (the task is only constructed when `signal-loss.enabled=true`, so detecting `telegram.enabled=false` there is the cleanest single point). Exception names both env-vars. |
+| Repo query failed (DB timeout, network) | Catch (excluding `CancellationException`), `logger.warn { "Signal-loss tick failed: ${e.message}" }`. State unchanged. Next tick retries. |
+| Telegram queue full | `notificationQueue.enqueue(task)` uses suspend `channel.send()`. Because `tick()` is `suspend fun`, this suspends the tick coroutine without blocking any platform thread. Spring `@Scheduled` waits for the suspending tick to complete before scheduling the next one (single in-flight invariant). When the consumer drains the queue, the tick resumes and finishes; the next tick fires `pollInterval` after that. Trade-off: under sustained queue pressure individual ticks may take longer than `pollInterval`, so freshness of state degrades — but `ServerHealthMonitor` and other `@Scheduled` jobs are unaffected (they run on their own scheduler-thread coroutines), and no notification is lost. The state transition is already applied for ticks that completed; cameras already in `SignalLost` fall into the no-op branch on subsequent ticks (no spam). |
+| `TelegramNotificationService` threw on enqueue (non-cancellation) | Catch, log warn, transition stays applied (per state-machine: `SignalLost(notificationSent = true)` even if enqueue failed). Subsequent ticks see `(SignalLost, sent=true, true)` no-op. Trade-off: one notification can be lost under unrecoverable Telegram failure, but the detector cannot become a runaway alert source. |
+| `CancellationException` propagation | Always rethrown (never swallowed) — required for proper coroutine cancellation on shutdown. |
+| Camera deleted from DB between ticks | `cleanup` step removes it on the next tick (only if `Healthy`), no notification. `SignalLost` entries are preserved (see Tick Algorithm step 3). |
+| Conflict at startup (signal-loss=true, telegram=false) | `SignalLossTelegramGuard` `@Component` (mirrors `AiDescriptionTelegramGuard`) throws `IllegalStateException` at context refresh. Exception names both `application.signal-loss.enabled` and `application.telegram.enabled`. Application context fails to start. |
+| Clock skew (Frigate `record_timestamp` is in the future relative to `now`) | `gap = max(Duration.ZERO, now - maxRecordTs)`. Log warn at most once per camera per tick. Treats the camera as healthy. |
 
 ### Logging Levels
 
 | Level | Event |
 |---|---|
-| `INFO` | Task startup with config; `Healthy → SignalLost` transition; `SignalLost → Healthy` transition; end of startup grace |
-| `DEBUG` | Per-tick summary: "scanned N cameras, M lost, K healthy" |
-| `WARN` | Tick failure; queue full; cleanup of cameras outside active window (count only — single line per tick if any) |
+| `INFO` | Task startup with config; `Healthy → SignalLost` transition (with `lastSeenAt`, `gap`); `SignalLost → Healthy` transition (with `downtime`); end of startup grace; **late LOSS alert dispatched after grace** (per camera, with `gap`) |
+| `DEBUG` | Per-tick summary: "scanned N cameras, currentlyLost=M, healthy=K, removed=R" (note: `currentlyLost` is a gauge — count of cameras currently in `SignalLost` — NOT new losses this tick) |
+| `WARN` | Tick failure; clock-skew detected for camera (rate-limited per camera); cleanup of `SignalLost` entries that fell out of activeWindow (none today; reserved); `TelegramNotificationService` enqueue threw |
+| —     | `CancellationException` is always rethrown (never logged at any level) |
 
 No `ERROR` — detector failure does not interrupt the rest of the system; it is degraded, not fatal.
 
 ## Testing
 
+### Unit tests for `decide()` (pure function, no mocks needed)
+
+Parameterized coverage of the full decision table (rows from "decide() Decision Table" above). Each row is one parameterized test case asserting `(newState, event)`. No `Clock`, no DB, no MockK — just `decide(prev, observation, config)`. This is the bulk of state-machine testing.
+
 ### Unit tests for `SignalLossMonitorTask` (JUnit 5 + MockK + injected `Clock`)
 
-Parameterized state-machine coverage — all 6 cases of `(prev state, overThreshold)`:
+These wrap `decide()` integration with the IO surfaces. Tests call `tick()` directly (not via `@Scheduled` triggers).
 
-- `(null, false)` → state seeded as `Healthy`, no notification
-- `(null, true)` → state seeded as `SignalLost`, **loss** emitted (outside grace)
-- `(Healthy, false)` → `lastSeenAt` advanced
-- `(Healthy, true)` → state → `SignalLost`, **loss** emitted with `lastSeen` from the prior `Healthy`
-- `(SignalLost, false)` → state → `Healthy`, **recovery** emitted with `downtime = newRec - prevLastSeen`
-- `(SignalLost, true)` → no-op, no emit
+- **State seeding from DB**: tick reads stats, applies decisions, updates state map.
+- **Cleanup logic**: camera absent from stats AND `Healthy` → removed; camera absent from stats AND `SignalLost` → KEPT (regression test for the recovery-after-cleanup gap).
+- **Startup grace**: in the first `startupGrace` minutes, all `Loss`/`Recovery` emissions are suppressed but state is seeded as `SignalLost(notificationSent = false)` if applicable.
+- **Late alert after grace** (CRITICAL test): camera dead at startup → first tick (in grace) seeds `SignalLost(sent=false)` silently → tick after grace ends emits LOSS, flips to `sent=true` → subsequent tick falls into no-op.
+- **Healthy → SignalLost uses `maxRecordTs`** (not stale `Healthy.lastSeenAt`): assert that `Loss` event's `lastSeen` matches the DB value, not the prior state's value.
+- **Repo throws** → `tick` catches non-cancellation exceptions, state unchanged.
+- **`CancellationException` propagates** (does NOT get caught) — assertion that the cancellation surfaces.
+- **Telegram enqueue throws** → state transition retained, next tick falls into no-op branch (no repeat alert).
+- **Clock skew handling**: `maxRecordTs > now` → `gap = 0`, treated as healthy, warn logged.
 
-Plus:
+### Tests for `SignalLossTelegramGuard`
 
-- Cleanup: camera in state but absent from stats → removed silently
-- Startup grace: in the first `startupGrace` minutes, all loss/recovery emissions are suppressed but state is seeded
-- After grace ends: a camera still in `SignalLost` from grace-time emits no late alert (that path is `(SignalLost, true)` no-op); a camera that flipped during grace stays in seeded state and behaves normally afterwards
-- Repo throws → tick swallows the exception, state unchanged
-- Telegram enqueue throws → state transition retained, next tick falls into no-op branch (no repeat alert)
+- `signal-loss.enabled=true && telegram.enabled=false` → guard throws `IllegalStateException` mentioning both env-vars.
+- `signal-loss.enabled=true && telegram.enabled=true` → guard accepts (no throw).
+- `signal-loss.enabled=false` → guard bean either not constructed (`@ConditionalOnProperty`) or accepts; covered by integration test (see below).
 
 ### Integration tests for `RecordingEntityRepository.findLastRecordingPerCamera`
 
@@ -274,7 +307,11 @@ Parameterized: `threshold=0`, `pollInterval >= threshold`, `activeWindow <= thre
 
 ### Conflict-fail integration test
 
-`@SpringBootTest` with `application.signal-loss.enabled=true`, `application.telegram.enabled=false` → context startup fails; the exception names both env-vars in conflict.
+`@SpringBootTest` with `application.signal-loss.enabled=true`, `application.telegram.enabled=false` → context startup fails because `SignalLossTelegramGuard` throws; the exception names both env-vars in conflict.
+
+### Test config compatibility check
+
+Run the existing `core` and `service` integration test suites unchanged (no patches to `modules/core/src/test/resources/application.yaml`). Because `@ConditionalOnProperty(matchIfMissing = false)` is in effect for `application.signal-loss.enabled`, and the test config does not set the property, neither `SignalLossMonitorTask` nor `SignalLossTelegramGuard` is constructed in test contexts → no breakage.
 
 ### Out of scope (explicitly)
 
@@ -282,9 +319,18 @@ Parameterized: `threshold=0`, `pollInterval >= threshold`, `activeWindow <= thre
 - Real Spring `@Scheduled` timing — tests call the tick method directly
 - Wall-clock timing — all tests use a controllable mock `Clock`
 
+## Accepted Trade-offs (consciously deferred)
+
+These were raised in the iter-1 review and explicitly accepted as deferred to a future iteration:
+
+- **First-sighting LOSS by very stale cameras**: a camera last seen 23h ago (still inside `activeWindow`) that we observe for the first time triggers a LOSS alert. Operationally this can mean alerts on cameras the user has already decommissioned but not yet purged from the DB. Accepted as is — the alert volume is bounded (one alert per stale camera at startup, never repeated), and adding a `firstSightingMaxAge` cutoff has its own UX trade-offs.
+- **Wording**: messages say "Camera X lost signal" rather than the more accurate "Recordings stopped arriving from camera X". Accepted as the snappier UX is more useful in the Telegram notification context.
+- **Flapping suppression / hysteresis / cooldown**: a camera that toggles around the threshold can produce LOSS+RECOVERY churn. Not addressed in this iteration; will be added if observed in production.
+- **Micrometer metrics** (`signal_loss_detected_total`, `signal_loss_cameras_lost` gauge, etc.): not added in this iteration. INFO-level logging on every transition is sufficient for first-iteration debugging.
+
 ## Open Questions
 
-None at this time. All ambiguities were resolved during brainstorming.
+None at this time. All ambiguities were resolved during brainstorming and the iter-1 review cycle.
 
 ## Next Step
 
