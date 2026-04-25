@@ -5,10 +5,13 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.verify
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
@@ -170,7 +173,7 @@ class TelegramNotificationServiceImplTest {
                 )
             val taskSlot = slot<RecordingNotificationTask>()
             var supplierInvocations = 0
-            val supplier: () -> kotlinx.coroutines.Deferred<Result<ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult>>? = {
+            val supplier: () -> Deferred<Result<DescriptionResult>>? = {
                 supplierInvocations++
                 null
             }
@@ -200,7 +203,7 @@ class TelegramNotificationServiceImplTest {
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
                 )
             var supplierInvocations = 0
-            val supplier: () -> kotlinx.coroutines.Deferred<Result<ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult>>? = {
+            val supplier: () -> Deferred<Result<DescriptionResult>>? = {
                 supplierInvocations++
                 null
             }
@@ -218,7 +221,7 @@ class TelegramNotificationServiceImplTest {
                 )
             val captured = mutableListOf<RecordingNotificationTask>()
             coEvery { notificationQueue.enqueue(any()) } answers {
-                captured.add(arg<Any>(0) as RecordingNotificationTask)
+                captured.add(arg<RecordingNotificationTask>(0))
             }
 
             service.sendRecordingNotification(recording, visualizedFrames, supplier)
@@ -255,6 +258,7 @@ class TelegramNotificationServiceImplTest {
             service.sendRecordingNotification(recording, visualizedFrames, descriptionSupplier = null)
 
             assertEquals(null, taskSlot.captured.descriptionHandle)
+            verify(exactly = 0) { rateLimiterProvider.getIfAvailable() }
         }
 
     @Test
@@ -268,7 +272,7 @@ class TelegramNotificationServiceImplTest {
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
                 )
             var supplierInvocations = 0
-            val supplier: () -> kotlinx.coroutines.Deferred<Result<ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult>>? = {
+            val supplier: () -> Deferred<Result<DescriptionResult>>? = {
                 supplierInvocations++
                 null
             }
