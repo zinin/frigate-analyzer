@@ -84,7 +84,7 @@ class SignalLossMonitorTask(
                 state[stat.camId] = decision.newState
 
                 when (val event = decision.event) {
-                    is SignalLossEvent.Loss -> emitLoss(event)
+                    is SignalLossEvent.Loss -> emitLoss(event, now)
                     is SignalLossEvent.Recovery -> emitRecovery(event)
                     null -> Unit
                 }
@@ -112,10 +112,15 @@ class SignalLossMonitorTask(
         }
     }
 
-    private suspend fun emitLoss(event: SignalLossEvent.Loss) {
+    private suspend fun emitLoss(
+        event: SignalLossEvent.Loss,
+        now: Instant,
+    ) {
         // Per-emit try/catch keeps the tick's for-loop progressing for other cameras when a single dispatch fails.
+        // `now` is propagated from `tick()` to avoid microsecond drift between the gap the decider used
+        // and the "Xm Xs ago" the formatter computes.
         try {
-            notificationService.sendCameraSignalLost(event.camId, event.lastSeenAt, Instant.now(clock))
+            notificationService.sendCameraSignalLost(event.camId, event.lastSeenAt, now)
             logger.info {
                 "Signal lost: camera=${event.camId}, lastSeen=${event.lastSeenAt}, gap=${event.gap}"
             }
