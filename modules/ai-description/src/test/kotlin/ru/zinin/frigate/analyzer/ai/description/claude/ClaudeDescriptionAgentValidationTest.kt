@@ -22,15 +22,19 @@ class ClaudeDescriptionAgentValidationTest {
     private val descriptionProps =
         DescriptionProperties(enabled = true, provider = "claude", common = common)
 
-    private fun agent(token: String): ClaudeDescriptionAgent =
+    private fun agent(
+        oauthToken: String = "token",
+        authToken: String = "",
+    ): ClaudeDescriptionAgent =
         ClaudeDescriptionAgent(
             claudeProperties =
                 ClaudeProperties(
-                    oauthToken = token,
+                    oauthToken = oauthToken,
                     model = "opus",
                     cliPath = "",
                     workingDirectory = "/tmp",
                     proxy = ClaudeProperties.ProxySection("", "", ""),
+                    anthropic = ClaudeProperties.AnthropicSection(authToken = authToken),
                 ),
             descriptionProperties = descriptionProps,
             promptBuilder = mockk(),
@@ -41,17 +45,27 @@ class ClaudeDescriptionAgentValidationTest {
         )
 
     @Test
-    fun `init rejects blank oauth token`() {
-        assertFailsWith<IllegalStateException> { agent("") }
+    fun `init rejects when both tokens blank`() {
+        assertFailsWith<IllegalStateException> { agent(oauthToken = "", authToken = "") }
     }
 
     @Test
-    fun `init rejects blank oauth token with whitespace`() {
-        assertFailsWith<IllegalStateException> { agent("   ") }
+    fun `init rejects when both tokens whitespace`() {
+        assertFailsWith<IllegalStateException> { agent(oauthToken = "   ", authToken = "   ") }
     }
 
     @Test
-    fun `init accepts non-blank oauth token`() {
-        agent("token-xyz") // no exception
+    fun `init accepts oauth token only`() {
+        agent(oauthToken = "token-xyz") // no exception
+    }
+
+    @Test
+    fun `init accepts anthropic auth token only`() {
+        agent(oauthToken = "", authToken = "sk-sp-xxx") // no exception
+    }
+
+    @Test
+    fun `init accepts both tokens`() {
+        agent(oauthToken = "token-xyz", authToken = "sk-sp-xxx") // no exception
     }
 }
