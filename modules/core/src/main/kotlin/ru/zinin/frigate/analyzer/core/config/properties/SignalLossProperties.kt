@@ -1,12 +1,11 @@
 package ru.zinin.frigate.analyzer.core.config.properties
 
-import jakarta.annotation.PostConstruct
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.validation.annotation.Validated
 import java.time.Duration
 
-@Validated
 @ConfigurationProperties(prefix = "application.signal-loss")
+@Validated
 data class SignalLossProperties(
     val enabled: Boolean = true,
     val threshold: Duration = Duration.ofMinutes(3),
@@ -14,8 +13,16 @@ data class SignalLossProperties(
     val activeWindow: Duration = Duration.ofHours(24),
     val startupGrace: Duration = Duration.ofMinutes(5),
 ) {
-    @PostConstruct
-    fun validateCrossField() {
+    // Cross-field invariants are checked imperatively in `init {}` (instead of as Bean Validation
+    // annotations on individual fields) for two reasons:
+    // 1. Bean Validation cannot concisely express `pollInterval < threshold` and
+    //    `activeWindow > threshold`.
+    // 2. Kotlin non-nullable types already prevent null binding, and unified imperative `check(...)`
+    //    messages name the offending property in operator-readable form.
+    //
+    // Using `init {}` rather than `@PostConstruct` ensures `data class.copy(...)` re-validates,
+    // preventing silent bypass.
+    init {
         check(!threshold.isZero && !threshold.isNegative) {
             "application.signal-loss.threshold must be positive, got $threshold"
         }
