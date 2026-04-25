@@ -53,6 +53,10 @@ application:
         queue-timeout: 30s
         timeout: 60s
         max-concurrent: 2
+        rate-limit:
+          enabled: false
+          max-requests: 10
+          window: 1h
       claude:
         oauth-token: ""
         model: opus

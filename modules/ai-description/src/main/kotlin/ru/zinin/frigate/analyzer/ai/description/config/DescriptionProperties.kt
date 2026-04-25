@@ -32,10 +32,23 @@ data class DescriptionProperties(
         val timeout: Duration,
         @field:Min(1) @field:Max(10)
         val maxConcurrent: Int,
+        @field:Valid
+        val rateLimit: RateLimit,
     ) {
         init {
             require(queueTimeout.toMillis() > 0) { "queue-timeout must be positive" }
             require(timeout.toMillis() > 0) { "timeout must be positive" }
+        }
+    }
+
+    data class RateLimit(
+        val enabled: Boolean = false,
+        @field:Min(1) @field:Max(10000)
+        val maxRequests: Int = 10,
+        val window: Duration = Duration.ofHours(1),
+    ) {
+        init {
+            require(window.toMillis() > 0) { "rate-limit.window must be positive" }
         }
     }
 }
