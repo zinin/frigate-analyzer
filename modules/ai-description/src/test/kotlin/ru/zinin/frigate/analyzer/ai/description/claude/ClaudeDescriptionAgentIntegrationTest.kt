@@ -82,6 +82,7 @@ JSON
                 cliPath = stubClaude.absolutePathString(),
                 workingDirectory = tempDir.absolutePathString(),
                 proxy = ClaudeProperties.ProxySection("", "", ""),
+                anthropic = ClaudeProperties.AnthropicSection(),
             )
         val common =
             DescriptionProperties.CommonSection(
