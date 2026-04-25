@@ -108,6 +108,33 @@ class SignalLossPropertiesTest {
                     expectedFragment = "activeWindow",
                 ),
                 InvalidCase(
+                    // Codex P2: activeWindow > threshold alone is insufficient. With grace=5m,
+                    // threshold=3m, activeWindow=4m: a camera lost just before startup falls out of
+                    // activeWindow before grace ends, so its deferred SignalLost(sent=false) never
+                    // gets revisited by decide() (camera no longer in stats) and the late-alert
+                    // never fires. Reject at startup instead of silently dropping outages.
+                    name = "activeWindow greater than threshold but not greater than threshold+startupGrace",
+                    constructor = {
+                        base().copy(
+                            threshold = Duration.ofMinutes(3),
+                            activeWindow = Duration.ofMinutes(4),
+                            startupGrace = Duration.ofMinutes(5),
+                        )
+                    },
+                    expectedFragment = "activeWindow",
+                ),
+                InvalidCase(
+                    name = "activeWindow equals threshold+startupGrace exactly (strict inequality required)",
+                    constructor = {
+                        base().copy(
+                            threshold = Duration.ofMinutes(3),
+                            activeWindow = Duration.ofMinutes(8),
+                            startupGrace = Duration.ofMinutes(5),
+                        )
+                    },
+                    expectedFragment = "activeWindow",
+                ),
+                InvalidCase(
                     name = "startupGrace negative",
                     constructor = { base().copy(startupGrace = Duration.ofSeconds(-1)) },
                     expectedFragment = "startupGrace",

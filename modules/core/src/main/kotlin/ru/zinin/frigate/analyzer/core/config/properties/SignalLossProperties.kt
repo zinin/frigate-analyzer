@@ -16,7 +16,7 @@ data class SignalLossProperties(
     // Cross-field invariants are checked imperatively in `init {}` (instead of as Bean Validation
     // annotations on individual fields) for two reasons:
     // 1. Bean Validation cannot concisely express `pollInterval < threshold` and
-    //    `activeWindow > threshold`.
+    //    `activeWindow > threshold + startupGrace`.
     // 2. Kotlin non-nullable types already prevent null binding, and unified imperative `check(...)`
     //    messages name the offending property in operator-readable form.
     //
@@ -38,8 +38,15 @@ data class SignalLossProperties(
         check(pollInterval < threshold) {
             "application.signal-loss.pollInterval ($pollInterval) must be smaller than threshold ($threshold)"
         }
-        check(activeWindow > threshold) {
-            "application.signal-loss.activeWindow ($activeWindow) must be greater than threshold ($threshold)"
+        // activeWindow must exceed threshold AND span the startup grace, otherwise a camera lost
+        // just before startup falls out of `activeWindow` before grace ends — `decide()` is then
+        // never called for it again and its deferred `SignalLost(notificationSent=false)` state
+        // never produces a late LOSS alert (silent outage). The strict inequality matches the spec.
+        check(activeWindow > threshold.plus(startupGrace)) {
+            "application.signal-loss.activeWindow ($activeWindow) must be greater than " +
+                "threshold + startupGrace (${threshold.plus(startupGrace)}); otherwise a camera " +
+                "lost during startup grace can fall out of activeWindow before the late-alert " +
+                "tick fires"
         }
     }
 }
