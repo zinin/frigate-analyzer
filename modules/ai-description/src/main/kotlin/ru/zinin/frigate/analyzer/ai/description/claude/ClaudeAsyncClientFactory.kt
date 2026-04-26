@@ -15,13 +15,19 @@ class ClaudeAsyncClientFactory(
     private val claudeProperties: ClaudeProperties,
 ) {
     fun create(workTimeout: Duration): ClaudeAsyncClient {
-        val options =
+        check(claudeProperties.oauthToken.isNotBlank() || claudeProperties.anthropic.authToken.isNotBlank()) {
+            "At least one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN must be set " +
+                "when application.ai.description.enabled=true"
+        }
+        val optionsBuilder =
             CLIOptions
                 .builder()
-                .model(claudeProperties.model)
                 .timeout(workTimeout)
                 .env(buildEnvMap())
-                .build()
+        if (claudeProperties.anthropic.modelOverride.isBlank()) {
+            optionsBuilder.model(claudeProperties.model)
+        }
+        val options = optionsBuilder.build()
 
         // workingDirectory ОБЯЗАТЕЛЕН для SDK 1.0.0 (AsyncSpec#build бросает
         // IllegalArgumentException("workingDirectory is required")).
@@ -38,15 +44,37 @@ class ClaudeAsyncClientFactory(
 
     internal fun buildEnvMap(): Map<String, String> =
         buildMap {
-            put("CLAUDE_CODE_OAUTH_TOKEN", claudeProperties.oauthToken)
-            if (claudeProperties.proxy.http.isNotBlank()) {
-                put("HTTP_PROXY", claudeProperties.proxy.http)
+            if (claudeProperties.oauthToken.isNotBlank()) {
+                put("CLAUDE_CODE_OAUTH_TOKEN", claudeProperties.oauthToken)
             }
-            if (claudeProperties.proxy.https.isNotBlank()) {
-                put("HTTPS_PROXY", claudeProperties.proxy.https)
+            val proxy = claudeProperties.proxy
+            if (proxy.http.isNotBlank()) {
+                put("HTTP_PROXY", proxy.http)
             }
-            if (claudeProperties.proxy.noProxy.isNotBlank()) {
-                put("NO_PROXY", claudeProperties.proxy.noProxy)
+            if (proxy.https.isNotBlank()) {
+                put("HTTPS_PROXY", proxy.https)
+            }
+            if (proxy.noProxy.isNotBlank()) {
+                put("NO_PROXY", proxy.noProxy)
+            }
+            val ap = claudeProperties.anthropic
+            if (ap.authToken.isNotBlank()) {
+                put("ANTHROPIC_AUTH_TOKEN", ap.authToken)
+            }
+            if (ap.baseUrl.isNotBlank()) {
+                put("ANTHROPIC_BASE_URL", ap.baseUrl)
+            }
+            if (ap.modelOverride.isNotBlank()) {
+                put("ANTHROPIC_MODEL", ap.modelOverride)
+            }
+            if (ap.defaultOpusModel.isNotBlank()) {
+                put("ANTHROPIC_DEFAULT_OPUS_MODEL", ap.defaultOpusModel)
+            }
+            if (ap.defaultSonnetModel.isNotBlank()) {
+                put("ANTHROPIC_DEFAULT_SONNET_MODEL", ap.defaultSonnetModel)
+            }
+            if (ap.defaultHaikuModel.isNotBlank()) {
+                put("ANTHROPIC_DEFAULT_HAIKU_MODEL", ap.defaultHaikuModel)
             }
         }
 }

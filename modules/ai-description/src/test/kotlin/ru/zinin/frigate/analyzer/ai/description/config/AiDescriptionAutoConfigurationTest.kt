@@ -61,6 +61,12 @@ class AiDescriptionAutoConfigurationTest {
                 "application.ai.description.claude.proxy.http=",
                 "application.ai.description.claude.proxy.https=",
                 "application.ai.description.claude.proxy.no-proxy=",
+                "application.ai.description.claude.anthropic.auth-token=",
+                "application.ai.description.claude.anthropic.base-url=",
+                "application.ai.description.claude.anthropic.model-override=",
+                "application.ai.description.claude.anthropic.default-opus-model=",
+                "application.ai.description.claude.anthropic.default-sonnet-model=",
+                "application.ai.description.claude.anthropic.default-haiku-model=",
             ).run { ctx ->
                 assert(ctx.getBeansOfType(DescriptionProperties::class.java).isNotEmpty()) {
                     "DescriptionProperties must be available when enabled=false (facade inject)"
@@ -94,6 +100,12 @@ class AiDescriptionAutoConfigurationTest {
                 "application.ai.description.claude.proxy.http=",
                 "application.ai.description.claude.proxy.https=",
                 "application.ai.description.claude.proxy.no-proxy=",
+                "application.ai.description.claude.anthropic.auth-token=",
+                "application.ai.description.claude.anthropic.base-url=",
+                "application.ai.description.claude.anthropic.model-override=",
+                "application.ai.description.claude.anthropic.default-opus-model=",
+                "application.ai.description.claude.anthropic.default-sonnet-model=",
+                "application.ai.description.claude.anthropic.default-haiku-model=",
             ).run { ctx ->
                 assert(ctx.getBeansOfType(DescriptionAgent::class.java).isNotEmpty()) {
                     "DescriptionAgent should be registered"
@@ -124,6 +136,12 @@ class AiDescriptionAutoConfigurationTest {
                 "application.ai.description.claude.proxy.http=",
                 "application.ai.description.claude.proxy.https=",
                 "application.ai.description.claude.proxy.no-proxy=",
+                "application.ai.description.claude.anthropic.auth-token=",
+                "application.ai.description.claude.anthropic.base-url=",
+                "application.ai.description.claude.anthropic.model-override=",
+                "application.ai.description.claude.anthropic.default-opus-model=",
+                "application.ai.description.claude.anthropic.default-sonnet-model=",
+                "application.ai.description.claude.anthropic.default-haiku-model=",
             ).run { ctx ->
                 assert(ctx.getBeansOfType(DescriptionRateLimiter::class.java).isNotEmpty()) {
                     "DescriptionRateLimiter must be registered when ai-description.enabled=true (regardless of rate-limit.enabled)"

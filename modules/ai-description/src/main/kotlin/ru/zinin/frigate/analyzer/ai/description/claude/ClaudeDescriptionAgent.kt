@@ -46,8 +46,9 @@ class ClaudeDescriptionAgent(
     private val semaphore = Semaphore(commonSection.maxConcurrent)
 
     init {
-        check(claudeProperties.oauthToken.isNotBlank()) {
-            "CLAUDE_CODE_OAUTH_TOKEN must be set when application.ai.description.enabled=true"
+        check(claudeProperties.oauthToken.isNotBlank() || claudeProperties.anthropic.authToken.isNotBlank()) {
+            "At least one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN must be set " +
+                "when application.ai.description.enabled=true"
         }
         // CLI detection зависит от cliPath: пустой → which claude; non-empty → проверяем executable напрямую.
         if (claudeProperties.cliPath.isBlank()) {

@@ -72,6 +72,13 @@ application:
         model: ${CLAUDE_MODEL:opus}
         cli-path: ${CLAUDE_CLI_PATH:}
         working-directory: ${CLAUDE_WORKING_DIR:${application.temp-folder}}
+        anthropic:
+          auth-token: ${ANTHROPIC_AUTH_TOKEN:}
+          base-url: ${ANTHROPIC_BASE_URL:}
+          model-override: ${ANTHROPIC_MODEL:}
+          default-opus-model: ${ANTHROPIC_DEFAULT_OPUS_MODEL:}
+          default-sonnet-model: ${ANTHROPIC_DEFAULT_SONNET_MODEL:}
+          default-haiku-model: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:}
         proxy:
           http: ${CLAUDE_HTTP_PROXY:}
           https: ${CLAUDE_HTTPS_PROXY:}
