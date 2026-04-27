@@ -753,10 +753,12 @@ object BboxClusteringHelper {
     fun cluster(
         detections: List<DetectionEntity>,
         innerIou: Float,
+        confidenceFloor: Float = 0.3f,
     ): List<RepresentativeBbox> {
         if (detections.isEmpty()) return emptyList()
 
         return detections
+            .filter { it.confidence >= confidenceFloor }
             .groupBy { it.className }
             .flatMap { (className, group) ->
                 clusterOneClass(className, group.sortedByDescending { it.confidence }, innerIou)
@@ -787,13 +789,21 @@ object BboxClusteringHelper {
         }
         return clusters.map { c ->
             val w = c.weightSum
-            RepresentativeBbox(
-                className = className,
-                x1 = c.weightedX1 / w,
-                y1 = c.weightedY1 / w,
-                x2 = c.weightedX2 / w,
-                y2 = c.weightedY2 / w,
-            )
+            if (w <= 0f) {
+                // Guard against NaN from all-zero-confidence detections.
+                RepresentativeBbox(
+                    className = className,
+                    x1 = c.unionX1, y1 = c.unionY1, x2 = c.unionX2, y2 = c.unionY2,
+                )
+            } else {
+                RepresentativeBbox(
+                    className = className,
+                    x1 = c.weightedX1 / w,
+                    y1 = c.weightedY1 / w,
+                    x2 = c.weightedX2 / w,
+                    y2 = c.weightedY2 / w,
+                )
+            }
         }
     }
 
@@ -865,6 +875,8 @@ data class ObjectTrackerProperties(
     val iouThreshold: Float = 0.3f,
     @field:DecimalMin("0.0") @field:DecimalMax("1.0")
     val innerIou: Float = 0.5f,
+    @field:DecimalMin("0.0") @field:DecimalMax("1.0")
+    val confidenceFloor: Float = 0.3f,
     val cleanupInterval: Duration = Duration.ofHours(1),
     val cleanupRetention: Duration = Duration.ofHours(1),
 )
@@ -1088,11 +1100,12 @@ class ObjectTrackerServiceImplTest {
     }
 
     @Test
-    fun `findActive uses now minus TTL as threshold`() = runTest {
+    fun `findActive uses recordingTimestamp minus TTL as threshold`() = runTest {
         val captured = slot<Instant>()
         coEvery { repo.findActive(eq(camId), capture(captured)) } returns emptyList()
+        coEvery { uuid.generateV1() } returns UUID.randomUUID()
 
-        service.evaluate(rec(), emptyList())
+        service.evaluate(rec(), listOf(det("car", 0f, 0f, 0.5f, 0.5f)))
 
         // Default TTL = 120s. fixedNow - 120s = 11:58:00Z.
         assertEquals(Instant.parse("2026-04-27T11:58:00Z"), captured.captured)
@@ -1126,7 +1139,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.reactive.TransactionalOperator
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.DetectionDelta
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
@@ -1150,16 +1163,25 @@ class ObjectTrackerServiceImpl(
     private val uuid: UUIDGeneratorHelper,
     private val clock: Clock,
     private val properties: ObjectTrackerProperties,
+    private val transactionalOperator: TransactionalOperator,
 ) : ObjectTrackerService {
+    // Per-camera mutexes for serializing evaluate() calls. Camera count is typically
+    // fixed at 2-10, so keys are never removed (not a memory concern).
     private val perCameraMutex = ConcurrentHashMap<String, Mutex>()
 
-    @Transactional
+    // Transaction is opened INSIDE the mutex via TransactionalOperator, not via
+    // @Transactional on the outer method — avoids holding R2DBC connections from
+    // the pool while waiting for the per-camera lock.
     override suspend fun evaluate(
         recording: RecordingDto,
         detections: List<DetectionEntity>,
     ): DetectionDelta {
         val mutex = perCameraMutex.computeIfAbsent(recording.camId) { Mutex() }
-        return mutex.withLock { evaluateLocked(recording, detections) }
+        return mutex.withLock {
+            transactionalOperator.executeAndAwait {
+                evaluateLocked(recording, detections)
+            }
+        }
     }
 
     private suspend fun evaluateLocked(
@@ -1169,7 +1191,9 @@ class ObjectTrackerServiceImpl(
         if (detections.isEmpty()) {
             return DetectionDelta(0, 0, 0, emptyList())
         }
-        val representatives = BboxClusteringHelper.cluster(detections, properties.innerIou)
+        val representatives = BboxClusteringHelper.cluster(
+            detections, properties.innerIou, properties.confidenceFloor,
+        )
         val recordingTimestamp = recording.recordTimestamp
         val ttlThreshold = recordingTimestamp.minus(properties.ttl)
         val active = repository.findActive(recording.camId, ttlThreshold).toMutableList()
@@ -1177,7 +1201,20 @@ class ObjectTrackerServiceImpl(
         var matched = 0
         val newClasses = mutableListOf<String>()
         for (bbox in representatives) {
-            val match = active.firstOrNull { it.matches(bbox, properties.iouThreshold) }
+            // Best-match (not first-match): pick the active track with highest IoU.
+            // Prevents cross-match aliasing when two nearby same-class objects both
+            // have IoU > threshold with multiple tracks.
+            val match = active
+                .filter { it.className == bbox.className }
+                .mapNotNull { track ->
+                    val iouVal = IouHelper.iou(
+                        track.bboxX1, track.bboxY1, track.bboxX2, track.bboxY2,
+                        bbox.x1, bbox.y1, bbox.x2, bbox.y2,
+                    )
+                    if (iouVal > properties.iouThreshold) track to iouVal else null
+                }
+                .maxByOrNull { (_, iouVal) -> iouVal }
+                ?.first
             if (match != null) {
                 active.remove(match)
                 repository.updateOnMatch(
@@ -1226,9 +1263,6 @@ class ObjectTrackerServiceImpl(
         return deleted
     }
 
-    private fun ObjectTrackEntity.matches(bbox: RepresentativeBbox, threshold: Float): Boolean =
-        className == bbox.className &&
-            IouHelper.iou(bboxX1, bboxY1, bboxX2, bboxY2, bbox.x1, bbox.y1, bbox.x2, bbox.y2) > threshold
 }
 ```
 
@@ -1573,13 +1607,13 @@ class NotificationDecisionServiceImplTest {
     }
 
     @Test
-    fun `tracker exception leads to TRACKER_ERROR and shouldNotify false`() = runTest {
+    fun `tracker exception leads to TRACKER_ERROR and shouldNotify true (fail-open)`() = runTest {
         coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
         coEvery { tracker.evaluate(recording, any()) } throws RuntimeException("db down")
 
         val decision = service.evaluate(recording, listOf(det()))
 
-        assertFalse(decision.shouldNotify)
+        assertTrue(decision.shouldNotify)
         assertEquals(NotificationDecisionReason.TRACKER_ERROR, decision.reason)
     }
 }
@@ -1628,6 +1662,8 @@ class NotificationDecisionServiceImpl(
             AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, default = true,
         )
 
+        // Tracker runs UNCONDITIONALLY (before the global check) to keep state
+        // coherent. When global returns ON, active tracks are up-to-date.
         return try {
             val delta = tracker.evaluate(recording, detections)
             when {
@@ -1649,10 +1685,13 @@ class NotificationDecisionServiceImpl(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            // Fail-open: on tracker failure, fall back to pre-tracker behavior —
+            // notify every recording with detections. Prevents silent suppression
+            // of real security events during transient DB issues.
             logger.warn(e) {
-                "Tracker failure for recording=${recording.id} cam=${recording.camId}; suppressing notification"
+                "Tracker failure for recording=${recording.id} cam=${recording.camId}; falling back to notify"
             }
-            NotificationDecision(false, NotificationDecisionReason.TRACKER_ERROR)
+            NotificationDecision(true, NotificationDecisionReason.TRACKER_ERROR)
         }
     }
 }
@@ -1700,8 +1739,8 @@ private val logger = KotlinLogging.logger {}
 class ObjectTracksCleanupTask(
     private val tracker: ObjectTrackerService,
 ) {
-    /** Cleanup interval is read from properties (ISO-8601 / simple Duration); default PT1H. */
-    @Scheduled(fixedDelayString = "\${application.notifications.tracker.cleanup-interval:PT1H}")
+    /** Cleanup interval in milliseconds; default 3_600_000 = 1 hour. */
+    @Scheduled(fixedDelay = 3_600_000)
     fun cleanup() {
         try {
             runBlocking {
@@ -1948,6 +1987,11 @@ git commit -m "feat(telegram): add per-user notification flags through entity/DT
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt`
 - Modify test: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplTest.kt`
 - Modify test: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt`
+- Possibly modify: `modules/telegram/build.gradle.kts`
+
+- [ ] **Step 0: Verify module dependency**
+
+Verify `modules/telegram/build.gradle.kts` has `implementation(project(":frigate-analyzer-service"))`. The module chain is `core → telegram → service`, so it should already be present. If missing, add it before proceeding — otherwise `AppSettingsService` from `service/` won't resolve.
 
 - [ ] **Step 1: Inject `AppSettingsService`**
 
@@ -3112,11 +3156,11 @@ Edit `modules/core/src/main/resources/application.yaml`. After the `signal-loss:
 ```yaml
   notifications:
     tracker:
-      ttl: ${NOTIFICATIONS_TRACK_TTL:120s}
+      ttl: ${NOTIFICATIONS_TRACK_TTL:PT2M}
       iou-threshold: ${NOTIFICATIONS_TRACK_IOU_THRESHOLD:0.3}
       inner-iou: ${NOTIFICATIONS_TRACK_INNER_IOU:0.5}
-      cleanup-interval: ${NOTIFICATIONS_TRACK_CLEANUP_INTERVAL:1h}
-      cleanup-retention: ${NOTIFICATIONS_TRACK_CLEANUP_RETENTION:1h}
+      cleanup-interval: ${NOTIFICATIONS_TRACK_CLEANUP_INTERVAL:PT1H}
+      cleanup-retention: ${NOTIFICATIONS_TRACK_CLEANUP_RETENTION:PT1H}
 ```
 
 - [ ] **Step 2: Update `.env.example`**
@@ -3126,11 +3170,11 @@ Edit `.env.example`. Append:
 ```bash
 
 # Notification tracker (object tracking + suppression)
-NOTIFICATIONS_TRACK_TTL=120s
+NOTIFICATIONS_TRACK_TTL=PT2M
 NOTIFICATIONS_TRACK_IOU_THRESHOLD=0.3
 NOTIFICATIONS_TRACK_INNER_IOU=0.5
-NOTIFICATIONS_TRACK_CLEANUP_INTERVAL=1h
-NOTIFICATIONS_TRACK_CLEANUP_RETENTION=1h
+NOTIFICATIONS_TRACK_CLEANUP_INTERVAL=PT1H
+NOTIFICATIONS_TRACK_CLEANUP_RETENTION=PT1H
 ```
 
 - [ ] **Step 3: Register `ObjectTrackerProperties` in core configuration**

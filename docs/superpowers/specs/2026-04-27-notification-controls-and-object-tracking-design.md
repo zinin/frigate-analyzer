@@ -191,10 +191,16 @@ ObjectTrackerService.evaluate(recording, representativeBboxes):
   toUpdate  = []
   unmatchedActive = active.toMutableList()
 
+  // Best-match: for each bbox pick the active track with *highest* IoU
+  // (not first-match). Prevents cross-match aliasing when two nearby
+  // same-class objects both have IoU > threshold with multiple tracks.
   for bbox in representativeBboxes:
-    match = unmatchedActive.find {
-      it.class_name == bbox.class && IoU(it.bbox, bbox) > THRESHOLD
-    }
+    match = unmatchedActive
+      .filter { it.class_name == bbox.class }
+      .map { it to IoU(it.bbox, bbox) }
+      .filter { (_, iou) -> iou > THRESHOLD }
+      .maxByOrNull { (_, iou) -> iou }
+      ?.first
     if match != null:
       unmatchedActive.remove(match)
       toUpdate.add(TrackUpdate(
@@ -403,10 +409,10 @@ This works correctly within a single application instance. If we later run multi
 
 ## Error Handling
 
-`evaluate` is `@Transactional` (Spring R2DBC). On exception:
+`evaluate` uses `@Transactional` on the **inner** method (after `Mutex.withLock`), NOT on the outer `evaluate()` entry point. This prevents transactions from opening before the mutex is acquired — which would otherwise hold R2DBC connections from the pool while waiting for the lock. On exception:
 
 - `ObjectTrackerService` propagates → `NotificationDecisionService` propagates → `RecordingProcessingFacade` catches in the existing try/catch around the notification step. Save is already committed (current contract).
-- **Fail-safe = "do not notify"** if tracker fails: prevents a flood when DB hiccups. Log at `WARN` with stack trace.
+- **Fail-safe = "notify anyway"** if tracker fails: avoids silent suppression of real security events when DB has a transient hiccup. Falls back to pre-tracker behavior — every recording with detections notifies. Log at `WARN` with stack trace.
 
 Concretely, `NotificationDecisionService` catches inside `evaluate`:
 
@@ -416,8 +422,8 @@ return try {
 } catch (e: CancellationException) {
     throw e
 } catch (e: Exception) {
-    logger.warn(e) { "Tracker failure for recording=${recording.id} cam=${recording.camId}; suppressing notification" }
-    NotificationDecision(shouldNotify = false, reason = TRACKER_ERROR, delta = null)
+    logger.warn(e) { "Tracker failure for recording=${recording.id} cam=${recording.camId}; falling back to notify" }
+    NotificationDecision(shouldNotify = true, reason = TRACKER_ERROR)
 }
 ```
 
