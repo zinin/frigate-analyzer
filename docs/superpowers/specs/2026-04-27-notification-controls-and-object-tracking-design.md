@@ -387,7 +387,7 @@ Two changes:
 
 ### `TelegramNotificationServiceImpl.sendCameraSignalLost / Recovered`
 
-Analogous changes by the `signal_*` flags.
+Analogous changes by the `signal_*` flags. Note: signal-loss/recovery does **not** go through `NotificationDecisionService` (it's not a recording event), so the global toggle check inside the Telegram impl is the **only** gate for the global flag — not defense-in-depth like the recording path.
 
 ## Concurrency
 
