@@ -14,6 +14,8 @@ import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
+import ru.zinin.frigate.analyzer.service.AppSettingKeys
+import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Duration
@@ -34,6 +36,7 @@ class TelegramNotificationServiceImpl(
     private val msg: MessageResolver,
     private val signalLossFormatter: SignalLossMessageFormatter,
     private val rateLimiterProvider: ObjectProvider<DescriptionRateLimiter>,
+    private val appSettings: AppSettingsService,
 ) : TelegramNotificationService {
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
@@ -48,6 +51,12 @@ class TelegramNotificationServiceImpl(
         val usersWithZones = userService.getAuthorizedUsersWithZones()
         if (usersWithZones.isEmpty()) {
             logger.debug { "No active subscribers found, skipping notification" }
+            return
+        }
+
+        val recipients = usersWithZones.filter { it.notificationsRecordingEnabled }
+        if (recipients.isEmpty()) {
+            logger.debug { "No subscribers with recording-notifications enabled" }
             return
         }
 
@@ -89,7 +98,7 @@ class TelegramNotificationServiceImpl(
                 }
             }
 
-        usersWithZones.forEach { userZone ->
+        recipients.forEach { userZone ->
             val lang = userZone.language ?: "en"
             val message = formatRecordingMessage(recording, userZone.zone, lang)
             val task =
@@ -105,7 +114,7 @@ class TelegramNotificationServiceImpl(
             notificationQueue.enqueue(task)
         }
 
-        logger.debug { "Enqueued notification for ${usersWithZones.size} subscribers" }
+        logger.debug { "Enqueued notification for ${recipients.size} subscribers" }
     }
 
     private fun formatRecordingMessage(
@@ -153,12 +162,21 @@ class TelegramNotificationServiceImpl(
         lastSeenAt: Instant,
         now: Instant,
     ) {
+        if (!appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, default = true)) {
+            logger.debug { "Signal-loss notifications globally disabled — skipping cam=$camId" }
+            return
+        }
         val usersWithZones = userService.getAuthorizedUsersWithZones()
         if (usersWithZones.isEmpty()) {
             logger.debug { "No active subscribers for signal-loss alert (cam=$camId)" }
             return
         }
-        usersWithZones.forEach { userZone ->
+        val recipients = usersWithZones.filter { it.notificationsSignalEnabled }
+        if (recipients.isEmpty()) {
+            logger.debug { "No subscribers with signal-loss notifications enabled (cam=$camId)" }
+            return
+        }
+        recipients.forEach { userZone ->
             val lang = userZone.language ?: "en"
             val text =
                 signalLossFormatter.buildLossMessage(
@@ -176,19 +194,28 @@ class TelegramNotificationServiceImpl(
                 ),
             )
         }
-        logger.info { "Enqueued signal-loss alert for camera $camId to ${usersWithZones.size} recipients" }
+        logger.info { "Enqueued signal-loss alert for camera $camId to ${recipients.size} recipients" }
     }
 
     override suspend fun sendCameraSignalRecovered(
         camId: String,
         downtime: Duration,
     ) {
+        if (!appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, default = true)) {
+            logger.debug { "Signal-recovery notifications globally disabled — skipping cam=$camId" }
+            return
+        }
         val usersWithZones = userService.getAuthorizedUsersWithZones()
         if (usersWithZones.isEmpty()) {
             logger.debug { "No active subscribers for signal-recovery alert (cam=$camId)" }
             return
         }
-        usersWithZones.forEach { userZone ->
+        val recipients = usersWithZones.filter { it.notificationsSignalEnabled }
+        if (recipients.isEmpty()) {
+            logger.debug { "No subscribers with signal-recovery notifications enabled (cam=$camId)" }
+            return
+        }
+        recipients.forEach { userZone ->
             val lang = userZone.language ?: "en"
             val text =
                 signalLossFormatter.buildRecoveryMessage(
@@ -204,6 +231,6 @@ class TelegramNotificationServiceImpl(
                 ),
             )
         }
-        logger.info { "Enqueued signal-recovery alert for camera $camId to ${usersWithZones.size} recipients" }
+        logger.info { "Enqueued signal-recovery alert for camera $camId to ${recipients.size} recipients" }
     }
 }

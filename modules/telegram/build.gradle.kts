@@ -9,6 +9,7 @@ tasks.bootJar {
 dependencies {
     implementation(project(":frigate-analyzer-common"))
     implementation(project(":frigate-analyzer-model"))
+    implementation(project(":frigate-analyzer-service"))
     implementation(project(":frigate-analyzer-ai-description"))
 
     implementation(libs.spring.boot.starter)
