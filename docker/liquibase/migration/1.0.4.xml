@@ -53,10 +53,10 @@
     </changeSet>
 
     <changeSet author="zinin" id="20260427-03-add-notification-flags-to-telegram-users">
-        <comment>Per-user on/off toggles for recording and signal-loss notifications</comment>
         <preConditions onFail="HALT">
             <tableExists tableName="telegram_users"/>
         </preConditions>
+        <comment>Per-user on/off toggles for recording and signal-loss notifications</comment>
         <sql>
             ALTER TABLE telegram_users
               ADD COLUMN notifications_recording_enabled BOOLEAN NOT NULL DEFAULT TRUE,
