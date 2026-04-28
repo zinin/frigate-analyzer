@@ -10,6 +10,7 @@ import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.entity.TelegramUserEntity
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.repository.TelegramUserRepository
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
@@ -24,6 +25,7 @@ class TelegramUserServiceImpl(
     private val repository: TelegramUserRepository,
     private val uuidGeneratorHelper: UUIDGeneratorHelper,
     private val clock: Clock,
+    private val telegramProperties: TelegramProperties,
 ) : TelegramUserService {
     @Transactional(readOnly = true)
     override suspend fun findByUsername(username: String): TelegramUserDto? = repository.findByUsername(username)?.toDto()
@@ -203,6 +205,12 @@ class TelegramUserServiceImpl(
         }
         logger.info { "Updated notifications.signal=$enabled for chatId=$chatId" }
         return true
+    }
+
+    override fun isOwner(username: String?): Boolean {
+        val configured = telegramProperties.owner
+        if (username.isNullOrBlank() || configured.isNullOrBlank()) return false
+        return username.equals(configured, ignoreCase = true)
     }
 
     companion object {

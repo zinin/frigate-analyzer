@@ -50,4 +50,6 @@ interface TelegramUserService {
         chatId: Long,
         enabled: Boolean,
     ): Boolean
+
+    fun isOwner(username: String?): Boolean
 }

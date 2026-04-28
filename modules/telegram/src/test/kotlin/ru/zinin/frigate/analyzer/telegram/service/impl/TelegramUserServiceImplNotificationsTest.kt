@@ -1,10 +1,12 @@
 package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.entity.TelegramUserEntity
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.repository.TelegramUserRepository
@@ -19,7 +21,10 @@ class TelegramUserServiceImplNotificationsTest {
     private val repository = mockk<TelegramUserRepository>()
     private val uuidGeneratorHelper = mockk<UUIDGeneratorHelper>()
     private val clock = Clock.systemUTC()
-    private val service = TelegramUserServiceImpl(repository, uuidGeneratorHelper, clock)
+    private val telegramProperties = mockk<TelegramProperties>().also {
+        every { it.owner } returns "owner_username"
+    }
+    private val service = TelegramUserServiceImpl(repository, uuidGeneratorHelper, clock, telegramProperties)
 
     private fun createUserEntity(
         chatId: Long? = 123L,
