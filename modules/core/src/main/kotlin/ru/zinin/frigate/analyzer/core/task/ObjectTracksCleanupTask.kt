@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.core.task
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
@@ -27,6 +28,8 @@ class ObjectTracksCleanupTask(
             runBlocking {
                 tracker.cleanupExpired()
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.warn(e) { "ObjectTracker cleanup task failed" }
         }
