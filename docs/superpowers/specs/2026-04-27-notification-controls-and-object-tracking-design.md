@@ -239,19 +239,27 @@ NotificationDecisionService.evaluate(recording, request):
   if (request.detectionsCount == 0):
     return NotificationDecision(shouldNotify = false, reason = NO_DETECTIONS, delta = null)
 
-  if (!appSettings.recordingGlobalEnabled):
-    // Note: tracker still runs to keep state coherent for when toggle returns ON.
-    delta = objectTracker.evaluate(recording, aggregate(request))
-    return NotificationDecision(shouldNotify = false, reason = GLOBAL_OFF, delta = delta)
+  globalEnabled = appSettings.recordingGlobalEnabled    // may throw — see Error Handling
 
   representatives = aggregateDetections(request.frames)
-  delta           = objectTracker.evaluate(recording, representatives)
+  if (representatives.isEmpty()):
+    // All detections filtered by confidenceFloor — no valid input for tracker.
+    return NotificationDecision(shouldNotify = false, reason = NO_VALID_DETECTIONS, delta = null)
+
+  // Tracker runs unconditionally so that state stays coherent when the global toggle returns ON.
+  delta = objectTracker.evaluate(recording, representatives)
+
+  if (!globalEnabled):
+    return NotificationDecision(shouldNotify = false, reason = GLOBAL_OFF, delta = delta)
+
   return NotificationDecision(
     shouldNotify = delta.newTracksCount > 0,
     reason       = if (delta.newTracksCount > 0) NEW_OBJECTS else ALL_REPEATED,
     delta        = delta,
   )
 ```
+
+`NotificationDecisionReason` enum: `NO_DETECTIONS`, `NO_VALID_DETECTIONS`, `GLOBAL_OFF`, `ALL_REPEATED`, `NEW_OBJECTS`, `TRACKER_ERROR`.
 
 Future extensions slot in *before* `objectTracker.evaluate` (e.g. schedule check) — they don't need to update tracker state if they short-circuit.
 
@@ -272,13 +280,14 @@ Future extensions slot in *before* `objectTracker.evaluate` (e.g. schedule check
 
 | Var | Default | Purpose |
 |---|---|---|
-| `NOTIFICATIONS_TRACK_TTL` | `120s` | Track stays "active" this long after last detection |
+| `NOTIFICATIONS_TRACK_TTL` | `PT2M` | Track stays "active" this long after last detection (ISO-8601 Duration) |
 | `NOTIFICATIONS_TRACK_IOU_THRESHOLD` | `0.3` | Cross-recording match threshold |
 | `NOTIFICATIONS_TRACK_INNER_IOU` | `0.5` | Inner-recording clustering threshold |
-| `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL` | `1h` | Background cleanup job period |
-| `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | `1h` | DELETE rows with `last_seen_at < now() - retention` |
+| `NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR` | `0.3` | Detections below this confidence are dropped before clustering |
+| `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS` | `3600000` | Background cleanup job period in milliseconds |
+| `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | `PT1H` | DELETE rows with `last_seen_at < now() - retention` (ISO-8601 Duration) |
 
-Cleanup retention is intentionally larger than TTL (so a still-relevant track won't get deleted by races) but small enough to keep the table small. Lazy filtering on read (`last_seen_at >= now() - TTL`) handles correctness; the cleanup job is purely housekeeping.
+Cleanup retention is intentionally larger than TTL (so a still-relevant track won't get deleted by races) but small enough to keep the table small. Lazy filtering on read (`last_seen_at >= now() - TTL`) handles correctness; the cleanup job is purely housekeeping. `ObjectTrackerProperties` enforces `cleanupRetention >= ttl`, `ttl > 0`, and `cleanupIntervalMs > 0` at startup so that bad env settings cannot cause active tracks to disappear.
 
 ## Bot UI
 
@@ -386,16 +395,22 @@ When `shouldNotify == false`, the AI description supplier is **not** invoked →
 
 ### `TelegramNotificationServiceImpl.sendRecordingNotification`
 
-Two changes:
+One change:
 
-1. (Defense-in-depth) early `if (!appSettings.recordingGlobalEnabled) return`. Decision service already gates this, but the Telegram impl shouldn't trust an upstream check by accident.
-2. After `userService.getAuthorizedUsersWithZones()`: filter `it.notificationsRecordingEnabled`.
+1. After `userService.getAuthorizedUsersWithZones()`: filter `it.notificationsRecordingEnabled`.
 
 `UserZoneInfo` gains the boolean. `getAuthorizedUsersWithZones()` returns it.
 
+The recording path does **not** re-check `appSettings.recordingGlobalEnabled` inside `sendRecordingNotification`. `NotificationDecisionService.evaluate(...)` already gates the global toggle before fan-out is invoked, and the facade catches and logs delivery exceptions without rethrowing — so any redundant `getBoolean(...)` here would (a) be silently swallowed on AppSettings failure (contradicting the design's "AppSettings failures propagate" rule) and (b) waste a settings read on every recording. The single source of truth for the recording-path global gate is the decision service.
+
 ### `TelegramNotificationServiceImpl.sendCameraSignalLost / Recovered`
 
-Analogous changes by the `signal_*` flags. Note: signal-loss/recovery does **not** go through `NotificationDecisionService` (it's not a recording event), so the global toggle check inside the Telegram impl is the **only** gate for the global flag — not defense-in-depth like the recording path.
+Two changes (analogous to recording fan-out, plus the global gate):
+
+1. Early `if (!appSettings.signalGlobalEnabled) return`. Signal-loss/recovery does **not** go through `NotificationDecisionService` (it's not a recording event), so the global toggle check inside the Telegram impl is the **only** gate for the signal flag.
+2. After `userService.getAuthorizedUsersWithZones()`: filter `it.notificationsSignalEnabled`.
+
+If `appSettings.getBoolean(...)` throws inside the signal path (DB unavailable), the exception propagates up to the signal-monitor task which catches/logs notification failures — the camera transition is then re-attempted on the next monitor tick. This is consistent with the recording path's "settings failures propagate" rule.
 
 When global signal notifications are OFF, signal-loss/recovery events are intentionally dropped without catch-up. The signal-loss state machine may still record the camera transition; when global notifications are enabled again, only future transitions notify.
 
@@ -413,26 +428,31 @@ This works correctly within a single application instance. If we later run multi
 
 ## Error Handling
 
-`evaluate` uses `@Transactional` on the **inner** method (after `Mutex.withLock`), NOT on the outer `evaluate()` entry point. This prevents transactions from opening before the mutex is acquired — which would otherwise hold R2DBC connections from the pool while waiting for the lock. On exception:
+`ObjectTrackerService.evaluate` uses `TransactionalOperator.executeAndAwait` on the **inner** code path (after `Mutex.withLock`), NOT a class-level `@Transactional` on the outer entry point. This prevents transactions from opening before the mutex is acquired — which would otherwise hold R2DBC connections from the pool while waiting for the lock. On exception:
 
-- `AppSettingsService` read failures are **not** converted into a default boolean. They indicate the application is not functioning correctly, so the exception should propagate, be logged by the pipeline, and the recording should not be considered successfully processed.
-- **Fail-safe = "notify anyway"** only if tracker evaluation fails after settings were read successfully: avoids silent suppression of real security events when tracker state has a transient issue. Falls back to pre-tracker behavior — every recording with detections notifies. Log at `WARN` with stack trace.
+- `AppSettingsService` read failures (DB unavailable, R2DBC error, etc.) are **not** converted into a default boolean. They indicate the application is not functioning correctly, so the exception propagates from `getBoolean(...)` through the decision service into the pipeline; the recording is left for retry by upstream pipeline mechanisms when present.
+- `AppSettingsService.getBoolean(...)` distinguishes *unparseable* values from *failed reads*. If the stored value exists but is not a strict boolean (e.g. someone wrote `"weird"` directly into the table), `getBoolean` logs `WARN` with the raw value and falls back to the supplied default. This treats data corruption as a recoverable configuration issue rather than a fatal failure, while keeping a diagnostic trail.
+- **Fail-safe = "notify anyway"** only if tracker evaluation fails after settings were read successfully **and** `globalEnabled == true`: avoids silent suppression of real security events when tracker state has a transient issue. Falls back to pre-tracker behavior — every recording with detections notifies. Log at `WARN` with stack trace.
+- **Global OFF wins over tracker error.** If the tracker throws while `globalEnabled == false`, the decision returned is `NotificationDecision(shouldNotify = false, reason = TRACKER_ERROR)`. This prevents fan-out, prevents the AI description supplier from being invoked (which would otherwise spend AI tokens for no delivered notification), and respects the OWNER's global kill-switch.
 - If tracker creates/updates tracks and the later Telegram enqueue/fan-out fails, the current iteration accepts the at-most-once gap: the next segment may be suppressed because the object is already tracked. This is documented for follow-up in `docs/telegram-outbox.md` rather than solved in this iteration.
+- **Recording retry boundary (accepted limitation).** `RecordingProcessingFacade.processAndNotify` calls `saveProcessingResult` *before* `NotificationDecisionService.evaluate(...)`. As a result, if the decision throws an `AppSettingsService` exception, the recording is already marked `process_timestamp != null` in the DB and will not be reprocessed by the pipeline; the failure is logged and the notification for this specific recording is lost. This matches the existing telegram-outbox accepted gap (delivery semantics are best-effort across all post-save steps) and is documented as a known limitation rather than fixed in this iteration. A future task may move evaluate before save or share a retry-safe boundary.
 
-Concretely, `NotificationDecisionService` reads settings before the tracker `try/catch`; only tracker exceptions are converted to `TRACKER_ERROR`:
+Concretely, `NotificationDecisionService` reads settings *before* the tracker `try/catch`; tracker exceptions are converted to `TRACKER_ERROR` while preserving `globalEnabled` semantics:
 
 ```kotlin
 val globalEnabled = appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
 return try {
     val delta = objectTracker.evaluate(recording, detections)
-    // decide NEW_OBJECTS / ALL_REPEATED / GLOBAL_OFF
+    // decide NEW_OBJECTS / ALL_REPEATED / GLOBAL_OFF based on (globalEnabled, delta)
 } catch (e: CancellationException) {
     throw e
 } catch (e: Exception) {
-    logger.warn(e) { "Tracker failure for recording=${recording.id} cam=${recording.camId}; falling back to notify" }
-    NotificationDecision(shouldNotify = true, reason = TRACKER_ERROR)
+    logger.warn(e) { "Tracker failure for recording=${recording.id} cam=${recording.camId}; globalEnabled=$globalEnabled, fail-open=$globalEnabled" }
+    NotificationDecision(shouldNotify = globalEnabled, reason = TRACKER_ERROR)
 }
 ```
+
+For signal-loss/recovery, `AppSettingsService.getBoolean(...)` is read inside `TelegramNotificationServiceImpl.sendCameraSignalLost / Recovered`. A read failure there propagates out of the Telegram service — the signal-monitor task that owns these calls catches and logs notification failures and the camera transition can be re-attempted on the next monitor tick (events are idempotent in the monitor's state machine), so the read failure does not silently lose the alert across restarts.
 
 ## Behavior with Telegram Disabled
 
@@ -446,25 +466,28 @@ Effect: when Telegram is disabled, tracker still runs and maintains state. When 
 |---|---|
 | `INFO` | `User @username toggled notifications.recording = false` |
 | `INFO` | `OWNER @username set global notifications.recording = false` |
-| `INFO` | `ObjectTracker: cam=$cam new=2 matched=3 stale=0 (recording=$rid)` — only when `new > 0` |
-| `DEBUG` | `Decision: suppress (all_repeated): cam=$cam recording=$rid` |
+| `DEBUG` | `ObjectTracker: cam=$cam new=2 matched=3 stale=0 (recording=$rid)` — only when `new > 0` (DEBUG so that busy outdoor cameras do not flood logs with one INFO per passing object) |
+| `DEBUG` | `Decision: suppress (all_repeated\|no_valid_detections\|global_off): cam=$cam recording=$rid` |
 | `DEBUG` | `Decision: notify: cam=$cam newClasses=[car, person]` |
-| `WARN`  | `Tracker failure for recording=$rid cam=$cam; falling back to notify` + stack |
-| `ERROR` | `AppSettings failure while evaluating notification decision` + stack; propagate to stop processing |
+| `WARN`  | `Tracker failure for recording=$rid cam=$cam; globalEnabled=$g, shouldNotify=$g` + stack (fail-open only when global ON) |
+| `WARN`  | `AppSettings: invalid stored value for $key=$raw; falling back to default=$default` (corruption signal, not fatal) |
+| `ERROR` | `AppSettings failure while evaluating notification decision` + stack (read failure — propagates out of decision service / Telegram service) |
 
 ## Tests
 
 | Layer | Coverage |
 |---|---|
-| Unit `ObjectTrackerServiceTest` | aggregateDetections (empty, one, two near, two far); matching (all match, partial match, none match); out-of-order timestamp; TTL expiry; bbox edge cases (zero-size, identical, fully containing); IoU helper edge cases (disjoint, overlapping, identical, zero-area) |
-| Unit `NotificationDecisionServiceTest` | shouldNotify=true on new tracks; false when all matched; false when global OFF; tracker error → fail-open true; settings read error propagates; no-detection short-circuit (does not call tracker) |
-| Unit `AppSettingsServiceTest` | get with default, set, cache invalidation, concurrent updates, missing key returns default |
-| Unit `NotificationsCommandHandlerTest` | initial message for USER vs OWNER; correct labels and buttons |
-| Unit `NotificationsSettingsCallbackHandlerTest` | toggle updates DB and edits message; `nfs:g:*` rejected for non-OWNER; `nfs:u:*` rejected for unauthorized chatId |
-| Unit `TelegramNotificationServiceImplTest` | existing + new: skip recipient when `notifications_recording_enabled=false`; signal-loss skip on `notifications_signal_enabled=false`; global OFF short-circuit |
-| Integration `ObjectTrackRepositoryIT` | insert/update/select-active-by-cam-and-ttl/cleanup-expired |
-| Integration `AppSettingsRepositoryIT` | upsert, default seed, OWNER-attribution |
-| Integration Facade-level | recording with detections → first time: tracker creates row, `sendRecordingNotification` invoked; same data again: tracker matches, send not invoked; different class: send invoked |
+| Unit `ObjectTrackerServiceTest` | aggregateDetections (empty, one, two near, two far); matching (all match, partial match, none match); out-of-order recording does not roll back `bbox_*` / `last_recording_id` (older `:T` keeps existing values via `CASE WHEN`); empty detections short-circuit *before* mutex/transaction acquisition; low-confidence detections below `confidenceFloor` produce empty representatives and zero DB writes; TTL expiry; bbox edge cases (zero-size, identical, fully containing); IoU helper edge cases (disjoint, overlapping, identical, zero-area); recordTimestamp fallback semantics |
+| Unit `NotificationDecisionServiceTest` | `shouldNotify=true` on new tracks; `false` when all matched; `false` when global OFF (tracker still ran and updated state); `tracker error + global ON → fail-open shouldNotify=true`; `tracker error + global OFF → suppressed shouldNotify=false reason=TRACKER_ERROR` (no AI supplier invocation); `representatives.isEmpty()` after confidenceFloor → `NO_VALID_DETECTIONS` (tracker not called); settings read error propagates (tracker not called); no-detection short-circuit (does not call tracker) |
+| Unit `AppSettingsServiceTest` | get with default, set, cache invalidation, concurrent updates, missing key returns default, **invalid stored value (e.g. `"weird"`) logs WARN and falls back to default**; cache is updated only after successful `repository.upsert(...)` (no `@Transactional` race window) |
+| Unit `NotificationsCommandHandlerTest` | initial message for USER vs OWNER; correct labels and buttons; `appSettings.getBoolean(...)` failure surfaces a user-facing error (or propagates per error-handling section); `getBoolean` only invoked for OWNER (USER rendering does not need global state) |
+| Unit `NotificationsSettingsCallbackHandlerTest` | toggle updates DB and edits message; `nfs:g:*` rejected for non-OWNER; `nfs:u:*` rejected for unauthorized callback sender; explicit target-state `1`/`0` interpreted correctly when DB row already matches (no-op); unknown / malformed callback data ignored |
+| Unit `TelegramNotificationServiceImplTest` | existing + new: skip recipient when `notifications_recording_enabled=false`; **`sendCameraSignalRecovered` filters by `notifications_signal_enabled`** (not just `sendCameraSignalLost`); signal global OFF short-circuit on both lost and recovered paths; signal AppSettings read failure propagates out of Telegram service |
+| Unit `ObjectTracksCleanupTaskTest` | `cleanup()` invokes `tracker.cleanupExpired()` once; exceptions are caught and logged WARN without rethrowing |
+| Unit `IsOwnerTest` (in `TelegramUserServiceImplNotificationsTest`) | `isOwner` returns `false` when `telegramProperties.owner` is null/blank or when `username` is null/blank; returns `true` only on exact match |
+| Integration `ObjectTrackRepositoryIT` | insert/update/select-active-by-cam-and-ttl/cleanup-expired; `updateOnMatch` does not roll back `bbox_*` / `last_recording_id` for older `:lastSeenAt` |
+| Integration `AppSettingsRepositoryIT` | upsert, default seed, OWNER-attribution, repeated upsert with same key |
+| Integration Facade-level | recording with detections → first time: tracker creates row, `sendRecordingNotification` invoked; same data again: tracker matches, send not invoked, AI description supplier *not* invoked; different class: send invoked; settings read exception propagates from facade (recording is left in pipeline state for current iteration's accepted retry-boundary semantics) |
 
 `NotificationDecisionServiceTest` mocks `ObjectTrackerService` and `AppSettingsService` to keep branch tests fast and DB-free.
 

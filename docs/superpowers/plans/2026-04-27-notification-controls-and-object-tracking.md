@@ -34,6 +34,7 @@
 - `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/NotificationDecisionService.kt`
 - `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/NotificationDecisionServiceImpl.kt`
 - `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/ObjectTracksCleanupTask.kt`
+- `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/dto/NotificationsViewState.kt`
 - `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsMessageRenderer.kt`
 - `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsCommandHandler.kt`
 - `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsSettingsCallbackHandler.kt`
@@ -51,7 +52,7 @@
 - `modules/telegram/src/main/resources/messages_en.properties` — new keys
 - `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/facade/RecordingProcessingFacade.kt` — call decision service
 - `modules/core/src/main/resources/application.yaml` — `application.notifications.tracker` block
-- `.env.example` — new env vars
+- `docker/deploy/.env.example` — new env vars
 - `.claude/rules/configuration.md`, `.claude/rules/telegram.md`, `.claude/rules/database.md` — docs
 
 **New tests:**
@@ -60,7 +61,9 @@
 - `modules/service/src/test/kotlin/.../impl/AppSettingsServiceImplTest.kt`
 - `modules/service/src/test/kotlin/.../impl/ObjectTrackerServiceImplTest.kt`
 - `modules/service/src/test/kotlin/.../impl/NotificationDecisionServiceImplTest.kt`
+- `modules/core/src/test/kotlin/.../task/ObjectTracksCleanupTaskTest.kt`
 - `modules/telegram/src/test/kotlin/.../bot/handler/notifications/NotificationsMessageRendererTest.kt`
+- `modules/telegram/src/test/kotlin/.../bot/handler/notifications/NotificationsCommandHandlerTest.kt`
 - `modules/telegram/src/test/kotlin/.../bot/handler/notifications/NotificationsSettingsCallbackHandlerTest.kt`
 - `modules/telegram/src/test/kotlin/.../service/impl/TelegramUserServiceImplNotificationsTest.kt`
 
@@ -123,6 +126,11 @@ Create `docker/liquibase/migration/1.0.4.xml`:
             CREATE INDEX idx_object_tracks_lastseen
               ON object_tracks (last_seen_at);
         </sql>
+        <rollback>
+            DROP INDEX IF EXISTS idx_object_tracks_lastseen;
+            DROP INDEX IF EXISTS idx_object_tracks_cam_lastseen;
+            DROP TABLE IF EXISTS object_tracks;
+        </rollback>
     </changeSet>
 
     <changeSet author="zinin" id="20260427-02-create-app-settings">
@@ -140,18 +148,30 @@ Create `docker/liquibase/migration/1.0.4.xml`:
               ('notifications.recording.global_enabled', 'true', NOW(), NULL),
               ('notifications.signal.global_enabled',    'true', NOW(), NULL);
         </sql>
+        <rollback>
+            DROP TABLE IF EXISTS app_settings;
+        </rollback>
     </changeSet>
 
     <changeSet author="zinin" id="20260427-03-add-notification-flags-to-telegram-users">
         <comment>Per-user on/off toggles for recording and signal-loss notifications</comment>
+        <preConditions onFail="HALT">
+            <tableExists tableName="telegram_users"/>
+        </preConditions>
         <sql>
             ALTER TABLE telegram_users
               ADD COLUMN notifications_recording_enabled BOOLEAN NOT NULL DEFAULT TRUE,
               ADD COLUMN notifications_signal_enabled    BOOLEAN NOT NULL DEFAULT TRUE;
         </sql>
+        <rollback>
+            ALTER TABLE telegram_users DROP COLUMN IF EXISTS notifications_signal_enabled;
+            ALTER TABLE telegram_users DROP COLUMN IF EXISTS notifications_recording_enabled;
+        </rollback>
     </changeSet>
 </databaseChangeLog>
 ```
+
+> **Note:** Adding new changesets to `1.0.4.xml` does **not** require a Liquibase checksum reset. Reset is only needed when modifying *existing* changesets. The new file is self-contained and registered via `<include>` in the master changelog.
 
 - [ ] **Step 2: Register in master changelog**
 
@@ -426,7 +446,7 @@ package ru.zinin.frigate.analyzer.model.dto
 
 /**
  * Aggregated bbox for one logical object inside a single recording.
- * Coordinates are normalized [0..1] from YOLO output, stored as Float to match DetectionEntity.
+ * Coordinates are pixel coordinates in the same coordinate space as DetectionEntity.x1..y2 (Float).
  */
 data class RepresentativeBbox(
     val className: String,
@@ -470,6 +490,8 @@ enum class NotificationDecisionReason {
     NEW_OBJECTS,
     ALL_REPEATED,
     NO_DETECTIONS,
+    /** Detections were present but all were filtered out by `confidenceFloor` before tracker. */
+    NO_VALID_DETECTIONS,
     GLOBAL_OFF,
     TRACKER_ERROR,
 }
@@ -851,10 +873,28 @@ git commit -m "feat(service): add BboxClusteringHelper with tests"
 
 ## Task 7: `ObjectTrackerProperties` (Spring config)
 
-**Goal:** Configurable parameters for the tracker via `@ConfigurationProperties`.
+**Goal:** Configurable parameters for the tracker via `@ConfigurationProperties`, including cross-field invariants enforced at startup.
 
 **Files:**
 - Create: `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/config/ObjectTrackerProperties.kt`
+- Modify (only if missing): `modules/service/build.gradle.kts`
+
+- [ ] **Step 0: Verify `modules/service/build.gradle.kts` has the required dependencies**
+
+Run: `cat modules/service/build.gradle.kts`.
+
+Required (add only those that are missing — do not duplicate or replace existing entries):
+
+| Dependency | Configuration | Reason |
+|---|---|---|
+| `org.springframework.boot:spring-boot-starter-validation` | `implementation` | Activates `@Validated` / Jakarta validation in `ObjectTrackerProperties` |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-core` | `implementation` | `kotlinx.coroutines.sync.Mutex` in `AppSettingsServiceImpl` and `ObjectTrackerServiceImpl` |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-test` | `testImplementation` | `runTest` in unit tests |
+| `io.mockk:mockk` | `testImplementation` | `mockk`, `coEvery`, `coVerify` in unit tests |
+
+Most are already present in upstream modules; verify before editing. If `coroutines-core` is exposed transitively via `frigate-analyzer-model` or `frigate-analyzer-common`, no change is needed.
+
+After any edits, run `./gradlew :frigate-analyzer-service:dependencies --configuration testRuntimeClasspath` (via `build-runner`) and confirm the four artifacts above appear.
 
 - [ ] **Step 1: Create the properties class**
 
@@ -881,8 +921,25 @@ data class ObjectTrackerProperties(
     val confidenceFloor: Float = 0.3f,
     val cleanupIntervalMs: Long = 3_600_000,
     val cleanupRetention: Duration = Duration.ofHours(1),
-)
+) {
+    init {
+        require(!ttl.isZero && !ttl.isNegative) {
+            "application.notifications.tracker.ttl must be > 0, got $ttl"
+        }
+        require(!cleanupRetention.isNegative && !cleanupRetention.isZero) {
+            "application.notifications.tracker.cleanup-retention must be > 0, got $cleanupRetention"
+        }
+        require(cleanupRetention >= ttl) {
+            "application.notifications.tracker.cleanup-retention must be >= ttl, got retention=$cleanupRetention ttl=$ttl"
+        }
+        require(cleanupIntervalMs > 0) {
+            "application.notifications.tracker.cleanup-interval-ms must be > 0, got $cleanupIntervalMs"
+        }
+    }
+}
 ```
+
+> The `cleanupIntervalMs` default lives here, in `application.yaml`, and in `@Scheduled(fixedDelayString = "...:3600000")`. If you change the default, update all three. The `application.yaml` value is the runtime source of truth — the data-class default and the `@Scheduled` placeholder default are only used in tests / when no env or YAML value is supplied.
 
 - [ ] **Step 2: Verify compilation**
 
@@ -893,7 +950,8 @@ Expected: BUILD SUCCESSFUL.
 
 ```bash
 git add modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/config/ObjectTrackerProperties.kt
-git commit -m "feat(service): add ObjectTrackerProperties"
+git add modules/service/build.gradle.kts # only if Step 0 modified it
+git commit -m "feat(service): add ObjectTrackerProperties with cross-field validation"
 ```
 
 ---
@@ -1027,15 +1085,18 @@ class ObjectTrackerServiceImplTest {
     )
 
     @Test
-    fun `empty detections produce zero delta and no DB writes`() = runTest {
-        coEvery { repo.findActive(any(), any()) } returns emptyList()
-
+    fun `empty detections produce zero delta and no DB writes and no transaction`() = runTest {
+        // Empty detections must short-circuit BEFORE mutex.withLock and BEFORE
+        // transactionalOperator.executeAndAwait so we never take an R2DBC connection
+        // from the pool just to discover there is nothing to do.
         val delta = service.evaluate(rec(), emptyList())
 
         assertEquals(0, delta.newTracksCount)
         assertEquals(0, delta.matchedTracksCount)
+        coVerify(exactly = 0) { repo.findActive(any(), any()) }
         coVerify(exactly = 0) { repo.save(any()) }
         coVerify(exactly = 0) { repo.updateOnMatch(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { transactionalOperator.executeAndAwait<Any>(any(), any()) }
     }
 
     @Test
@@ -1130,6 +1191,31 @@ class ObjectTrackerServiceImplTest {
     }
 
     @Test
+    fun `out-of-order older recording matches existing track via updateOnMatch with original lastSeenAt`() = runTest {
+        // Existing track was last seen at 12:01:00Z (newer than this recording's
+        // record_timestamp at 12:00:00Z). The CASE WHEN guard in the SQL must
+        // keep the existing bbox/last_recording_id, not roll them back. This test
+        // verifies that updateOnMatch is invoked with the older :lastSeenAt; the
+        // SQL itself protects state in integration tests (ObjectTrackRepositoryIT).
+        val newer = Instant.parse("2026-04-27T12:01:00Z")
+        val existing = track("car", 0f, 0f, 0.5f, 0.5f, lastSeen = newer)
+        coEvery { repo.findActive(any(), any()) } returns listOf(existing)
+
+        val delta = service.evaluate(
+            rec(), // record_timestamp = fixedNow = 12:00:00Z, which is older
+            listOf(det("car", 0.01f, 0.0f, 0.51f, 0.5f)),
+        )
+
+        assertEquals(0, delta.newTracksCount)
+        assertEquals(1, delta.matchedTracksCount)
+        // updateOnMatch is invoked with :lastSeenAt = recording.recordTimestamp;
+        // the SQL CASE WHEN keeps existing values when :lastSeenAt < last_seen_at.
+        coVerify(exactly = 1) {
+            repo.updateOnMatch(existing.id!!, any(), any(), any(), any(), Instant.parse("2026-04-27T12:00:00Z"), recId)
+        }
+    }
+
+    @Test
     fun `cleanupExpired delegates to repo with now-minus-retention`() = runTest {
         coEvery { repo.deleteExpired(any()) } returns 7L
 
@@ -1195,6 +1281,12 @@ class ObjectTrackerServiceImpl(
         recording: RecordingDto,
         detections: List<DetectionEntity>,
     ): DetectionDelta {
+        // Early return BEFORE acquiring the mutex and BEFORE opening a transaction:
+        // an empty detection list cannot create or update tracks, so taking the lock
+        // and a R2DBC connection would be pure overhead.
+        if (detections.isEmpty()) {
+            return DetectionDelta(0, 0, 0, emptyList())
+        }
         val mutex = perCameraMutex.computeIfAbsent(recording.camId) { Mutex() }
         return mutex.withLock {
             transactionalOperator.executeAndAwait {
@@ -1207,13 +1299,23 @@ class ObjectTrackerServiceImpl(
         recording: RecordingDto,
         detections: List<DetectionEntity>,
     ): DetectionDelta {
+        // Defensive: caller is expected to early-return on empty, but keep the guard
+        // in case evaluateLocked is invoked from another path (e.g. tests) without it.
         if (detections.isEmpty()) {
             return DetectionDelta(0, 0, 0, emptyList())
         }
         val representatives = BboxClusteringHelper.cluster(
             detections, properties.innerIou, properties.confidenceFloor,
         )
-        val recordingTimestamp = recording.recordTimestamp
+        if (representatives.isEmpty()) {
+            // All detections filtered by confidenceFloor — no DB writes, zero delta.
+            return DetectionDelta(0, 0, 0, emptyList())
+        }
+        // RecordingDto.recordTimestamp is non-null in current schema; if the caller
+        // ever passes a recording without a timestamp this is a programming error.
+        val recordingTimestamp = requireNotNull(recording.recordTimestamp) {
+            "RecordingDto.recordTimestamp is null for recording=${recording.id}"
+        }
         val ttlThreshold = recordingTimestamp.minus(properties.ttl)
         val active = repository.findActive(recording.camId, ttlThreshold).toMutableList()
 
@@ -1401,9 +1503,15 @@ class AppSettingsServiceImplTest {
     }
 
     @Test
-    fun `unparseable value falls back to default`() = runTest {
+    fun `unparseable value logs WARN and falls back to default (recoverable corruption)`() = runTest {
+        // Defensive behavior: a corrupt stored value (e.g. someone wrote "weird" into
+        // the DB) must NOT crash the pipeline. AppSettingsServiceImpl logs WARN and
+        // returns the default. Unit test verifies the fallback; the WARN is a signal
+        // for ops, validated visually / via integration tests.
         coEvery { repo.findBySettingKey("k") } returns AppSettingEntity("k", "weird", fixed, null)
         assertTrue(service.getBoolean("k", default = true))
+        // Both defaults are preserved through cache hit.
+        assertFalse(service.getBoolean("k", default = false))
     }
 }
 ```
@@ -1424,7 +1532,6 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.service.repository.AppSettingRepository
 import java.time.Clock
@@ -1446,10 +1553,21 @@ class AppSettingsServiceImpl(
             cache[key] ?: loadAndCache(key)
         }
         if (raw == null) return default
-        return raw.toBooleanStrictOrNull() ?: default
+        return raw.toBooleanStrictOrNull() ?: run {
+            // Treat unparseable stored values as configuration corruption: log a WARN
+            // with the raw payload (useful for diagnosing manual DB edits) and fall
+            // back to the supplied default. This avoids crashing the pipeline because
+            // someone wrote a bad value, but still surfaces the problem in logs.
+            logger.warn { "AppSettings: invalid stored value for '$key'='$raw'; falling back to default=$default" }
+            default
+        }
     }
 
-    @Transactional
+    // No @Transactional here: repository.upsert(...) is a single atomic SQL statement,
+    // and adding @Transactional would (a) be redundant and (b) widen the race window
+    // because the cache write below would run BEFORE the transaction commit. Updating
+    // the cache only after upsert returns guarantees the cache reflects committed DB
+    // state, not in-flight (potentially rolled-back) state.
     override suspend fun setBoolean(key: String, value: Boolean, updatedBy: String?) {
         val v = value.toString()
         repository.upsert(key, v, Instant.now(clock), updatedBy)
@@ -1510,10 +1628,16 @@ interface NotificationDecisionService {
      *
      * Order:
      *   1. detections empty → NO_DETECTIONS, no tracker call.
-     *   2. global recording toggle off → GLOBAL_OFF, but tracker still runs to keep state coherent.
-     *   3. tracker.evaluate → NEW_OBJECTS or ALL_REPEATED.
+     *   2. read globalEnabled (may throw — propagates).
+     *   3. cluster detections → if all filtered by confidenceFloor, NO_VALID_DETECTIONS, no tracker call.
+     *   4. tracker.evaluate → state is updated unconditionally so it stays coherent
+     *      when the global toggle returns ON.
+     *   5. compose decision: GLOBAL_OFF if !globalEnabled, otherwise NEW_OBJECTS / ALL_REPEATED.
      *
-     * On tracker exceptions: returns shouldNotify=true with TRACKER_ERROR (fail-open).
+     * On tracker exceptions while globalEnabled = true: returns shouldNotify = true with
+     * TRACKER_ERROR (fail-open).
+     * On tracker exceptions while globalEnabled = false: returns shouldNotify = false with
+     * TRACKER_ERROR — global OFF wins, no AI description supplier is invoked, no fan-out.
      * Settings read exceptions propagate; they indicate the pipeline should stop/retry later.
      */
     suspend fun evaluate(
@@ -1634,13 +1758,41 @@ class NotificationDecisionServiceImplTest {
     }
 
     @Test
-    fun `tracker exception leads to TRACKER_ERROR and shouldNotify true (fail-open)`() = runTest {
+    fun `tracker returns empty delta for confidence-filtered detections leads to NO_VALID_DETECTIONS`() = runTest {
+        // ObjectTrackerServiceImpl returns DetectionDelta(0,0,0,emptyList()) when all
+        // detections were below confidenceFloor. NotificationDecisionService surfaces
+        // this as NO_VALID_DETECTIONS to disambiguate from ALL_REPEATED in logs.
+        coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+        coEvery { tracker.evaluate(recording, any()) } returns DetectionDelta(0, 0, 0, emptyList())
+
+        val decision = service.evaluate(recording, listOf(det()))
+
+        assertFalse(decision.shouldNotify)
+        assertEquals(NotificationDecisionReason.NO_VALID_DETECTIONS, decision.reason)
+    }
+
+    @Test
+    fun `tracker exception with global ON leads to TRACKER_ERROR and shouldNotify true (fail-open)`() = runTest {
         coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
         coEvery { tracker.evaluate(recording, any()) } throws RuntimeException("db down")
 
         val decision = service.evaluate(recording, listOf(det()))
 
         assertTrue(decision.shouldNotify)
+        assertEquals(NotificationDecisionReason.TRACKER_ERROR, decision.reason)
+    }
+
+    @Test
+    fun `tracker exception with global OFF leads to TRACKER_ERROR and shouldNotify false (global wins)`() = runTest {
+        // When global is OFF, tracker failure must NOT bypass the global gate.
+        // Otherwise the facade would invoke the AI description supplier (spending
+        // tokens) only for the Telegram path to drop the notification anyway.
+        coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns false
+        coEvery { tracker.evaluate(recording, any()) } throws RuntimeException("db down")
+
+        val decision = service.evaluate(recording, listOf(det()))
+
+        assertFalse(decision.shouldNotify)
         assertEquals(NotificationDecisionReason.TRACKER_ERROR, decision.reason)
     }
 
@@ -1696,6 +1848,9 @@ class NotificationDecisionServiceImpl(
             return NotificationDecision(false, NotificationDecisionReason.NO_DETECTIONS)
         }
 
+        // Read settings BEFORE the tracker `try/catch` so AppSettings exceptions
+        // propagate to the caller — the design says these failures are application
+        // malfunctions, not transient tracker noise.
         val globalEnabled = settings.getBoolean(
             AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, default = true,
         )
@@ -1705,6 +1860,15 @@ class NotificationDecisionServiceImpl(
         return try {
             val delta = tracker.evaluate(recording, detections)
             when {
+                delta.newTracksCount == 0 && delta.matchedTracksCount == 0 && delta.staleTracksCount == 0 -> {
+                    // Tracker was called with detections but produced an empty delta —
+                    // ObjectTrackerServiceImpl returns this when all detections were
+                    // below `confidenceFloor`. The decision service surfaces this as a
+                    // distinct reason so suppression in logs is not confused with
+                    // "all_repeated" (which means tracker matched against existing tracks).
+                    logger.debug { "Decision: suppress (no_valid_detections): cam=${recording.camId} recording=${recording.id}" }
+                    NotificationDecision(false, NotificationDecisionReason.NO_VALID_DETECTIONS, delta)
+                }
                 !globalEnabled -> {
                     logger.debug { "Decision: suppress (global_off): cam=${recording.camId} recording=${recording.id}" }
                     NotificationDecision(false, NotificationDecisionReason.GLOBAL_OFF, delta)
@@ -1723,13 +1887,16 @@ class NotificationDecisionServiceImpl(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // Fail-open: on tracker failure, fall back to pre-tracker behavior —
-            // notify every recording with detections. Prevents silent suppression
-            // of real security events during transient DB issues.
+            // Fail-open ONLY when global is ON: on tracker failure with global ON,
+            // fall back to pre-tracker behavior — notify every recording with detections.
+            // When global is OFF, we keep the global gate authoritative and suppress.
+            // This avoids invoking the AI description supplier (which costs tokens)
+            // for a notification that would be dropped by the Telegram path anyway.
             logger.warn(e) {
-                "Tracker failure for recording=${recording.id} cam=${recording.camId}; falling back to notify"
+                "Tracker failure for recording=${recording.id} cam=${recording.camId}; " +
+                    "globalEnabled=$globalEnabled, shouldNotify=$globalEnabled"
             }
-            NotificationDecision(true, NotificationDecisionReason.TRACKER_ERROR)
+            NotificationDecision(globalEnabled, NotificationDecisionReason.TRACKER_ERROR)
         }
     }
 }
@@ -1757,6 +1924,7 @@ git commit -m "feat(service): add NotificationDecisionService orchestrating trac
 
 **Files:**
 - Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/ObjectTracksCleanupTask.kt`
+- Create test: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/ObjectTracksCleanupTaskTest.kt`
 
 - [ ] **Step 1: Create the task**
 
@@ -1770,15 +1938,22 @@ import kotlinx.coroutines.runBlocking
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.service.ObjectTrackerService
-import ru.zinin.frigate.analyzer.service.config.ObjectTrackerProperties
 
 private val logger = KotlinLogging.logger {}
 
 @Component
 class ObjectTracksCleanupTask(
     private val tracker: ObjectTrackerService,
-    private val properties: ObjectTrackerProperties,
 ) {
+    /**
+     * Hourly housekeeping job that deletes tracks last seen before
+     * `now - cleanupRetention`. The single suspending DELETE is wrapped in
+     * `runBlocking` so it can be invoked from Spring's classic `@Scheduled`
+     * thread; this is acceptable for a single short DELETE that runs once an
+     * hour. If the cleanup grows (multiple queries, batching), revisit by
+     * scheduling on a coroutine scope and consuming a `SmartLifecycle` for
+     * graceful shutdown.
+     */
     @Scheduled(fixedDelayString = "\${application.notifications.tracker.cleanup-interval-ms:3600000}")
     fun cleanup() {
         try {
@@ -1800,16 +1975,56 @@ Run: `grep -rn "EnableScheduling" modules/core/src/main/kotlin/`
 
 Expected: at least one match (the project already uses `@Scheduled` for `WatchRecordsTask`). If none, add `@EnableScheduling` to the main configuration class. Otherwise no action needed.
 
-- [ ] **Step 3: Verify compilation**
+- [ ] **Step 3: Write the test**
 
-Dispatch `build-runner`: `./gradlew :frigate-analyzer-core:compileKotlin`.
-Expected: BUILD SUCCESSFUL.
+Create `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/ObjectTracksCleanupTaskTest.kt`:
 
-- [ ] **Step 4: Commit**
+```kotlin
+package ru.zinin.frigate.analyzer.core.task
+
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.mockk
+import org.junit.jupiter.api.Test
+import ru.zinin.frigate.analyzer.service.ObjectTrackerService
+
+class ObjectTracksCleanupTaskTest {
+    private val tracker = mockk<ObjectTrackerService>()
+    private val task = ObjectTracksCleanupTask(tracker)
+
+    @Test
+    fun `cleanup invokes tracker cleanupExpired once`() {
+        coEvery { tracker.cleanupExpired() } returns 5L
+
+        task.cleanup()
+
+        coVerify(exactly = 1) { tracker.cleanupExpired() }
+    }
+
+    @Test
+    fun `cleanup swallows tracker exception and logs WARN (does not propagate)`() {
+        coEvery { tracker.cleanupExpired() } throws RuntimeException("db down")
+
+        // Must not throw; otherwise the @Scheduled subsystem would back off
+        // on the next firing.
+        task.cleanup()
+
+        coVerify(exactly = 1) { tracker.cleanupExpired() }
+    }
+}
+```
+
+- [ ] **Step 4: Verify compilation and tests**
+
+Dispatch `build-runner`: `./gradlew :frigate-analyzer-core:test --tests "ru.zinin.frigate.analyzer.core.task.ObjectTracksCleanupTaskTest"`.
+Expected: PASS (2 tests).
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/ObjectTracksCleanupTask.kt
-git commit -m "feat(core): add ObjectTracksCleanupTask scheduled job"
+git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/ObjectTracksCleanupTask.kt \
+        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/ObjectTracksCleanupTaskTest.kt
+git commit -m "feat(core): add ObjectTracksCleanupTask scheduled job with tests"
 ```
 
 ---
@@ -2020,7 +2235,7 @@ git commit -m "feat(telegram): add per-user notification flags through entity/DT
 
 ## Task 13: `TelegramNotificationServiceImpl` global gate + recipient filtering (both flows)
 
-**Goal:** Apply global toggles and per-user filtering inside the existing `sendRecordingNotification` and `sendCameraSignalLost`/`sendCameraSignalRecovered` flows.
+**Goal:** Apply per-user filtering on the recording flow, and apply both the global toggle and per-user filtering inside `sendCameraSignalLost`/`sendCameraSignalRecovered`. The recording-flow global gate is owned by `NotificationDecisionService` (Task 19) — `sendRecordingNotification` does **not** re-check it.
 
 **Files:**
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt`
@@ -2047,16 +2262,13 @@ Add to the constructor parameter list (after `rateLimiterProvider`):
     private val appSettings: AppSettingsService,
 ```
 
-- [ ] **Step 2: Add the global+per-user gate to `sendRecordingNotification`**
+`AppSettingsService` is used **only** for the signal-loss/recovery flows. The recording flow does not read it here — that gate already happened in `NotificationDecisionService.evaluate(...)` (see Task 19) and a redundant read here would be silently swallowed by the facade's `try/catch` around fan-out, contradicting the design's "AppSettings failures propagate" rule.
+
+- [ ] **Step 2: Add per-user filtering to `sendRecordingNotification` (no global re-check)**
 
 In the same file, modify `sendRecordingNotification`. After the existing early returns for `detectionsCount == 0` and empty `usersWithZones`, insert:
 
 ```kotlin
-        if (!appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, default = true)) {
-            logger.debug { "Recording notifications globally disabled — skipping for ${recording.filePath}" }
-            return
-        }
-
         val recipients = usersWithZones.filter { it.notificationsRecordingEnabled }
         if (recipients.isEmpty()) {
             logger.debug { "No subscribers with recording-notifications enabled" }
@@ -2066,9 +2278,11 @@ In the same file, modify `sendRecordingNotification`. After the existing early r
 
 Replace the existing `usersWithZones.forEach` with `recipients.forEach`.
 
-- [ ] **Step 3: Apply analogous gate to signal-loss/recovery**
+> **Do not** add `appSettings.getBoolean(NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, ...)` here. The decision service has already gated the global flag, and `RecordingProcessingFacade` catches notification exceptions without rethrowing them — adding the read here would silently swallow `AppSettings` failures.
 
-In the same file, locate `sendCameraSignalLost`. After the existing `if (usersWithZones.isEmpty())` early return, insert:
+- [ ] **Step 3: Apply global gate + per-user filtering to signal-loss/recovery**
+
+In the same file, locate `sendCameraSignalLost`. After the existing `if (usersWithZones.isEmpty())` early return, insert (the global check goes **first** — short-circuits before iterating users):
 
 ```kotlin
         if (!appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, default = true)) {
@@ -2084,14 +2298,15 @@ In the same file, locate `sendCameraSignalLost`. After the existing `if (usersWi
 
 Replace `usersWithZones.forEach` with `recipients.forEach` in that method.
 
-Repeat for `sendCameraSignalRecovered` (same pattern, same flag, swap log strings to "recovery").
+Repeat for `sendCameraSignalRecovered` (same pattern, same flag `NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED`, swap log strings to "recovery"). Both signal flows must filter by `notificationsSignalEnabled` and gate on the same global key.
+
+If `appSettings.getBoolean(...)` throws inside either signal flow, the exception propagates out of `sendCameraSignalLost`/`sendCameraSignalRecovered`. The signal-monitor task that owns these calls catches and logs notification failures (see signal-monitor implementation), and the camera transition is re-attempted on the next monitor tick — matching the design's "AppSettings failures propagate" rule.
 
 - [ ] **Step 4: Update existing test setup**
 
 Edit `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplTest.kt`. Add to the imports:
 
 ```kotlin
-import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 ```
 
@@ -2101,37 +2316,15 @@ Add a mocked `appSettings` field after `rateLimiterProvider`:
     private val appSettings = mockk<AppSettingsService>()
 ```
 
-Update the service-under-test instantiation to include `appSettings` as the last constructor argument.
-
-In the `init` (or just-above field for default behavior), add:
-
-```kotlin
-    init {
-        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
-    }
-```
-
-(Place the `init` block after field declarations.)
+Update the service-under-test instantiation to include `appSettings` as the last constructor argument. The recording test does not configure `appSettings.getBoolean(...)` for `NOTIFICATIONS_RECORDING_GLOBAL_ENABLED` because Step 2 removed the recording-path read; configuring it would be misleading and a future regression test will fail if someone re-adds the read.
 
 - [ ] **Step 5: Add new test cases**
 
-Append two test methods to `TelegramNotificationServiceImplTest`:
+Append the per-user filtering test method to `TelegramNotificationServiceImplTest`:
 
 ```kotlin
     @Test
-    fun `global recording toggle off skips notification entirely`() = runTest {
-        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns false
-        coEvery { userService.getAuthorizedUsersWithZones() } returns
-            listOf(UserZoneInfo(chatId, ZoneId.of("UTC"), "en"))
-
-        service.sendRecordingNotification(createRecording(detectionsCount = 1), emptyList())
-
-        coVerify(exactly = 0) { notificationQueue.enqueue(any()) }
-    }
-
-    @Test
     fun `user with notificationsRecordingEnabled false is filtered out`() = runTest {
-        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
         every { uuidGeneratorHelper.generateV1() } returns taskId
         coEvery { userService.getAuthorizedUsersWithZones() } returns listOf(
             UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = false),
@@ -2146,13 +2339,41 @@ Append two test methods to `TelegramNotificationServiceImplTest`:
         coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
         assertEquals(222L, captured.captured.chatId)
     }
+
+    @Test
+    fun `recording flow does not read global flag (decision service owns the gate)`() = runTest {
+        // Regression test: even if the AppSettingsService throws, sendRecordingNotification
+        // must continue to deliver because the global gate is in NotificationDecisionService.
+        // If someone re-adds the read here, the throw would make this test fail.
+        coEvery { appSettings.getBoolean(any(), any()) } throws RuntimeException("settings db down")
+        every { uuidGeneratorHelper.generateV1() } returns taskId
+        coEvery { userService.getAuthorizedUsersWithZones() } returns
+            listOf(UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = true))
+        coEvery { notificationQueue.enqueue(any()) } returns Unit
+
+        service.sendRecordingNotification(createRecording(detectionsCount = 1), emptyList())
+
+        coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
+        coVerify(exactly = 0) { appSettings.getBoolean(any(), any()) }
+    }
 ```
 
 - [ ] **Step 6: Same wiring for signal-loss test**
 
-Edit `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt`. Add the same imports, the `appSettings = mockk<...>()`, the constructor argument, and an `init {}` block setting `NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED` to `true` by default.
+Edit `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt`. Add the same imports, the `appSettings = mockk<...>()`, the constructor argument, and an `init {}` block setting `NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED` to `true` by default:
 
-Append two cases:
+```kotlin
+import ru.zinin.frigate.analyzer.service.AppSettingKeys
+import ru.zinin.frigate.analyzer.service.AppSettingsService
+// ...
+    private val appSettings = mockk<AppSettingsService>()
+
+    init {
+        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns true
+    }
+```
+
+Append four cases — both flows (loss and recovery), both flag positions (ON and OFF), plus the AppSettings-failure regression:
 
 ```kotlin
     @Test
@@ -2167,8 +2388,18 @@ Append two cases:
     }
 
     @Test
-    fun `user with notificationsSignalEnabled false is filtered out`() = runTest {
-        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns true
+    fun `global signal toggle off skips signal-recovery alert`() = runTest {
+        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns false
+        coEvery { userService.getAuthorizedUsersWithZones() } returns
+            listOf(UserZoneInfo(123L, ZoneId.of("UTC"), "en"))
+
+        service.sendCameraSignalRecovered("cam", Instant.parse("2026-04-27T11:00:00Z"), Instant.parse("2026-04-27T12:00:00Z"))
+
+        coVerify(exactly = 0) { notificationQueue.enqueue(any()) }
+    }
+
+    @Test
+    fun `signal-loss filters out users with notificationsSignalEnabled false`() = runTest {
         every { uuidGeneratorHelper.generateV1() } returns UUID.randomUUID()
         coEvery { userService.getAuthorizedUsersWithZones() } returns listOf(
             UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = false),
@@ -2183,9 +2414,41 @@ Append two cases:
         coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
         assertEquals(222L, captured.captured.chatId)
     }
+
+    @Test
+    fun `signal-recovery filters out users with notificationsSignalEnabled false`() = runTest {
+        every { uuidGeneratorHelper.generateV1() } returns UUID.randomUUID()
+        coEvery { userService.getAuthorizedUsersWithZones() } returns listOf(
+            UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = false),
+            UserZoneInfo(222L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = true),
+        )
+
+        val captured = slot<SimpleTextNotificationTask>()
+        coEvery { notificationQueue.enqueue(capture(captured)) } returns Unit
+
+        service.sendCameraSignalRecovered("cam", Instant.parse("2026-04-27T11:00:00Z"), Instant.parse("2026-04-27T12:00:00Z"))
+
+        coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
+        assertEquals(222L, captured.captured.chatId)
+    }
+
+    @Test
+    fun `signal-loss propagates AppSettings read failure (no silent fallback)`() = runTest {
+        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } throws
+            RuntimeException("settings db down")
+        coEvery { userService.getAuthorizedUsersWithZones() } returns
+            listOf(UserZoneInfo(123L, ZoneId.of("UTC"), "en"))
+
+        assertFailsWith<RuntimeException> {
+            service.sendCameraSignalLost(
+                "cam", Instant.parse("2026-04-27T11:00:00Z"), Instant.parse("2026-04-27T12:00:00Z"),
+            )
+        }
+        coVerify(exactly = 0) { notificationQueue.enqueue(any()) }
+    }
 ```
 
-(Adjust imports for `SimpleTextNotificationTask`, `UUID`.)
+(Adjust imports for `SimpleTextNotificationTask`, `UUID`, `assertFailsWith`.)
 
 - [ ] **Step 7: Run all telegram tests**
 
@@ -2283,20 +2546,33 @@ git commit -m "i18n(telegram): add /notifications dialog strings (ru, en)"
 - Create test: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsMessageRendererTest.kt`
 - Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsMessageRenderer.kt`
 
-- [ ] **Step 1: Define the data shape**
+- [ ] **Step 1: Define the data shapes**
 
-In the new package, the renderer takes a small data record. We'll declare it inside the renderer file:
+`NotificationsViewState` lives in its own DTO file so that both `NotificationsCommandHandler` (Task 16) and the bot wiring (Task 18) can import it without depending on the renderer's package. The global flags are nullable to avoid forcing non-OWNER call sites to read `app_settings`:
+
+Create `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/dto/NotificationsViewState.kt`:
 
 ```kotlin
+package ru.zinin.frigate.analyzer.telegram.dto
+
 data class NotificationsViewState(
     val isOwner: Boolean,
     val recordingUserEnabled: Boolean,
     val signalUserEnabled: Boolean,
-    val recordingGlobalEnabled: Boolean,
-    val signalGlobalEnabled: Boolean,
+    /**
+     * Recording global toggle. Required when [isOwner] = true; must be `null` for non-OWNER
+     * to make accidental reads of `app_settings` for plain users a programming error.
+     */
+    val recordingGlobalEnabled: Boolean?,
+    /** Signal global toggle. Same null-discipline as [recordingGlobalEnabled]. */
+    val signalGlobalEnabled: Boolean?,
     val language: String,
 )
+```
 
+`RenderedNotifications` stays inside the renderer file (it has no callers outside it):
+
+```kotlin
 data class RenderedNotifications(
     val text: String,
     val keyboard: InlineKeyboardMarkup,
@@ -2337,8 +2613,8 @@ class NotificationsMessageRendererTest {
                 isOwner = false,
                 recordingUserEnabled = true,
                 signalUserEnabled = true,
-                recordingGlobalEnabled = true,
-                signalGlobalEnabled = true,
+                recordingGlobalEnabled = null, // null for non-OWNER
+                signalGlobalEnabled = null,
                 language = "en",
             ),
         )
@@ -2367,8 +2643,8 @@ class NotificationsMessageRendererTest {
                 isOwner = false,
                 recordingUserEnabled = false,
                 signalUserEnabled = true,
-                recordingGlobalEnabled = true,
-                signalGlobalEnabled = true,
+                recordingGlobalEnabled = null,
+                signalGlobalEnabled = null,
                 language = "en",
             ),
         )
@@ -2384,8 +2660,8 @@ class NotificationsMessageRendererTest {
                 isOwner = false,
                 recordingUserEnabled = true,
                 signalUserEnabled = true,
-                recordingGlobalEnabled = true,
-                signalGlobalEnabled = true,
+                recordingGlobalEnabled = null,
+                signalGlobalEnabled = null,
                 language = "en",
             ),
         )
@@ -2401,8 +2677,8 @@ class NotificationsMessageRendererTest {
                 isOwner = false,
                 recordingUserEnabled = true,
                 signalUserEnabled = true,
-                recordingGlobalEnabled = true,
-                signalGlobalEnabled = true,
+                recordingGlobalEnabled = null,
+                signalGlobalEnabled = null,
                 language = "ru",
             ),
         )
@@ -2416,8 +2692,8 @@ class NotificationsMessageRendererTest {
                 isOwner = false,
                 recordingUserEnabled = true,
                 signalUserEnabled = true,
-                recordingGlobalEnabled = true,
-                signalGlobalEnabled = true,
+                recordingGlobalEnabled = null,
+                signalGlobalEnabled = null,
                 language = "fr",
             ),
         )
@@ -2441,6 +2717,22 @@ class NotificationsMessageRendererTest {
         val btn = lastRow[0] as CallbackDataInlineKeyboardButton
         assertEquals("nfs:close", btn.callbackData)
     }
+
+    @Test
+    fun `owner variant requires non-null global flags`() {
+        // Defensive: the renderer must reject an OWNER state without globals because
+        // it would mean upstream forgot to read app_settings — a programming error.
+        val state = NotificationsViewState(
+            isOwner = true,
+            recordingUserEnabled = true,
+            signalUserEnabled = true,
+            recordingGlobalEnabled = null,
+            signalGlobalEnabled = null,
+            language = "en",
+        )
+        kotlin.runCatching { renderer.render(state) }
+            .let { result -> assertTrue(result.isFailure, "renderer must throw for OWNER+null globals") }
+    }
 }
 ```
 
@@ -2461,16 +2753,8 @@ import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.utils.matrix
 import dev.inmo.tgbotapi.utils.row
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.dto.NotificationsViewState
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
-
-data class NotificationsViewState(
-    val isOwner: Boolean,
-    val recordingUserEnabled: Boolean,
-    val signalUserEnabled: Boolean,
-    val recordingGlobalEnabled: Boolean,
-    val signalGlobalEnabled: Boolean,
-    val language: String,
-)
 
 data class RenderedNotifications(
     val text: String,
@@ -2482,6 +2766,16 @@ class NotificationsMessageRenderer(
     private val msg: MessageResolver,
 ) {
     fun render(state: NotificationsViewState): RenderedNotifications {
+        if (state.isOwner) {
+            // OWNER must always pass globals — null is a programming error in the
+            // caller, surface it loudly instead of silently rendering "false".
+            requireNotNull(state.recordingGlobalEnabled) {
+                "OWNER NotificationsViewState.recordingGlobalEnabled must not be null"
+            }
+            requireNotNull(state.signalGlobalEnabled) {
+                "OWNER NotificationsViewState.signalGlobalEnabled must not be null"
+            }
+        }
         val text = renderText(state)
         val keyboard = renderKeyboard(state)
         return RenderedNotifications(text, keyboard)
@@ -2503,7 +2797,7 @@ class NotificationsMessageRenderer(
                     "notifications.settings.line.owner.format", lang,
                     recordingLabel,
                     if (state.recordingUserEnabled) on else off, user,
-                    if (state.recordingGlobalEnabled) on else off, global,
+                    if (state.recordingGlobalEnabled!!) on else off, global,
                 )
             } else {
                 msg.get(
@@ -2519,7 +2813,7 @@ class NotificationsMessageRenderer(
                     "notifications.settings.line.owner.format", lang,
                     signalLabel,
                     if (state.signalUserEnabled) on else off, user,
-                    if (state.signalGlobalEnabled) on else off, global,
+                    if (state.signalGlobalEnabled!!) on else off, global,
                 )
             } else {
                 msg.get(
@@ -2556,16 +2850,18 @@ class NotificationsMessageRenderer(
                     )
                 }
                 if (state.isOwner) {
+                    val recGlobal = state.recordingGlobalEnabled!!
+                    val sigGlobal = state.signalGlobalEnabled!!
                     row {
                         +CallbackDataInlineKeyboardButton(
-                            msg.get(toggleKey("recording", "global", state.recordingGlobalEnabled), lang),
-                            "nfs:g:rec:${targetValue(state.recordingGlobalEnabled)}",
+                            msg.get(toggleKey("recording", "global", recGlobal), lang),
+                            "nfs:g:rec:${targetValue(recGlobal)}",
                         )
                     }
                     row {
                         +CallbackDataInlineKeyboardButton(
-                            msg.get(toggleKey("signal", "global", state.signalGlobalEnabled), lang),
-                            "nfs:g:sig:${targetValue(state.signalGlobalEnabled)}",
+                            msg.get(toggleKey("signal", "global", sigGlobal), lang),
+                            "nfs:g:sig:${targetValue(sigGlobal)}",
                         )
                     }
                 }
@@ -2588,12 +2884,13 @@ class NotificationsMessageRenderer(
 - [ ] **Step 5: Run test to verify it passes**
 
 Dispatch `build-runner`: `./gradlew :frigate-analyzer-telegram:test --tests "ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsMessageRendererTest"`.
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsMessageRenderer.kt \
+git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/dto/NotificationsViewState.kt \
+        modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsMessageRenderer.kt \
         modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsMessageRendererTest.kt
 git commit -m "feat(telegram): add NotificationsMessageRenderer with tests"
 ```
@@ -2614,7 +2911,7 @@ git commit -m "feat(telegram): add NotificationsMessageRenderer with tests"
 
 Run: `grep -n "override val order" modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/*CommandHandler.kt`
 
-Identify the largest existing `order` and pick the next integer. The plan assumes `order = 6` — adjust if the codebase has shifted.
+Identify the largest existing `order` (note: as of this writing `/language` already takes `order = 6` and OWNER commands jump to `12`) and pick the next integer **after `/language`**. The intended position is "after `/language`", so use **`order = 7`** unless the codebase has shifted again.
 
 - [ ] **Step 2: Add `isOwner` helper to `TelegramUserService`**
 
@@ -2625,28 +2922,53 @@ If a method already exists, skip this step. Otherwise:
 In `TelegramUserService.kt` append before the closing brace:
 
 ```kotlin
-    fun isOwner(username: String): Boolean
+    /**
+     * Returns true iff [username] is non-blank and matches `application.telegram.owner`
+     * case-insensitively. Defensive against null/blank inputs and missing owner config.
+     */
+    fun isOwner(username: String?): Boolean
 ```
 
-Edit `TelegramUserServiceImpl.kt`. Inject `TelegramProperties` into the constructor if not already present:
+Edit `TelegramUserServiceImpl.kt`. **`TelegramProperties` is not currently injected into the primary constructor** — adding it is a constructor signature change. Update the class as follows:
 
 ```kotlin
 class TelegramUserServiceImpl(
     private val repository: TelegramUserRepository,
     private val uuidGeneratorHelper: UUIDGeneratorHelper,
     private val clock: Clock,
-    private val telegramProperties: TelegramProperties,
+    private val telegramProperties: TelegramProperties, // NEW
 ) : TelegramUserService {
 ```
 
 Add inside the class:
 
 ```kotlin
-    override fun isOwner(username: String): Boolean =
-        username.equals(telegramProperties.owner, ignoreCase = true)
+    override fun isOwner(username: String?): Boolean {
+        val configured = telegramProperties.owner
+        if (username.isNullOrBlank() || configured.isNullOrBlank()) return false
+        return username.equals(configured, ignoreCase = true)
+    }
 ```
 
-Add/adjust `TelegramUserServiceImplTest` cases for `isOwner`: exact owner match returns true, case-insensitive owner match returns true, other username returns false.
+Because `TelegramProperties` is a new constructor argument, **every existing caller that constructs `TelegramUserServiceImpl(...)` must be updated**. Verify and update:
+
+```bash
+grep -rn "TelegramUserServiceImpl(" modules/telegram/src/test/kotlin/
+```
+
+Expected files (add a stub `telegramProperties = mockk<TelegramProperties>().also { every { it.owner } returns "owner_username" }` or equivalent):
+
+- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramUserServiceImplTest.kt`
+- any other test file that directly instantiates the impl (run the grep — there may be `TelegramUserServiceImplNotificationsTest` or similar from earlier tasks).
+
+Add/adjust `TelegramUserServiceImplTest` cases for `isOwner`:
+
+- exact owner match (case-sensitive) → `true`;
+- case-insensitive owner match → `true`;
+- different username → `false`;
+- `null` username → `false`;
+- blank `""` username → `false`;
+- `null` or blank `application.telegram.owner` config → `false` for any input (defensive).
 
 - [ ] **Step 3: Implement the handler**
 
@@ -2659,14 +2981,18 @@ import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
 import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
+import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
+import ru.zinin.frigate.analyzer.telegram.dto.NotificationsViewState
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+
+private val logger = KotlinLogging.logger {}
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
@@ -2677,7 +3003,7 @@ class NotificationsCommandHandler(
 ) : CommandHandler {
     override val command: String = "notifications"
     override val requiredRole: UserRole = UserRole.USER
-    override val order: Int = 6
+    override val order: Int = 7
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
@@ -2686,17 +3012,29 @@ class NotificationsCommandHandler(
         if (user == null) return
         val chatId = message.chat.id
         val isOwner = userService.isOwner(user.username)
+        logger.debug { "/notifications opened by chatId=$chatId username=${user.username} isOwner=$isOwner" }
+
+        // Only OWNER sees the global block, so only OWNER needs the global flags.
+        // Skipping the read for USER reduces AppSettings load and shrinks the
+        // failure surface (a settings DB outage no longer breaks /notifications
+        // for regular users).
+        val recordingGlobal = if (isOwner) {
+            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
+        } else {
+            null
+        }
+        val signalGlobal = if (isOwner) {
+            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
+        } else {
+            null
+        }
 
         val state = NotificationsViewState(
             isOwner = isOwner,
             recordingUserEnabled = user.notificationsRecordingEnabled,
             signalUserEnabled = user.notificationsSignalEnabled,
-            recordingGlobalEnabled = appSettings.getBoolean(
-                AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true,
-            ),
-            signalGlobalEnabled = appSettings.getBoolean(
-                AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true,
-            ),
+            recordingGlobalEnabled = recordingGlobal,
+            signalGlobalEnabled = signalGlobal,
             language = user.languageCode ?: "en",
         )
 
@@ -2706,18 +3044,53 @@ class NotificationsCommandHandler(
 }
 ```
 
-- [ ] **Step 4: Verify compilation and existing tests still pass**
+> If `appSettings.getBoolean(...)` throws above for an OWNER (e.g. settings DB unreachable), the exception propagates out of `handle(...)` and is caught by the bot framework's per-handler error wrapper — the user sees a generic error, the failure is logged, and the OWNER can retry. This matches the design's "AppSettings failures propagate" rule.
+
+`NotificationsViewState` lives in `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/dto/NotificationsViewState.kt` so that both the handler (`telegram/bot/handler/notifications/`) and the renderer (`telegram/bot/handler/notifications/`) can import it without a one-way dependency on the renderer file:
+
+```kotlin
+package ru.zinin.frigate.analyzer.telegram.dto
+
+data class NotificationsViewState(
+    val isOwner: Boolean,
+    val recordingUserEnabled: Boolean,
+    val signalUserEnabled: Boolean,
+    /** null for non-OWNER users — the dialog does not render or read globals for them. */
+    val recordingGlobalEnabled: Boolean?,
+    /** null for non-OWNER users — the dialog does not render or read globals for them. */
+    val signalGlobalEnabled: Boolean?,
+    val language: String,
+)
+```
+
+Update `NotificationsMessageRenderer` (Task 15) to use the new package import and to treat `recordingGlobalEnabled` / `signalGlobalEnabled` as nullable: when `isOwner == false`, both are `null` and the global block is omitted; when `isOwner == true`, both must be non-null (defensive `requireNotNull(...)` with a clear message in renderer).
+
+- [ ] **Step 4: Add `NotificationsCommandHandlerTest`**
+
+Create `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsCommandHandlerTest.kt` with the following coverage:
+
+- USER (non-OWNER) opens `/notifications` → renderer is called with `recordingGlobalEnabled = null` and `signalGlobalEnabled = null`; `appSettings.getBoolean(...)` is **not** called for either global key.
+- OWNER opens `/notifications` → renderer is called with non-null global flags read from `appSettings`; `appSettings.getBoolean(NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)` and `appSettings.getBoolean(NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)` are each invoked exactly once.
+- `appSettings.getBoolean(...)` throwing for OWNER → exception propagates from `handle(...)`.
+- USER variant uses `notifications.settings.line.format`, OWNER variant uses `notifications.settings.line.owner.format` (verify via captured renderer call).
+- `findByUsernameAsDto` / `isOwner` use the configured username consistently.
+
+Use `mockk<NotificationsMessageRenderer>(relaxed = true)` and `slot<NotificationsViewState>()` to capture the state passed to the renderer; assertions go on the captured state, not on the rendered text/keyboard.
+
+- [ ] **Step 5: Verify compilation and existing tests still pass**
 
 Dispatch `build-runner`: `./gradlew :frigate-analyzer-telegram:test`.
-Expected: BUILD SUCCESSFUL.
+Expected: BUILD SUCCESSFUL — the new `NotificationsCommandHandlerTest` passes alongside existing telegram tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsCommandHandler.kt \
+        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsCommandHandlerTest.kt \
         modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/TelegramUserService.kt \
-        modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramUserServiceImpl.kt
-git commit -m "feat(telegram): add /notifications command handler and isOwner helper"
+        modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramUserServiceImpl.kt \
+        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramUserServiceImplTest.kt
+git commit -m "feat(telegram): add /notifications command handler, isOwner helper, command tests"
 ```
 
 ---
@@ -2738,16 +3111,18 @@ Run: `grep -rn "DataCallbackQuery\|onDataCallbackQuery\|CallbackHandler" modules
 
 Read `QuickExportHandler.kt` and any cancel/registration code to understand the project's callback registration pattern. Mirror it.
 
-- [ ] **Step 2: Add lookup helpers to `TelegramUserService`**
+- [ ] **Step 2: Add lookup helpers to `TelegramUserService` (username-based, mirroring existing handlers)**
 
-Run: `grep -n "findByChatId\|findByUserId" modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/ modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/repository/`
+Existing callback handlers in this codebase (`QuickExportHandler`, `CancelExportHandler`) authenticate the callback sender by **username**, not by Telegram user ID. Use the same pattern here so the auth path is uniform across handlers and so Task 17/18 do not require a new `findByUserId` repository method.
 
-If absent, add to `TelegramUserService` interface:
+Run: `grep -n "findByUsername\|findByChatId" modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/ modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/repository/`
+
+If a username-based lookup already exists (likely yes — the export handlers use it), reuse it. Otherwise add to `TelegramUserService` interface:
 
 ```kotlin
     suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto?
 
-    suspend fun findByUserIdAsDto(userId: Long): TelegramUserDto?
+    suspend fun findByUsernameAsDto(username: String): TelegramUserDto?
 ```
 
 And implement in `TelegramUserServiceImpl` using existing repository methods (or add repository derived methods if missing):
@@ -2758,9 +3133,11 @@ And implement in `TelegramUserServiceImpl` using existing repository methods (or
         repository.findByChatId(chatId)?.toDto()
 
     @Transactional(readOnly = true)
-    override suspend fun findByUserIdAsDto(userId: Long): TelegramUserDto? =
-        repository.findByUserId(userId)?.toDto()
+    override suspend fun findByUsernameAsDto(username: String): TelegramUserDto? =
+        repository.findByUsername(username)?.toDto()
 ```
+
+> Do **not** add `findByUserId(userId: Long)` derived methods unless the project already uses Telegram user ID for lookups elsewhere — `callback.user.id` typing in ktgbotapi v31.x is non-trivial and inconsistent across versions, while `callback.user.username` is a stable `String?`. Use username and follow the existing pattern.
 
 - [ ] **Step 3: Write the failing test**
 
@@ -2905,6 +3282,7 @@ Create `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/
 ```kotlin
 package ru.zinin.frigate.analyzer.telegram.bot.handler.notifications
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
@@ -2924,9 +3302,13 @@ class NotificationsSettingsCallbackHandler(
     enum class DispatchOutcome { RERENDER, CLOSE, UNAUTHORIZED, IGNORE }
 
     /**
-     * Pure dispatch for testability: returns the outcome based on the callback data and current
-     * caller state. Side-effects (DB updates) are issued here; the calling site handles
-     * Telegram message editing.
+     * Pure dispatch for testability: returns the outcome based on the callback data and the
+     * caller's current state. Side-effects (DB updates) are issued here; the calling site
+     * handles Telegram message editing.
+     *
+     * `data` carries the explicit target state (`nfs:u:rec:1`/`nfs:u:rec:0`, etc.) instead of
+     * a "toggle" semantic, so a stale `/notifications` message cannot invert a value that has
+     * already been changed in another window.
      */
     suspend fun dispatch(
         data: String,
@@ -2938,26 +3320,32 @@ class NotificationsSettingsCallbackHandler(
         return when {
             data == "nfs:close" -> DispatchOutcome.CLOSE
             parts.size == 4 && parts[0] == "nfs" -> {
-                val enabled = when (parts[3]) {
+                // `targetEnabled` is the desired post-click state, not the current DB state.
+                // Naming it `enabled` would be misleading: a button that says "Disable" is
+                // wired with `nfs:u:rec:0`, so reading "0" here means "set to false".
+                val targetEnabled = when (parts[3]) {
                     "1" -> true
                     "0" -> false
-                    else -> return DispatchOutcome.IGNORE
+                    else -> {
+                        logger.debug { "Ignoring nfs callback with malformed target state: $data" }
+                        return DispatchOutcome.IGNORE
+                    }
                 }
                 when (parts[1] to parts[2]) {
                     "u" to "rec" -> {
-                        userService.updateNotificationsRecordingEnabled(chatId, enabled)
+                        userService.updateNotificationsRecordingEnabled(chatId, targetEnabled)
                         DispatchOutcome.RERENDER
                     }
                     "u" to "sig" -> {
-                        userService.updateNotificationsSignalEnabled(chatId, enabled)
+                        userService.updateNotificationsSignalEnabled(chatId, targetEnabled)
                         DispatchOutcome.RERENDER
                     }
                     "g" to "rec" -> {
                         if (!isOwner) return DispatchOutcome.UNAUTHORIZED
                         appSettings.setBoolean(
                             AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED,
-                            enabled,
-                            currentUser.username,
+                            targetEnabled,
+                            currentUser.username ?: "<unknown>",
                         )
                         DispatchOutcome.RERENDER
                     }
@@ -2965,19 +3353,27 @@ class NotificationsSettingsCallbackHandler(
                         if (!isOwner) return DispatchOutcome.UNAUTHORIZED
                         appSettings.setBoolean(
                             AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED,
-                            enabled,
-                            currentUser.username,
+                            targetEnabled,
+                            currentUser.username ?: "<unknown>",
                         )
                         DispatchOutcome.RERENDER
                     }
-                    else -> DispatchOutcome.IGNORE
+                    else -> {
+                        logger.debug { "Ignoring nfs callback with unknown scope/stream: $data" }
+                        DispatchOutcome.IGNORE
+                    }
                 }
             }
-            else -> DispatchOutcome.IGNORE
+            else -> {
+                logger.debug { "Ignoring unknown nfs callback: $data" }
+                DispatchOutcome.IGNORE
+            }
         }
     }
 }
 ```
+
+> `currentUser.username ?: "<unknown>"`: Telegram allows users without a username (rare for OWNER, but still defensive). The fallback string is logged in `app_settings.updated_by` so an audit can still tell that the change came from the bot, not from a migration.
 
 Telegram-side wiring is implemented in Task 18 using the existing `onDataCallbackQuery` pattern in `FrigateAnalyzerBot.registerRoutes()`.
 
@@ -3002,6 +3398,8 @@ git commit -m "feat(telegram): add NotificationsSettingsCallbackHandler with dis
 
 **Goal:** Subscribe to `nfs:*` callbacks in the same place where existing callback subscriptions live (e.g. `FrigateAnalyzerBot` / `QuickExportHandler` registration). The pseudocode block from Task 17 becomes a real subscription.
 
+**Depends on:** Task 9 (`AppSettingsService`), Task 16 (`NotificationsCommandHandler`, `isOwner`, `NotificationsViewState`), Task 17 (`NotificationsSettingsCallbackHandler` and username lookup helpers). Task 18 must run after these. The plan is sequential so this is implicit, but if anyone runs sub-agents in parallel, Task 18 must be gated on the three listed.
+
 **Files:**
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt`
 
@@ -3009,21 +3407,50 @@ git commit -m "feat(telegram): add NotificationsSettingsCallbackHandler with dis
 
 Run: `grep -rn "onDataCallbackQuery\|QuickExportHandler\|CancelExport" modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/ | head -40`
 
-Read `FrigateAnalyzerBot.registerRoutes()` and existing callback handlers. The project uses `onDataCallbackQuery(initialFilter = { ... })`, not `waitDataCallbackQuery`; mirror that pattern.
+Read `FrigateAnalyzerBot.registerRoutes()` and existing callback handlers. The project uses `onDataCallbackQuery(initialFilter = { ... })`, not `waitDataCallbackQuery`; mirror that pattern. Authentication uses `callback.user.username` (mirroring `QuickExportHandler` / `CancelExportHandler`).
 
 - [ ] **Step 2: Add the subscription**
 
 Inside `FrigateAnalyzerBot.registerRoutes()` (near the existing callback registration), add an `onDataCallbackQuery` block:
 
 ```kotlin
+import dev.inmo.tgbotapi.extensions.api.answers.answer
+import dev.inmo.tgbotapi.extensions.api.edit.text.editMessageText
+import dev.inmo.tgbotapi.extensions.api.edit.editMessageReplyMarkup
+import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onDataCallbackQuery
+import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
+import ru.zinin.frigate.analyzer.service.AppSettingKeys
+import ru.zinin.frigate.analyzer.service.AppSettingsService
+import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsMessageRenderer
+import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsSettingsCallbackHandler
+import ru.zinin.frigate.analyzer.telegram.dto.NotificationsViewState
+// ... (alongside existing imports)
+
 onDataCallbackQuery(
     initialFilter = { it.data.startsWith("nfs:") },
 ) { callback ->
+    // Acknowledge the callback FIRST so Telegram clears the spinner on the user's
+    // button. We do this before any potentially-slow DB lookup so the UX stays
+    // responsive even if DB latency spikes.
     try {
         bot.answer(callback)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        logger.warn(e) { "Failed to answer nfs callback id=${callback.id}" }
+    }
+
+    try {
         val msg = (callback as? MessageDataCallbackQuery)?.message ?: return@onDataCallbackQuery
-        val senderUserId = callback.user.id.chatId.long
-        val current = userService.findByUserIdAsDto(senderUserId) ?: return@onDataCallbackQuery
+        // Authenticate by Telegram callback sender's username (mirroring
+        // QuickExportHandler / CancelExportHandler) — NOT by message.chat.id and
+        // NOT by callback.user.id. This prevents forwarded/stale messages from
+        // mutating another user's settings, and avoids ktgbotapi UserId-typing
+        // pitfalls across versions.
+        val senderUsername = callback.user.username ?: return@onDataCallbackQuery
+        val current = userService.findByUsernameAsDto(senderUsername) ?: return@onDataCallbackQuery
         val cid = current.chatId ?: return@onDataCallbackQuery
         val owner = userService.isOwner(current.username)
         val outcome = notificationsSettingsCallbackHandler.dispatch(callback.data, cid, owner, current)
@@ -3034,37 +3461,90 @@ onDataCallbackQuery(
                     isOwner = owner,
                     recordingUserEnabled = updated.notificationsRecordingEnabled,
                     signalUserEnabled = updated.notificationsSignalEnabled,
-                    recordingGlobalEnabled = appSettings.getBoolean(
-                        AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true),
-                    signalGlobalEnabled = appSettings.getBoolean(
-                        AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true),
+                    recordingGlobalEnabled = if (owner) {
+                        appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
+                    } else {
+                        null
+                    },
+                    signalGlobalEnabled = if (owner) {
+                        appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
+                    } else {
+                        null
+                    },
                     language = updated.languageCode ?: "en",
                 )
                 val rendered = notificationsMessageRenderer.render(state)
-                bot.editMessageText(msg, rendered.text, replyMarkup = rendered.keyboard)
+                try {
+                    bot.editMessageText(msg, rendered.text, replyMarkup = rendered.keyboard)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Telegram rejects edits with identical content with
+                    // "Bad Request: message is not modified". This happens whenever
+                    // the user double-clicks the same button (the second click would
+                    // re-render the same state). Downgrade that one error to DEBUG
+                    // so it does not pollute logs; everything else is WARN.
+                    val isNotModified = e.message?.contains(
+                        "message is not modified", ignoreCase = true,
+                    ) == true
+                    if (isNotModified) {
+                        logger.debug { "nfs edit no-op (message not modified): ${callback.data}" }
+                    } else {
+                        logger.warn(e) { "Failed to edit /notifications message for callback=${callback.data}" }
+                    }
+                }
             }
             NotificationsSettingsCallbackHandler.DispatchOutcome.CLOSE -> {
-                bot.editMessageReplyMarkup(msg, replyMarkup = null)
+                try {
+                    bot.editMessageReplyMarkup(msg, replyMarkup = null)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to close /notifications keyboard" }
+                }
             }
             else -> Unit
         }
+    } catch (e: CancellationException) {
+        // Always rethrow CancellationException — swallowing it would break
+        // structured concurrency and prevent coroutine cleanup on shutdown.
+        throw e
     } catch (e: Exception) {
         logger.warn(e) { "Failed to handle nfs callback data=${callback.data}" }
     }
 }
 ```
 
-Wire the constructor of `FrigateAnalyzerBot` to inject `notificationsSettingsCallbackHandler`, `notificationsMessageRenderer`, `appSettings`, and `userService` if not already present. The callback must authorize by Telegram callback sender (`callback.user`), not only by `message.chat.id`; this prevents forwarded/stale messages from mutating another user's settings. Add `findByUserIdAsDto` to `TelegramUserService` if the current service does not expose it.
+Wire the constructor of `FrigateAnalyzerBot` to inject `notificationsSettingsCallbackHandler`, `notificationsMessageRenderer`, `appSettings`, and `userService` if not already present. The callback authorizes by Telegram callback sender's **username** (`callback.user.username`), not by `message.chat.id` and not by `callback.user.id`. This matches the pattern in existing callback handlers and avoids the cross-version typing issues with `UserId.chatId.long` in ktgbotapi.
 
-- [ ] **Step 3: Run telegram tests**
+- [ ] **Step 3: Audit `nfs:` callback strings against the design**
+
+Before completing this task, run a final audit to ensure plan, renderer, and handler all use the design's exact strings:
+
+```bash
+grep -rn "\"nfs:" modules/telegram/src/main/kotlin/
+```
+
+Expected matches (and only these):
+
+- `nfs:u:rec:1` / `nfs:u:rec:0`
+- `nfs:u:sig:1` / `nfs:u:sig:0`
+- `nfs:g:rec:1` / `nfs:g:rec:0`
+- `nfs:g:sig:1` / `nfs:g:sig:0`
+- `nfs:close`
+- prefix filter `nfs:` in `initialFilter`
+
+Anything else is a typo and must be fixed.
+
+- [ ] **Step 4: Run telegram tests**
 
 Dispatch `build-runner`: `./gradlew :frigate-analyzer-telegram:test`.
 Expected: BUILD SUCCESSFUL.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add <bot-wiring-file>
+git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt
 git commit -m "feat(telegram): subscribe to nfs:* callbacks in bot lifecycle"
 ```
 
@@ -3073,6 +3553,8 @@ git commit -m "feat(telegram): subscribe to nfs:* callbacks in bot lifecycle"
 ## Task 19: `RecordingProcessingFacade` — call `NotificationDecisionService`
 
 **Goal:** Before invoking Telegram fan-out, gate via decision service. Skip notification (and AI description) when `shouldNotify=false`.
+
+> **Accepted limitation (documented):** This task places the decision call **after** `recordingEntityService.saveProcessingResult(request)`. As a result, if the decision throws an `AppSettingsService` read exception, the recording is already marked `process_timestamp != null` and will not be retried by the pipeline; the facade's `try/catch` logs the failure and the notification for that specific recording is lost. This is the same accepted at-most-once gap as `docs/telegram-outbox.md` and is documented in the design's "Error Handling" section. A future task may move the decision call before save (or share a retry-safe boundary) — out of scope for this iteration.
 
 **Files:**
 - Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/facade/RecordingProcessingFacade.kt`
@@ -3165,7 +3647,7 @@ git commit -m "feat(core): gate recording notifications via NotificationDecision
 
 **Files:**
 - Modify: `modules/core/src/main/resources/application.yaml`
-- Modify: `.env.example`
+- Modify: `docker/deploy/.env.example`
 
 - [ ] **Step 1: Add `application.notifications` block to YAML**
 
@@ -3182,9 +3664,9 @@ Edit `modules/core/src/main/resources/application.yaml`. After the `signal-loss:
       cleanup-retention: ${NOTIFICATIONS_TRACK_CLEANUP_RETENTION:PT1H}
 ```
 
-- [ ] **Step 2: Update `.env.example`**
+- [ ] **Step 2: Update `docker/deploy/.env.example`**
 
-Edit `.env.example`. Append:
+Edit `docker/deploy/.env.example` (the project's deployment-template `.env.example` lives under `docker/deploy/`, not at the repo root — verify with `ls -la docker/deploy/.env.example`). Append:
 
 ```bash
 
@@ -3208,12 +3690,12 @@ Current project configuration uses explicit `@EnableConfigurationProperties`, so
 - [ ] **Step 4: Verify with full build**
 
 Dispatch `build-runner`: `./gradlew build -x test`.
-Expected: BUILD SUCCESSFUL — application context loads with new properties bound.
+Expected: BUILD SUCCESSFUL — application context loads with new properties bound. The `ObjectTrackerProperties.init` block also runs at this point and will fail-fast if `cleanupRetention < ttl` or any `*Ms`/`Duration` is non-positive.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add modules/core/src/main/resources/application.yaml .env.example \
+git add modules/core/src/main/resources/application.yaml docker/deploy/.env.example \
         <core-config-class-if-modified>
 git commit -m "feat(config): wire NOTIFICATIONS_TRACK_* env vars and ObjectTrackerProperties"
 ```
