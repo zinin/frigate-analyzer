@@ -30,6 +30,7 @@ class ObjectTrackerServiceImpl(
     private val properties: ObjectTrackerProperties,
     private val transactionalOperator: TransactionalOperator,
 ) : ObjectTrackerService {
+    // Camera set is static for this single-instance deployment.
     private val perCameraMutex = ConcurrentHashMap<String, Mutex>()
 
     override suspend fun evaluate(
@@ -93,15 +94,18 @@ class ObjectTrackerServiceImpl(
                     ?.first
             if (match != null) {
                 active.remove(match)
-                repository.updateOnMatch(
-                    id = match.id!!,
-                    x1 = bbox.x1,
-                    y1 = bbox.y1,
-                    x2 = bbox.x2,
-                    y2 = bbox.y2,
-                    lastSeenAt = recordingTimestamp,
-                    lastRecordingId = recording.id,
-                )
+                val matchId = requireNotNull(match.id) { "ObjectTrackEntity.id is null for matched track" }
+                val updated =
+                    repository.updateOnMatch(
+                        id = matchId,
+                        x1 = bbox.x1,
+                        y1 = bbox.y1,
+                        x2 = bbox.x2,
+                        y2 = bbox.y2,
+                        lastSeenAt = recordingTimestamp,
+                        lastRecordingId = recording.id,
+                    )
+                check(updated == 1L) { "Object track $matchId disappeared before update" }
                 matched++
             } else {
                 repository.save(

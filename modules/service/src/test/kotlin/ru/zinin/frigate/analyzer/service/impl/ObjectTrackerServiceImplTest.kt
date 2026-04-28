@@ -25,10 +25,14 @@ import java.time.LocalTime
 import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class ObjectTrackerServiceImplTest {
-    private val repo = mockk<ObjectTrackRepository>(relaxed = true)
+    private val repo =
+        mockk<ObjectTrackRepository>(relaxed = true) {
+            coEvery { updateOnMatch(any(), any(), any(), any(), any(), any(), any()) } returns 1L
+        }
     private val uuid = mockk<UUIDGeneratorHelper>()
     private val fixedNow = Instant.parse("2026-04-27T12:00:00Z")
     private val clock = Clock.fixed(fixedNow, ZoneOffset.UTC)
@@ -218,6 +222,39 @@ class ObjectTrackerServiceImplTest {
             assertEquals(1, delta.newTracksCount)
             assertEquals(1, delta.matchedTracksCount)
             assertEquals(listOf("person"), delta.newClasses)
+        }
+
+    @Test
+    fun `unmatched active tracks are reported as stale`() =
+        runTest {
+            val existingCar = track("car", 0f, 0f, 0.5f, 0.5f)
+            val stalePerson = track("person", 0.6f, 0.6f, 0.8f, 0.9f)
+            coEvery { repo.findActive(any(), any()) } returns listOf(existingCar, stalePerson)
+
+            val delta =
+                service.evaluate(
+                    rec(),
+                    listOf(det("car", 0.01f, 0.0f, 0.51f, 0.5f)),
+                )
+
+            assertEquals(0, delta.newTracksCount)
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(1, delta.staleTracksCount)
+        }
+
+    @Test
+    fun `missing row during match update fails instead of silently suppressing`() =
+        runTest {
+            val existing = track("car", 0f, 0f, 0.5f, 0.5f)
+            coEvery { repo.findActive(any(), any()) } returns listOf(existing)
+            coEvery { repo.updateOnMatch(any(), any(), any(), any(), any(), any(), any()) } returns 0L
+
+            assertFailsWith<IllegalStateException> {
+                service.evaluate(
+                    rec(),
+                    listOf(det("car", 0.01f, 0.0f, 0.51f, 0.5f)),
+                )
+            }
         }
 
     @Test

@@ -34,7 +34,7 @@ class IouHelperTest {
     }
 
     @Test
-    fun `half overlap returns one third`() {
+    fun `half overlap returns one half`() {
         // A: [0,0]-[1,1] area=1; B: [0.5,0]-[1,1] area=0.5; intersection=0.5; union=1.0; iou=0.5
         val iou = IouHelper.iou(0f, 0f, 1f, 1f, 0.5f, 0f, 1f, 1f)
         assertNear(0.5f, iou)

@@ -17,6 +17,7 @@ dependencies {
     implementation(libs.uuid.creator)
     implementation(libs.kotlin.logging)
     implementation(libs.coroutines.core)
+    implementation(libs.coroutines.reactor)
     implementation(libs.bundles.mapstruct)
     implementation(libs.jakarta.inject.api)
 
@@ -25,7 +26,6 @@ dependencies {
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.coroutines.test)
-    testImplementation(libs.coroutines.reactor)
     testImplementation(libs.mockk)
 
     testRuntimeOnly(libs.junit.platform.launcher)

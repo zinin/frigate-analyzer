@@ -77,6 +77,19 @@ class BboxClusteringHelperTest {
     }
 
     @Test
+    fun `confidence below floor is ignored`() {
+        val result =
+            BboxClusteringHelper.cluster(
+                listOf(
+                    det("car", 0.0f, 0.0f, 0.5f, 0.5f, confidence = 0.29f),
+                ),
+                innerIou = 0.5f,
+                confidenceFloor = 0.3f,
+            )
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
     fun `different classes never merge`() {
         val result =
             BboxClusteringHelper.cluster(
