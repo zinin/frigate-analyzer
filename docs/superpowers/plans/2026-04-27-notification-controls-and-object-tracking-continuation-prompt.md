@@ -1,120 +1,164 @@
 ## TASK
 
-Continue iterative external design review for notification controls and object tracking.
+Begin executing the implementation plan for "notification controls and object tracking" in a fresh Claude Code session.
 
-## CRITICAL: DO NOT IMPLEMENT
+## CRITICAL: DO NOT START WORKING YET
 
 **STOP. READ THIS CAREFULLY.**
 
-This fresh session is for **review iteration 3 only**, not for implementation.
-
 After loading all context below, you MUST:
-1. Read the listed documents and understand current review state.
-2. Run `/review-design-external-iterative default` to start the next review iteration.
-3. Follow that skill exactly.
+1. Read the design and plan documents.
+2. Skim the three review iteration files for the decision history.
+3. Report a brief summary (2–4 sentences) of what you understood.
+4. **WAIT for explicit user instructions** before taking ANY action.
 
 **DO NOT:**
-- Start implementing plan tasks.
-- Modify application code.
-- Run build/test/lint commands unless the review skill explicitly requires them.
-- Assume implementation should begin after review.
+- Start implementing tasks autonomously.
+- Make any code changes.
+- Run any commands (except reading documents).
+- Assume which task to start with.
 
-## COMMAND TO RUN
-
-Run this slash command in the fresh session:
-
-```text
-/review-design-external-iterative default
-```
+**The user will tell you exactly what to do.** Until then, only read and summarize.
 
 ## DOCUMENTS
 
+**Primary:**
 - Design: `docs/superpowers/specs/2026-04-27-notification-controls-and-object-tracking-design.md`
 - Plan: `docs/superpowers/plans/2026-04-27-notification-controls-and-object-tracking.md`
+
+**Decision history (skim — do not re-litigate already-decided issues):**
 - Iteration 1: `docs/superpowers/specs/2026-04-27-notification-controls-and-object-tracking-review-iter-1.md`
 - Iteration 2: `docs/superpowers/specs/2026-04-27-notification-controls-and-object-tracking-review-iter-2.md`
-- Merged iteration 2 output: `docs/superpowers/specs/2026-04-27-notification-controls-and-object-tracking-review-merged-iter-2.md`
-- Telegram outbox follow-up note: `docs/telegram-outbox.md`
+- Iteration 3: `docs/superpowers/specs/2026-04-27-notification-controls-and-object-tracking-review-iter-3.md`
+
+**Follow-up note:**
+- `docs/telegram-outbox.md` (accepted at-most-once delivery gap, future task)
 
 ## PROGRESS
 
-**Implementation tasks completed:** None. All 22 implementation tasks remain pending.
+**Implementation tasks:** None completed. All 21 tasks (Task 1 through Task 21) are pending.
 
-**Review progress:**
-- Iteration 1 completed and committed earlier.
-- Iteration 2 completed and committed as `8425ade docs: review iteration 2 for notification-controls-and-object-tracking`.
-- Design and plan documents have been updated with iteration 2 fixes.
-- `docs/telegram-outbox.md` was created as a follow-up note for the accepted Telegram enqueue/outbox risk.
+**Review iterations:** 3 completed. Latest commit: `6745f97 docs: review iteration 3 for notification-controls-and-object-tracking`. Design and plan reflect all accepted iter-1/2/3 fixes.
 
-## SESSION CONTEXT FROM ITERATION 2
+**Branch:** `feature/notification-controls`. Base: `master`.
 
-Iteration 2 reviewed design and plan using Codex, Gemini, and CCS profiles.
+## TASK INVENTORY
 
-Key decisions from the user:
+The plan defines 21 tasks. They have an implicit dependency order — execute sequentially unless told otherwise:
 
-1. **Tracker state before Telegram enqueue failure**
-   - If tracker creates/updates a track and Telegram enqueue/fan-out later fails, future segments may be suppressed as repeats even though the first notification was not queued.
-   - User chose: document this as an accepted risk for the current iteration.
-   - A follow-up document was created: `docs/telegram-outbox.md`.
+| # | Task | Module |
+|---|------|--------|
+| 1 | Liquibase migration `1.0.4` (object_tracks, app_settings, telegram_users flags) | docker/liquibase |
+| 2 | `ObjectTrackEntity` + `ObjectTrackRepository` | model + service |
+| 3 | `AppSettingEntity` + `AppSettingRepository` | model + service |
+| 4 | Domain DTOs (`RepresentativeBbox`, `DetectionDelta`, `NotificationDecision`, `NotificationDecisionReason`) | model |
+| 5 | `IouHelper` + tests | service |
+| 6 | `BboxClusteringHelper` + tests | service |
+| 7 | `ObjectTrackerProperties` (Spring config + cross-field validation) | service |
+| 8 | `ObjectTrackerService` interface + impl + tests (TransactionalOperator + Mutex) | service |
+| 9 | `AppSettingsService` interface + impl + tests (cached, no @Transactional, WARN on corrupt) | service |
+| 10 | `NotificationDecisionService` interface + impl + tests (orchestrates tracker + settings) | service |
+| 11 | `ObjectTracksCleanupTask` (`@Scheduled`) + tests | core |
+| 12 | Telegram user model extensions (entity, DTO, UserZoneInfo, repo, service) | telegram |
+| 13 | `TelegramNotificationServiceImpl` per-user filtering + signal-flow global gate (recording flow does NOT re-read global) | telegram |
+| 14 | i18n message keys (ru, en) | telegram resources |
+| 15 | `NotificationsMessageRenderer` + `NotificationsViewState` DTO + tests | telegram |
+| 16 | `NotificationsCommandHandler` + `isOwner` + tests | telegram |
+| 17 | `NotificationsSettingsCallbackHandler` + tests | telegram |
+| 18 | Wire callback subscription into `FrigateAnalyzerBot.registerRoutes()` | telegram |
+| 19 | `RecordingProcessingFacade` — call `NotificationDecisionService` + add `findByRecordingId` | core + service |
+| 20 | `application.yaml` + `docker/deploy/.env.example` + `@EnableConfigurationProperties` | core |
+| 21 | Documentation updates (`.claude/rules/*`) | docs |
 
-2. **Signal-loss/recovery while global signal notifications are OFF**
-   - User chose: drop without catch-up.
-   - OFF means signal events during that period are intentionally not delivered; after ON, only future transitions notify.
+## SESSION CONTEXT (KEY DECISIONS YOU SHOULD KNOW)
 
-3. **`app_settings` read failure semantics**
-   - User clarified that a runtime exception while reading settings means the application is malfunctioning.
-   - Do not default-open or default-closed.
-   - Let the exception propagate/log so the pipeline stops and can retry the recording later.
+These decisions were made over three review iterations. Do not re-debate them; the design/plan reflect them already.
 
-4. **Bbox coordinate contract**
-   - User chose: pixel coordinates.
-   - Docs now say coordinates use the same coordinate space as detections, currently pixel coordinates; do not add normalized `0..1` constraints.
+**Architecture:**
+- Best-match IoU (per-bbox `maxByOrNull` of IoU over active tracks).
+- Per-camera `Mutex` from `kotlinx.coroutines.sync`; transaction opened **inside** mutex via `TransactionalOperator.executeAndAwait` (not class-level `@Transactional`).
+- Sliding TTL is intentional — a continuously matched track can live indefinitely.
+- Single-instance only; multi-instance / advisory locks / `FOR UPDATE` are out of scope.
+- Schedules / quiet hours / per-class / per-zone filters are out of scope (data model leaves room).
 
-Major iteration 2 document changes already applied:
+**Coordinates:** pixel coordinates in the same space as `DetectionEntity.x1..y2`. Do **not** introduce normalized `[0..1]` constraints.
 
-- Added `idx_object_tracks_lastseen (last_seen_at)` for cleanup deletes.
-- Added out-of-order timestamp guard for `bbox_*` and `last_recording_id` in `updateOnMatch`.
-- Replaced callback toggle semantics with explicit target state callback data: `nfs:*:*:1/0`.
-- Rewrote bot callback wiring guidance to use existing `onDataCallbackQuery(initialFilter = { ... })` pattern in `FrigateAnalyzerBot.registerRoutes()`.
-- Added callback sender authorization requirement via `callback.user`, not only `message.chat.id`.
-- Added try/catch around callback handling/editing to avoid breaking the callback flow.
-- Fixed `TransactionalOperator` test/import snippets in the plan.
-- Updated `AppSettingsServiceImpl` cache plan to use coroutine `Mutex` and write-through cache updates.
-- Changed cleanup scheduling config to `cleanupIntervalMs` / `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS`.
-- Added `NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR` to config/docs.
-- Made `ObjectTrackerProperties` registration in core explicit.
-- Added/focused tests for low-confidence detections, settings failure propagation, facade suppression/no-AI-supplier behavior, callback semantics, and `isOwner`.
-- Documented sliding TTL: a continuously matched track may live indefinitely while the object stays visible.
+**Error handling:**
+- Tracker exception with `globalEnabled = true` → fail-open (`shouldNotify = true`, `TRACKER_ERROR`).
+- Tracker exception with `globalEnabled = false` → suppress (`shouldNotify = false`, `TRACKER_ERROR`). Global OFF wins; AI description supplier is not invoked.
+- `AppSettingsService.getBoolean(...)` read failure → propagates (NOT default-open / default-closed); pipeline reports the failure.
+- `AppSettingsService.getBoolean(...)` *unparseable* stored value (e.g. someone wrote `"weird"` into the table) → log `WARN`, fall back to default. Recoverable corruption, not fatal.
+- Recording retry boundary: decision call happens **after** `saveProcessingResult`, so AppSettings exception loses the notification for that recording (accepted limitation, similar to telegram-outbox gap).
+- Telegram enqueue gap: tracker may mutate state before fan-out succeeds — accepted at-most-once, documented in `docs/telegram-outbox.md`.
 
-Known dismissed/repeated issues:
+**Callbacks (`/notifications` dialog):**
+- Callback data carries explicit target state, e.g. `nfs:u:rec:1` / `nfs:u:rec:0` / `nfs:close`. Idempotent against stale messages.
+- Authentication uses `callback.user.username` (mirroring `QuickExportHandler`/`CancelExportHandler`); avoids ktgbotapi `UserId` typing pitfalls.
+- `bot.answer(callback)` is called **first** to clear the spinner.
+- `CancellationException` is **always re-thrown** before the generic `catch (e: Exception)`.
+- "Bad Request: message is not modified" (Telegram) is downgraded to `DEBUG`.
+- USER (non-OWNER) variant of `/notifications` does **not** read `app_settings` — `recordingGlobalEnabled` and `signalGlobalEnabled` in `NotificationsViewState` are nullable and `null` for USER. Renderer `requireNotNull(...)` for OWNER.
+- `isOwner(username: String?)` is null-safe; returns `false` if either side is null/blank.
 
-- `telegram → service` dependency is already handled by Task 13 Step 0 from iteration 1; during implementation, verify and add if missing.
-- `runBlocking` in cleanup remains accepted tech debt for a simple hourly DELETE.
-- Static `BboxClusteringHelper` is intentionally kept as pure deterministic logic, not DI.
-- JSON `app_settings` for future schedules was rejected as premature; schedules remain out of scope.
-- Full Hungarian matching remains out of scope; current best-match is accepted for this iteration.
+**Logging:**
+- Tracker per-recording logs are `DEBUG` (busy outdoor cameras would otherwise flood logs).
+- WARN for tracker fail-open, WARN for corrupt setting fallback, ERROR for AppSettings read failure that propagates.
 
-## PROJECT CONVENTIONS
+**Tech debt accepted:**
+- `runBlocking` in `ObjectTracksCleanupTask` for a single hourly DELETE.
+- `ConcurrentHashMap<String, Mutex>` without eviction (camera count fixed 2–10).
+- `BboxClusteringHelper` stays as a static `object` (pure deterministic logic; tested directly).
+- Per-row `save()` accepted; batch insert is a future optimization.
 
-- Do NOT implement in this fresh session unless explicitly instructed after review.
-- Do NOT run `./gradlew build` directly. Any build/test/lint/format command must be delegated to `build-runner`.
-- One commit per implementation task when implementation eventually begins.
-- Before PR, `docs/superpowers/...` plan/spec/review files must be removed from PR diff per project workflow, while remaining available in branch history.
+**Known compile-blocker traps the plan now guards against:**
+- `modules/service/build.gradle.kts` may be missing `spring-boot-starter-validation`, `kotlinx-coroutines-test`, `mockk`, `kotlinx-coroutines-core` — Task 7 Step 0 verifies and adds.
+- `TelegramUserServiceImpl` does **not** currently take `TelegramProperties` in its constructor; Task 16 Step 2 adds it and lists all existing tests that need updating.
+- `NotificationsViewState` lives in `modules/telegram/.../telegram/dto/`, not in the renderer file.
+- `findByUsernameAsDto` (not `findByUserIdAsDto`) is the lookup method used by `/notifications` callbacks.
+
+## PROJECT CONVENTIONS (FROM CLAUDE.md)
+
+- **Do NOT** run `./gradlew build` (or any test/lint/format) directly. Always delegate to the `build-runner` agent.
+- One commit per implementation task. Use `git add <file>` per file — never `git add .` or `git add -A`.
+- Fix critical comments after a `superpowers:code-reviewer` pass before running build.
+- On ktlint errors: `./gradlew ktlintFormat` then retry build.
+- Module dependencies: `core → telegram → service → model → common`. Don't pull telegram into service or model.
+- Always inject `java.time.Clock`; never call `Instant.now()` directly.
+- Logging: `kotlin-logging` (`io.github.oshai.kotlinlogging.KotlinLogging`).
+- Coroutines `Mutex`: `kotlinx.coroutines.sync.Mutex` (suspend-friendly), not `java.util.concurrent.locks`.
+
+**Before opening a PR:**
+- `git rm` all `docs/superpowers/...` plan/spec/review files for this branch and commit (per global workflow rules in user's `~/.claude/CLAUDE.md`). Documents remain in branch git history.
+- Standard ktlint clean.
 
 ## PLAN QUALITY WARNING
 
-The design/plan are large and may still contain:
-- errors or inaccuracies in implementation details;
-- assumptions that do not match current code;
-- missing tests or edge cases;
-- stale snippets after review edits.
+The plan was iterated three times by 6+ external reviewers, but it is still a 3500-line document and may contain:
+- Snippet imports or method names that drift from the live codebase.
+- Assumptions about Spring R2DBC / ktgbotapi versions that may have changed.
+- Missing edge cases the reviewers did not catch.
 
-During review iteration 3, be critical and focus on **new issues not already covered** by iterations 1 and 2.
+**If you notice any issue during implementation:**
+1. STOP before proceeding with the problematic step.
+2. Clearly describe the problem (file path, line number, what doesn't match).
+3. Explain why the plan step doesn't work or seems incorrect.
+4. Ask the user how to proceed.
+
+Do **NOT** silently work around plan issues or make significant deviations without user approval.
+
+## RECOMMENDED FIRST STEPS (FOR THE USER TO PICK FROM)
+
+These are suggestions for the user — present them after your summary, do not act on them yourself:
+
+1. **Sequential execution from Task 1.** Use the `superpowers:executing-plans` skill to walk the plan task-by-task with review checkpoints.
+2. **Subagent-driven parallelism for independent tasks.** Use `superpowers:subagent-driven-development` for the early independent tasks (Tasks 1–6 are largely independent), then synchronize before Task 7+.
+3. **Spike a single task first.** Pick Task 5 (`IouHelper`) or Task 1 (Liquibase) as a smoke test before committing to the full sequence.
 
 ## INSTRUCTIONS FOR THE FRESH SESSION
 
-1. Read the documents listed above.
-2. Invoke `/review-design-external-iterative default`.
-3. Let the skill find previous iterations and run iteration 3.
-4. Process new issues according to the skill.
-5. Do not start implementation.
+1. Read **Design** and **Plan** in full.
+2. Skim **iter-1 / iter-2 / iter-3** review files for context (do not re-read every issue — the decisions are already applied).
+3. Skim `docs/telegram-outbox.md` (one short page).
+4. Provide a brief 2–4 sentence summary of what you understood — confirm the goal, the architecture, and the current state.
+5. **STOP and WAIT** — do NOT proceed with any implementation.
+6. Ask: "What would you like me to work on?"
