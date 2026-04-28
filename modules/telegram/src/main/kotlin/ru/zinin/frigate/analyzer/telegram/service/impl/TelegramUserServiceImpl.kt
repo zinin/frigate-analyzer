@@ -105,6 +105,14 @@ class TelegramUserServiceImpl(
     override suspend fun getAllActiveChatIds(): List<Long> = repository.findAllActiveChatIds()
 
     @Transactional(readOnly = true)
+    override suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto? =
+        repository.findByChatId(chatId)?.toDto()
+
+    @Transactional(readOnly = true)
+    override suspend fun findByUsernameAsDto(username: String): TelegramUserDto? =
+        repository.findByUsername(username)?.toDto()
+
+    @Transactional(readOnly = true)
     override suspend fun getUserZone(chatId: Long): ZoneId {
         val user = repository.findByChatId(chatId)
         if (user == null) {

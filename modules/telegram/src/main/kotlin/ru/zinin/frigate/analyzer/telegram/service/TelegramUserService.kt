@@ -25,6 +25,10 @@ interface TelegramUserService {
 
     suspend fun getAllActiveChatIds(): List<Long>
 
+    suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto?
+
+    suspend fun findByUsernameAsDto(username: String): TelegramUserDto?
+
     suspend fun getUserZone(chatId: Long): ZoneId
 
     suspend fun updateTimezone(
