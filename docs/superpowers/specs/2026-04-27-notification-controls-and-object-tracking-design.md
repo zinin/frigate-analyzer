@@ -95,9 +95,11 @@ Module dependency direction is preserved: `core → telegram → service → mod
 | `last_seen_at` | TIMESTAMPTZ NOT NULL | Updated to `recording.record_timestamp` on match. |
 | `last_recording_id` | UUID NULLABLE | FK → `recordings(id) ON DELETE SET NULL` for traceability. |
 
-Index: `idx_object_tracks_cam_lastseen (cam_id, last_seen_at DESC)`.
+Indexes:
+- `idx_object_tracks_cam_lastseen (cam_id, last_seen_at DESC)` for active-track lookup.
+- `idx_object_tracks_lastseen (last_seen_at)` for cleanup deletes.
 
-Coordinates use the same units as `detections.x1..y2` (REAL, normalized 0..1 from YOLO output).
+Coordinates use the same units as `detections.x1..y2`. In the current pipeline these are pixel coordinates; tracker logic only requires a consistent coordinate space because IoU is scale-invariant. Do not add normalized `0..1` constraints.
 
 ### New table `app_settings`
 
@@ -228,7 +230,7 @@ ObjectTrackerService.evaluate(recording, representativeBboxes):
   )
 ```
 
-The `UPDATE` uses `SET last_seen_at = GREATEST(last_seen_at, :T)` to be safe under out-of-order processing.
+The `UPDATE` uses `SET last_seen_at = GREATEST(last_seen_at, :T)` and updates `bbox_*` / `last_recording_id` only when `:T >= last_seen_at`. This prevents a late older recording from rolling the representative bbox or traceability pointer backward.
 
 ### 4. Decision
 
@@ -258,7 +260,7 @@ Future extensions slot in *before* `objectTracker.evaluate` (e.g. schedule check
 | Case | Result |
 |---|---|
 | Car arrives for the first time | `newTracks=1` → notify |
-| Car parked, recordings every 10s | match → updateLastSeen → no notify |
+| Car parked, recordings every 10s | match → updateLastSeen → no notify; track can live indefinitely while it keeps matching because TTL is sliding from `last_seen_at` |
 | Stationary car, 1-recording detector blink | previous track still within TTL → match on return → no false notify |
 | Car leaves for 5 min then returns | old track expired → `newTracks=1` → notify |
 | Car parked, person enters | car matches; person → new track → notify (with the recording's frames as today) |
@@ -330,13 +332,13 @@ Prefix `nfs:` (notification settings):
 
 | Callback | Action |
 |---|---|
-| `nfs:u:rec:tgl` | toggle per-user recording for current `chatId` |
-| `nfs:u:sig:tgl` | toggle per-user signal-loss for current `chatId` |
-| `nfs:g:rec:tgl` | toggle global recording (OWNER only) |
-| `nfs:g:sig:tgl` | toggle global signal-loss (OWNER only) |
+| `nfs:u:rec:1` / `nfs:u:rec:0` | explicitly enable / disable per-user recording for the callback sender |
+| `nfs:u:sig:1` / `nfs:u:sig:0` | explicitly enable / disable per-user signal-loss for the callback sender |
+| `nfs:g:rec:1` / `nfs:g:rec:0` | explicitly enable / disable global recording (OWNER only) |
+| `nfs:g:sig:1` / `nfs:g:sig:0` | explicitly enable / disable global signal-loss (OWNER only) |
 | `nfs:close` | remove keyboard, leave message |
 
-Authorization in callback handler: `g:*` paths require OWNER role (via `AuthorizationFilter`); `u:*` require the calling user to be the message recipient and ACTIVE.
+Callbacks carry the target state instead of a pure toggle so old `/notifications` messages cannot invert a newer setting accidentally. Authorization in callback handler: `g:*` paths require OWNER role; `u:*` paths must use the Telegram callback sender, not only the message chat id, and require that sender to be ACTIVE.
 
 ### Telegram-side components
 
@@ -395,6 +397,8 @@ Two changes:
 
 Analogous changes by the `signal_*` flags. Note: signal-loss/recovery does **not** go through `NotificationDecisionService` (it's not a recording event), so the global toggle check inside the Telegram impl is the **only** gate for the global flag — not defense-in-depth like the recording path.
 
+When global signal notifications are OFF, signal-loss/recovery events are intentionally dropped without catch-up. The signal-loss state machine may still record the camera transition; when global notifications are enabled again, only future transitions notify.
+
 ## Concurrency
 
 Multiple `FrameAnalyzerConsumer` coroutines may process recordings of **the same camera** in parallel.
@@ -405,20 +409,23 @@ Multiple `FrameAnalyzerConsumer` coroutines may process recordings of **the same
 
 This works correctly within a single application instance. If we later run multiple instances, switch to `SELECT … FOR UPDATE` or advisory locks; out of scope now.
 
-**Out-of-order recordings:** `UPDATE … SET last_seen_at = GREATEST(last_seen_at, :T)` ensures we never roll `last_seen_at` backward. The match decision itself is correct regardless of arrival order because it's based on the *current* set of active tracks at the moment of evaluation.
+**Out-of-order recordings:** `UPDATE … SET last_seen_at = GREATEST(last_seen_at, :T)` ensures we never roll `last_seen_at` backward. The same update must guard `bbox_*` and `last_recording_id` with `CASE WHEN :T >= last_seen_at THEN ... ELSE existing_value END`, so a late older recording does not roll the representative bbox backward. The match decision itself is based on the *current* set of active tracks at the moment of evaluation.
 
 ## Error Handling
 
 `evaluate` uses `@Transactional` on the **inner** method (after `Mutex.withLock`), NOT on the outer `evaluate()` entry point. This prevents transactions from opening before the mutex is acquired — which would otherwise hold R2DBC connections from the pool while waiting for the lock. On exception:
 
-- `ObjectTrackerService` propagates → `NotificationDecisionService` propagates → `RecordingProcessingFacade` catches in the existing try/catch around the notification step. Save is already committed (current contract).
-- **Fail-safe = "notify anyway"** if tracker fails: avoids silent suppression of real security events when DB has a transient hiccup. Falls back to pre-tracker behavior — every recording with detections notifies. Log at `WARN` with stack trace.
+- `AppSettingsService` read failures are **not** converted into a default boolean. They indicate the application is not functioning correctly, so the exception should propagate, be logged by the pipeline, and the recording should not be considered successfully processed.
+- **Fail-safe = "notify anyway"** only if tracker evaluation fails after settings were read successfully: avoids silent suppression of real security events when tracker state has a transient issue. Falls back to pre-tracker behavior — every recording with detections notifies. Log at `WARN` with stack trace.
+- If tracker creates/updates tracks and the later Telegram enqueue/fan-out fails, the current iteration accepts the at-most-once gap: the next segment may be suppressed because the object is already tracked. This is documented for follow-up in `docs/telegram-outbox.md` rather than solved in this iteration.
 
-Concretely, `NotificationDecisionService` catches inside `evaluate`:
+Concretely, `NotificationDecisionService` reads settings before the tracker `try/catch`; only tracker exceptions are converted to `TRACKER_ERROR`:
 
 ```kotlin
+val globalEnabled = appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
 return try {
-    // happy path: appSettings + tracker
+    val delta = objectTracker.evaluate(recording, detections)
+    // decide NEW_OBJECTS / ALL_REPEATED / GLOBAL_OFF
 } catch (e: CancellationException) {
     throw e
 } catch (e: Exception) {
@@ -442,14 +449,15 @@ Effect: when Telegram is disabled, tracker still runs and maintains state. When 
 | `INFO` | `ObjectTracker: cam=$cam new=2 matched=3 stale=0 (recording=$rid)` — only when `new > 0` |
 | `DEBUG` | `Decision: suppress (all_repeated): cam=$cam recording=$rid` |
 | `DEBUG` | `Decision: notify: cam=$cam newClasses=[car, person]` |
-| `WARN`  | `Tracker failure for recording=$rid cam=$cam; suppressing notification` + stack |
+| `WARN`  | `Tracker failure for recording=$rid cam=$cam; falling back to notify` + stack |
+| `ERROR` | `AppSettings failure while evaluating notification decision` + stack; propagate to stop processing |
 
 ## Tests
 
 | Layer | Coverage |
 |---|---|
 | Unit `ObjectTrackerServiceTest` | aggregateDetections (empty, one, two near, two far); matching (all match, partial match, none match); out-of-order timestamp; TTL expiry; bbox edge cases (zero-size, identical, fully containing); IoU helper edge cases (disjoint, overlapping, identical, zero-area) |
-| Unit `NotificationDecisionServiceTest` | shouldNotify=true on new tracks; false when all matched; false when global OFF; tracker error → fail-safe false; no-detection short-circuit (does not call tracker) |
+| Unit `NotificationDecisionServiceTest` | shouldNotify=true on new tracks; false when all matched; false when global OFF; tracker error → fail-open true; settings read error propagates; no-detection short-circuit (does not call tracker) |
 | Unit `AppSettingsServiceTest` | get with default, set, cache invalidation, concurrent updates, missing key returns default |
 | Unit `NotificationsCommandHandlerTest` | initial message for USER vs OWNER; correct labels and buttons |
 | Unit `NotificationsSettingsCallbackHandlerTest` | toggle updates DB and edits message; `nfs:g:*` rejected for non-OWNER; `nfs:u:*` rejected for unauthorized chatId |

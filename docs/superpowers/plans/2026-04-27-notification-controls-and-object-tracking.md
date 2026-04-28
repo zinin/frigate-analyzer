@@ -120,6 +120,8 @@ Create `docker/liquibase/migration/1.0.4.xml`:
             );
             CREATE INDEX idx_object_tracks_cam_lastseen
               ON object_tracks (cam_id, last_seen_at DESC);
+            CREATE INDEX idx_object_tracks_lastseen
+              ON object_tracks (last_seen_at);
         </sql>
     </changeSet>
 
@@ -254,12 +256,12 @@ interface ObjectTrackRepository : CoroutineCrudRepository<ObjectTrackEntity, UUI
     @Query(
         """
         UPDATE object_tracks
-        SET bbox_x1 = :x1,
-            bbox_y1 = :y1,
-            bbox_x2 = :x2,
-            bbox_y2 = :y2,
+        SET bbox_x1 = CASE WHEN :lastSeenAt >= last_seen_at THEN :x1 ELSE bbox_x1 END,
+            bbox_y1 = CASE WHEN :lastSeenAt >= last_seen_at THEN :y1 ELSE bbox_y1 END,
+            bbox_x2 = CASE WHEN :lastSeenAt >= last_seen_at THEN :x2 ELSE bbox_x2 END,
+            bbox_y2 = CASE WHEN :lastSeenAt >= last_seen_at THEN :y2 ELSE bbox_y2 END,
             last_seen_at = GREATEST(last_seen_at, :lastSeenAt),
-            last_recording_id = :lastRecordingId
+            last_recording_id = CASE WHEN :lastSeenAt >= last_seen_at THEN :lastRecordingId ELSE last_recording_id END
         WHERE id = :id
         """,
     )
@@ -877,7 +879,7 @@ data class ObjectTrackerProperties(
     val innerIou: Float = 0.5f,
     @field:DecimalMin("0.0") @field:DecimalMax("1.0")
     val confidenceFloor: Float = 0.3f,
-    val cleanupInterval: Duration = Duration.ofHours(1),
+    val cleanupIntervalMs: Long = 3_600_000,
     val cleanupRetention: Duration = Duration.ofHours(1),
 )
 ```
@@ -948,6 +950,8 @@ import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import org.springframework.transaction.reactive.TransactionalOperator
+import org.springframework.transaction.reactive.executeAndAwait
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
@@ -969,8 +973,9 @@ class ObjectTrackerServiceImplTest {
     private val fixedNow = Instant.parse("2026-04-27T12:00:00Z")
     private val clock = Clock.fixed(fixedNow, ZoneOffset.UTC)
     private val props = ObjectTrackerProperties()
+    private val transactionalOperator = mockk<TransactionalOperator>()
     private val service: ObjectTrackerServiceImpl =
-        ObjectTrackerServiceImpl(repo, uuid, clock, props)
+        ObjectTrackerServiceImpl(repo, uuid, clock, props, transactionalOperator)
 
     private val camId = "front"
     private val recId = UUID.randomUUID()
@@ -1026,6 +1031,19 @@ class ObjectTrackerServiceImplTest {
         coEvery { repo.findActive(any(), any()) } returns emptyList()
 
         val delta = service.evaluate(rec(), emptyList())
+
+        assertEquals(0, delta.newTracksCount)
+        assertEquals(0, delta.matchedTracksCount)
+        coVerify(exactly = 0) { repo.save(any()) }
+        coVerify(exactly = 0) { repo.updateOnMatch(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `low confidence detections below floor produce zero delta and no writes`() = runTest {
+        val delta = service.evaluate(
+            rec(),
+            listOf(det("car", 0f, 0f, 0.5f, 0.5f, conf = 0.2f)),
+        )
 
         assertEquals(0, delta.newTracksCount)
         assertEquals(0, delta.matchedTracksCount)
@@ -1140,6 +1158,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.springframework.stereotype.Service
 import org.springframework.transaction.reactive.TransactionalOperator
+import org.springframework.transaction.reactive.executeAndAwait
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.DetectionDelta
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
@@ -1269,7 +1288,7 @@ class ObjectTrackerServiceImpl(
 - [ ] **Step 5: Run test to verify it passes**
 
 Dispatch `build-runner`: `./gradlew :frigate-analyzer-service:test --tests "ru.zinin.frigate.analyzer.service.impl.ObjectTrackerServiceImplTest"`.
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -1402,6 +1421,8 @@ Create `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/A
 package ru.zinin.frigate.analyzer.service.impl
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import ru.zinin.frigate.analyzer.service.AppSettingsService
@@ -1418,10 +1439,12 @@ class AppSettingsServiceImpl(
     private val clock: Clock,
 ) : AppSettingsService {
     private val cache = ConcurrentHashMap<String, String>()
+    private val cacheMutex = Mutex()
 
-    @Transactional(readOnly = true)
     override suspend fun getBoolean(key: String, default: Boolean): Boolean {
-        val raw = cache[key] ?: loadAndCache(key)
+        val raw = cache[key] ?: cacheMutex.withLock {
+            cache[key] ?: loadAndCache(key)
+        }
         if (raw == null) return default
         return raw.toBooleanStrictOrNull() ?: default
     }
@@ -1430,7 +1453,9 @@ class AppSettingsServiceImpl(
     override suspend fun setBoolean(key: String, value: Boolean, updatedBy: String?) {
         val v = value.toString()
         repository.upsert(key, v, Instant.now(clock), updatedBy)
-        cache.remove(key)
+        cacheMutex.withLock {
+            cache[key] = v
+        }
         logger.info { "AppSettings: '$key' set to $v by ${updatedBy ?: "<system>"}" }
     }
 
@@ -1461,7 +1486,7 @@ git commit -m "feat(service): add AppSettingsService with cached get/set and tes
 
 ## Task 10: `NotificationDecisionService` interface + impl + tests
 
-**Goal:** Orchestrate the decision: short-circuit on no detections, gate on global toggle, run tracker, return verdict. Fail-safe to "do not notify" on tracker errors.
+**Goal:** Orchestrate the decision: short-circuit on no detections, read the global toggle, run tracker, return verdict. Tracker failures fail-open (`shouldNotify=true`). Settings read failures are system errors and propagate so the pipeline can retry later.
 
 **Files:**
 - Create: `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/NotificationDecisionService.kt`
@@ -1488,7 +1513,8 @@ interface NotificationDecisionService {
      *   2. global recording toggle off → GLOBAL_OFF, but tracker still runs to keep state coherent.
      *   3. tracker.evaluate → NEW_OBJECTS or ALL_REPEATED.
      *
-     * On tracker exceptions: returns shouldNotify=false with TRACKER_ERROR (fail-safe).
+     * On tracker exceptions: returns shouldNotify=true with TRACKER_ERROR (fail-open).
+     * Settings read exceptions propagate; they indicate the pipeline should stop/retry later.
      */
     suspend fun evaluate(
         recording: RecordingDto,
@@ -1522,6 +1548,7 @@ import java.time.LocalTime
 import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -1616,6 +1643,17 @@ class NotificationDecisionServiceImplTest {
         assertTrue(decision.shouldNotify)
         assertEquals(NotificationDecisionReason.TRACKER_ERROR, decision.reason)
     }
+
+    @Test
+    fun `settings read exception propagates and tracker is not called`() = runTest {
+        coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } throws
+            RuntimeException("settings db down")
+
+        assertFailsWith<RuntimeException> {
+            service.evaluate(recording, listOf(det()))
+        }
+        coVerify(exactly = 0) { tracker.evaluate(any(), any()) }
+    }
 }
 ```
 
@@ -1700,7 +1738,7 @@ class NotificationDecisionServiceImpl(
 - [ ] **Step 5: Run test to verify it passes**
 
 Dispatch `build-runner`: `./gradlew :frigate-analyzer-service:test --tests "ru.zinin.frigate.analyzer.service.impl.NotificationDecisionServiceImplTest"`.
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -1732,15 +1770,16 @@ import kotlinx.coroutines.runBlocking
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.service.ObjectTrackerService
+import ru.zinin.frigate.analyzer.service.config.ObjectTrackerProperties
 
 private val logger = KotlinLogging.logger {}
 
 @Component
 class ObjectTracksCleanupTask(
     private val tracker: ObjectTrackerService,
+    private val properties: ObjectTrackerProperties,
 ) {
-    /** Cleanup interval in milliseconds; default 3_600_000 = 1 hour. */
-    @Scheduled(fixedDelay = 3_600_000)
+    @Scheduled(fixedDelayString = "\${application.notifications.tracker.cleanup-interval-ms:3600000}")
     fun cleanup() {
         try {
             runBlocking {
@@ -2335,7 +2374,7 @@ class NotificationsMessageRendererTest {
         )
         val recordingBtn = rendered.keyboard.keyboard[0][0] as CallbackDataInlineKeyboardButton
         assertTrue(recordingBtn.text.contains("Enable"), "button=${recordingBtn.text}")
-        assertEquals("nfs:u:rec:tgl", recordingBtn.callbackData)
+        assertEquals("nfs:u:rec:1", recordingBtn.callbackData)
     }
 
     @Test
@@ -2507,26 +2546,26 @@ class NotificationsMessageRenderer(
                 row {
                     +CallbackDataInlineKeyboardButton(
                         msg.get(toggleKey("recording", "user", state.recordingUserEnabled), lang),
-                        "nfs:u:rec:tgl",
+                        "nfs:u:rec:${targetValue(state.recordingUserEnabled)}",
                     )
                 }
                 row {
                     +CallbackDataInlineKeyboardButton(
                         msg.get(toggleKey("signal", "user", state.signalUserEnabled), lang),
-                        "nfs:u:sig:tgl",
+                        "nfs:u:sig:${targetValue(state.signalUserEnabled)}",
                     )
                 }
                 if (state.isOwner) {
                     row {
                         +CallbackDataInlineKeyboardButton(
                             msg.get(toggleKey("recording", "global", state.recordingGlobalEnabled), lang),
-                            "nfs:g:rec:tgl",
+                            "nfs:g:rec:${targetValue(state.recordingGlobalEnabled)}",
                         )
                     }
                     row {
                         +CallbackDataInlineKeyboardButton(
                             msg.get(toggleKey("signal", "global", state.signalGlobalEnabled), lang),
-                            "nfs:g:sig:tgl",
+                            "nfs:g:sig:${targetValue(state.signalGlobalEnabled)}",
                         )
                     }
                 }
@@ -2541,6 +2580,8 @@ class NotificationsMessageRenderer(
         val action = if (currentlyEnabled) "disable" else "enable"
         return "notifications.settings.button.toggle.$stream.$scope.$action"
     }
+
+    private fun targetValue(currentlyEnabled: Boolean): String = if (currentlyEnabled) "0" else "1"
 }
 ```
 
@@ -2566,6 +2607,7 @@ git commit -m "feat(telegram): add NotificationsMessageRenderer with tests"
 **Files:**
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/TelegramUserService.kt`
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramUserServiceImpl.kt`
+- Modify/create test: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramUserServiceImplTest.kt`
 - Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/NotificationsCommandHandler.kt`
 
 - [ ] **Step 1: Pick the next available `order`**
@@ -2603,6 +2645,8 @@ Add inside the class:
     override fun isOwner(username: String): Boolean =
         username.equals(telegramProperties.owner, ignoreCase = true)
 ```
+
+Add/adjust `TelegramUserServiceImplTest` cases for `isOwner`: exact owner match returns true, case-insensitive owner match returns true, other username returns false.
 
 - [ ] **Step 3: Implement the handler**
 
@@ -2694,22 +2738,28 @@ Run: `grep -rn "DataCallbackQuery\|onDataCallbackQuery\|CallbackHandler" modules
 
 Read `QuickExportHandler.kt` and any cancel/registration code to understand the project's callback registration pattern. Mirror it.
 
-- [ ] **Step 2: Add `findByChatIdAsDto` to `TelegramUserService`**
+- [ ] **Step 2: Add lookup helpers to `TelegramUserService`**
 
-Run: `grep -n "findByChatId" modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/`
+Run: `grep -n "findByChatId\|findByUserId" modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/ modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/repository/`
 
-If only the repository-level `findByChatId` exists, add to `TelegramUserService` interface:
+If absent, add to `TelegramUserService` interface:
 
 ```kotlin
     suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto?
+
+    suspend fun findByUserIdAsDto(userId: Long): TelegramUserDto?
 ```
 
-And implement in `TelegramUserServiceImpl`:
+And implement in `TelegramUserServiceImpl` using existing repository methods (or add repository derived methods if missing):
 
 ```kotlin
     @Transactional(readOnly = true)
     override suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto? =
         repository.findByChatId(chatId)?.toDto()
+
+    @Transactional(readOnly = true)
+    override suspend fun findByUserIdAsDto(userId: Long): TelegramUserDto? =
+        repository.findByUserId(userId)?.toDto()
 ```
 
 - [ ] **Step 3: Write the failing test**
@@ -2765,29 +2815,29 @@ class NotificationsSettingsCallbackHandlerTest {
     )
 
     @Test
-    fun `nfs u rec tgl flips per-user recording flag`() = runTest {
+    fun `nfs u rec 0 disables per-user recording flag`() = runTest {
         val current = user(recording = true)
         coEvery { userService.findByChatIdAsDto(chatId) } returns current
 
-        val result = handler.dispatch("nfs:u:rec:tgl", chatId, isOwner = false, current)
+        val result = handler.dispatch("nfs:u:rec:0", chatId, isOwner = false, current)
 
         coVerify(exactly = 1) { userService.updateNotificationsRecordingEnabled(chatId, false) }
         assertEquals(NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER, result)
     }
 
     @Test
-    fun `nfs u sig tgl flips per-user signal flag`() = runTest {
+    fun `nfs u sig 1 enables per-user signal flag`() = runTest {
         val current = user(signal = false)
-        val result = handler.dispatch("nfs:u:sig:tgl", chatId, isOwner = false, current)
+        val result = handler.dispatch("nfs:u:sig:1", chatId, isOwner = false, current)
 
         coVerify(exactly = 1) { userService.updateNotificationsSignalEnabled(chatId, true) }
         assertEquals(NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER, result)
     }
 
     @Test
-    fun `nfs g rec tgl rejected for non-owner`() = runTest {
+    fun `nfs g rec 0 rejected for non-owner`() = runTest {
         val current = user()
-        val result = handler.dispatch("nfs:g:rec:tgl", chatId, isOwner = false, current)
+        val result = handler.dispatch("nfs:g:rec:0", chatId, isOwner = false, current)
 
         coVerify(exactly = 0) {
             appSettings.setBoolean(any(), any(), any())
@@ -2796,11 +2846,11 @@ class NotificationsSettingsCallbackHandlerTest {
     }
 
     @Test
-    fun `nfs g rec tgl flips global recording flag for owner`() = runTest {
+    fun `nfs g rec 0 disables global recording flag for owner`() = runTest {
         val current = user()
         coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
 
-        val result = handler.dispatch("nfs:g:rec:tgl", chatId, isOwner = true, current)
+        val result = handler.dispatch("nfs:g:rec:0", chatId, isOwner = true, current)
 
         coVerify(exactly = 1) {
             appSettings.setBoolean(
@@ -2813,11 +2863,11 @@ class NotificationsSettingsCallbackHandlerTest {
     }
 
     @Test
-    fun `nfs g sig tgl flips global signal flag for owner`() = runTest {
+    fun `nfs g sig 1 enables global signal flag for owner`() = runTest {
         val current = user()
         coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns false
 
-        val result = handler.dispatch("nfs:g:sig:tgl", chatId, isOwner = true, current)
+        val result = handler.dispatch("nfs:g:sig:1", chatId, isOwner = true, current)
 
         coVerify(exactly = 1) {
             appSettings.setBoolean(
@@ -2855,21 +2905,6 @@ Create `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/
 ```kotlin
 package ru.zinin.frigate.analyzer.telegram.bot.handler.notifications
 
-import dev.inmo.tgbotapi.bot.TelegramBot
-import dev.inmo.tgbotapi.extensions.api.answers.answer
-import dev.inmo.tgbotapi.extensions.api.edit.text.editMessageText
-import dev.inmo.tgbotapi.extensions.api.edit.reply_markup.editMessageReplyMarkup
-import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
-import dev.inmo.tgbotapi.extensions.behaviour_builder.expectations.waitDataCallbackQuery
-import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
-import io.github.oshai.kotlinlogging.KotlinLogging
-import jakarta.annotation.PostConstruct
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.launch
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
@@ -2899,81 +2934,52 @@ class NotificationsSettingsCallbackHandler(
         isOwner: Boolean,
         currentUser: TelegramUserDto,
     ): DispatchOutcome {
-        return when (data) {
-            "nfs:u:rec:tgl" -> {
-                val newValue = !currentUser.notificationsRecordingEnabled
-                userService.updateNotificationsRecordingEnabled(chatId, newValue)
-                DispatchOutcome.RERENDER
+        val parts = data.split(":")
+        return when {
+            data == "nfs:close" -> DispatchOutcome.CLOSE
+            parts.size == 4 && parts[0] == "nfs" -> {
+                val enabled = when (parts[3]) {
+                    "1" -> true
+                    "0" -> false
+                    else -> return DispatchOutcome.IGNORE
+                }
+                when (parts[1] to parts[2]) {
+                    "u" to "rec" -> {
+                        userService.updateNotificationsRecordingEnabled(chatId, enabled)
+                        DispatchOutcome.RERENDER
+                    }
+                    "u" to "sig" -> {
+                        userService.updateNotificationsSignalEnabled(chatId, enabled)
+                        DispatchOutcome.RERENDER
+                    }
+                    "g" to "rec" -> {
+                        if (!isOwner) return DispatchOutcome.UNAUTHORIZED
+                        appSettings.setBoolean(
+                            AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED,
+                            enabled,
+                            currentUser.username,
+                        )
+                        DispatchOutcome.RERENDER
+                    }
+                    "g" to "sig" -> {
+                        if (!isOwner) return DispatchOutcome.UNAUTHORIZED
+                        appSettings.setBoolean(
+                            AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED,
+                            enabled,
+                            currentUser.username,
+                        )
+                        DispatchOutcome.RERENDER
+                    }
+                    else -> DispatchOutcome.IGNORE
+                }
             }
-            "nfs:u:sig:tgl" -> {
-                val newValue = !currentUser.notificationsSignalEnabled
-                userService.updateNotificationsSignalEnabled(chatId, newValue)
-                DispatchOutcome.RERENDER
-            }
-            "nfs:g:rec:tgl" -> {
-                if (!isOwner) return DispatchOutcome.UNAUTHORIZED
-                val current = appSettings.getBoolean(
-                    AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true,
-                )
-                appSettings.setBoolean(
-                    AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED,
-                    !current,
-                    currentUser.username,
-                )
-                DispatchOutcome.RERENDER
-            }
-            "nfs:g:sig:tgl" -> {
-                if (!isOwner) return DispatchOutcome.UNAUTHORIZED
-                val current = appSettings.getBoolean(
-                    AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true,
-                )
-                appSettings.setBoolean(
-                    AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED,
-                    !current,
-                    currentUser.username,
-                )
-                DispatchOutcome.RERENDER
-            }
-            "nfs:close" -> DispatchOutcome.CLOSE
             else -> DispatchOutcome.IGNORE
         }
     }
 }
 ```
 
-> **Note:** wiring into the bot's behaviour-builder flow (subscribing to `waitDataCallbackQuery`, editing message after dispatch) is part of the bot-startup orchestration. Inspect `FrigateAnalyzerBot` and existing handlers (e.g. `QuickExportHandler` registration) and add a corresponding subscription in the same place. Pseudocode:
-
-```kotlin
-waitDataCallbackQuery()
-    .filter { it.data.startsWith("nfs:") }
-    .collect { cb ->
-        answer(cb)
-        val msg = (cb as? MessageDataCallbackQuery)?.message ?: return@collect
-        val cid = msg.chat.id.chatId.long
-        val current = userService.findByChatIdAsDto(cid) ?: return@collect
-        val owner = userService.isOwner(current.username)
-        val outcome = handler.dispatch(cb.data, cid, owner, current)
-        when (outcome) {
-            DispatchOutcome.RERENDER -> {
-                val updated = userService.findByChatIdAsDto(cid) ?: current
-                val state = NotificationsViewState(
-                    isOwner = owner,
-                    recordingUserEnabled = updated.notificationsRecordingEnabled,
-                    signalUserEnabled = updated.notificationsSignalEnabled,
-                    recordingGlobalEnabled = appSettings.getBoolean(
-                        AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true),
-                    signalGlobalEnabled = appSettings.getBoolean(
-                        AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true),
-                    language = updated.languageCode ?: "en",
-                )
-                val rendered = renderer.render(state)
-                editMessageText(msg, rendered.text, replyMarkup = rendered.keyboard)
-            }
-            DispatchOutcome.CLOSE -> editMessageReplyMarkup(msg, replyMarkup = null)
-            else -> { /* no-op */ }
-        }
-    }
-```
+Telegram-side wiring is implemented in Task 18 using the existing `onDataCallbackQuery` pattern in `FrigateAnalyzerBot.registerRoutes()`.
 
 - [ ] **Step 6: Run test to verify it passes**
 
@@ -2997,28 +3003,30 @@ git commit -m "feat(telegram): add NotificationsSettingsCallbackHandler with dis
 **Goal:** Subscribe to `nfs:*` callbacks in the same place where existing callback subscriptions live (e.g. `FrigateAnalyzerBot` / `QuickExportHandler` registration). The pseudocode block from Task 17 becomes a real subscription.
 
 **Files:**
-- Modify: bot startup wiring file (find via `grep -rn "waitDataCallbackQuery" modules/telegram/src/main/kotlin/`)
+- Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt`
 
 - [ ] **Step 1: Locate the registration site**
 
-Run: `grep -rn "waitDataCallbackQuery\|onDataCallbackQuery\|CommandHandler\|qe:\|xc:" modules/telegram/src/main/kotlin/ | head -20`
+Run: `grep -rn "onDataCallbackQuery\|QuickExportHandler\|CancelExport" modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/ | head -40`
 
-Read the file(s) with existing callback subscriptions. The new subscription must run inside the same `BehaviourContext` lifecycle (typically inside `FrigateAnalyzerBot`'s `start()` or an `@PostConstruct` that opens a behaviour scope).
+Read `FrigateAnalyzerBot.registerRoutes()` and existing callback handlers. The project uses `onDataCallbackQuery(initialFilter = { ... })`, not `waitDataCallbackQuery`; mirror that pattern.
 
 - [ ] **Step 2: Add the subscription**
 
-Inside the existing `BehaviourContext.buildBehaviour { ... }` block (or equivalent), add:
+Inside `FrigateAnalyzerBot.registerRoutes()` (near the existing callback registration), add an `onDataCallbackQuery` block:
 
 ```kotlin
-waitDataCallbackQuery()
-    .filter { it.data.startsWith("nfs:") }
-    .onEach { cb ->
-        answer(cb)
-        val msg = (cb as? MessageDataCallbackQuery)?.message ?: return@onEach
-        val cid = msg.chat.id.chatId.long
-        val current = userService.findByChatIdAsDto(cid) ?: return@onEach
+onDataCallbackQuery(
+    initialFilter = { it.data.startsWith("nfs:") },
+) { callback ->
+    try {
+        bot.answer(callback)
+        val msg = (callback as? MessageDataCallbackQuery)?.message ?: return@onDataCallbackQuery
+        val senderUserId = callback.user.id.chatId.long
+        val current = userService.findByUserIdAsDto(senderUserId) ?: return@onDataCallbackQuery
+        val cid = current.chatId ?: return@onDataCallbackQuery
         val owner = userService.isOwner(current.username)
-        val outcome = notificationsSettingsCallbackHandler.dispatch(cb.data, cid, owner, current)
+        val outcome = notificationsSettingsCallbackHandler.dispatch(callback.data, cid, owner, current)
         when (outcome) {
             NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER -> {
                 val updated = userService.findByChatIdAsDto(cid) ?: current
@@ -3033,18 +3041,20 @@ waitDataCallbackQuery()
                     language = updated.languageCode ?: "en",
                 )
                 val rendered = notificationsMessageRenderer.render(state)
-                editMessageText(msg, rendered.text, replyMarkup = rendered.keyboard)
+                bot.editMessageText(msg, rendered.text, replyMarkup = rendered.keyboard)
             }
             NotificationsSettingsCallbackHandler.DispatchOutcome.CLOSE -> {
-                editMessageReplyMarkup(msg, replyMarkup = null)
+                bot.editMessageReplyMarkup(msg, replyMarkup = null)
             }
-            else -> { /* unauthorized / ignore */ }
+            else -> Unit
         }
+    } catch (e: Exception) {
+        logger.warn(e) { "Failed to handle nfs callback data=${callback.data}" }
     }
-    .launchIn(this)
+}
 ```
 
-Wire the constructor of the registering class to inject `notificationsSettingsCallbackHandler`, `notificationsMessageRenderer`, `appSettings`, and (if not already present) `userService`. Imports as needed.
+Wire the constructor of `FrigateAnalyzerBot` to inject `notificationsSettingsCallbackHandler`, `notificationsMessageRenderer`, `appSettings`, and `userService` if not already present. The callback must authorize by Telegram callback sender (`callback.user`), not only by `message.chat.id`; this prevents forwarded/stale messages from mutating another user's settings. Add `findByUserIdAsDto` to `TelegramUserService` if the current service does not expose it.
 
 - [ ] **Step 3: Run telegram tests**
 
@@ -3124,12 +3134,20 @@ Add to `DetectionEntityRepository`:
 
 (Spring Data derives the query.)
 
-- [ ] **Step 4: Verify compilation**
+- [ ] **Step 4: Add/adjust facade tests**
+
+Add or update `RecordingProcessingFacadeTest` coverage:
+- `shouldNotify=false` → `telegramNotificationService.sendRecordingNotification` is not called.
+- `shouldNotify=false` → AI description supplier is not invoked.
+- `shouldNotify=true` → existing notification flow still runs.
+- settings read exceptions from `NotificationDecisionService` propagate so the pipeline can retry the recording later.
+
+- [ ] **Step 5: Verify compilation**
 
 Dispatch `build-runner`: `./gradlew :frigate-analyzer-core:test`.
 Expected: BUILD SUCCESSFUL.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/facade/RecordingProcessingFacade.kt \
@@ -3159,7 +3177,8 @@ Edit `modules/core/src/main/resources/application.yaml`. After the `signal-loss:
       ttl: ${NOTIFICATIONS_TRACK_TTL:PT2M}
       iou-threshold: ${NOTIFICATIONS_TRACK_IOU_THRESHOLD:0.3}
       inner-iou: ${NOTIFICATIONS_TRACK_INNER_IOU:0.5}
-      cleanup-interval: ${NOTIFICATIONS_TRACK_CLEANUP_INTERVAL:PT1H}
+      confidence-floor: ${NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR:0.3}
+      cleanup-interval-ms: ${NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS:3600000}
       cleanup-retention: ${NOTIFICATIONS_TRACK_CLEANUP_RETENTION:PT1H}
 ```
 
@@ -3173,7 +3192,8 @@ Edit `.env.example`. Append:
 NOTIFICATIONS_TRACK_TTL=PT2M
 NOTIFICATIONS_TRACK_IOU_THRESHOLD=0.3
 NOTIFICATIONS_TRACK_INNER_IOU=0.5
-NOTIFICATIONS_TRACK_CLEANUP_INTERVAL=PT1H
+NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR=0.3
+NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS=3600000
 NOTIFICATIONS_TRACK_CLEANUP_RETENTION=PT1H
 ```
 
@@ -3183,7 +3203,7 @@ Find the existing `@ConfigurationPropertiesScan` or `@EnableConfigurationPropert
 
 Run: `grep -rn "ConfigurationPropertiesScan\|EnableConfigurationProperties" modules/core/src/main/kotlin/`
 
-If `@ConfigurationPropertiesScan` exists with a basePackages list that already covers `ru.zinin.frigate.analyzer.service.config`, no action needed. Otherwise add `ru.zinin.frigate.analyzer.service.config` to the scan path or add `ObjectTrackerProperties::class` to `@EnableConfigurationProperties`.
+Current project configuration uses explicit `@EnableConfigurationProperties`, so add `ObjectTrackerProperties::class` to the core application/configuration class. If the project has since switched to `@ConfigurationPropertiesScan`, ensure the scan includes `ru.zinin.frigate.analyzer.service.config`.
 
 - [ ] **Step 4: Verify with full build**
 
@@ -3223,7 +3243,8 @@ Settings under `application.notifications` in `application.yaml`. Object tracker
 | `NOTIFICATIONS_TRACK_TTL` | 120s | Track stays "active" this long after last detection. Match → updateLastSeen → no spam. |
 | `NOTIFICATIONS_TRACK_IOU_THRESHOLD` | 0.3 | IoU threshold for cross-recording matching of (class, bbox). |
 | `NOTIFICATIONS_TRACK_INNER_IOU` | 0.5 | IoU threshold for clustering same-class detections within one recording. |
-| `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL` | 1h | `@Scheduled` cleanup job period. |
+| `NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR` | 0.3 | Ignore low-confidence detections before clustering/tracking. |
+| `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS` | 3600000 | `@Scheduled` cleanup job period in milliseconds. |
 | `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | 1h | DELETE rows with `last_seen_at < now() - retention`. Larger than TTL. |
 
 Per-user toggles for recording detections and camera signal-loss alerts are stored in `telegram_users.notifications_recording_enabled` / `notifications_signal_enabled` (default `true`). Global toggles in `app_settings`: `notifications.recording.global_enabled`, `notifications.signal.global_enabled`. OWNER manages globals via `/notifications`.
@@ -3251,8 +3272,10 @@ Add a new section near the bottom:
 | `NotificationsMessageRenderer` | `bot/handler/notifications/` | Renders text + keyboard from current state |
 
 Callback prefix: `nfs:`. Variants:
-- `nfs:u:rec:tgl` / `nfs:u:sig:tgl` — per-user toggles (USER, OWNER)
-- `nfs:g:rec:tgl` / `nfs:g:sig:tgl` — global toggles (OWNER only; non-OWNER receives no-op acknowledgement)
+- `nfs:u:rec:1` / `nfs:u:rec:0` — explicitly enable / disable per-user recording notifications
+- `nfs:u:sig:1` / `nfs:u:sig:0` — explicitly enable / disable per-user signal notifications
+- `nfs:g:rec:1` / `nfs:g:rec:0` — explicitly enable / disable global recording notifications (OWNER only)
+- `nfs:g:sig:1` / `nfs:g:sig:0` — explicitly enable / disable global signal notifications (OWNER only)
 - `nfs:close` — close keyboard
 ```
 
