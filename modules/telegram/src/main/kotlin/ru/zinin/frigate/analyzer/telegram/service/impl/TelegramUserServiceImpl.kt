@@ -147,7 +147,13 @@ class TelegramUserServiceImpl(
                         logger.warn { "Invalid olson_code='${user.olsonCode}' for chatId=${user.chatId}, falling back to UTC" }
                         ZoneId.of("UTC")
                     }
-                UserZoneInfo(user.chatId!!, zone, user.languageCode)
+                UserZoneInfo(
+                    chatId = user.chatId!!,
+                    zone = zone,
+                    language = user.languageCode,
+                    notificationsRecordingEnabled = user.notificationsRecordingEnabled,
+                    notificationsSignalEnabled = user.notificationsSignalEnabled,
+                )
             }
 
     @Transactional(readOnly = true)
@@ -171,6 +177,34 @@ class TelegramUserServiceImpl(
         return true
     }
 
+    @Transactional
+    override suspend fun updateNotificationsRecordingEnabled(
+        chatId: Long,
+        enabled: Boolean,
+    ): Boolean {
+        val updated = repository.updateNotificationsRecordingEnabled(chatId, enabled)
+        if (updated == 0L) {
+            logger.warn { "updateNotificationsRecordingEnabled: no rows updated for chatId=$chatId" }
+            return false
+        }
+        logger.info { "Updated notifications.recording=$enabled for chatId=$chatId" }
+        return true
+    }
+
+    @Transactional
+    override suspend fun updateNotificationsSignalEnabled(
+        chatId: Long,
+        enabled: Boolean,
+    ): Boolean {
+        val updated = repository.updateNotificationsSignalEnabled(chatId, enabled)
+        if (updated == 0L) {
+            logger.warn { "updateNotificationsSignalEnabled: no rows updated for chatId=$chatId" }
+            return false
+        }
+        logger.info { "Updated notifications.signal=$enabled for chatId=$chatId" }
+        return true
+    }
+
     companion object {
         val SUPPORTED_LANGUAGES = setOf("ru", "en")
     }
@@ -187,5 +221,7 @@ class TelegramUserServiceImpl(
             creationTimestamp = creationTimestamp!!,
             activationTimestamp = activationTimestamp,
             languageCode = languageCode,
+            notificationsRecordingEnabled = notificationsRecordingEnabled,
+            notificationsSignalEnabled = notificationsSignalEnabled,
         )
 }

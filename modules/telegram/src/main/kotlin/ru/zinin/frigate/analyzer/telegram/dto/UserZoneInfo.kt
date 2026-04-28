@@ -6,4 +6,6 @@ data class UserZoneInfo(
     val chatId: Long,
     val zone: ZoneId,
     val language: String? = null,
+    val notificationsRecordingEnabled: Boolean = true,
+    val notificationsSignalEnabled: Boolean = true,
 )

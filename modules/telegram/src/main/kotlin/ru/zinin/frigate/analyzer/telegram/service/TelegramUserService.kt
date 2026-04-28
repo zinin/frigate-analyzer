@@ -40,4 +40,14 @@ interface TelegramUserService {
         chatId: Long,
         languageCode: String,
     ): Boolean
+
+    suspend fun updateNotificationsRecordingEnabled(
+        chatId: Long,
+        enabled: Boolean,
+    ): Boolean
+
+    suspend fun updateNotificationsSignalEnabled(
+        chatId: Long,
+        enabled: Boolean,
+    ): Boolean
 }

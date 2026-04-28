@@ -15,4 +15,6 @@ data class TelegramUserDto(
     val creationTimestamp: Instant,
     val activationTimestamp: Instant?,
     val languageCode: String? = null,
+    val notificationsRecordingEnabled: Boolean = true,
+    val notificationsSignalEnabled: Boolean = true,
 )
