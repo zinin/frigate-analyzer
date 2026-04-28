@@ -7,7 +7,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class IouHelperTest {
-    private fun assertNear(expected: Float, actual: Float, eps: Float = 1e-5f) {
+    private fun assertNear(
+        expected: Float,
+        actual: Float,
+        eps: Float = 1e-5f,
+    ) {
         assertTrue(abs(expected - actual) < eps, "expected $expected, got $actual")
     }
 

@@ -54,37 +54,51 @@ class ObjectTrackerServiceImpl(
         if (detections.isEmpty()) {
             return DetectionDelta(0, 0, 0, emptyList())
         }
-        val representatives = BboxClusteringHelper.cluster(
-            detections, properties.innerIou, properties.confidenceFloor,
-        )
+        val representatives =
+            BboxClusteringHelper.cluster(
+                detections,
+                properties.innerIou,
+                properties.confidenceFloor,
+            )
         if (representatives.isEmpty()) {
             return DetectionDelta(0, 0, 0, emptyList())
         }
-        val recordingTimestamp = requireNotNull(recording.recordTimestamp) {
-            "RecordingDto.recordTimestamp is null for recording=${recording.id}"
-        }
+        val recordingTimestamp =
+            requireNotNull(recording.recordTimestamp) {
+                "RecordingDto.recordTimestamp is null for recording=${recording.id}"
+            }
         val ttlThreshold = recordingTimestamp.minus(properties.ttl)
         val active = repository.findActive(recording.camId, ttlThreshold).toMutableList()
 
         var matched = 0
         val newClasses = mutableListOf<String>()
         for (bbox in representatives) {
-            val match = active
-                .filter { it.className == bbox.className }
-                .mapNotNull { track ->
-                    val iouVal = IouHelper.iou(
-                        track.bboxX1, track.bboxY1, track.bboxX2, track.bboxY2,
-                        bbox.x1, bbox.y1, bbox.x2, bbox.y2,
-                    )
-                    if (iouVal > properties.iouThreshold) track to iouVal else null
-                }
-                .maxByOrNull { (_, iouVal) -> iouVal }
-                ?.first
+            val match =
+                active
+                    .filter { it.className == bbox.className }
+                    .mapNotNull { track ->
+                        val iouVal =
+                            IouHelper.iou(
+                                track.bboxX1,
+                                track.bboxY1,
+                                track.bboxX2,
+                                track.bboxY2,
+                                bbox.x1,
+                                bbox.y1,
+                                bbox.x2,
+                                bbox.y2,
+                            )
+                        if (iouVal > properties.iouThreshold) track to iouVal else null
+                    }.maxByOrNull { (_, iouVal) -> iouVal }
+                    ?.first
             if (match != null) {
                 active.remove(match)
                 repository.updateOnMatch(
                     id = match.id!!,
-                    x1 = bbox.x1, y1 = bbox.y1, x2 = bbox.x2, y2 = bbox.y2,
+                    x1 = bbox.x1,
+                    y1 = bbox.y1,
+                    x2 = bbox.x2,
+                    y2 = bbox.y2,
                     lastSeenAt = recordingTimestamp,
                     lastRecordingId = recording.id,
                 )
@@ -96,7 +110,10 @@ class ObjectTrackerServiceImpl(
                         creationTimestamp = recordingTimestamp,
                         camId = recording.camId,
                         className = bbox.className,
-                        bboxX1 = bbox.x1, bboxY1 = bbox.y1, bboxX2 = bbox.x2, bboxY2 = bbox.y2,
+                        bboxX1 = bbox.x1,
+                        bboxY1 = bbox.y1,
+                        bboxX2 = bbox.x2,
+                        bboxY2 = bbox.y2,
                         lastSeenAt = recordingTimestamp,
                         lastRecordingId = recording.id,
                     ),

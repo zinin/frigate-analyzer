@@ -5,8 +5,14 @@ import ru.zinin.frigate.analyzer.model.dto.RepresentativeBbox
 object IouHelper {
     @Suppress("LongParameterList")
     fun iou(
-        ax1: Float, ay1: Float, ax2: Float, ay2: Float,
-        bx1: Float, by1: Float, bx2: Float, by2: Float,
+        ax1: Float,
+        ay1: Float,
+        ax2: Float,
+        ay2: Float,
+        bx1: Float,
+        by1: Float,
+        bx2: Float,
+        by2: Float,
     ): Float {
         val ix1 = maxOf(ax1, bx1)
         val iy1 = maxOf(ay1, by1)
@@ -23,6 +29,8 @@ object IouHelper {
         return if (union > 0f) intersection / union else 0f
     }
 
-    fun iou(a: RepresentativeBbox, b: RepresentativeBbox): Float =
-        iou(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1, b.x2, b.y2)
+    fun iou(
+        a: RepresentativeBbox,
+        b: RepresentativeBbox,
+    ): Float = iou(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1, b.x2, b.y2)
 }

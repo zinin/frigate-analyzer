@@ -10,6 +10,7 @@ enum class NotificationDecisionReason {
     NEW_OBJECTS,
     ALL_REPEATED,
     NO_DETECTIONS,
+
     /** Detections were present but all were filtered out by `confidenceFloor` before tracker. */
     NO_VALID_DETECTIONS,
     GLOBAL_OFF,

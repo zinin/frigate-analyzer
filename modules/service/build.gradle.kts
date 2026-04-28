@@ -25,6 +25,7 @@ dependencies {
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.kotlin.test.junit5)
     testImplementation(libs.coroutines.test)
+    testImplementation(libs.coroutines.reactor)
     testImplementation(libs.mockk)
 
     testRuntimeOnly(libs.junit.platform.launcher)

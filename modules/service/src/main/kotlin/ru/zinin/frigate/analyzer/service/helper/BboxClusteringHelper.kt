@@ -25,8 +25,14 @@ object BboxClusteringHelper {
     }
 
     private data class WorkingCluster(
-        var unionX1: Float, var unionY1: Float, var unionX2: Float, var unionY2: Float,
-        var weightedX1: Float, var weightedY1: Float, var weightedX2: Float, var weightedY2: Float,
+        var unionX1: Float,
+        var unionY1: Float,
+        var unionX2: Float,
+        var unionY2: Float,
+        var weightedX1: Float,
+        var weightedY1: Float,
+        var weightedX2: Float,
+        var weightedY2: Float,
         var weightSum: Float,
     )
 
@@ -37,9 +43,10 @@ object BboxClusteringHelper {
     ): List<RepresentativeBbox> {
         val clusters = mutableListOf<WorkingCluster>()
         for (det in sortedByConfidenceDesc) {
-            val matched = clusters.firstOrNull { c ->
-                IouHelper.iou(c.unionX1, c.unionY1, c.unionX2, c.unionY2, det.x1, det.y1, det.x2, det.y2) > innerIou
-            }
+            val matched =
+                clusters.firstOrNull { c ->
+                    IouHelper.iou(c.unionX1, c.unionY1, c.unionX2, c.unionY2, det.x1, det.y1, det.x2, det.y2) > innerIou
+                }
             if (matched != null) {
                 addToCluster(matched, det)
             } else {
@@ -52,7 +59,10 @@ object BboxClusteringHelper {
                 // Guard against NaN from all-zero-confidence detections.
                 RepresentativeBbox(
                     className = className,
-                    x1 = c.unionX1, y1 = c.unionY1, x2 = c.unionX2, y2 = c.unionY2,
+                    x1 = c.unionX1,
+                    y1 = c.unionY1,
+                    x2 = c.unionX2,
+                    y2 = c.unionY2,
                 )
             } else {
                 RepresentativeBbox(
@@ -69,14 +79,22 @@ object BboxClusteringHelper {
     private fun newCluster(det: DetectionEntity): WorkingCluster {
         val w = det.confidence
         return WorkingCluster(
-            unionX1 = det.x1, unionY1 = det.y1, unionX2 = det.x2, unionY2 = det.y2,
-            weightedX1 = det.x1 * w, weightedY1 = det.y1 * w,
-            weightedX2 = det.x2 * w, weightedY2 = det.y2 * w,
+            unionX1 = det.x1,
+            unionY1 = det.y1,
+            unionX2 = det.x2,
+            unionY2 = det.y2,
+            weightedX1 = det.x1 * w,
+            weightedY1 = det.y1 * w,
+            weightedX2 = det.x2 * w,
+            weightedY2 = det.y2 * w,
             weightSum = w,
         )
     }
 
-    private fun addToCluster(c: WorkingCluster, det: DetectionEntity) {
+    private fun addToCluster(
+        c: WorkingCluster,
+        det: DetectionEntity,
+    ) {
         c.unionX1 = minOf(c.unionX1, det.x1)
         c.unionY1 = minOf(c.unionY1, det.y1)
         c.unionX2 = maxOf(c.unionX2, det.x2)
