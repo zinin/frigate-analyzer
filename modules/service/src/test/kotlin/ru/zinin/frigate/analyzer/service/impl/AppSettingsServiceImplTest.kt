@@ -1,9 +1,7 @@
 package ru.zinin.frigate.analyzer.service.impl
 
-import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
-import io.mockk.just
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
@@ -12,7 +10,6 @@ import ru.zinin.frigate.analyzer.service.repository.AppSettingRepository
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
-import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
