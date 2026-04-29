@@ -67,7 +67,8 @@ class ObjectTrackerServiceImpl(
     ): DetectionDelta {
         val recordingTimestamp = recording.recordTimestamp
         val ttlThreshold = recordingTimestamp.minus(properties.ttl)
-        val active = repository.findActive(recording.camId, ttlThreshold).toMutableList()
+        val ttlUpperBound = recordingTimestamp.plus(properties.ttl)
+        val active = repository.findActive(recording.camId, ttlThreshold, ttlUpperBound).toMutableList()
 
         var matched = 0
         val newClasses = mutableListOf<String>()

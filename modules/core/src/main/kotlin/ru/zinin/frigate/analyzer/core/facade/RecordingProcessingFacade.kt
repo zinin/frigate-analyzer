@@ -49,6 +49,14 @@ class RecordingProcessingFacade(
         // Visualize frames BEFORE saving the result.
         // If visualization fails, the recording will be reprocessed.
         val visualizedFrames = frameVisualizationService.visualizeFrames(request.frames)
+        val recordingNotificationsGloballyEnabled =
+            if (request.hasDetections()) {
+                // Resolve the settings-backed gate before marking the recording processed.
+                // A transient settings failure should leave the recording retryable.
+                notificationDecisionService.isRecordingNotificationsGloballyEnabled()
+            } else {
+                null
+            }
 
         try {
             recordingEntityService.saveProcessingResult(request)
@@ -59,45 +67,42 @@ class RecordingProcessingFacade(
             throw e
         }
 
-        // Post-save: failures here cannot trigger a retry (the recording is already marked
-        // processed). Log distinctly and do not rethrow — notification is best-effort.
+        val recording = recordingEntityService.getRecording(recordingId)
+        if (recording == null) {
+            logger.warn { "Recording $recordingId not found after saving, skipping notification" }
+            return
+        }
+        val detections = detectionEntityService.findByRecordingId(recordingId)
+        val decision =
+            notificationDecisionService.evaluate(
+                recording,
+                detections,
+                recordingNotificationsGloballyEnabled,
+            )
+        if (!decision.shouldNotify) {
+            logger.debug {
+                "Notification suppressed for recording=$recordingId reason=${decision.reason}"
+            }
+            return
+        }
+        // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
+        // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
+        val descriptionSupplier = buildDescriptionSupplier(recordingId, request)
         try {
-            val recording = recordingEntityService.getRecording(recordingId)
-            if (recording == null) {
-                logger.warn { "Recording $recordingId not found after saving, skipping notification" }
-                return
-            }
-            val detections = detectionEntityService.findByRecordingId(recordingId)
-            val decision = notificationDecisionService.evaluate(recording, detections)
-            if (!decision.shouldNotify) {
-                logger.debug {
-                    "Notification suppressed for recording=$recordingId reason=${decision.reason}"
-                }
-                return
-            }
-            // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
-            // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
-            val descriptionSupplier = buildDescriptionSupplier(recordingId, request)
-            try {
-                telegramNotificationService.sendRecordingNotification(
-                    recording,
-                    visualizedFrames,
-                    descriptionSupplier,
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.error(e) { "Failed to send telegram notification for recording $recordingId" }
-            }
+            telegramNotificationService.sendRecordingNotification(
+                recording,
+                visualizedFrames,
+                descriptionSupplier,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.error(e) {
-                "Failed to evaluate or send notification after save for recording $recordingId; " +
-                    "save already committed, notification dropped"
-            }
+            logger.error(e) { "Failed to send telegram notification for recording $recordingId" }
         }
     }
+
+    private fun SaveProcessingResultRequest.hasDetections(): Boolean =
+        frames.any { frame -> frame.detectResponse?.detections?.isNotEmpty() == true }
 
     /**
      * Returns a supplier that lazily kicks off a describe-job. Returns null when the agent is

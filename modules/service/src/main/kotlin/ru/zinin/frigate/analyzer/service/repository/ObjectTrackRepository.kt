@@ -16,11 +16,13 @@ interface ObjectTrackRepository : CoroutineCrudRepository<ObjectTrackEntity, UUI
         SELECT * FROM object_tracks
         WHERE cam_id = :camId
           AND last_seen_at >= :minLastSeen
+          AND last_seen_at <= :maxLastSeen
         """,
     )
     suspend fun findActive(
         @Param("camId") camId: String,
         @Param("minLastSeen") minLastSeen: Instant,
+        @Param("maxLastSeen") maxLastSeen: Instant,
     ): List<ObjectTrackEntity>
 
     @Modifying

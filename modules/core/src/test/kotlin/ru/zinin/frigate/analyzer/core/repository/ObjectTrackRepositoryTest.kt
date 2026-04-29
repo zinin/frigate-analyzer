@@ -38,18 +38,22 @@ class ObjectTrackRepositoryTest : IntegrationTestBase() {
     }
 
     @Test
-    fun `findActive filters by camera and minimum last seen timestamp`() {
+    fun `findActive filters by camera and bounded last seen timestamp window`() {
         runBlocking {
             val activeFront = track(camId = "front", lastSeenAt = baseTime)
+            val nearFutureFront = track(camId = "front", lastSeenAt = baseTime.plusSeconds(60))
+            val farFutureFront = track(camId = "front", lastSeenAt = baseTime.plusSeconds(300))
             val oldFront = track(camId = "front", lastSeenAt = baseTime.minusSeconds(300))
             val activeBack = track(camId = "back", lastSeenAt = baseTime)
             repository.save(activeFront)
+            repository.save(nearFutureFront)
+            repository.save(farFutureFront)
             repository.save(oldFront)
             repository.save(activeBack)
 
-            val result = repository.findActive("front", baseTime.minusSeconds(120))
+            val result = repository.findActive("front", baseTime.minusSeconds(120), baseTime.plusSeconds(120))
 
-            assertEquals(listOf(activeFront.id), result.map { it.id })
+            assertEquals(setOf(activeFront.id, nearFutureFront.id), result.map { it.id }.toSet())
         }
     }
 

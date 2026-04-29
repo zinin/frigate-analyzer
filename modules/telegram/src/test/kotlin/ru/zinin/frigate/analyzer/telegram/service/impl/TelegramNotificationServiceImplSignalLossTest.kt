@@ -23,7 +23,6 @@ import java.time.ZoneId
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class TelegramNotificationServiceImplSignalLossTest {
@@ -248,17 +247,38 @@ class TelegramNotificationServiceImplSignalLossTest {
         }
 
     @Test
-    fun `signal-loss propagates AppSettings read failure (no silent fallback)`() =
+    fun `signal-loss fails open when AppSettings read fails`() =
         runBlocking {
             coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } throws
                 RuntimeException("db down")
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"))
+            val captured = slot<SimpleTextNotificationTask>()
+            coEvery { queue.enqueue(capture(captured)) } answers { /* no-op */ }
 
-            assertFailsWith<RuntimeException> {
-                service.sendCameraSignalLost(
-                    camId = "front_door",
-                    lastSeenAt = Instant.now(),
-                    now = Instant.now(),
-                )
-            }
+            service.sendCameraSignalLost(
+                camId = "front_door",
+                lastSeenAt = Instant.now(),
+                now = Instant.now(),
+            )
+
+            assertEquals(100L, captured.captured.chatId)
+            assertEquals("loss-msg", captured.captured.text)
+        }
+
+    @Test
+    fun `signal-recovery fails open when AppSettings read fails`() =
+        runBlocking {
+            coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } throws
+                RuntimeException("db down")
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"))
+            val captured = slot<SimpleTextNotificationTask>()
+            coEvery { queue.enqueue(capture(captured)) } answers { /* no-op */ }
+
+            service.sendCameraSignalRecovered(camId = "front_door", downtime = Duration.ofMinutes(5))
+
+            assertEquals(100L, captured.captured.chatId)
+            assertEquals("recovery-msg", captured.captured.text)
         }
 }

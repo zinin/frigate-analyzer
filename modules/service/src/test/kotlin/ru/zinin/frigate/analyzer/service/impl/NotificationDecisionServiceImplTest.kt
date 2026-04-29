@@ -158,4 +158,18 @@ class NotificationDecisionServiceImplTest {
             }
             coVerify(exactly = 0) { tracker.evaluate(any(), any()) }
         }
+
+    @Test
+    fun `provided global setting bypasses settings read`() =
+        runTest {
+            coEvery { tracker.evaluate(recording, any()) } returns DetectionDelta(1, 0, 0, listOf("car"))
+
+            val decision = service.evaluate(recording, listOf(det()), globalEnabled = false)
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.GLOBAL_OFF, decision.reason)
+            coVerify(exactly = 0) {
+                settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
+            }
+        }
 }

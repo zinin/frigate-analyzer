@@ -22,16 +22,13 @@ class NotificationDecisionServiceImpl(
     override suspend fun evaluate(
         recording: RecordingDto,
         detections: List<DetectionEntity>,
+        globalEnabled: Boolean?,
     ): NotificationDecision {
         if (detections.isEmpty()) {
             return NotificationDecision(false, NotificationDecisionReason.NO_DETECTIONS)
         }
 
-        val globalEnabled =
-            settings.getBoolean(
-                AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED,
-                default = true,
-            )
+        val resolvedGlobalEnabled = globalEnabled ?: isRecordingNotificationsGloballyEnabled()
 
         return try {
             val delta = tracker.evaluate(recording, detections)
@@ -41,7 +38,7 @@ class NotificationDecisionServiceImpl(
                     NotificationDecision(false, NotificationDecisionReason.NO_VALID_DETECTIONS, delta)
                 }
 
-                !globalEnabled -> {
+                !resolvedGlobalEnabled -> {
                     logger.debug { "Decision: suppress (global_off): cam=${recording.camId} recording=${recording.id}" }
                     NotificationDecision(false, NotificationDecisionReason.GLOBAL_OFF, delta)
                 }
@@ -63,9 +60,15 @@ class NotificationDecisionServiceImpl(
         } catch (e: Exception) {
             logger.warn(e) {
                 "Tracker failure for recording=${recording.id} cam=${recording.camId}; " +
-                    "globalEnabled=$globalEnabled, shouldNotify=$globalEnabled"
+                    "globalEnabled=$resolvedGlobalEnabled, shouldNotify=$resolvedGlobalEnabled"
             }
-            NotificationDecision(globalEnabled, NotificationDecisionReason.TRACKER_ERROR)
+            NotificationDecision(resolvedGlobalEnabled, NotificationDecisionReason.TRACKER_ERROR)
         }
     }
+
+    override suspend fun isRecordingNotificationsGloballyEnabled(): Boolean =
+        settings.getBoolean(
+            AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED,
+            default = true,
+        )
 }

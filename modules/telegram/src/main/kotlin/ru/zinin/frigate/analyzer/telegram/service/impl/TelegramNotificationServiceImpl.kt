@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -162,7 +163,7 @@ class TelegramNotificationServiceImpl(
         lastSeenAt: Instant,
         now: Instant,
     ) {
-        if (!appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, default = true)) {
+        if (!signalNotificationsGloballyEnabled(camId, eventType = "loss")) {
             logger.debug { "Signal-loss notifications globally disabled — skipping cam=$camId" }
             return
         }
@@ -201,7 +202,7 @@ class TelegramNotificationServiceImpl(
         camId: String,
         downtime: Duration,
     ) {
-        if (!appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, default = true)) {
+        if (!signalNotificationsGloballyEnabled(camId, eventType = "recovery")) {
             logger.debug { "Signal-recovery notifications globally disabled — skipping cam=$camId" }
             return
         }
@@ -233,4 +234,19 @@ class TelegramNotificationServiceImpl(
         }
         logger.info { "Enqueued signal-recovery alert for camera $camId to ${recipients.size} recipients" }
     }
+
+    private suspend fun signalNotificationsGloballyEnabled(
+        camId: String,
+        eventType: String,
+    ): Boolean =
+        try {
+            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, default = true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) {
+                "Failed to read global signal-notification setting for $eventType cam=$camId; failing open"
+            }
+            true
+        }
 }

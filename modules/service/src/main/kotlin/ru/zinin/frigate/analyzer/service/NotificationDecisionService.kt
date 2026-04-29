@@ -10,7 +10,7 @@ interface NotificationDecisionService {
      *
      * Order:
      *   1. detections empty → NO_DETECTIONS, no tracker call.
-     *   2. read globalEnabled (may throw — propagates).
+     *   2. use provided globalEnabled or read it from settings (may throw — propagates).
      *   3. cluster detections → if all filtered by confidenceFloor, NO_VALID_DETECTIONS, no tracker call.
      *   4. tracker.evaluate → state is updated unconditionally so it stays coherent
      *      when the global toggle returns ON.
@@ -25,5 +25,8 @@ interface NotificationDecisionService {
     suspend fun evaluate(
         recording: RecordingDto,
         detections: List<DetectionEntity>,
+        globalEnabled: Boolean? = null,
     ): NotificationDecision
+
+    suspend fun isRecordingNotificationsGloballyEnabled(): Boolean
 }

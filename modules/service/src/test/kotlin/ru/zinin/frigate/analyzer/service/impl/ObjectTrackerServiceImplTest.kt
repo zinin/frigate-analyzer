@@ -129,7 +129,7 @@ class ObjectTrackerServiceImplTest {
 
             assertEquals(0, delta.newTracksCount)
             assertEquals(0, delta.matchedTracksCount)
-            coVerify(exactly = 0) { repo.findActive(any(), any()) }
+            coVerify(exactly = 0) { repo.findActive(any(), any(), any()) }
             coVerify(exactly = 0) { repo.save(any()) }
             coVerify(exactly = 0) { repo.updateOnMatch(any(), any(), any(), any(), any(), any(), any()) }
             coVerify(exactly = 0) { transactionalOperator.execute<Any>(any()) }
@@ -153,7 +153,7 @@ class ObjectTrackerServiceImplTest {
     @Test
     fun `first time appearance creates a new track and reports new=1`() =
         runTest {
-            coEvery { repo.findActive(any(), any()) } returns emptyList()
+            coEvery { repo.findActive(any(), any(), any()) } returns emptyList()
             coEvery { uuid.generateV1() } returns UUID.randomUUID()
 
             val delta =
@@ -172,7 +172,7 @@ class ObjectTrackerServiceImplTest {
     fun `match against existing active track reports matched=1 and updates`() =
         runTest {
             val existing = track("car", 0f, 0f, 0.5f, 0.5f)
-            coEvery { repo.findActive(any(), any()) } returns listOf(existing)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
 
             val delta =
                 service.evaluate(
@@ -190,7 +190,7 @@ class ObjectTrackerServiceImplTest {
     fun `same class but distant bbox treated as new track`() =
         runTest {
             val existing = track("car", 0f, 0f, 0.2f, 0.2f)
-            coEvery { repo.findActive(any(), any()) } returns listOf(existing)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
             coEvery { uuid.generateV1() } returns UUID.randomUUID()
 
             val delta =
@@ -207,7 +207,7 @@ class ObjectTrackerServiceImplTest {
     fun `mixed scenario car matches person is new`() =
         runTest {
             val existing = track("car", 0f, 0f, 0.5f, 0.5f)
-            coEvery { repo.findActive(any(), any()) } returns listOf(existing)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
             coEvery { uuid.generateV1() } returns UUID.randomUUID()
 
             val delta =
@@ -229,7 +229,7 @@ class ObjectTrackerServiceImplTest {
         runTest {
             val existingCar = track("car", 0f, 0f, 0.5f, 0.5f)
             val stalePerson = track("person", 0.6f, 0.6f, 0.8f, 0.9f)
-            coEvery { repo.findActive(any(), any()) } returns listOf(existingCar, stalePerson)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existingCar, stalePerson)
 
             val delta =
                 service.evaluate(
@@ -246,7 +246,7 @@ class ObjectTrackerServiceImplTest {
     fun `missing row during match update fails instead of silently suppressing`() =
         runTest {
             val existing = track("car", 0f, 0f, 0.5f, 0.5f)
-            coEvery { repo.findActive(any(), any()) } returns listOf(existing)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
             coEvery { repo.updateOnMatch(any(), any(), any(), any(), any(), any(), any()) } returns 0L
 
             assertFailsWith<IllegalStateException> {
@@ -258,15 +258,17 @@ class ObjectTrackerServiceImplTest {
         }
 
     @Test
-    fun `findActive uses recordingTimestamp minus TTL as threshold`() =
+    fun `findActive uses recordingTimestamp plus or minus TTL as window`() =
         runTest {
-            val captured = slot<Instant>()
-            coEvery { repo.findActive(eq(camId), capture(captured)) } returns emptyList()
+            val capturedMin = slot<Instant>()
+            val capturedMax = slot<Instant>()
+            coEvery { repo.findActive(eq(camId), capture(capturedMin), capture(capturedMax)) } returns emptyList()
             coEvery { uuid.generateV1() } returns UUID.randomUUID()
 
             service.evaluate(rec(), listOf(det("car", 0f, 0f, 0.5f, 0.5f)))
 
-            assertEquals(Instant.parse("2026-04-27T11:58:00Z"), captured.captured)
+            assertEquals(Instant.parse("2026-04-27T11:58:00Z"), capturedMin.captured)
+            assertEquals(Instant.parse("2026-04-27T12:02:00Z"), capturedMax.captured)
         }
 
     @Test
@@ -274,7 +276,7 @@ class ObjectTrackerServiceImplTest {
         runTest {
             val newer = Instant.parse("2026-04-27T12:01:00Z")
             val existing = track("car", 0f, 0f, 0.5f, 0.5f, lastSeen = newer)
-            coEvery { repo.findActive(any(), any()) } returns listOf(existing)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
 
             val delta =
                 service.evaluate(

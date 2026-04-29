@@ -43,6 +43,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
@@ -93,7 +94,10 @@ class RecordingProcessingFacadeTest {
     init {
         coEvery { recordingEntityService.saveProcessingResult(any()) } returns Unit
         coEvery { recordingEntityService.getRecording(recordingId) } returns recording
-        coEvery { notificationDecisionService.evaluate(any(), any()) } returns
+        coEvery { notificationDecisionService.isRecordingNotificationsGloballyEnabled() } returns true
+        coEvery { notificationDecisionService.evaluate(any(), any(), any()) } returns
+            NotificationDecision(shouldNotify = true, reason = NotificationDecisionReason.NEW_OBJECTS)
+        coEvery { notificationDecisionService.evaluate(any(), any(), null) } returns
             NotificationDecision(shouldNotify = true, reason = NotificationDecisionReason.NEW_OBJECTS)
         coEvery { detectionEntityService.findByRecordingId(any()) } returns emptyList()
     }
@@ -169,6 +173,20 @@ class RecordingProcessingFacadeTest {
         block()
         return captured
     }
+
+    @Test
+    fun `recording notification settings failure happens before processed state is saved`() =
+        runTest {
+            val (f, req) = facade(agent = null)
+            coEvery { notificationDecisionService.isRecordingNotificationsGloballyEnabled() } throws
+                RuntimeException("settings db down")
+
+            assertFailsWith<RuntimeException> {
+                f.processAndNotify(req)
+            }
+
+            coVerify(exactly = 0) { recordingEntityService.saveProcessingResult(any()) }
+        }
 
     @Test
     fun `agent disabled produces null supplier`() =
