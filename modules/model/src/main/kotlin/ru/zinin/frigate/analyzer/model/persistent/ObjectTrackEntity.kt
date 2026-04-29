@@ -33,5 +33,6 @@ data class ObjectTrackEntity(
 ) : Persistable<UUID> {
     override fun getId(): UUID? = id
 
+    // Always treated as "new" so save() emits an INSERT; updates use ObjectTrackRepository.updateOnMatch.
     override fun isNew(): Boolean = true
 }

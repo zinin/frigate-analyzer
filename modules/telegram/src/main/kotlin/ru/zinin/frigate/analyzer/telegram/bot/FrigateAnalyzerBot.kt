@@ -217,7 +217,8 @@ class FrigateAnalyzerBot(
             try {
                 val callbackMsg = (callback as? MessageDataCallbackQuery)?.message ?: return@onDataCallbackQuery
                 val senderUsername = callback.user.username?.withoutAt ?: return@onDataCallbackQuery
-                val current = userService.findByUsernameAsDto(senderUsername) ?: return@onDataCallbackQuery
+                // ACTIVE-only: prevents an INVITED row that somehow has a chatId from passing auth
+                val current = userService.findActiveByUsername(senderUsername) ?: return@onDataCallbackQuery
                 val cid = current.chatId ?: return@onDataCallbackQuery
                 val owner = userService.isOwner(current.username)
                 val outcome = notificationsSettingsCallbackHandler.dispatch(callback.data, cid, owner, current)

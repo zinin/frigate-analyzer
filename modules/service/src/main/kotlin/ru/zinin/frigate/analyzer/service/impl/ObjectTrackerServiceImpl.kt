@@ -9,6 +9,7 @@ import org.springframework.transaction.reactive.executeAndAwait
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.DetectionDelta
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
+import ru.zinin.frigate.analyzer.model.dto.RepresentativeBbox
 import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.model.persistent.ObjectTrackEntity
 import ru.zinin.frigate.analyzer.service.ObjectTrackerService
@@ -40,21 +41,9 @@ class ObjectTrackerServiceImpl(
         if (detections.isEmpty()) {
             return DetectionDelta(0, 0, 0, emptyList())
         }
-        val mutex = perCameraMutex.computeIfAbsent(recording.camId) { Mutex() }
-        return mutex.withLock {
-            transactionalOperator.executeAndAwait {
-                evaluateLocked(recording, detections)
-            }
-        }
-    }
-
-    private suspend fun evaluateLocked(
-        recording: RecordingDto,
-        detections: List<DetectionEntity>,
-    ): DetectionDelta {
-        if (detections.isEmpty()) {
-            return DetectionDelta(0, 0, 0, emptyList())
-        }
+        // Cluster outside the mutex + transaction: pure CPU work, no DB connection needed.
+        // Avoids holding the per-camera lock and a connection-pool slot when all detections
+        // are below confidence floor (representatives empty → no DB writes anyway).
         val representatives =
             BboxClusteringHelper.cluster(
                 detections,
@@ -64,10 +53,19 @@ class ObjectTrackerServiceImpl(
         if (representatives.isEmpty()) {
             return DetectionDelta(0, 0, 0, emptyList())
         }
-        val recordingTimestamp =
-            requireNotNull(recording.recordTimestamp) {
-                "RecordingDto.recordTimestamp is null for recording=${recording.id}"
+        val mutex = perCameraMutex.computeIfAbsent(recording.camId) { Mutex() }
+        return mutex.withLock {
+            transactionalOperator.executeAndAwait {
+                evaluateLocked(recording, representatives)
             }
+        }
+    }
+
+    private suspend fun evaluateLocked(
+        recording: RecordingDto,
+        representatives: List<RepresentativeBbox>,
+    ): DetectionDelta {
+        val recordingTimestamp = recording.recordTimestamp
         val ttlThreshold = recordingTimestamp.minus(properties.ttl)
         val active = repository.findActive(recording.camId, ttlThreshold).toMutableList()
 

@@ -51,43 +51,51 @@ class RecordingProcessingFacade(
         val visualizedFrames = frameVisualizationService.visualizeFrames(request.frames)
 
         try {
-            // Save processing result within @Transactional
             recordingEntityService.saveProcessingResult(request)
-
-            // Fetch recording DTO for notification
-            val recording = recordingEntityService.getRecording(recordingId)
-            if (recording != null) {
-                val detections = detectionEntityService.findByRecordingId(recordingId)
-                val decision = notificationDecisionService.evaluate(recording, detections)
-                if (!decision.shouldNotify) {
-                    logger.debug {
-                        "Notification suppressed for recording=$recordingId reason=${decision.reason}"
-                    }
-                    return
-                }
-                // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
-                // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
-                val descriptionSupplier = buildDescriptionSupplier(recordingId, request)
-                try {
-                    telegramNotificationService.sendRecordingNotification(
-                        recording,
-                        visualizedFrames,
-                        descriptionSupplier,
-                    )
-                } catch (e: CancellationException) {
-                    throw e // structured concurrency — do not swallow cancellation
-                } catch (e: Exception) {
-                    logger.error(e) { "Failed to send telegram notification for recording $recordingId" }
-                    // Do not rethrow - notification failure should not affect processing
-                }
-            } else {
-                logger.warn { "Recording $recordingId not found after saving, skipping notification" }
-            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logger.error(e) { "Failed to save processing result for recording $recordingId" }
-            throw e // Rethrow to let caller handle the error
+            throw e
+        }
+
+        // Post-save: failures here cannot trigger a retry (the recording is already marked
+        // processed). Log distinctly and do not rethrow — notification is best-effort.
+        try {
+            val recording = recordingEntityService.getRecording(recordingId)
+            if (recording == null) {
+                logger.warn { "Recording $recordingId not found after saving, skipping notification" }
+                return
+            }
+            val detections = detectionEntityService.findByRecordingId(recordingId)
+            val decision = notificationDecisionService.evaluate(recording, detections)
+            if (!decision.shouldNotify) {
+                logger.debug {
+                    "Notification suppressed for recording=$recordingId reason=${decision.reason}"
+                }
+                return
+            }
+            // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
+            // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
+            val descriptionSupplier = buildDescriptionSupplier(recordingId, request)
+            try {
+                telegramNotificationService.sendRecordingNotification(
+                    recording,
+                    visualizedFrames,
+                    descriptionSupplier,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to send telegram notification for recording $recordingId" }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.error(e) {
+                "Failed to evaluate or send notification after save for recording $recordingId; " +
+                    "save already committed, notification dropped"
+            }
         }
     }
 
