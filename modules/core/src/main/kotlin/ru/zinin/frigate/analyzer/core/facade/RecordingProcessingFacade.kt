@@ -13,6 +13,8 @@ import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
+import ru.zinin.frigate.analyzer.service.DetectionEntityService
+import ru.zinin.frigate.analyzer.service.NotificationDecisionService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.util.UUID
@@ -27,6 +29,8 @@ class RecordingProcessingFacade(
     private val descriptionAgentProvider: ObjectProvider<DescriptionAgent>,
     private val descriptionScope: DescriptionCoroutineScope,
     private val descriptionProperties: DescriptionProperties,
+    private val notificationDecisionService: NotificationDecisionService,
+    private val detectionEntityService: DetectionEntityService,
 ) {
     suspend fun processAndNotify(
         request: SaveProcessingResultRequest,
@@ -53,6 +57,14 @@ class RecordingProcessingFacade(
             // Fetch recording DTO for notification
             val recording = recordingEntityService.getRecording(recordingId)
             if (recording != null) {
+                val detections = detectionEntityService.findByRecordingId(recordingId)
+                val decision = notificationDecisionService.evaluate(recording, detections)
+                if (!decision.shouldNotify) {
+                    logger.debug {
+                        "Notification suppressed for recording=$recordingId reason=${decision.reason}"
+                    }
+                    return
+                }
                 // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
                 // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
                 val descriptionSupplier = buildDescriptionSupplier(recordingId, request)

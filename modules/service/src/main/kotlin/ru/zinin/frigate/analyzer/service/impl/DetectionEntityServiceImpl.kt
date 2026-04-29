@@ -5,6 +5,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.request.CreateDetectionRequest
+import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.service.DetectionEntityService
 import ru.zinin.frigate.analyzer.service.mapper.DetectionMapper
 import ru.zinin.frigate.analyzer.service.repository.DetectionEntityRepository
@@ -37,4 +38,8 @@ class DetectionEntityServiceImpl(
 
         return detectionId
     }
+
+    @Transactional(readOnly = true)
+    override suspend fun findByRecordingId(recordingId: UUID): List<DetectionEntity> =
+        repository.findByRecordingId(recordingId)
 }

@@ -25,12 +25,16 @@ import ru.zinin.frigate.analyzer.core.config.properties.LocalVisualizationProper
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
 import ru.zinin.frigate.analyzer.core.service.LocalVisualizationService
 import ru.zinin.frigate.analyzer.model.dto.FrameData
+import ru.zinin.frigate.analyzer.model.dto.NotificationDecision
+import ru.zinin.frigate.analyzer.model.dto.NotificationDecisionReason
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
 import ru.zinin.frigate.analyzer.model.response.BBox
 import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.Detection
 import ru.zinin.frigate.analyzer.model.response.ImageSize
+import ru.zinin.frigate.analyzer.service.DetectionEntityService
+import ru.zinin.frigate.analyzer.service.NotificationDecisionService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.time.Duration
@@ -46,6 +50,8 @@ import kotlin.test.assertNull
 class RecordingProcessingFacadeTest {
     private val recordingEntityService = mockk<RecordingEntityService>()
     private val telegramNotificationService = mockk<TelegramNotificationService>(relaxed = true)
+    private val notificationDecisionService = mockk<NotificationDecisionService>()
+    private val detectionEntityService = mockk<DetectionEntityService>()
 
     // Real service is used instead of a mock because `FrameVisualizationService.visualizeFrames`
     // has a default parameter `maxFrames = visualizationProperties.maxFrames`; the synthetic
@@ -87,6 +93,9 @@ class RecordingProcessingFacadeTest {
     init {
         coEvery { recordingEntityService.saveProcessingResult(any()) } returns Unit
         coEvery { recordingEntityService.getRecording(recordingId) } returns recording
+        coEvery { notificationDecisionService.evaluate(any(), any()) } returns
+            NotificationDecision(shouldNotify = true, reason = NotificationDecisionReason.NEW_OBJECTS)
+        coEvery { detectionEntityService.findByRecordingId(any()) } returns emptyList()
     }
 
     private fun frameWithDetection(
@@ -142,6 +151,8 @@ class RecordingProcessingFacadeTest {
                 descriptionAgentProvider = provider,
                 descriptionScope = scope,
                 descriptionProperties = props,
+                notificationDecisionService = notificationDecisionService,
+                detectionEntityService = detectionEntityService,
             )
         return facade to SaveProcessingResultRequest(recordingId = recordingId, frames = framesForRequest)
     }
