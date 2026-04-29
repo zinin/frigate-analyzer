@@ -167,3 +167,18 @@ Settings under `application.signal-loss` in `application.yaml`. The detector pol
 | `SIGNAL_LOSS_POLL_INTERVAL` | 30s | Detector tick period. Must be smaller than `SIGNAL_LOSS_THRESHOLD`. |
 | `SIGNAL_LOSS_ACTIVE_WINDOW` | 24h | Window of "active" cameras. **Must be set to at least Frigate's recording retention.** Cameras whose last recording is older are not monitored. Validation at startup also enforces `activeWindow > threshold + startupGrace` so a camera lost just before boot does not fall out of the window before the late-alert tick fires. |
 | `SIGNAL_LOSS_STARTUP_GRACE` | 5m | After startup, alerts are deferred for this duration. If a camera was already dark at boot, the first tick after grace ends fires a (late) LOSS alert provided the gap still holds. Shorten to surface boot-time outages faster; lengthen if Frigate restarts and you want to avoid spurious LOSS during its own warm-up. |
+
+## Notifications
+
+Settings under `application.notifications` in `application.yaml`. Object tracker suppresses duplicate recording notifications when an object remains in view across consecutive recordings.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `NOTIFICATIONS_TRACK_TTL` | 120s | Track stays "active" this long after last detection. Match → updateLastSeen → no spam. |
+| `NOTIFICATIONS_TRACK_IOU_THRESHOLD` | 0.3 | IoU threshold for cross-recording matching of (class, bbox). |
+| `NOTIFICATIONS_TRACK_INNER_IOU` | 0.5 | IoU threshold for clustering same-class detections within one recording. |
+| `NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR` | 0.3 | Ignore low-confidence detections before clustering/tracking. |
+| `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS` | 3600000 | `@Scheduled` cleanup job period in milliseconds. |
+| `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | 1h | DELETE rows with `last_seen_at < now() - retention`. Larger than TTL. |
+
+Per-user toggles for recording detections and camera signal-loss alerts are stored in `telegram_users.notifications_recording_enabled` / `notifications_signal_enabled` (default `true`). Global toggles in `app_settings`: `notifications.recording.global_enabled`, `notifications.signal.global_enabled`. OWNER manages globals via `/notifications`.
