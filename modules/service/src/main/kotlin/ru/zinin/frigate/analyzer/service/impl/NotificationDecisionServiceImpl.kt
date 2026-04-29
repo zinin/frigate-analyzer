@@ -27,9 +27,11 @@ class NotificationDecisionServiceImpl(
             return NotificationDecision(false, NotificationDecisionReason.NO_DETECTIONS)
         }
 
-        val globalEnabled = settings.getBoolean(
-            AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, default = true,
-        )
+        val globalEnabled =
+            settings.getBoolean(
+                AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED,
+                default = true,
+            )
 
         return try {
             val delta = tracker.evaluate(recording, detections)
@@ -38,16 +40,19 @@ class NotificationDecisionServiceImpl(
                     logger.debug { "Decision: suppress (no_valid_detections): cam=${recording.camId} recording=${recording.id}" }
                     NotificationDecision(false, NotificationDecisionReason.NO_VALID_DETECTIONS, delta)
                 }
+
                 !globalEnabled -> {
                     logger.debug { "Decision: suppress (global_off): cam=${recording.camId} recording=${recording.id}" }
                     NotificationDecision(false, NotificationDecisionReason.GLOBAL_OFF, delta)
                 }
+
                 delta.newTracksCount > 0 -> {
                     logger.debug {
                         "Decision: notify: cam=${recording.camId} newClasses=${delta.newClasses} recording=${recording.id}"
                     }
                     NotificationDecision(true, NotificationDecisionReason.NEW_OBJECTS, delta)
                 }
+
                 else -> {
                     logger.debug { "Decision: suppress (all_repeated): cam=${recording.camId} recording=${recording.id}" }
                     NotificationDecision(false, NotificationDecisionReason.ALL_REPEATED, delta)

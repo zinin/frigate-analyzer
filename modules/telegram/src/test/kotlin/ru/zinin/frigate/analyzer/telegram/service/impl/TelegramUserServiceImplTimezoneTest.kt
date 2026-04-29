@@ -21,9 +21,10 @@ class TelegramUserServiceImplTimezoneTest {
     private val repository = mockk<TelegramUserRepository>()
     private val uuidGeneratorHelper = mockk<UUIDGeneratorHelper>()
     private val clock = Clock.systemUTC()
-    private val telegramProperties = mockk<TelegramProperties>().also {
-        every { it.owner } returns "owner_username"
-    }
+    private val telegramProperties =
+        mockk<TelegramProperties>().also {
+            every { it.owner } returns "owner_username"
+        }
     private val service = TelegramUserServiceImpl(repository, uuidGeneratorHelper, clock, telegramProperties)
 
     private fun createUserEntity(

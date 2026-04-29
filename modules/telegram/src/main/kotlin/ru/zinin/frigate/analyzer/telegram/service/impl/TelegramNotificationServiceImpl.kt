@@ -10,12 +10,12 @@ import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
+import ru.zinin.frigate.analyzer.service.AppSettingKeys
+import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
-import ru.zinin.frigate.analyzer.service.AppSettingKeys
-import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Duration

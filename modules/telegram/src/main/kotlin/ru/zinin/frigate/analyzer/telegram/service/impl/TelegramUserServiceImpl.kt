@@ -6,11 +6,11 @@ import kotlinx.coroutines.flow.toList
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.entity.TelegramUserEntity
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.repository.TelegramUserRepository
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
@@ -105,12 +105,10 @@ class TelegramUserServiceImpl(
     override suspend fun getAllActiveChatIds(): List<Long> = repository.findAllActiveChatIds()
 
     @Transactional(readOnly = true)
-    override suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto? =
-        repository.findByChatId(chatId)?.toDto()
+    override suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto? = repository.findByChatId(chatId)?.toDto()
 
     @Transactional(readOnly = true)
-    override suspend fun findByUsernameAsDto(username: String): TelegramUserDto? =
-        repository.findByUsername(username)?.toDto()
+    override suspend fun findByUsernameAsDto(username: String): TelegramUserDto? = repository.findByUsername(username)?.toDto()
 
     @Transactional(readOnly = true)
     override suspend fun getUserZone(chatId: Long): ZoneId {

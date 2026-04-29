@@ -224,22 +224,25 @@ class FrigateAnalyzerBot(
                 when (outcome) {
                     NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER -> {
                         val updated = userService.findByChatIdAsDto(cid) ?: current
-                        val state = NotificationsViewState(
-                            isOwner = owner,
-                            recordingUserEnabled = updated.notificationsRecordingEnabled,
-                            signalUserEnabled = updated.notificationsSignalEnabled,
-                            recordingGlobalEnabled = if (owner) {
-                                appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
-                            } else {
-                                null
-                            },
-                            signalGlobalEnabled = if (owner) {
-                                appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
-                            } else {
-                                null
-                            },
-                            language = updated.languageCode ?: "en",
-                        )
+                        val state =
+                            NotificationsViewState(
+                                isOwner = owner,
+                                recordingUserEnabled = updated.notificationsRecordingEnabled,
+                                signalUserEnabled = updated.notificationsSignalEnabled,
+                                recordingGlobalEnabled =
+                                    if (owner) {
+                                        appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
+                                    } else {
+                                        null
+                                    },
+                                signalGlobalEnabled =
+                                    if (owner) {
+                                        appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
+                                    } else {
+                                        null
+                                    },
+                                language = updated.languageCode ?: "en",
+                            )
                         val rendered = notificationsMessageRenderer.render(state)
                         try {
                             @Suppress("UNCHECKED_CAST")
@@ -251,9 +254,11 @@ class FrigateAnalyzerBot(
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
-                            val isNotModified = e.message?.contains(
-                                "message is not modified", ignoreCase = true,
-                            ) == true
+                            val isNotModified =
+                                e.message?.contains(
+                                    "message is not modified",
+                                    ignoreCase = true,
+                                ) == true
                             if (isNotModified) {
                                 logger.debug { "nfs edit no-op (message not modified): ${callback.data}" }
                             } else {
@@ -261,6 +266,7 @@ class FrigateAnalyzerBot(
                             }
                         }
                     }
+
                     NotificationsSettingsCallbackHandler.DispatchOutcome.CLOSE -> {
                         try {
                             bot.editMessageReplyMarkup(callbackMsg, replyMarkup = null)
@@ -270,7 +276,10 @@ class FrigateAnalyzerBot(
                             logger.warn(e) { "Failed to close /notifications keyboard" }
                         }
                     }
-                    else -> Unit
+
+                    else -> {
+                        Unit
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e

@@ -178,82 +178,87 @@ class TelegramNotificationServiceImplSignalLossTest {
         }
 
     @Test
-    fun `global signal toggle off skips signal-loss alert`() = runBlocking {
-        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns false
-        coEvery { userService.getAuthorizedUsersWithZones() } returns
-            listOf(UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"))
+    fun `global signal toggle off skips signal-loss alert`() =
+        runBlocking {
+            coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns false
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"))
 
-        service.sendCameraSignalLost(
-            camId = "front_door",
-            lastSeenAt = Instant.now(),
-            now = Instant.now(),
-        )
-
-        coVerify(exactly = 0) { queue.enqueue(any()) }
-    }
-
-    @Test
-    fun `global signal toggle off skips signal-recovery alert`() = runBlocking {
-        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns false
-        coEvery { userService.getAuthorizedUsersWithZones() } returns
-            listOf(UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"))
-
-        service.sendCameraSignalRecovered(camId = "front_door", downtime = Duration.ofMinutes(5))
-
-        coVerify(exactly = 0) { queue.enqueue(any()) }
-    }
-
-    @Test
-    fun `signal-loss filters out users with notificationsSignalEnabled false`() = runBlocking {
-        coEvery { userService.getAuthorizedUsersWithZones() } returns
-            listOf(
-                UserZoneInfo(100L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = false),
-                UserZoneInfo(200L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = true),
-            )
-        val captured = mutableListOf<SimpleTextNotificationTask>()
-        coEvery { queue.enqueue(any()) } answers {
-            captured.add(arg<Any>(0) as SimpleTextNotificationTask)
-        }
-
-        service.sendCameraSignalLost(
-            camId = "front_door",
-            lastSeenAt = Instant.now(),
-            now = Instant.now(),
-        )
-
-        assertEquals(1, captured.size)
-        assertEquals(200L, captured.first().chatId)
-    }
-
-    @Test
-    fun `signal-recovery filters out users with notificationsSignalEnabled false`() = runBlocking {
-        coEvery { userService.getAuthorizedUsersWithZones() } returns
-            listOf(
-                UserZoneInfo(100L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = false),
-                UserZoneInfo(200L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = true),
-            )
-        val captured = mutableListOf<SimpleTextNotificationTask>()
-        coEvery { queue.enqueue(any()) } answers {
-            captured.add(arg<Any>(0) as SimpleTextNotificationTask)
-        }
-
-        service.sendCameraSignalRecovered(camId = "front_door", downtime = Duration.ofMinutes(5))
-
-        assertEquals(1, captured.size)
-        assertEquals(200L, captured.first().chatId)
-    }
-
-    @Test
-    fun `signal-loss propagates AppSettings read failure (no silent fallback)`() = runBlocking {
-        coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } throws
-            RuntimeException("db down")
-
-        assertFailsWith<RuntimeException> {
             service.sendCameraSignalLost(
                 camId = "front_door",
                 lastSeenAt = Instant.now(),
                 now = Instant.now(),
             )
+
+            coVerify(exactly = 0) { queue.enqueue(any()) }
         }
-    }
+
+    @Test
+    fun `global signal toggle off skips signal-recovery alert`() =
+        runBlocking {
+            coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns false
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), language = "en"))
+
+            service.sendCameraSignalRecovered(camId = "front_door", downtime = Duration.ofMinutes(5))
+
+            coVerify(exactly = 0) { queue.enqueue(any()) }
+        }
+
+    @Test
+    fun `signal-loss filters out users with notificationsSignalEnabled false`() =
+        runBlocking {
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(
+                    UserZoneInfo(100L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = false),
+                    UserZoneInfo(200L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = true),
+                )
+            val captured = mutableListOf<SimpleTextNotificationTask>()
+            coEvery { queue.enqueue(any()) } answers {
+                captured.add(arg<Any>(0) as SimpleTextNotificationTask)
+            }
+
+            service.sendCameraSignalLost(
+                camId = "front_door",
+                lastSeenAt = Instant.now(),
+                now = Instant.now(),
+            )
+
+            assertEquals(1, captured.size)
+            assertEquals(200L, captured.first().chatId)
+        }
+
+    @Test
+    fun `signal-recovery filters out users with notificationsSignalEnabled false`() =
+        runBlocking {
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(
+                    UserZoneInfo(100L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = false),
+                    UserZoneInfo(200L, ZoneId.of("UTC"), "en", notificationsSignalEnabled = true),
+                )
+            val captured = mutableListOf<SimpleTextNotificationTask>()
+            coEvery { queue.enqueue(any()) } answers {
+                captured.add(arg<Any>(0) as SimpleTextNotificationTask)
+            }
+
+            service.sendCameraSignalRecovered(camId = "front_door", downtime = Duration.ofMinutes(5))
+
+            assertEquals(1, captured.size)
+            assertEquals(200L, captured.first().chatId)
+        }
+
+    @Test
+    fun `signal-loss propagates AppSettings read failure (no silent fallback)`() =
+        runBlocking {
+            coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } throws
+                RuntimeException("db down")
+
+            assertFailsWith<RuntimeException> {
+                service.sendCameraSignalLost(
+                    camId = "front_door",
+                    lastSeenAt = Instant.now(),
+                    now = Instant.now(),
+                )
+            }
+        }
 }

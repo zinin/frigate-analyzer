@@ -44,14 +44,18 @@ class NotificationsMessageRenderer(
         val recordingLine =
             if (state.isOwner) {
                 msg.get(
-                    "notifications.settings.line.owner.format", lang,
+                    "notifications.settings.line.owner.format",
+                    lang,
                     recordingLabel,
-                    if (state.recordingUserEnabled) on else off, user,
-                    if (state.recordingGlobalEnabled!!) on else off, global,
+                    if (state.recordingUserEnabled) on else off,
+                    user,
+                    if (state.recordingGlobalEnabled!!) on else off,
+                    global,
                 )
             } else {
                 msg.get(
-                    "notifications.settings.line.format", lang,
+                    "notifications.settings.line.format",
+                    lang,
                     recordingLabel,
                     if (state.recordingUserEnabled) on else off,
                 )
@@ -60,14 +64,18 @@ class NotificationsMessageRenderer(
         val signalLine =
             if (state.isOwner) {
                 msg.get(
-                    "notifications.settings.line.owner.format", lang,
+                    "notifications.settings.line.owner.format",
+                    lang,
                     signalLabel,
-                    if (state.signalUserEnabled) on else off, user,
-                    if (state.signalGlobalEnabled!!) on else off, global,
+                    if (state.signalUserEnabled) on else off,
+                    user,
+                    if (state.signalGlobalEnabled!!) on else off,
+                    global,
                 )
             } else {
                 msg.get(
-                    "notifications.settings.line.format", lang,
+                    "notifications.settings.line.format",
+                    lang,
                     signalLabel,
                     if (state.signalUserEnabled) on else off,
                 )
@@ -86,43 +94,48 @@ class NotificationsMessageRenderer(
         val close = msg.get("notifications.settings.button.close", lang)
 
         return InlineKeyboardMarkup(
-            keyboard = matrix {
-                row {
-                    +CallbackDataInlineKeyboardButton(
-                        msg.get(toggleKey("recording", "user", state.recordingUserEnabled), lang),
-                        "nfs:u:rec:${targetValue(state.recordingUserEnabled)}",
-                    )
-                }
-                row {
-                    +CallbackDataInlineKeyboardButton(
-                        msg.get(toggleKey("signal", "user", state.signalUserEnabled), lang),
-                        "nfs:u:sig:${targetValue(state.signalUserEnabled)}",
-                    )
-                }
-                if (state.isOwner) {
-                    val recGlobal = state.recordingGlobalEnabled!!
-                    val sigGlobal = state.signalGlobalEnabled!!
+            keyboard =
+                matrix {
                     row {
                         +CallbackDataInlineKeyboardButton(
-                            msg.get(toggleKey("recording", "global", recGlobal), lang),
-                            "nfs:g:rec:${targetValue(recGlobal)}",
+                            msg.get(toggleKey("recording", "user", state.recordingUserEnabled), lang),
+                            "nfs:u:rec:${targetValue(state.recordingUserEnabled)}",
                         )
                     }
                     row {
                         +CallbackDataInlineKeyboardButton(
-                            msg.get(toggleKey("signal", "global", sigGlobal), lang),
-                            "nfs:g:sig:${targetValue(sigGlobal)}",
+                            msg.get(toggleKey("signal", "user", state.signalUserEnabled), lang),
+                            "nfs:u:sig:${targetValue(state.signalUserEnabled)}",
                         )
                     }
-                }
-                row {
-                    +CallbackDataInlineKeyboardButton(close, "nfs:close")
-                }
-            },
+                    if (state.isOwner) {
+                        val recGlobal = state.recordingGlobalEnabled!!
+                        val sigGlobal = state.signalGlobalEnabled!!
+                        row {
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get(toggleKey("recording", "global", recGlobal), lang),
+                                "nfs:g:rec:${targetValue(recGlobal)}",
+                            )
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get(toggleKey("signal", "global", sigGlobal), lang),
+                                "nfs:g:sig:${targetValue(sigGlobal)}",
+                            )
+                        }
+                    }
+                    row {
+                        +CallbackDataInlineKeyboardButton(close, "nfs:close")
+                    }
+                },
         )
     }
 
-    private fun toggleKey(stream: String, scope: String, currentlyEnabled: Boolean): String {
+    private fun toggleKey(
+        stream: String,
+        scope: String,
+        currentlyEnabled: Boolean,
+    ): String {
         val action = if (currentlyEnabled) "disable" else "enable"
         return "notifications.settings.button.toggle.$stream.$scope.$action"
     }

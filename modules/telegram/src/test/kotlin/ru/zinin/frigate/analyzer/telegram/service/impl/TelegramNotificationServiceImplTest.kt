@@ -321,33 +321,36 @@ class TelegramNotificationServiceImplTest {
         }
 
     @Test
-    fun `user with notificationsRecordingEnabled false is filtered out`() = runTest {
-        every { uuidGeneratorHelper.generateV1() } returns taskId
-        coEvery { userService.getAuthorizedUsersWithZones() } returns listOf(
-            UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = false),
-            UserZoneInfo(222L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = true),
-        )
+    fun `user with notificationsRecordingEnabled false is filtered out`() =
+        runTest {
+            every { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(
+                    UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = false),
+                    UserZoneInfo(222L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = true),
+                )
 
-        val captured = slot<RecordingNotificationTask>()
-        coEvery { notificationQueue.enqueue(capture(captured)) } returns Unit
+            val captured = slot<RecordingNotificationTask>()
+            coEvery { notificationQueue.enqueue(capture(captured)) } returns Unit
 
-        service.sendRecordingNotification(createRecording(detectionsCount = 1), emptyList())
+            service.sendRecordingNotification(createRecording(detectionsCount = 1), emptyList())
 
-        coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
-        assertEquals(222L, captured.captured.chatId)
-    }
+            coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
+            assertEquals(222L, captured.captured.chatId)
+        }
 
     @Test
-    fun `recording flow does not read global flag (decision service owns the gate)`() = runTest {
-        coEvery { appSettings.getBoolean(any(), any()) } throws RuntimeException("settings db down")
-        every { uuidGeneratorHelper.generateV1() } returns taskId
-        coEvery { userService.getAuthorizedUsersWithZones() } returns
-            listOf(UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = true))
-        coEvery { notificationQueue.enqueue(any()) } returns Unit
+    fun `recording flow does not read global flag (decision service owns the gate)`() =
+        runTest {
+            coEvery { appSettings.getBoolean(any(), any()) } throws RuntimeException("settings db down")
+            every { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = true))
+            coEvery { notificationQueue.enqueue(any()) } returns Unit
 
-        service.sendRecordingNotification(createRecording(detectionsCount = 1), emptyList())
+            service.sendRecordingNotification(createRecording(detectionsCount = 1), emptyList())
 
-        coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
-        coVerify(exactly = 0) { appSettings.getBoolean(any(), any()) }
-    }
+            coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
+            coVerify(exactly = 0) { appSettings.getBoolean(any(), any()) }
+        }
 }

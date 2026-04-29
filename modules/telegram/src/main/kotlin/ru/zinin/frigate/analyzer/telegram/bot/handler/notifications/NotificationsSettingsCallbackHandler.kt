@@ -32,25 +32,37 @@ class NotificationsSettingsCallbackHandler(
     ): DispatchOutcome {
         val parts = data.split(":")
         return when {
-            data == "nfs:close" -> DispatchOutcome.CLOSE
+            data == "nfs:close" -> {
+                DispatchOutcome.CLOSE
+            }
+
             parts.size == 4 && parts[0] == "nfs" -> {
-                val targetEnabled = when (parts[3]) {
-                    "1" -> true
-                    "0" -> false
-                    else -> {
-                        logger.debug { "Ignoring nfs callback with malformed target state: $data" }
-                        return DispatchOutcome.IGNORE
+                val targetEnabled =
+                    when (parts[3]) {
+                        "1" -> {
+                            true
+                        }
+
+                        "0" -> {
+                            false
+                        }
+
+                        else -> {
+                            logger.debug { "Ignoring nfs callback with malformed target state: $data" }
+                            return DispatchOutcome.IGNORE
+                        }
                     }
-                }
                 when (parts[1] to parts[2]) {
                     "u" to "rec" -> {
                         userService.updateNotificationsRecordingEnabled(chatId, targetEnabled)
                         DispatchOutcome.RERENDER
                     }
+
                     "u" to "sig" -> {
                         userService.updateNotificationsSignalEnabled(chatId, targetEnabled)
                         DispatchOutcome.RERENDER
                     }
+
                     "g" to "rec" -> {
                         if (!isOwner) return DispatchOutcome.UNAUTHORIZED
                         appSettings.setBoolean(
@@ -60,6 +72,7 @@ class NotificationsSettingsCallbackHandler(
                         )
                         DispatchOutcome.RERENDER
                     }
+
                     "g" to "sig" -> {
                         if (!isOwner) return DispatchOutcome.UNAUTHORIZED
                         appSettings.setBoolean(
@@ -69,12 +82,14 @@ class NotificationsSettingsCallbackHandler(
                         )
                         DispatchOutcome.RERENDER
                     }
+
                     else -> {
                         logger.debug { "Ignoring nfs callback with unknown scope/stream: $data" }
                         DispatchOutcome.IGNORE
                     }
                 }
             }
+
             else -> {
                 logger.debug { "Ignoring unknown nfs callback: $data" }
                 DispatchOutcome.IGNORE

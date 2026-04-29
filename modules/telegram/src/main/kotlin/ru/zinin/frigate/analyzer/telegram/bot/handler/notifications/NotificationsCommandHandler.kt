@@ -37,25 +37,28 @@ class NotificationsCommandHandler(
         val isOwner = userService.isOwner(user.username)
         logger.debug { "/notifications opened by chatId=$chatId username=${user.username} isOwner=$isOwner" }
 
-        val recordingGlobal = if (isOwner) {
-            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
-        } else {
-            null
-        }
-        val signalGlobal = if (isOwner) {
-            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
-        } else {
-            null
-        }
+        val recordingGlobal =
+            if (isOwner) {
+                appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
+            } else {
+                null
+            }
+        val signalGlobal =
+            if (isOwner) {
+                appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
+            } else {
+                null
+            }
 
-        val state = NotificationsViewState(
-            isOwner = isOwner,
-            recordingUserEnabled = user.notificationsRecordingEnabled,
-            signalUserEnabled = user.notificationsSignalEnabled,
-            recordingGlobalEnabled = recordingGlobal,
-            signalGlobalEnabled = signalGlobal,
-            language = user.languageCode ?: "en",
-        )
+        val state =
+            NotificationsViewState(
+                isOwner = isOwner,
+                recordingUserEnabled = user.notificationsRecordingEnabled,
+                signalUserEnabled = user.notificationsSignalEnabled,
+                recordingGlobalEnabled = recordingGlobal,
+                signalGlobalEnabled = signalGlobal,
+                language = user.languageCode ?: "en",
+            )
 
         val rendered = renderer.render(state)
         sendTextMessage(chatId, rendered.text, replyMarkup = rendered.keyboard)

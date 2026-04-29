@@ -20,10 +20,14 @@ class AppSettingsServiceImpl(
     private val cache = ConcurrentHashMap<String, String>()
     private val cacheMutex = Mutex()
 
-    override suspend fun getBoolean(key: String, default: Boolean): Boolean {
-        val raw = cache[key] ?: cacheMutex.withLock {
-            cache[key] ?: loadAndCache(key)
-        }
+    override suspend fun getBoolean(
+        key: String,
+        default: Boolean,
+    ): Boolean {
+        val raw =
+            cache[key] ?: cacheMutex.withLock {
+                cache[key] ?: loadAndCache(key)
+            }
         if (raw == null) return default
         return raw.toBooleanStrictOrNull() ?: run {
             logger.warn { "AppSettings: invalid stored value for '$key'='$raw'; falling back to default=$default" }
@@ -31,7 +35,11 @@ class AppSettingsServiceImpl(
         }
     }
 
-    override suspend fun setBoolean(key: String, value: Boolean, updatedBy: String?) {
+    override suspend fun setBoolean(
+        key: String,
+        value: Boolean,
+        updatedBy: String?,
+    ) {
         val v = value.toString()
         repository.upsert(key, v, Instant.now(clock), updatedBy)
         cacheMutex.withLock {
