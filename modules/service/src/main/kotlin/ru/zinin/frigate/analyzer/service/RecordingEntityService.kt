@@ -1,16 +1,22 @@
 package ru.zinin.frigate.analyzer.service
 
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
+import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
 import java.util.UUID
+
+data class SavedProcessingResult(
+    val recording: RecordingDto,
+    val detections: List<DetectionEntity>,
+)
 
 interface RecordingEntityService {
     suspend fun createRecording(request: CreateRecordingRequest): UUID
 
     suspend fun findUnprocessedRecordings(limit: Int = 10): List<RecordingDto>
 
-    suspend fun saveProcessingResult(request: SaveProcessingResultRequest)
+    suspend fun saveProcessingResult(request: SaveProcessingResultRequest): SavedProcessingResult
 
     suspend fun getRecording(id: UUID): RecordingDto?
 

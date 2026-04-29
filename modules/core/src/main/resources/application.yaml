@@ -51,6 +51,14 @@ application:
     poll-interval: ${SIGNAL_LOSS_POLL_INTERVAL:30s}
     active-window: ${SIGNAL_LOSS_ACTIVE_WINDOW:24h}
     startup-grace: ${SIGNAL_LOSS_STARTUP_GRACE:5m}
+  notifications:
+    tracker:
+      ttl: ${NOTIFICATIONS_TRACK_TTL:PT2M}
+      iou-threshold: ${NOTIFICATIONS_TRACK_IOU_THRESHOLD:0.3}
+      inner-iou: ${NOTIFICATIONS_TRACK_INNER_IOU:0.5}
+      confidence-floor: ${NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR:0.3}
+      cleanup-interval-ms: ${NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS:3600000}
+      cleanup-retention: ${NOTIFICATIONS_TRACK_CLEANUP_RETENTION:PT1H}
   ai:
     description:
       enabled: ${APP_AI_DESCRIPTION_ENABLED:false}

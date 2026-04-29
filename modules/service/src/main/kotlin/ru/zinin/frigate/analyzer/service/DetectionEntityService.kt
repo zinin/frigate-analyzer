@@ -1,8 +1,11 @@
 package ru.zinin.frigate.analyzer.service
 
+import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.model.request.CreateDetectionRequest
 import java.util.UUID
 
 interface DetectionEntityService {
-    suspend fun createDetection(request: CreateDetectionRequest): UUID
+    suspend fun createDetection(request: CreateDetectionRequest): DetectionEntity
+
+    suspend fun findByRecordingId(recordingId: UUID): List<DetectionEntity>
 }

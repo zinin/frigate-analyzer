@@ -25,6 +25,10 @@ interface TelegramUserService {
 
     suspend fun getAllActiveChatIds(): List<Long>
 
+    suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto?
+
+    suspend fun findByUsernameAsDto(username: String): TelegramUserDto?
+
     suspend fun getUserZone(chatId: Long): ZoneId
 
     suspend fun updateTimezone(
@@ -40,4 +44,16 @@ interface TelegramUserService {
         chatId: Long,
         languageCode: String,
     ): Boolean
+
+    suspend fun updateNotificationsRecordingEnabled(
+        chatId: Long,
+        enabled: Boolean,
+    ): Boolean
+
+    suspend fun updateNotificationsSignalEnabled(
+        chatId: Long,
+        enabled: Boolean,
+    ): Boolean
+
+    fun isOwner(username: String?): Boolean
 }

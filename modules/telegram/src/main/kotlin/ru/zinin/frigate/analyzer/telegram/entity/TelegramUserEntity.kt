@@ -32,6 +32,10 @@ data class TelegramUserEntity(
     var olsonCode: String? = null,
     @Column("language_code")
     var languageCode: String? = null,
+    @Column("notifications_recording_enabled")
+    var notificationsRecordingEnabled: Boolean = true,
+    @Column("notifications_signal_enabled")
+    var notificationsSignalEnabled: Boolean = true,
 ) : Persistable<UUID> {
     override fun getId(): UUID? = id
 

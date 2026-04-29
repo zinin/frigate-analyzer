@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
+import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.model.request.CreateDetectionRequest
 import ru.zinin.frigate.analyzer.service.DetectionEntityService
 import ru.zinin.frigate.analyzer.service.mapper.DetectionMapper
@@ -22,7 +23,7 @@ class DetectionEntityServiceImpl(
     val clock: Clock,
 ) : DetectionEntityService {
     @Transactional
-    override suspend fun createDetection(request: CreateDetectionRequest): UUID {
+    override suspend fun createDetection(request: CreateDetectionRequest): DetectionEntity {
         val now = Instant.now(clock)
         val detectionId = uuidGeneratorHelper.generateV1()
 
@@ -32,9 +33,12 @@ class DetectionEntityServiceImpl(
                 creationTimestamp = now
             }
 
-        repository.save(entity)
+        val saved = repository.save(entity)
         logger.info { "Created detection $detectionId for recording ${request.recordingId}" }
 
-        return detectionId
+        return saved
     }
+
+    @Transactional(readOnly = true)
+    override suspend fun findByRecordingId(recordingId: UUID): List<DetectionEntity> = repository.findByRecordingId(recordingId)
 }

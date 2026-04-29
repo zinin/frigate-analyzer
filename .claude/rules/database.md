@@ -67,6 +67,33 @@ Migrations location: `docker/liquibase/migration/`
 | activation_timestamp | TIMESTAMPTZ | Activation time |
 | language_code | VARCHAR(64) | User language code, nullable (e.g. "ru", "en", null if not set) |
 | olson_code | VARCHAR(50) | User timezone (Olson format) |
+| notifications_recording_enabled | BOOLEAN NOT NULL DEFAULT TRUE | Per-user toggle for recording notifications |
+| notifications_signal_enabled | BOOLEAN NOT NULL DEFAULT TRUE | Per-user toggle for signal-loss alerts |
+
+### object_tracks
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| id | UUID | Primary key |
+| creation_timestamp | TIMESTAMPTZ | First time this track was seen |
+| cam_id | VARCHAR(255) | Camera identifier |
+| class_name | VARCHAR(255) | YOLO class |
+| bbox_x1, bbox_y1, bbox_x2, bbox_y2 | REAL | Representative bbox of latest match |
+| last_seen_at | TIMESTAMPTZ | Last match timestamp (updated via GREATEST) |
+| last_recording_id | UUID NULL | FK → recordings (ON DELETE SET NULL) |
+
+Index: `idx_object_tracks_cam_lastseen (cam_id, last_seen_at DESC)`. Cleanup via `ObjectTracksCleanupTask`.
+
+### app_settings
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| setting_key | VARCHAR(64) | PK; hierarchical key |
+| setting_value | VARCHAR(2048) | Serialized scalar |
+| updated_at | TIMESTAMPTZ | |
+| updated_by | VARCHAR(255) NULL | OWNER username, NULL for migration-seeded |
+
+Seeded with `notifications.recording.global_enabled=true` and `notifications.signal.global_enabled=true`.
 
 ## Patterns
 

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-5.0.xsd">
+    <changeSet author="zinin" id="20260427-01-create-object-tracks">
+        <comment>Create object_tracks table for per-camera object tracking with TTL</comment>
+        <sql>
+            CREATE TABLE object_tracks (
+              id                  UUID         PRIMARY KEY,
+              creation_timestamp  TIMESTAMPTZ  NOT NULL,
+              cam_id              VARCHAR(255) NOT NULL,
+              class_name          VARCHAR(255) NOT NULL,
+              bbox_x1             REAL         NOT NULL,
+              bbox_y1             REAL         NOT NULL,
+              bbox_x2             REAL         NOT NULL,
+              bbox_y2             REAL         NOT NULL,
+              last_seen_at        TIMESTAMPTZ  NOT NULL,
+              last_recording_id   UUID         NULL,
+              CONSTRAINT fk_object_tracks_recording
+                FOREIGN KEY (last_recording_id) REFERENCES recordings(id)
+                ON DELETE SET NULL
+            );
+            CREATE INDEX idx_object_tracks_cam_lastseen
+              ON object_tracks (cam_id, last_seen_at DESC);
+            CREATE INDEX idx_object_tracks_lastseen
+              ON object_tracks (last_seen_at);
+        </sql>
+        <rollback>
+            DROP INDEX IF EXISTS idx_object_tracks_lastseen;
+            DROP INDEX IF EXISTS idx_object_tracks_cam_lastseen;
+            DROP TABLE IF EXISTS object_tracks;
+        </rollback>
+    </changeSet>
+
+    <changeSet author="zinin" id="20260427-02-create-app-settings">
+        <comment>Create app_settings table; seed two notifications.* keys with default 'true'</comment>
+        <sql>
+            CREATE TABLE app_settings (
+              setting_key    VARCHAR(64)   PRIMARY KEY,
+              setting_value  VARCHAR(2048) NOT NULL,
+              updated_at     TIMESTAMPTZ   NOT NULL,
+              updated_by     VARCHAR(255)  NULL
+            );
+
+            INSERT INTO app_settings (setting_key, setting_value, updated_at, updated_by)
+            VALUES
+              ('notifications.recording.global_enabled', 'true', NOW(), NULL),
+              ('notifications.signal.global_enabled',    'true', NOW(), NULL);
+        </sql>
+        <rollback>
+            DROP TABLE IF EXISTS app_settings;
+        </rollback>
+    </changeSet>
+
+    <changeSet author="zinin" id="20260427-03-add-notification-flags-to-telegram-users">
+        <preConditions onFail="HALT">
+            <tableExists tableName="telegram_users"/>
+        </preConditions>
+        <comment>Per-user on/off toggles for recording and signal-loss notifications</comment>
+        <sql>
+            ALTER TABLE telegram_users
+              ADD COLUMN notifications_recording_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+              ADD COLUMN notifications_signal_enabled    BOOLEAN NOT NULL DEFAULT TRUE;
+        </sql>
+        <rollback>
+            ALTER TABLE telegram_users DROP COLUMN IF EXISTS notifications_signal_enabled;
+            ALTER TABLE telegram_users DROP COLUMN IF EXISTS notifications_recording_enabled;
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

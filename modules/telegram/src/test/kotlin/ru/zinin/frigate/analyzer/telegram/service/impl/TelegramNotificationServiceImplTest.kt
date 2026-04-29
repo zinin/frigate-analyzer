@@ -16,6 +16,7 @@ import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
+import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
@@ -47,6 +48,7 @@ class TelegramNotificationServiceImplTest {
         )
     private val signalLossFormatter = mockk<SignalLossMessageFormatter>(relaxed = true)
     private val rateLimiterProvider = mockk<ObjectProvider<DescriptionRateLimiter>>(relaxed = true)
+    private val appSettings = mockk<AppSettingsService>()
     private val service: TelegramNotificationService =
         TelegramNotificationServiceImpl(
             userService,
@@ -55,6 +57,7 @@ class TelegramNotificationServiceImplTest {
             msg,
             signalLossFormatter,
             rateLimiterProvider,
+            appSettings,
         )
 
     private val taskId = UUID.randomUUID()
@@ -315,5 +318,39 @@ class TelegramNotificationServiceImplTest {
             assertEquals(0, supplierInvocations, "supplier must not fire when visualizedFrames is empty")
             assertEquals(null, taskSlot.captured.descriptionHandle)
             verify(exactly = 0) { rateLimiterProvider.getIfAvailable() }
+        }
+
+    @Test
+    fun `user with notificationsRecordingEnabled false is filtered out`() =
+        runTest {
+            every { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(
+                    UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = false),
+                    UserZoneInfo(222L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = true),
+                )
+
+            val captured = slot<RecordingNotificationTask>()
+            coEvery { notificationQueue.enqueue(capture(captured)) } returns Unit
+
+            service.sendRecordingNotification(createRecording(detectionsCount = 1), emptyList())
+
+            coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
+            assertEquals(222L, captured.captured.chatId)
+        }
+
+    @Test
+    fun `recording flow does not read global flag (decision service owns the gate)`() =
+        runTest {
+            coEvery { appSettings.getBoolean(any(), any()) } throws RuntimeException("settings db down")
+            every { uuidGeneratorHelper.generateV1() } returns taskId
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(UserZoneInfo(111L, ZoneId.of("UTC"), "en", notificationsRecordingEnabled = true))
+            coEvery { notificationQueue.enqueue(any()) } returns Unit
+
+            service.sendRecordingNotification(createRecording(detectionsCount = 1), emptyList())
+
+            coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
+            coVerify(exactly = 0) { appSettings.getBoolean(any(), any()) }
         }
 }

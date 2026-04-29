@@ -57,6 +57,7 @@ Library: `dev.inmo:tgbotapi` (ktgbotapi)
 | /help | USER, OWNER | List commands |
 | /export | USER, OWNER | Export camera video |
 | /timezone | USER, OWNER | Configure timezone |
+| /notifications | USER, OWNER | Manage notification subscriptions |
 | /version | USER, OWNER | Show application version |
 | /adduser | OWNER | Invite user |
 | /removeuser | OWNER | Remove user |
@@ -185,3 +186,20 @@ val msg = waitTextMessage()
     .first()
 val text = msg.content.text
 ```
+
+## Notifications Dialog
+
+`/notifications` opens an inline-keyboard dialog managed by:
+
+| Component | Location | Purpose |
+|---|---|---|
+| `NotificationsCommandHandler` | `bot/handler/notifications/` | Sends initial dialog message |
+| `NotificationsSettingsCallbackHandler` | `bot/handler/notifications/` | Handles `nfs:*` callbacks, mutates per-user/global state |
+| `NotificationsMessageRenderer` | `bot/handler/notifications/` | Renders text + keyboard from current state |
+
+Callback prefix: `nfs:`. Variants:
+- `nfs:u:rec:1` / `nfs:u:rec:0` — explicitly enable / disable per-user recording notifications
+- `nfs:u:sig:1` / `nfs:u:sig:0` — explicitly enable / disable per-user signal notifications
+- `nfs:g:rec:1` / `nfs:g:rec:0` — explicitly enable / disable global recording notifications (OWNER only)
+- `nfs:g:sig:1` / `nfs:g:sig:0` — explicitly enable / disable global signal notifications (OWNER only)
+- `nfs:close` — close keyboard

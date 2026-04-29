@@ -65,4 +65,18 @@ interface TelegramUserRepository : CoroutineCrudRepository<TelegramUserEntity, U
         @Param("chatId") chatId: Long,
         @Param("languageCode") languageCode: String,
     ): Long
+
+    @Modifying
+    @Query("UPDATE telegram_users SET notifications_recording_enabled = :enabled WHERE chat_id = :chatId")
+    suspend fun updateNotificationsRecordingEnabled(
+        @Param("chatId") chatId: Long,
+        @Param("enabled") enabled: Boolean,
+    ): Long
+
+    @Modifying
+    @Query("UPDATE telegram_users SET notifications_signal_enabled = :enabled WHERE chat_id = :chatId")
+    suspend fun updateNotificationsSignalEnabled(
+        @Param("chatId") chatId: Long,
+        @Param("enabled") enabled: Boolean,
+    ): Long
 }

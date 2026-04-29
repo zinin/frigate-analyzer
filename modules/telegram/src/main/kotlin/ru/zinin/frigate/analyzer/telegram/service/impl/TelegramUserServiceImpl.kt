@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.toList
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.entity.TelegramUserEntity
@@ -24,6 +25,7 @@ class TelegramUserServiceImpl(
     private val repository: TelegramUserRepository,
     private val uuidGeneratorHelper: UUIDGeneratorHelper,
     private val clock: Clock,
+    private val telegramProperties: TelegramProperties,
 ) : TelegramUserService {
     @Transactional(readOnly = true)
     override suspend fun findByUsername(username: String): TelegramUserDto? = repository.findByUsername(username)?.toDto()
@@ -103,6 +105,12 @@ class TelegramUserServiceImpl(
     override suspend fun getAllActiveChatIds(): List<Long> = repository.findAllActiveChatIds()
 
     @Transactional(readOnly = true)
+    override suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto? = repository.findByChatId(chatId)?.toDto()
+
+    @Transactional(readOnly = true)
+    override suspend fun findByUsernameAsDto(username: String): TelegramUserDto? = repository.findByUsername(username)?.toDto()
+
+    @Transactional(readOnly = true)
     override suspend fun getUserZone(chatId: Long): ZoneId {
         val user = repository.findByChatId(chatId)
         if (user == null) {
@@ -147,7 +155,13 @@ class TelegramUserServiceImpl(
                         logger.warn { "Invalid olson_code='${user.olsonCode}' for chatId=${user.chatId}, falling back to UTC" }
                         ZoneId.of("UTC")
                     }
-                UserZoneInfo(user.chatId!!, zone, user.languageCode)
+                UserZoneInfo(
+                    chatId = user.chatId!!,
+                    zone = zone,
+                    language = user.languageCode,
+                    notificationsRecordingEnabled = user.notificationsRecordingEnabled,
+                    notificationsSignalEnabled = user.notificationsSignalEnabled,
+                )
             }
 
     @Transactional(readOnly = true)
@@ -171,6 +185,40 @@ class TelegramUserServiceImpl(
         return true
     }
 
+    @Transactional
+    override suspend fun updateNotificationsRecordingEnabled(
+        chatId: Long,
+        enabled: Boolean,
+    ): Boolean {
+        val updated = repository.updateNotificationsRecordingEnabled(chatId, enabled)
+        if (updated == 0L) {
+            logger.warn { "updateNotificationsRecordingEnabled: no rows updated for chatId=$chatId" }
+            return false
+        }
+        logger.info { "Updated notifications.recording=$enabled for chatId=$chatId" }
+        return true
+    }
+
+    @Transactional
+    override suspend fun updateNotificationsSignalEnabled(
+        chatId: Long,
+        enabled: Boolean,
+    ): Boolean {
+        val updated = repository.updateNotificationsSignalEnabled(chatId, enabled)
+        if (updated == 0L) {
+            logger.warn { "updateNotificationsSignalEnabled: no rows updated for chatId=$chatId" }
+            return false
+        }
+        logger.info { "Updated notifications.signal=$enabled for chatId=$chatId" }
+        return true
+    }
+
+    override fun isOwner(username: String?): Boolean {
+        val configured = telegramProperties.owner
+        if (username.isNullOrBlank() || configured.isNullOrBlank()) return false
+        return username.equals(configured, ignoreCase = true)
+    }
+
     companion object {
         val SUPPORTED_LANGUAGES = setOf("ru", "en")
     }
@@ -187,5 +235,7 @@ class TelegramUserServiceImpl(
             creationTimestamp = creationTimestamp!!,
             activationTimestamp = activationTimestamp,
             languageCode = languageCode,
+            notificationsRecordingEnabled = notificationsRecordingEnabled,
+            notificationsSignalEnabled = notificationsSignalEnabled,
         )
 }

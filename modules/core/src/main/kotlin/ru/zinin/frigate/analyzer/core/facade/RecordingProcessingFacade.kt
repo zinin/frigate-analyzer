@@ -13,6 +13,7 @@ import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
+import ru.zinin.frigate.analyzer.service.NotificationDecisionService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.util.UUID
@@ -27,6 +28,7 @@ class RecordingProcessingFacade(
     private val descriptionAgentProvider: ObjectProvider<DescriptionAgent>,
     private val descriptionScope: DescriptionCoroutineScope,
     private val descriptionProperties: DescriptionProperties,
+    private val notificationDecisionService: NotificationDecisionService,
 ) {
     suspend fun processAndNotify(
         request: SaveProcessingResultRequest,
@@ -45,39 +47,56 @@ class RecordingProcessingFacade(
         // Visualize frames BEFORE saving the result.
         // If visualization fails, the recording will be reprocessed.
         val visualizedFrames = frameVisualizationService.visualizeFrames(request.frames)
-
-        try {
-            // Save processing result within @Transactional
-            recordingEntityService.saveProcessingResult(request)
-
-            // Fetch recording DTO for notification
-            val recording = recordingEntityService.getRecording(recordingId)
-            if (recording != null) {
-                // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
-                // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
-                val descriptionSupplier = buildDescriptionSupplier(recordingId, request)
-                try {
-                    telegramNotificationService.sendRecordingNotification(
-                        recording,
-                        visualizedFrames,
-                        descriptionSupplier,
-                    )
-                } catch (e: CancellationException) {
-                    throw e // structured concurrency — do not swallow cancellation
-                } catch (e: Exception) {
-                    logger.error(e) { "Failed to send telegram notification for recording $recordingId" }
-                    // Do not rethrow - notification failure should not affect processing
-                }
+        val recordingNotificationsGloballyEnabled =
+            if (request.hasDetections()) {
+                // Resolve the settings-backed gate before marking the recording processed.
+                // A transient settings failure should leave the recording retryable.
+                notificationDecisionService.isRecordingNotificationsGloballyEnabled()
             } else {
-                logger.warn { "Recording $recordingId not found after saving, skipping notification" }
+                null
             }
+
+        val savedResult =
+            try {
+                recordingEntityService.saveProcessingResult(request)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to save processing result for recording $recordingId" }
+                throw e
+            }
+
+        val recording = savedResult.recording
+        val decision =
+            notificationDecisionService.evaluate(
+                recording,
+                savedResult.detections,
+                recordingNotificationsGloballyEnabled,
+            )
+        if (!decision.shouldNotify) {
+            logger.debug {
+                "Notification suppressed for recording=$recordingId reason=${decision.reason}"
+            }
+            return
+        }
+        // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
+        // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
+        val descriptionSupplier = buildDescriptionSupplier(recordingId, request)
+        try {
+            telegramNotificationService.sendRecordingNotification(
+                recording,
+                visualizedFrames,
+                descriptionSupplier,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.error(e) { "Failed to save processing result for recording $recordingId" }
-            throw e // Rethrow to let caller handle the error
+            logger.error(e) { "Failed to send telegram notification for recording $recordingId" }
         }
     }
+
+    private fun SaveProcessingResultRequest.hasDetections(): Boolean =
+        frames.any { frame -> frame.detectResponse?.detections?.isNotEmpty() == true }
 
     /**
      * Returns a supplier that lazily kicks off a describe-job. Returns null when the agent is
