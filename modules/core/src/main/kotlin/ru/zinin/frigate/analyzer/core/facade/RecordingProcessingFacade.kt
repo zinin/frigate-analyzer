@@ -13,7 +13,6 @@ import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
-import ru.zinin.frigate.analyzer.service.DetectionEntityService
 import ru.zinin.frigate.analyzer.service.NotificationDecisionService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
@@ -30,7 +29,6 @@ class RecordingProcessingFacade(
     private val descriptionScope: DescriptionCoroutineScope,
     private val descriptionProperties: DescriptionProperties,
     private val notificationDecisionService: NotificationDecisionService,
-    private val detectionEntityService: DetectionEntityService,
 ) {
     suspend fun processAndNotify(
         request: SaveProcessingResultRequest,
@@ -58,25 +56,21 @@ class RecordingProcessingFacade(
                 null
             }
 
-        try {
-            recordingEntityService.saveProcessingResult(request)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            logger.error(e) { "Failed to save processing result for recording $recordingId" }
-            throw e
-        }
+        val savedResult =
+            try {
+                recordingEntityService.saveProcessingResult(request)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to save processing result for recording $recordingId" }
+                throw e
+            }
 
-        val recording = recordingEntityService.getRecording(recordingId)
-        if (recording == null) {
-            logger.warn { "Recording $recordingId not found after saving, skipping notification" }
-            return
-        }
-        val detections = detectionEntityService.findByRecordingId(recordingId)
+        val recording = savedResult.recording
         val decision =
             notificationDecisionService.evaluate(
                 recording,
-                detections,
+                savedResult.detections,
                 recordingNotificationsGloballyEnabled,
             )
         if (!decision.shouldNotify) {

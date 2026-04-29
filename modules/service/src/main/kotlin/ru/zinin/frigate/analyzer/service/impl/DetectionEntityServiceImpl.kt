@@ -23,7 +23,7 @@ class DetectionEntityServiceImpl(
     val clock: Clock,
 ) : DetectionEntityService {
     @Transactional
-    override suspend fun createDetection(request: CreateDetectionRequest): UUID {
+    override suspend fun createDetection(request: CreateDetectionRequest): DetectionEntity {
         val now = Instant.now(clock)
         val detectionId = uuidGeneratorHelper.generateV1()
 
@@ -33,10 +33,10 @@ class DetectionEntityServiceImpl(
                 creationTimestamp = now
             }
 
-        repository.save(entity)
+        val saved = repository.save(entity)
         logger.info { "Created detection $detectionId for recording ${request.recordingId}" }
 
-        return detectionId
+        return saved
     }
 
     @Transactional(readOnly = true)

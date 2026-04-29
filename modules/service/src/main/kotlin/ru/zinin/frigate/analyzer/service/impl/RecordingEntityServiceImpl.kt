@@ -5,11 +5,13 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
+import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.model.request.CreateDetectionRequest
 import ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
 import ru.zinin.frigate.analyzer.service.DetectionEntityService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
+import ru.zinin.frigate.analyzer.service.SavedProcessingResult
 import ru.zinin.frigate.analyzer.service.mapper.RecordingMapper
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
 import java.time.Clock
@@ -61,13 +63,14 @@ class RecordingEntityServiceImpl(
     }
 
     @Transactional
-    override suspend fun saveProcessingResult(request: SaveProcessingResultRequest) {
+    override suspend fun saveProcessingResult(request: SaveProcessingResultRequest): SavedProcessingResult {
         val recording =
             repository.findById(request.recordingId)
                 ?: throw IllegalArgumentException("Recording with id ${request.recordingId} not found")
 
         var totalAnalyzeTime = 0L
         var detectionsCount = 0
+        val savedDetections = mutableListOf<DetectionEntity>()
 
         for (frame in request.frames) {
             val detectResponse = frame.detectResponse ?: continue
@@ -89,21 +92,39 @@ class RecordingEntityServiceImpl(
                         y2 = detection.bbox.y2.toFloat(),
                     )
 
-                detectionService.createDetection(detectionRequest)
+                savedDetections += detectionService.createDetection(detectionRequest)
                 detectionsCount++
             }
         }
 
-        // Update the recording
+        val processTimestamp = Instant.now(clock)
+        val analyzeTime = totalAnalyzeTime.toInt()
+
         repository.markProcessed(
             recordingId = request.recordingId,
-            processTimestamp = Instant.now(clock),
+            processTimestamp = processTimestamp,
             detectionsCount,
-            analyzeTime = totalAnalyzeTime.toInt(),
+            analyzeTime = analyzeTime,
             request.frames.size,
         )
 
+        val savedRecording =
+            mapper.toDto(
+                recording.copy(
+                    processTimestamp = processTimestamp,
+                    processAttempts = (recording.processAttempts ?: 0) + 1,
+                    detectionsCount = detectionsCount,
+                    analyzeTime = (recording.analyzeTime ?: 0) + analyzeTime,
+                    analyzedFramesCount = request.frames.size,
+                ),
+            )
+
         logger.info { "Saved processing result for recording ${request.recordingId}" }
+
+        return SavedProcessingResult(
+            recording = savedRecording,
+            detections = savedDetections,
+        )
     }
 
     @Transactional(readOnly = true)

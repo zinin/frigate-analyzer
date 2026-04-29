@@ -28,14 +28,15 @@ import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecision
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecisionReason
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
+import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
 import ru.zinin.frigate.analyzer.model.response.BBox
 import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.Detection
 import ru.zinin.frigate.analyzer.model.response.ImageSize
-import ru.zinin.frigate.analyzer.service.DetectionEntityService
 import ru.zinin.frigate.analyzer.service.NotificationDecisionService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
+import ru.zinin.frigate.analyzer.service.SavedProcessingResult
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.time.Duration
 import java.time.Instant
@@ -52,7 +53,6 @@ class RecordingProcessingFacadeTest {
     private val recordingEntityService = mockk<RecordingEntityService>()
     private val telegramNotificationService = mockk<TelegramNotificationService>(relaxed = true)
     private val notificationDecisionService = mockk<NotificationDecisionService>()
-    private val detectionEntityService = mockk<DetectionEntityService>()
 
     // Real service is used instead of a mock because `FrameVisualizationService.visualizeFrames`
     // has a default parameter `maxFrames = visualizationProperties.maxFrames`; the synthetic
@@ -92,14 +92,16 @@ class RecordingProcessingFacadeTest {
         )
 
     init {
-        coEvery { recordingEntityService.saveProcessingResult(any()) } returns Unit
-        coEvery { recordingEntityService.getRecording(recordingId) } returns recording
+        coEvery { recordingEntityService.saveProcessingResult(any()) } returns
+            SavedProcessingResult(
+                recording = recording,
+                detections = listOf(detectionEntity()),
+            )
         coEvery { notificationDecisionService.isRecordingNotificationsGloballyEnabled() } returns true
         coEvery { notificationDecisionService.evaluate(any(), any(), any()) } returns
             NotificationDecision(shouldNotify = true, reason = NotificationDecisionReason.NEW_OBJECTS)
         coEvery { notificationDecisionService.evaluate(any(), any(), null) } returns
             NotificationDecision(shouldNotify = true, reason = NotificationDecisionReason.NEW_OBJECTS)
-        coEvery { detectionEntityService.findByRecordingId(any()) } returns emptyList()
     }
 
     private fun frameWithDetection(
@@ -117,6 +119,26 @@ class RecordingProcessingFacadeTest {
                     imageSize = ImageSize(1, 1),
                     model = "x",
                 ),
+        )
+
+    private fun detectionEntity(
+        frameIndex: Int = 0,
+        className: String = "person",
+    ): DetectionEntity =
+        DetectionEntity(
+            id = UUID.randomUUID(),
+            creationTimestamp = Instant.now(),
+            recordingId = recordingId,
+            detectionTimestamp = recording.recordTimestamp,
+            frameIndex = frameIndex,
+            model = "x",
+            classId = 0,
+            className = className,
+            confidence = 0.9f,
+            x1 = 0.0f,
+            y1 = 0.0f,
+            x2 = 1.0f,
+            y2 = 1.0f,
         )
 
     private fun TestScope.facade(
@@ -156,7 +178,6 @@ class RecordingProcessingFacadeTest {
                 descriptionScope = scope,
                 descriptionProperties = props,
                 notificationDecisionService = notificationDecisionService,
-                detectionEntityService = detectionEntityService,
             )
         return facade to SaveProcessingResultRequest(recordingId = recordingId, frames = framesForRequest)
     }
@@ -186,6 +207,39 @@ class RecordingProcessingFacadeTest {
             }
 
             coVerify(exactly = 0) { recordingEntityService.saveProcessingResult(any()) }
+        }
+
+    @Test
+    fun `post-save recording and detection reads are not required to send notification`() =
+        runTest {
+            val savedDetections = listOf(detectionEntity())
+
+            coEvery { recordingEntityService.saveProcessingResult(any()) } returns
+                SavedProcessingResult(
+                    recording = recording,
+                    detections = savedDetections,
+                )
+            coEvery { recordingEntityService.getRecording(recordingId) } throws
+                AssertionError("post-save recording read must not be called")
+            coEvery {
+                notificationDecisionService.evaluate(recording, savedDetections, true)
+            } returns
+                NotificationDecision(
+                    shouldNotify = true,
+                    reason = NotificationDecisionReason.NEW_OBJECTS,
+                )
+
+            val (f, req) = facade(agent = null)
+
+            f.processAndNotify(req)
+
+            coVerify(exactly = 1) {
+                notificationDecisionService.evaluate(recording, savedDetections, true)
+            }
+            coVerify(exactly = 1) {
+                telegramNotificationService.sendRecordingNotification(recording, any(), null)
+            }
+            coVerify(exactly = 0) { recordingEntityService.getRecording(any()) }
         }
 
     @Test
@@ -233,7 +287,7 @@ class RecordingProcessingFacadeTest {
 
             val (f, req) = facade(agent)
             val supplier = captureSupplierDuring { f.processAndNotify(req) }
-            val outcome = supplier!!.invoke()!!.await()
+            val outcome = supplier!!.invoke().await()
             assertEquals(true, outcome.isFailure)
         }
 
@@ -247,7 +301,7 @@ class RecordingProcessingFacadeTest {
 
             val (f, req) = facade(agent, framesForRequest = manyFrames)
             val supplier = captureSupplierDuring { f.processAndNotify(req) }
-            supplier!!.invoke()!!.await()
+            supplier!!.invoke().await()
 
             assertEquals(10, captured.captured.frames.size)
             assertEquals((0..9).toList(), captured.captured.frames.map { it.frameIndex })
@@ -272,7 +326,7 @@ class RecordingProcessingFacadeTest {
 
             val (f, req) = facade(agent, framesForRequest = frames, maxFrames = 3)
             val supplier = captureSupplierDuring { f.processAndNotify(req) }
-            supplier!!.invoke()!!.await()
+            supplier!!.invoke().await()
 
             // Top-3 by confidence: indices 1 (0.9), 3 (0.7), 0 (0.5). Then sorted chronologically: 0, 1, 3.
             assertEquals(listOf(0, 1, 3), captured.captured.frames.map { it.frameIndex })
@@ -294,7 +348,7 @@ class RecordingProcessingFacadeTest {
 
             val (f, req) = facade(agent, framesForRequest = framesMix)
             val supplier = captureSupplierDuring { f.processAndNotify(req) }
-            supplier!!.invoke()!!.await()
+            supplier!!.invoke().await()
 
             assertEquals(2, captured.captured.frames.size)
             assertEquals(listOf(1, 3), captured.captured.frames.map { it.frameIndex })
