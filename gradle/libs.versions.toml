@@ -14,7 +14,10 @@ uuid-creator = "6.1.1"
 testcontainers = "2.0.5"
 openapi-starter = "3.0.3"
 ktgbotapi = "33.1.0"
-ktor = "3.5.0"
+# Stay on 3.4.x: ktor 3.5.0 requires kotlinx-coroutines-core 1.11.0,
+# but Spring Boot 4.0.6 BOM pins it to 1.10.2 -> NoSuchMethodError at runtime.
+# Revisit when Spring Boot ships a BOM with coroutines 1.11+ or override BOM here.
+ktor = "3.4.2"
 mockwebserver = "5.3.2"
 mockk = "1.14.9"
 liquibase = "5.0.3"

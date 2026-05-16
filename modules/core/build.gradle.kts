@@ -66,6 +66,7 @@ dependencies {
     testImplementation(libs.bundles.testcontainers)
     testImplementation(libs.mockwebserver)
     testImplementation(libs.mockk)
+    testImplementation(libs.ktgbotapi)
 
     testRuntimeOnly(libs.junit.platform.launcher)
 
