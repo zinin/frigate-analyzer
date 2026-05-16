@@ -9,7 +9,7 @@ import java.time.Duration
 @ConfigurationProperties(prefix = "application.notifications.tracker")
 @Validated
 data class ObjectTrackerProperties(
-    val ttl: Duration = Duration.ofSeconds(120),
+    val ttl: Duration = Duration.ofMinutes(30),
     @field:DecimalMin("0.0") @field:DecimalMax("1.0")
     val iouThreshold: Float = 0.3f,
     @field:DecimalMin("0.0") @field:DecimalMax("1.0")

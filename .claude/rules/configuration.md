@@ -174,7 +174,7 @@ Settings under `application.notifications` in `application.yaml`. Object tracker
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `NOTIFICATIONS_TRACK_TTL` | 120s | Track stays "active" this long after last detection. Match → updateLastSeen → no spam. |
+| `NOTIFICATIONS_TRACK_TTL` | 30m | Track stays "active" this long after last detection. Match → updateLastSeen → no spam. |
 | `NOTIFICATIONS_TRACK_IOU_THRESHOLD` | 0.3 | IoU threshold for cross-recording matching of (class, bbox). |
 | `NOTIFICATIONS_TRACK_INNER_IOU` | 0.5 | IoU threshold for clustering same-class detections within one recording. |
 | `NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR` | 0.3 | Ignore low-confidence detections before clustering/tracking. |

@@ -267,8 +267,8 @@ class ObjectTrackerServiceImplTest {
 
             service.evaluate(rec(), listOf(det("car", 0f, 0f, 0.5f, 0.5f)))
 
-            assertEquals(Instant.parse("2026-04-27T11:58:00Z"), capturedMin.captured)
-            assertEquals(Instant.parse("2026-04-27T12:02:00Z"), capturedMax.captured)
+            assertEquals(Instant.parse("2026-04-27T11:30:00Z"), capturedMin.captured)
+            assertEquals(Instant.parse("2026-04-27T12:30:00Z"), capturedMax.captured)
         }
 
     @Test

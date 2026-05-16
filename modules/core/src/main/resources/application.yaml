@@ -53,7 +53,7 @@ application:
     startup-grace: ${SIGNAL_LOSS_STARTUP_GRACE:5m}
   notifications:
     tracker:
-      ttl: ${NOTIFICATIONS_TRACK_TTL:PT2M}
+      ttl: ${NOTIFICATIONS_TRACK_TTL:PT30M}
       iou-threshold: ${NOTIFICATIONS_TRACK_IOU_THRESHOLD:0.3}
       inner-iou: ${NOTIFICATIONS_TRACK_INNER_IOU:0.5}
       confidence-floor: ${NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR:0.3}
