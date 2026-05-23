@@ -13,6 +13,8 @@
 
 Тот же сценарий уже стрельнул дважды. Цель — гарантировать, что следующая транзиентная ошибка PG/IO превратится в **одну строку в логе + автоматический restart**, а не в многочасовой outage с обнаружением вручную.
 
+**Замечание о паттерне:** Это новый паттерн для проекта (существующий `SignalLossMonitorTask` использует `@Scheduled(fixedDelay)` + `suspend tick()` — он не разделяет coroutine supervisor + dedicated dispatcher idiom, который мы здесь вводим).
+
 ## 2. Goals / Non-goals
 
 **Goals (что делаем в этом design'е):**
@@ -92,12 +94,12 @@ class WatchRecordsTask(
 Владеет:
 
 - `CoroutineScope(SupervisorJob + dispatcher + CoroutineName("watch-records"))` — dedicated scope, изолирован от остального приложения; в production `dispatcher = Dispatchers.IO.limitedParallelism(1)` гарантирует ровно одну ниточку для блокирующего `watchService.poll()`.
-- `supervisorJob: Job?` — handle на запущенную корутину для cancel + join.
+- `@Volatile internal var supervisorJob: Job? = null` — handle на запущенную корутину для cancel + join. `supervisorJob` is `internal var` purely to allow unit tests to inject a `Job` returned by `Job()` or a relaxed `mockk<Job>` with `isActive=true` when exercising `computeHealth`'s active-job branches.
 - `watchService: WatchService?` — `var`, пересоздаётся при `ClosedWatchServiceException`.
 - `registeredDirs: ConcurrentHashMap<Path, WatchKey>` — как сейчас.
 - State для health (все `@Volatile` для безопасного чтения из HealthIndicator-bean):
   - `lastSuccessfulIterationAt: Instant?` — null до первой успешной итерации.
-  - `consecutiveFailures: Int` — счётчик подряд провалов; сбрасывается в 0 при успехе.
+  - `consecutiveFailures: Long` — счётчик подряд провалов; сбрасывается в 0 при успехе.
   - `successesSinceLastFailure: Int` — для логики `SUCCESSES_TO_RESET_BACKOFF`. Инкрементируется только во время failure-периода (`currentBackoff > INITIAL_BACKOFF`).
   - `currentBackoff: Duration` — текущая величина backoff'а.
   - `lastFailure: Throwable?` — последний пойманный exception (для health details).
@@ -119,12 +121,15 @@ fun shutdown() {
     logger.info { "Shutting down watch records..." }
     supervisorJob?.cancel()
     runBlocking { supervisorJob?.join() }
+    scope.cancel()
     registeredDirs.values.forEach { it.cancel() }
     registeredDirs.clear()
     runCatching { watchService?.close() }
     logger.info { "Watch records shut down." }
 }
 ```
+
+> **Note:** `scope.cancel()` releases the dedicated `Dispatchers.IO.limitedParallelism(1)` view so multiple Spring context refreshes (tests) do not leak slots.
 
 Константы (захардкожено в файле):
 
@@ -157,7 +162,7 @@ private suspend fun runSupervised() {
             onIterationFailure(e)
             delay(currentBackoff.toMillis())
             currentBackoff = nextBackoff(currentBackoff)
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
             logger.error(e) { "WatchRecordsTask iteration failed; backing off for $currentBackoff" }
             onIterationFailure(e)
             delay(currentBackoff.toMillis())
@@ -167,13 +172,22 @@ private suspend fun runSupervised() {
 }
 ```
 
+> **Note:** `Throwable` would swallow `OutOfMemoryError`/`LinkageError`/`StackOverflowError` — we let those propagate to the JVM.
+
 `ensureWatchService()` и `closeWatchServiceQuietly()`:
 
 ```kotlin
 private fun ensureWatchService() {
     if (watchService == null) {
         val ws = watchServiceFactory()
-        loop.registerAllDirs(recordsWatcherProperties.folder, ws, registeredDirs)
+        try {
+            registeredDirs.clear()  // guarantee clean state
+            loop.registerAllDirs(recordsWatcherProperties.folder, ws, registeredDirs)
+        } catch (e: Exception) {
+            runCatching { ws.close() }
+            registeredDirs.clear()
+            throw e  // supervisor catches → backoff → retry from scratch
+        }
         watchService = ws
         logger.info { "Watch service created; registered ${registeredDirs.size} directories." }
     }
@@ -184,6 +198,8 @@ private fun closeWatchServiceQuietly() {
     watchService = null
 }
 ```
+
+> **Atomic publication:** if `registerAllDirs` throws, the local `ws` is closed and `watchService` field is left null so the next iteration retries cleanly.
 
 State-машина транзишн-методов:
 
@@ -208,7 +224,7 @@ private fun onIterationFailure(t: Throwable) {
 }
 
 private fun nextBackoff(current: Duration): Duration =
-    if (current >= MAX_BACKOFF) MAX_BACKOFF else minOf(current.multipliedBy(2), MAX_BACKOFF)
+    minOf(current.multipliedBy(2), MAX_BACKOFF)
 ```
 
 ### 4.2 `WatchRecordsLoop` (iteration)
@@ -244,7 +260,11 @@ data class IterationResult(
 
 Тело `runIteration` — те же шаги, что в текущем коде между `key = watchService.poll(...)` и обновлением `lastCleanup`. Никакого `runBlocking` внутри — это уже `suspend fun`, `recordingEntityHelper.createRecording(...)` вызывается напрямую через `.coAwait()`/uncoroutine-ный mapping (уже используется через runBlocking → переходим на прямой suspend).
 
+> **Concurrency note:** `cleanupExpiredDirs` and event-processing run on a single dedicated dispatcher thread; `ConcurrentHashMap` is used for safe reads from the HealthIndicator only, not for concurrent writers.
+
 Утилиты `extractDateFromPath` / `isWithinWatchPeriod` остаются top-level в файле (как сейчас) — они pure, переезд внутрь класса не даст профита.
+
+> **Exception safety in `runIteration`:** After processing events, `key.reset()` runs in a `finally` block so a thrown exception from `Files.readAttributes` / `recordingFileHelper.parse` / `recordingEntityHelper.createRecording` still resets the key; the captured throwable is then rethrown to the supervisor. (Plan §5.2 carries the actual code change.)
 
 ### 4.3 `WatchRecordsTaskHealthIndicator`
 

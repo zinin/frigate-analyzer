@@ -161,12 +161,9 @@ class TelegramNotificationServiceImplOwnerMessageTest {
                     userId = 1L,
                     firstName = null,
                     lastName = null,
-                    activatedAt = Instant.now(),
-                    invitedAt = Instant.now(),
-                    notificationsRecordingEnabled = true,
-                    notificationsSignalEnabled = true,
-                    languageCode = null,
-                    timezone = null,
+                    status = ru.zinin.frigate.analyzer.telegram.model.UserStatus.ACTIVE,
+                    creationTimestamp = Instant.now(),
+                    activationTimestamp = Instant.now(),
                 )
             coEvery { notificationQueue.enqueue(any()) } just Runs
 
@@ -174,12 +171,9 @@ class TelegramNotificationServiceImplOwnerMessageTest {
 
             coVerify(exactly = 1) {
                 notificationQueue.enqueue(
-                    SimpleTextNotificationTask(
-                        id = ownerId,
-                        chatId = 42L,
-                        text = "Hello, admin!",
-                        createdAt = any(),
-                    ),
+                    match<SimpleTextNotificationTask> {
+                        it.id == ownerId && it.chatId == 42L && it.text == "Hello, admin!"
+                    },
                 )
             }
         }
@@ -195,8 +189,6 @@ class TelegramNotificationServiceImplOwnerMessageTest {
         }
 }
 ```
-
-**ВНИМАНИЕ:** Сигнатура `TelegramUserDto` показанная в коде — это **гипотеза**. Перед запуском теста прочитайте actual `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/dto/TelegramUserDto.kt` и скорректируйте конструктор под реальные поля. Если тест уже компилируется в reality - оставить как есть.
 
 - [ ] **Step 2.2: Запустить failing test**
 
@@ -223,6 +215,7 @@ Expected: компиляция упадёт — `TelegramNotificationServiceImpl
 2. После метода `sendCameraSignalRecovered(...)` добавить:
 
 ```kotlin
+    // Critical fix: TelegramUserDto.chatId is nullable.
     override suspend fun sendOwnerMessage(text: String) {
         val owner = userService.findActiveByUsername(telegramProperties.owner)
         if (owner == null) {
@@ -231,14 +224,21 @@ Expected: компиляция упадёт — `TelegramNotificationServiceImpl
             }
             return
         }
+        val chatId = owner.chatId
+        if (chatId == null) {
+            logger.warn {
+                "Cannot send owner message: owner '${telegramProperties.owner}' has no chatId (bot not started yet?)"
+            }
+            return
+        }
         notificationQueue.enqueue(
             SimpleTextNotificationTask(
                 id = uuidGeneratorHelper.generateV1(),
-                chatId = owner.chatId,
+                chatId = chatId,
                 text = text,
             ),
         )
-        logger.debug { "Enqueued owner message to chat ${owner.chatId}" }
+        logger.debug { "Enqueued owner message to chat $chatId" }
     }
 ```
 
@@ -260,7 +260,16 @@ Expected: BUILD SUCCESSFUL, 2 tests pass. Если ktlint в build-цикле п
 Build target: ./gradlew :frigate-analyzer-telegram:test
 ```
 
-Expected: BUILD SUCCESSFUL, все тесты telegram-модуля проходят. Если что-то ломается — скорее всего где-то ещё инстанцируется `TelegramNotificationServiceImpl` без нового параметра. Найти и исправить (обычно — `TelegramNotificationServiceImplSignalLossTest.kt` / `TelegramNotificationServiceImplTest.kt` — добавить `telegramProperties` в их constructor calls тоже).
+Expected: BUILD SUCCESSFUL, все тесты telegram-модуля проходят.
+
+**Регрессия — known impact:** После добавления `telegramProperties` параметром конструктора следующие EXISTING тесты упадут на этапе компиляции и потребуют обновления конструктор-вызовов:
+
+- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplTest.kt`
+- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplSignalLossTest.kt`
+
+Добавить в **оба** setup'а: `telegramProperties = mockk<TelegramProperties>(relaxed = true)` (или реальный `TelegramProperties(enabled = true, botToken = "test", owner = "test")`).
+
+Если в проекте появятся ещё файлы, инстанцирующие `TelegramNotificationServiceImpl(...)` — найти через `grep -l "TelegramNotificationServiceImpl(" modules/telegram/src/test/` и обновить аналогично.
 
 - [ ] **Step 2.6: Commit**
 
@@ -378,6 +387,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.event.ApplicationReadyEvent
 import org.springframework.boot.info.BuildProperties
 import org.springframework.boot.info.GitProperties
+import org.springframework.context.annotation.Profile
 import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
@@ -387,6 +397,7 @@ import java.time.Instant
 private val logger = KotlinLogging.logger {}
 
 @Component
+@Profile("!test")
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class StartupTelegramNotifier(
     private val telegramNotificationService: TelegramNotificationService,
@@ -538,8 +549,6 @@ import java.util.concurrent.TimeUnit
 
 private val logger = KotlinLogging.logger {}
 
-const val POLL_PERIOD_MS: Long = 500L
-
 data class IterationResult(
     val processedEvents: Int,
     val lastCleanupAt: Instant,
@@ -563,8 +572,14 @@ class WatchRecordsLoop(
         // TODO Task 5: cleanup if Duration.between(lastCleanupAt, now) >= cleanupInterval
         return IterationResult(processedEvents = processed, lastCleanupAt = lastCleanupAt)
     }
+
+    private companion object {
+        const val POLL_PERIOD_MS: Long = 500L
+    }
 }
 ```
+
+Конвенция: класс-specific константы хранятся в `private companion object` (а не как `const val POLL_PERIOD_MS` на top-level) — это избегает утечки имени `POLL_PERIOD_MS` в package-scope и упрощает test-stubbing если когда-нибудь понадобится. `WatchRecordsTask` использует тот же подход (см. Task 6 — `INITIAL_BACKOFF` / `MAX_BACKOFF` / `SUCCESSES_TO_RESET_BACKOFF` / `HEALTH_STALENESS` — рекомендуется привести их к тому же style'у если они сейчас на top-level).
 
 **Намеренно**: оставляем `TODO Task 5:` — следующие TDD-циклы их закроют. Это допустимо в плановом TODO внутри одной серии задач (не placeholder, а скоупный маркер).
 
@@ -634,19 +649,25 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
                 val parsedRequest =
                     ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest(
                         filePath = realFile.toAbsolutePath().toString(),
-                        creationTimestamp = Instant.parse("2026-05-23T12:14:27Z"),
+                        fileCreationTimestamp = Instant.parse("2026-05-23T12:14:27Z"),
                         camId = "cam1",
-                        date = java.time.LocalDate.of(2026, 5, 23),
-                        time = java.time.LocalTime.of(12, 14, 27),
+                        recordDate = java.time.LocalDate.of(2026, 5, 23),
+                        recordTime = java.time.LocalTime.of(12, 14, 27),
                         recordTimestamp = Instant.parse("2026-05-23T12:14:27Z"),
                     )
                 io.mockk.coEvery { recordingEntityHelper.createRecording(any()) } returns java.util.UUID.randomUUID()
-                io.mockk.every { recordingFileHelper.parse(any()) } returns mockk {
-                    every { camId } returns "cam1"
-                    every { date } returns java.time.LocalDate.of(2026, 5, 23)
-                    every { time } returns java.time.LocalTime.of(12, 14, 27)
-                    every { timestamp } returns Instant.parse("2026-05-23T12:14:27Z")
-                }
+                // Use a real RecordingFileDto instance instead of mockk — DTO is a tiny data class,
+                // mocking its property getters adds noise without any value.
+                // Signature: RecordingFileDto(basePath, camId, date, time, timestamp) — see
+                // modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/RecordingFileDto.kt
+                io.mockk.every { recordingFileHelper.parse(any()) } returns
+                    ru.zinin.frigate.analyzer.model.dto.RecordingFileDto(
+                        basePath = realDir.toAbsolutePath().toString(),
+                        camId = "cam1",
+                        date = java.time.LocalDate.of(2026, 5, 23),
+                        time = java.time.LocalTime.of(12, 14, 27),
+                        timestamp = Instant.parse("2026-05-23T12:14:27Z"),
+                    )
 
                 val result = loop.runIteration(watchService, ConcurrentHashMap(), Instant.now(clock))
 
@@ -657,8 +678,6 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
             }
         }
 ```
-
-**Замечание для разработчика:** Сигнатура `CreateRecordingRequest` — это **гипотеза по spec'у**. Прочитайте actual `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/request/CreateRecordingRequest.kt` перед запуском теста; то же про возвращаемый тип `RecordingFileHelper.parse(...)`. Скорректируйте `mockk { every { ... } returns ... }` под актуальные имена полей. Test goal — verify that `createRecording` is called once when a .mp4 ENTRY_CREATE event arrives.
 
 - [ ] **Step 5.2: Imp body — обработать ENTRY_CREATE для файла**
 
@@ -674,40 +693,47 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
         var processed = 0
         if (key != null) {
             val dir = key.watchable() as Path
-            for (event in key.pollEvents()) {
-                if (event.kind() != java.nio.file.StandardWatchEventKinds.ENTRY_CREATE) continue
-                @Suppress("UNCHECKED_CAST")
-                val ev = event as java.nio.file.WatchEvent<Path>
-                val fullPath = dir.resolve(ev.context())
-                logger.info { "New file created: $fullPath" }
+            var iterationError: Throwable? = null
+            try {
+                for (event in key.pollEvents()) {
+                    if (event.kind() != java.nio.file.StandardWatchEventKinds.ENTRY_CREATE) continue
+                    @Suppress("UNCHECKED_CAST")
+                    val ev = event as java.nio.file.WatchEvent<Path>
+                    val fullPath = dir.resolve(ev.context())
+                    logger.info { "New file created: $fullPath" }
 
-                if (java.nio.file.Files.isDirectory(fullPath)) {
-                    if (isWithinWatchPeriod(fullPath, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
-                        registerAllDirs(fullPath, watchService, registeredDirs)
+                    if (java.nio.file.Files.isDirectory(fullPath)) {
+                        if (isWithinWatchPeriod(fullPath, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
+                            registerAllDirs(fullPath, watchService, registeredDirs)
+                        } else {
+                            logger.info { "Skipping old directory: $fullPath" }
+                        }
                     } else {
-                        logger.info { "Skipping old directory: $fullPath" }
+                        val attrs = java.nio.file.Files.readAttributes(fullPath, java.nio.file.attribute.BasicFileAttributes::class.java)
+                        val recordingFile = recordingFileHelper.parse(fullPath)
+                        val recordingId =
+                            recordingEntityHelper.createRecording(
+                                ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest(
+                                    filePath = fullPath.toAbsolutePath().toString(),
+                                    fileCreationTimestamp = attrs.creationTime().toInstant(),
+                                    camId = recordingFile.camId,
+                                    recordDate = recordingFile.date,
+                                    recordTime = recordingFile.time,
+                                    recordTimestamp = recordingFile.timestamp,
+                                ),
+                            )
+                        logger.info { "Recording id: $recordingId" }
                     }
-                } else {
-                    val attrs = java.nio.file.Files.readAttributes(fullPath, java.nio.file.attribute.BasicFileAttributes::class.java)
-                    val recordingFile = recordingFileHelper.parse(fullPath)
-                    val recordingId =
-                        recordingEntityHelper.createRecording(
-                            ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest(
-                                fullPath.toAbsolutePath().toString(),
-                                attrs.creationTime().toInstant(),
-                                recordingFile.camId,
-                                recordingFile.date,
-                                recordingFile.time,
-                                recordingFile.timestamp,
-                            ),
-                        )
-                    logger.info { "Recording id: $recordingId" }
+                    processed++
                 }
-                processed++
+            } catch (e: Throwable) {
+                iterationError = e
+            } finally {
+                if (!key.reset()) {
+                    registeredDirs.remove(dir)
+                }
             }
-            if (!key.reset()) {
-                registeredDirs.remove(dir)
-            }
+            if (iterationError != null) throw iterationError
         }
 
         // TODO Step 5.5: cleanup if Duration.between(lastCleanupAt, now) >= cleanupInterval
@@ -725,20 +751,21 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
     ): Int {
         var registered = 0
         var skipped = 0
-        java.nio.file.Files
-            .walk(start)
-            .filter { java.nio.file.Files.isDirectory(it) }
-            .forEach { dir ->
-                if (isWithinWatchPeriod(dir, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
-                    registeredDirs.computeIfAbsent(dir) {
-                        val key = dir.register(watchService, java.nio.file.StandardWatchEventKinds.ENTRY_CREATE)
-                        registered++
-                        key
+        java.nio.file.Files.walk(start).use { stream ->
+            stream
+                .filter { java.nio.file.Files.isDirectory(it) }
+                .forEach { dir ->
+                    if (isWithinWatchPeriod(dir, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
+                        registeredDirs.computeIfAbsent(dir) {
+                            val key = dir.register(watchService, java.nio.file.StandardWatchEventKinds.ENTRY_CREATE)
+                            registered++
+                            key
+                        }
+                    } else {
+                        skipped++
                     }
-                } else {
-                    skipped++
                 }
-            }
+        }
         logger.info { "Registered $registered directories, skipped $skipped old directories." }
         return registered
     }
@@ -876,32 +903,22 @@ Expected: BUILD SUCCESSFUL, 2 tests pass.
     }
 ```
 
-И **удалить тот же блок из `WatchRecordsTaskTest.kt`** (там пока остаются только эти тесты — после удаления файл станет почти пустым, оставить только class-skeleton без @Test'ов; supervisor tests добавим в Task 7).
+И **удалить тот же блок из `WatchRecordsTaskTest.kt`** (там пока остаются только эти тесты — после удаления файл станет почти пустым, оставить только class-skeleton без @Test'ов; supervisor tests добавим в Task 8).
 
 - [ ] **Step 5.5: Failing test #3 — new directory → `registerAllDirs` called, `createRecording` НЕ вызван**
+
+Использовать **реальный** `WatchService` из tempdir — мокать `WatchService`/`WatchKey`/`WatchEvent` слишком хрупко и не отлавливает реальные NIO contract'ы.
 
 ```kotlin
     @Test
     fun `runIteration registers new directory and does not call createRecording`() =
         runTest {
-            val watchService = mockk<WatchService>()
-            val key = mockk<WatchKey>()
-            val event = mockk<java.nio.file.WatchEvent<Path>>()
             val tmpDir = java.nio.file.Files.createTempDirectory("wrl-test-dir")
+            val watchService = java.nio.file.FileSystems.getDefault().newWatchService()
             try {
-                val parent = tmpDir.resolve("2026-05-23")
-                java.nio.file.Files.createDirectories(parent)
-                val newSubdir = parent.resolve("12")
-                java.nio.file.Files.createDirectories(newSubdir)
-                val fakeKey = mockk<WatchKey>(relaxed = true)
-                every { watchService.poll(any<Long>(), any<TimeUnit>()) } returns key
-                every { key.watchable() } returns parent
-                every { key.reset() } returns true
-                every { event.kind() } returns java.nio.file.StandardWatchEventKinds.ENTRY_CREATE
-                every { event.context() } returns Path.of("12")
-                every { key.pollEvents() } returns listOf(event)
+                // Регистрируем корень — будем ловить ENTRY_CREATE для новых поддиректорий
+                tmpDir.register(watchService, java.nio.file.StandardWatchEventKinds.ENTRY_CREATE)
 
-                // Tweaked properties: tmpDir как root, чтобы isWithinWatchPeriod вернул true
                 val loopWithTmpRoot =
                     WatchRecordsLoop(
                         recordsWatcherProperties =
@@ -915,17 +932,24 @@ Expected: BUILD SUCCESSFUL, 2 tests pass.
                         clock = clock,
                     )
 
+                // Создаём поддиректорию ПОСЛЕ регистрации — WatchService увидит ENTRY_CREATE
+                java.nio.file.Files.createDirectory(tmpDir.resolve("2026-05-23"))
+
+                // Дать ОС время доставить событие в WatchService
+                Thread.sleep(200)
+
                 val result = loopWithTmpRoot.runIteration(watchService, ConcurrentHashMap(), Instant.now(clock))
 
                 io.mockk.coVerify(exactly = 0) { recordingEntityHelper.createRecording(any()) }
                 assertEquals(1, result.processedEvents)
             } finally {
+                watchService.close()
                 tmpDir.toFile().deleteRecursively()
             }
         }
 ```
 
-Test code purposely creates real directories (tempdir) — `Files.isDirectory(...)` & `Files.walk(...)` нужны реальные пути; static-mocking слишком хрупко.
+Тест работает на реальном NIO `WatchService` — `Files.isDirectory(...)` / `Files.walk(...)` получают реальные пути, `key.pollEvents()` возвращает реальные `WatchEvent`. Проверяет `processedEvents` count и что `recordingEntityHelper.createRecording` НЕ был вызван.
 
 Запустить, проверить что green (имплементация в Step 5.2 уже это покрывает). Если красный — отлаживать.
 
@@ -1023,6 +1047,9 @@ Test code purposely creates real directories (tempdir) — `Files.isDirectory(..
         return IterationResult(processedEvents = processed, lastCleanupAt = newLastCleanup)
     }
 
+    // Single-writer invariant: cleanupExpiredDirs() and event processing run on the same
+    // dedicated dispatcher thread (Dispatchers.IO.limitedParallelism(1)). ConcurrentHashMap
+    // is used only so the HealthIndicator bean can safely read .size from another thread.
     private fun cleanupExpiredDirs(registeredDirs: ConcurrentMap<Path, WatchKey>) {
         var removed = 0
         registeredDirs.entries.removeIf { (dir, watchKey) ->
@@ -1068,7 +1095,7 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
 
 ## Task 6: Rewrite `WatchRecordsTask` — lifecycle (`@PostConstruct`/`@PreDestroy`), supervisor skeleton
 
-> **Context:** spec §4.1 (полностью). Параметры testability — `dispatcher` и `watchServiceFactory` с дефолтами. После этого Task'а класс компилируется и стартует, но supervisor пока пустой — backoff/exception handling добавим в Task 7.
+> **Context:** spec §4.1 (полностью). Параметры testability — `dispatcher` и `watchServiceFactory` с дефолтами. После этого Task'а класс компилируется и стартует, но supervisor пока пустой — backoff/exception handling добавим в Task 8.
 
 **Files:**
 - Modify (rewrite): `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTask.kt`
@@ -1126,13 +1153,13 @@ class WatchRecordsTask(
     private val watchServiceFactory: () -> WatchService = { FileSystems.getDefault().newWatchService() },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher + CoroutineName("watch-records"))
-    private var supervisorJob: Job? = null
+    @Volatile internal var supervisorJob: Job? = null
 
     private var watchService: WatchService? = null
     internal val registeredDirs: ConcurrentHashMap<Path, WatchKey> = ConcurrentHashMap()
 
     @Volatile internal var lastSuccessfulIterationAt: Instant? = null
-    @Volatile internal var consecutiveFailures: Int = 0
+    @Volatile internal var consecutiveFailures: Long = 0
     @Volatile private var successesSinceLastFailure: Int = 0
     @Volatile internal var currentBackoff: Duration = INITIAL_BACKOFF
     @Volatile internal var lastFailure: Throwable? = null
@@ -1152,6 +1179,7 @@ class WatchRecordsTask(
         logger.info { "Shutting down watch records..." }
         supervisorJob?.cancel()
         runBlocking { supervisorJob?.join() }
+        scope.cancel()
         registeredDirs.values.forEach { it.cancel() }
         registeredDirs.clear()
         closeWatchServiceQuietly()
@@ -1176,7 +1204,7 @@ class WatchRecordsTask(
                 onIterationFailure(e)
                 delay(currentBackoff.toMillis())
                 currentBackoff = nextBackoff(currentBackoff)
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
                 logger.error(e) { "WatchRecordsTask iteration failed; backing off for $currentBackoff" }
                 onIterationFailure(e)
                 delay(currentBackoff.toMillis())
@@ -1188,7 +1216,14 @@ class WatchRecordsTask(
     private fun ensureWatchService() {
         if (watchService == null) {
             val ws = watchServiceFactory()
-            loop.registerAllDirs(recordsWatcherProperties.folder, ws, registeredDirs)
+            try {
+                registeredDirs.clear()  // guarantee clean state
+                loop.registerAllDirs(recordsWatcherProperties.folder, ws, registeredDirs)
+            } catch (e: Exception) {
+                runCatching { ws.close() }
+                registeredDirs.clear()
+                throw e  // supervisor catches → backoff → retry from scratch
+            }
             watchService = ws
             logger.info { "Watch service created; registered ${registeredDirs.size} directories." }
         }
@@ -1219,7 +1254,7 @@ class WatchRecordsTask(
     }
 
     private fun nextBackoff(current: Duration): Duration =
-        if (current >= MAX_BACKOFF) MAX_BACKOFF else minOf(current.multipliedBy(2), MAX_BACKOFF)
+        minOf(current.multipliedBy(2), MAX_BACKOFF)
 
     fun computeHealth(now: Instant): Health {
         val builder =
@@ -1274,7 +1309,7 @@ class WatchRecordsTask(
 Build target: ./gradlew :frigate-analyzer-core:compileKotlin
 ```
 
-Expected: BUILD SUCCESSFUL. Если падает на `ApplicationListener.kt` (там вызов `watchRecordsTask.run()` который теперь не существует) — это исправляется в Task 8, временно можно закомментировать вызов / удалить, чтобы продолжить TDD-циклы supervisor'а. Лучше выполнить Task 8 ПЕРЕД Task 7, чтобы вся ветка компилировалась после каждого commit'а. Если этот шаг падает на ApplicationListener — переходить к Task 8 СЕЙЧАС, потом вернуться.
+Expected: BUILD SUCCESSFUL. Падение на `ApplicationListener.kt` (там вызов `watchRecordsTask.run()` который теперь не существует) исправляется следующим Task 7 (ApplicationListener cleanup) — порядок Task 6 → Task 7 → Task 8 (already in this order) гарантирует, что ветка компилируется после каждого commit'а.
 
 - [ ] **Step 6.3: Запустить существующий test set (только pure-fn в WatchRecordsTaskTest — если ещё не пустой)**
 
@@ -1301,14 +1336,100 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.1
 
 ---
 
-## Task 7: `WatchRecordsTask` supervisor tests (TDD)
+## Task 7: Обновить `ApplicationListener` (cleanup)
+
+> **Context:** spec §3 — `ApplicationListener` больше не отвечает за lifecycle WatchRecordsTask. Запуск через @PostConstruct в самом классе, shutdown через @PreDestroy.
+
+**Files:**
+- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt`
+
+- [ ] **Step 7.1: Убрать вызов `watchRecordsTask.run()` и обработку `ContextClosedEvent`**
+
+Заменить содержимое файла на:
+
+```kotlin
+package ru.zinin.frigate.analyzer.core.application
+
+import io.github.oshai.kotlinlogging.KotlinLogging
+import org.springframework.boot.context.event.ApplicationReadyEvent
+import org.springframework.boot.info.BuildProperties
+import org.springframework.boot.info.GitProperties
+import org.springframework.context.event.EventListener
+import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
+import ru.zinin.frigate.analyzer.core.helper.SpringProfileHelper
+import ru.zinin.frigate.analyzer.core.task.FirstTimeScanTask
+
+private val logger = KotlinLogging.logger {}
+
+@Component
+class ApplicationListener(
+    val gitProperties: GitProperties,
+    val buildProperties: BuildProperties,
+    val firstTimeScanTask: FirstTimeScanTask,
+    val recordsWatcherProperties: RecordsWatcherProperties,
+    val springProfileHelper: SpringProfileHelper,
+) {
+    @EventListener(ApplicationReadyEvent::class)
+    fun initializeApplication() {
+        logger.info { "Application started." }
+
+        logger.info { "Git version: ${gitProperties.getCommitId()}" }
+        logger.info { "Git commit time: ${gitProperties.getCommitTime()}" }
+        logger.info { "Build version: ${buildProperties.getVersion()}" }
+        logger.info { "Build time: ${buildProperties.getTime()}" }
+
+        // WatchRecordsTask now starts itself via @PostConstruct (see WatchRecordsTask.start).
+
+        if (springProfileHelper.isTestProfile()) {
+            logger.info { "Test profile detected. First time scan task skipped." }
+        } else if (!recordsWatcherProperties.disableFirstScan) {
+            firstTimeScanTask.run()
+        } else {
+            logger.info { "First time scan task skipped." }
+        }
+
+        logger.info { "Tasks started." }
+    }
+}
+```
+
+Изменения:
+- Удалили зависимость `watchRecordsTask: WatchRecordsTask` из конструктора.
+- Удалили вызов `watchRecordsTask.run()`.
+- Удалили `@EventListener(ContextClosedEvent::class) fun shutdownApplication()` целиком (lifecycle WatchRecordsTask теперь через `@PreDestroy` внутри самого класса).
+
+- [ ] **Step 7.2: Запустить compile + полный test core-модуля**
+
+Делегировать через build-runner:
+
+```
+Build target: ./gradlew :frigate-analyzer-core:compileKotlin :frigate-analyzer-core:test
+```
+
+Expected: BUILD SUCCESSFUL. Если падает на `FrigateAnalyzerApplicationTests` (Spring context test) — скорее всего из-за `@PostConstruct fun start()` пытающегося создать `WatchService` в тестовом профиле. Решение: убедиться, что `springProfileHelper.isTestProfile()` возвращает `true` в test-контексте (это уже было в pre-existing коде — должно работать). Если нет — отлаживать.
+
+- [ ] **Step 7.3: Commit**
+
+```bash
+git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt
+git commit -m "refactor(application): move WatchRecordsTask lifecycle ownership into task
+
+Listener no longer triggers watchRecordsTask.run() or shutdown — that's now
+done by @PostConstruct/@PreDestroy inside WatchRecordsTask itself.
+Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §3, §4.1"
+```
+
+---
+
+## Task 8: `WatchRecordsTask` supervisor tests (TDD)
 
 > **Context:** spec §7.1 (5 tests). Используем `kotlinx-coroutines-test` virtual time для мгновенного `delay()`. Конструктор инжектит `StandardTestDispatcher` и mock `watchServiceFactory`. Tests дёргают `runSupervised()` напрямую внутри `runTest{}`.
 
 **Files:**
 - Modify: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskTest.kt`
 
-- [ ] **Step 7.1: Очистить `WatchRecordsTaskTest.kt` (если есть остатки) и подготовить skeleton**
+- [ ] **Step 8.1: Очистить `WatchRecordsTaskTest.kt` (если есть остатки) и подготовить skeleton**
 
 Полностью переписать файл:
 
@@ -1372,7 +1493,7 @@ class WatchRecordsTaskTest {
 }
 ```
 
-- [ ] **Step 7.2: Failing test #1 — supervisor survives RuntimeException, returns to UP after success**
+- [ ] **Step 8.2: Failing test #1 — supervisor survives RuntimeException, returns to UP after success**
 
 Добавить в class:
 
@@ -1381,29 +1502,33 @@ class WatchRecordsTaskTest {
     fun `supervisor survives RuntimeException and continues looping`() =
         runTest {
             val task = newTask(dispatcher = StandardTestDispatcher(testScheduler))
-            // First two iterations throw, third succeeds
-            coEvery { loop.runIteration(any(), any(), any()) } throwsMany
-                listOf(RuntimeException("boom1"), RuntimeException("boom2")) andThen
-                IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
+            // First two iterations throw, third succeeds, fourth signals "test done" to exit loop cleanly.
+            var iterations = 0
+            coEvery { loop.runIteration(any(), any(), any()) } coAnswers {
+                iterations++
+                when (iterations) {
+                    1 -> throw RuntimeException("boom1")
+                    2 -> throw RuntimeException("boom2")
+                    3 -> IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
+                    else -> throw CancellationException("test done")  // self-terminate loop
+                }
+            }
 
             val job = launch { task.runSupervised() }
 
-            // Allow first iteration to run, fail, backoff 5s, retry, fail, backoff 10s, retry, succeed
-            advanceTimeBy(20_000)
-            yield()
-            advanceUntilIdle()
+            // Allow: fail (backoff 5s), fail (backoff 10s), succeed, CancellationException exits.
+            advanceUntilIdle()  // safe — loop self-terminates via CancellationException
+            job.join()
 
             assertNotNull(task.lastSuccessfulIterationAt, "Expected at least one successful iteration")
             assertEquals(0, task.consecutiveFailures, "Counter should reset on success")
             assertTrue(task.lastFailure is RuntimeException)
-
-            job.cancel()
         }
 ```
 
 Run, expect green (supervisor logic уже на месте от Task 6).
 
-- [ ] **Step 7.3: Failing test #2 — `ClosedWatchServiceException` triggers WatchService recreation**
+- [ ] **Step 8.3: Failing test #2 — `ClosedWatchServiceException` triggers WatchService recreation**
 
 ```kotlin
     @Test
@@ -1419,23 +1544,26 @@ Run, expect green (supervisor logic уже на месте от Task 6).
                     },
                     dispatcher = StandardTestDispatcher(testScheduler),
                 )
-            coEvery { loop.runIteration(any(), any(), any()) } throwsMany
-                listOf(ClosedWatchServiceException()) andThen
-                IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
+            var iterations = 0
+            coEvery { loop.runIteration(any(), any(), any()) } coAnswers {
+                iterations++
+                when (iterations) {
+                    1 -> throw ClosedWatchServiceException()
+                    2 -> IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
+                    else -> throw CancellationException("test done")
+                }
+            }
 
             val job = launch { task.runSupervised() }
-            advanceTimeBy(10_000)
-            yield()
             advanceUntilIdle()
+            job.join()
 
             assertTrue(factoryCallCount >= 2, "WatchService should be recreated after ClosedWatchServiceException; got $factoryCallCount calls")
             assertNotNull(task.lastSuccessfulIterationAt)
-
-            job.cancel()
         }
 ```
 
-- [ ] **Step 7.4: Failing test #3 — `CancellationException` propagates, loop exits cleanly**
+- [ ] **Step 8.4: Failing test #3 — `CancellationException` propagates, loop exits cleanly**
 
 ```kotlin
     @Test
@@ -1456,7 +1584,7 @@ Run, expect green (supervisor logic уже на месте от Task 6).
         }
 ```
 
-- [ ] **Step 7.5: Failing test #4 — backoff resets after N consecutive successes**
+- [ ] **Step 8.5: Failing test #4 — backoff resets after N consecutive successes**
 
 ```kotlin
     @Test
@@ -1464,26 +1592,29 @@ Run, expect green (supervisor logic уже на месте от Task 6).
         runTest {
             val task = newTask(dispatcher = StandardTestDispatcher(testScheduler))
             val successResult = IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
-            // 3 failures (backoff: 5s→10s→20s→40s), then 5 successes (resets backoff to 5s)
-            coEvery { loop.runIteration(any(), any(), any()) } throwsMany
-                listOf(RuntimeException("e1"), RuntimeException("e2"), RuntimeException("e3")) andThenMany
-                List(5) { successResult }
+            // 3 failures (backoff: 5s→10s→20s→40s), then 5 successes (resets backoff to 5s),
+            // then CancellationException to exit the loop cleanly.
+            var iterations = 0
+            coEvery { loop.runIteration(any(), any(), any()) } coAnswers {
+                iterations++
+                when {
+                    iterations <= 3 -> throw RuntimeException("e$iterations")
+                    iterations <= 8 -> successResult
+                    else -> throw CancellationException("test done")
+                }
+            }
 
             val job = launch { task.runSupervised() }
-            // Need to wait long enough for 3 failures + their backoffs: 5s + 10s + 20s = 35s + 5 successes
-            advanceTimeBy(60_000)
-            yield()
-            advanceUntilIdle()
+            advanceUntilIdle()  // safe — loop self-terminates after 9 iterations
+            job.join()
 
             // After 5 consecutive successes following failures, currentBackoff should be reset to INITIAL_BACKOFF
             assertEquals(Duration.ofSeconds(5), task.currentBackoff, "Backoff should reset to INITIAL_BACKOFF=5s")
             assertEquals(0, task.consecutiveFailures)
-
-            job.cancel()
         }
 ```
 
-- [ ] **Step 7.6: Failing test #5 — `computeHealth` covers all 5 states**
+- [ ] **Step 8.6: Failing test #5 — `computeHealth` covers all 5 states**
 
 ```kotlin
     @Test
@@ -1529,46 +1660,102 @@ Run, expect green (supervisor logic уже на месте от Task 6).
             job.cancel()
         }
 
-    @Test
-    fun `computeHealth returns DOWN when stale beyond staleness`() {
+    // Helper: build a task and inject a real `Job()` with isActive=true into supervisorJob
+    // so computeHealth's active-job branches can be exercised without launching a real coroutine.
+    // Requires `supervisorJob` to be declared `@Volatile internal var` (see Step 6.1).
+    private fun taskWithActiveJob(
+        last: Instant?,
+        fails: Long,
+        lastFailure: Throwable? = null,
+    ): WatchRecordsTask {
         val task = newTask()
-        // Force state directly via internal fields
-        task.lastSuccessfulIterationAt = Instant.parse("2026-05-23T11:00:00Z")
-        task.consecutiveFailures = 3
-        task.lastFailure = RuntimeException("PG XX000")
-        // Pretend supervisorJob is active via internal-state trickery is not feasible without test-only hook.
-        // Workaround: skip this assert path here OR temporarily skip — covered indirectly through OUT_OF_SERVICE test.
-        // For now: confirm structure when job is null (returns DOWN with different reason — see other test).
-        val now = Instant.parse("2026-05-23T12:05:00Z")  // 1h05m since last success > 2m staleness
-        val health = task.computeHealth(now)
-        assertEquals(Status.DOWN, health.status)
-        // NOTE: reason here will be "supervisor not active" (since job is null in this path).
-        // This is OK — the "stale" reason is covered implicitly in the OUT_OF_SERVICE → DOWN transition
-        // achievable in an integration test, but unit-testing the stale branch directly requires a
-        // testable supervisorJob seam. Acceptable trade-off; the state-table is exercised E2E.
+        task.supervisorJob = kotlinx.coroutines.Job().apply { /* fresh, isActive=true */ }
+        task.lastSuccessfulIterationAt = last
+        task.consecutiveFailures = fails
+        task.lastFailure = lastFailure
+        return task
     }
 
     @Test
-    fun `computeHealth returns OUT_OF_SERVICE in backoff with fresh successful iteration`() =
+    fun `computeHealth returns DOWN when stale beyond staleness`() {
+        val task =
+            taskWithActiveJob(
+                last = Instant.parse("2026-05-23T11:00:00Z"),
+                fails = 3,
+                lastFailure = RuntimeException("PG XX000"),
+            )
+        val now = Instant.parse("2026-05-23T12:05:00Z")  // 1h05m since last success > 2m staleness
+        val health = task.computeHealth(now)
+        assertEquals(Status.DOWN, health.status)
+        assertTrue(
+            health.details["reason"].toString().contains("stale"),
+            "Expected 'stale' reason when active job + stale lastSuccessful + failures > 0; got ${health.details["reason"]}",
+        )
+    }
+
+    @Test
+    fun `computeHealth returns OUT_OF_SERVICE in backoff with fresh successful iteration`() {
+        val task =
+            taskWithActiveJob(
+                last = Instant.parse("2026-05-23T12:00:00Z"),
+                fails = 1,
+                lastFailure = RuntimeException("transient"),
+            )
+        val now = Instant.parse("2026-05-23T12:00:05Z")  // 5s after last success < staleness=2m
+        val health = task.computeHealth(now)
+        assertEquals(Status.OUT_OF_SERVICE, health.status)
+    }
+```
+
+**Test seam:** `supervisorJob` is declared `@Volatile internal var` (see Step 6.1 / design D-FIX-2) specifically to allow the `taskWithActiveJob(...)` helper to inject a `Job()` instance whose `isActive` returns `true`. This lets us exercise `computeHealth`'s active-job branches (stale → DOWN; fresh + failures → OUT_OF_SERVICE) without needing to launch a real coroutine.
+
+- [ ] **Step 8.7: Lifecycle test — `shutdown()` cancels supervisor, closes watchService, clears registeredDirs**
+
+Добавить test, который покрывает `@PreDestroy.shutdown()` поведение после `@PostConstruct.start()`:
+
+```kotlin
+    @Test
+    fun `shutdown cancels supervisorJob closes watchService and clears registeredDirs`() =
         runTest {
-            val task = newTask(dispatcher = StandardTestDispatcher(testScheduler))
-            // Sequence: 1 success, 1 failure → fails=1, lastSuccessful very recent
-            coEvery { loop.runIteration(any(), any(), any()) } returnsMany
-                listOf(IterationResult(0, Instant.now(clock))) andThenThrows
-                listOf(RuntimeException("transient"))
-            val job = launch { task.runSupervised() }
-            advanceTimeBy(100)
+            val watchService = mockk<WatchService>(relaxed = true)
+            val task =
+                newTask(
+                    watchServiceFactory = { watchService },
+                    dispatcher = StandardTestDispatcher(testScheduler),
+                )
+            coEvery { loop.runIteration(any(), any(), any()) } coAnswers {
+                kotlinx.coroutines.delay(Long.MAX_VALUE / 2)  // park inside loop
+                IterationResult(0, Instant.now(clock))
+            }
+            // Prime registeredDirs to mimic post-start state
+            task.registeredDirs[Path.of("/tmp/dir1")] = mockk(relaxed = true)
+            task.registeredDirs[Path.of("/tmp/dir2")] = mockk(relaxed = true)
+
+            task.start()  // would normally come from @PostConstruct
             yield()
-            val now = Instant.now(clock).plusSeconds(5)
-            val health = task.computeHealth(now)
-            assertEquals(Status.OUT_OF_SERVICE, health.status)
-            job.cancel()
+            assertTrue(task.supervisorJob != null && task.supervisorJob!!.isActive)
+
+            task.shutdown()
+
+            assertEquals(0, task.registeredDirs.size, "registeredDirs should be cleared after shutdown")
+            assertTrue(task.supervisorJob!!.isCancelled, "supervisorJob should be cancelled")
+            io.mockk.verify { watchService.close() }
         }
 ```
 
-**Замечание для разработчика:** Тест `computeHealth returns DOWN when stale beyond staleness` имеет ограничение — без exposing `supervisorJob` через test seam мы не можем поставить его в "active" state without реального launch. Соответствующий комментарий в коде объясняет trade-off. Если хочется честно покрыть stale-ветку — добавить `internal var supervisorJob` (вместо `private`) и в тесте подменять mocked `Job` с `isActive=true`. На усмотрение реализатора.
+- [ ] **Step 8.8: Additional mandatory tests covering CRITICAL-4/5/8 fixes**
 
-- [ ] **Step 7.7: Запустить все WatchRecordsTaskTest — green**
+Добавить три теста-сценария:
+
+1. **`exception during event processing still resets key (CRITICAL-5 follow-up)`** — verify that когда `loop.runIteration` бросает exception из тела обработки event'а, `key.reset()` всё равно отрабатывает (try/finally в Step 5.2). Тест использует реальный tempdir + реальный WatchService и мок recordingFileHelper, бросающий exception.
+
+2. **`partial registerAllDirs failure leaves watchService=null for next-iteration retry (CRITICAL-4 follow-up)`** — verify, что когда `loop.registerAllDirs` throws (например, `IOException`) из `ensureWatchService()`, локальный `ws` закрывается, `watchService` поле остаётся `null`, `registeredDirs.clear()` отработал, и следующий iteration пересоздаёт всё с нуля.
+
+3. **`ensureWatchService failing 3x in a row triggers backoff progression and DOWN after HEALTH_STALENESS (CRITICAL-8 follow-up — pending architectural decision in iter-1 review)`** — verify backoff progression 5s→10s→20s + что после HEALTH_STALENESS период `computeHealth()` flip'ает в DOWN.
+
+> **Note (architectural):** Тест #3 depends on resolution of disputed health-state architecture in iter-1 review §D2. Если решение — оставить текущую модель (DOWN только когда `last != null && stale`), тест должен manually прокрутить как минимум одну успешную итерацию перед серией провалов. Если решение поменяется (DOWN сразу после N consecutive failures without success), тест упрощается. Финализировать пo результатам итерации.
+
+- [ ] **Step 8.9: Запустить все WatchRecordsTaskTest — green**
 
 Делегировать через build-runner:
 
@@ -1578,7 +1765,7 @@ Build target: ./gradlew :frigate-analyzer-core:test --tests "ru.zinin.frigate.an
 
 Expected: BUILD SUCCESSFUL, все supervisor + health tests pass.
 
-- [ ] **Step 7.8: Commit**
+- [ ] **Step 8.10: Commit**
 
 ```bash
 git add modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskTest.kt
@@ -1586,94 +1773,8 @@ git commit -m "test(records-watcher): unit tests for supervisor and computeHealt
 
 Covers: RuntimeException survival + retry/backoff, ClosedWatchServiceException
 recreation, CancellationException propagation, backoff reset after N successes,
-computeHealth state matrix.
+computeHealth state matrix, shutdown lifecycle, follow-ups for CRITICAL-4/5.
 Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §7.1"
-```
-
----
-
-## Task 8: Обновить `ApplicationListener` (cleanup)
-
-> **Context:** spec §3 — `ApplicationListener` больше не отвечает за lifecycle WatchRecordsTask. Запуск через @PostConstruct в самом классе, shutdown через @PreDestroy.
-
-**Files:**
-- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt`
-
-- [ ] **Step 8.1: Убрать вызов `watchRecordsTask.run()` и обработку `ContextClosedEvent`**
-
-Заменить содержимое файла на:
-
-```kotlin
-package ru.zinin.frigate.analyzer.core.application
-
-import io.github.oshai.kotlinlogging.KotlinLogging
-import org.springframework.boot.context.event.ApplicationReadyEvent
-import org.springframework.boot.info.BuildProperties
-import org.springframework.boot.info.GitProperties
-import org.springframework.context.event.EventListener
-import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
-import ru.zinin.frigate.analyzer.core.helper.SpringProfileHelper
-import ru.zinin.frigate.analyzer.core.task.FirstTimeScanTask
-
-private val logger = KotlinLogging.logger {}
-
-@Component
-class ApplicationListener(
-    val gitProperties: GitProperties,
-    val buildProperties: BuildProperties,
-    val firstTimeScanTask: FirstTimeScanTask,
-    val recordsWatcherProperties: RecordsWatcherProperties,
-    val springProfileHelper: SpringProfileHelper,
-) {
-    @EventListener(ApplicationReadyEvent::class)
-    fun initializeApplication() {
-        logger.info { "Application started." }
-
-        logger.info { "Git version: ${gitProperties.getCommitId()}" }
-        logger.info { "Git commit time: ${gitProperties.getCommitTime()}" }
-        logger.info { "Build version: ${buildProperties.getVersion()}" }
-        logger.info { "Build time: ${buildProperties.getTime()}" }
-
-        // WatchRecordsTask now starts itself via @PostConstruct (see WatchRecordsTask.start).
-
-        if (springProfileHelper.isTestProfile()) {
-            logger.info { "Test profile detected. First time scan task skipped." }
-        } else if (!recordsWatcherProperties.disableFirstScan) {
-            firstTimeScanTask.run()
-        } else {
-            logger.info { "First time scan task skipped." }
-        }
-
-        logger.info { "Tasks started." }
-    }
-}
-```
-
-Изменения:
-- Удалили зависимость `watchRecordsTask: WatchRecordsTask` из конструктора.
-- Удалили вызов `watchRecordsTask.run()`.
-- Удалили `@EventListener(ContextClosedEvent::class) fun shutdownApplication()` целиком (lifecycle WatchRecordsTask теперь через `@PreDestroy` внутри самого класса).
-
-- [ ] **Step 8.2: Запустить compile + полный test core-модуля**
-
-Делегировать через build-runner:
-
-```
-Build target: ./gradlew :frigate-analyzer-core:compileKotlin :frigate-analyzer-core:test
-```
-
-Expected: BUILD SUCCESSFUL. Если падает на `FrigateAnalyzerApplicationTests` (Spring context test) — скорее всего из-за `@PostConstruct fun start()` пытающегося создать `WatchService` в тестовом профиле. Решение: убедиться, что `springProfileHelper.isTestProfile()` возвращает `true` в test-контексте (это уже было в pre-existing коде — должно работать). Если нет — отлаживать.
-
-- [ ] **Step 8.3: Commit**
-
-```bash
-git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt
-git commit -m "refactor(application): move WatchRecordsTask lifecycle ownership into task
-
-Listener no longer triggers watchRecordsTask.run() or shutdown — that's now
-done by @PostConstruct/@PreDestroy inside WatchRecordsTask itself.
-Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §3, §4.1"
 ```
 
 ---
@@ -1901,8 +2002,10 @@ docker logs -f deploy-frigate-analyzer-1
 
 Тест на supervisor (вручную):
 ```bash
-# Скопировать кривой файл в один из watched directories (триггерит parse exception):
-docker exec deploy-frigate-analyzer-1 touch /mnt/data/frigate/recordings/$(date +%Y-%m-%d)/garbage.txt
+# Скопировать кривой файл в один из watched directories (триггерит parse exception).
+# ВАЖНО: на host'е, НЕ внутри контейнера — volume смонтирован read-only (:ro)
+# в frigate-analyzer контейнере, поэтому изнутри `docker exec ... touch` упадёт с EROFS.
+touch /path/to/host/mount/$(date +%Y-%m-%d)/garbage.txt
 # (или подобный — не .mp4)
 
 # Проверить лог:
@@ -1999,6 +2102,6 @@ EOF
 
 ## Self-review checklist (выполнить перед началом execution)
 
-- [ ] **Spec coverage:** Все секции spec'а имеют покрывающий task — Task 1-2 (§4.5), Task 3 (§4.4), Task 4-5 (§4.2, §7.2), Task 6 (§4.1), Task 7 (§7.1), Task 8 (§3), Task 9 (§4.3), Task 10 (§8). Acceptance criteria mapping в §8 spec'а проверен.
+- [ ] **Spec coverage:** Все секции spec'а имеют покрывающий task — Task 1-2 (§4.5), Task 3 (§4.4), Task 4-5 (§4.2, §7.2), Task 6 (§4.1), Task 7 (§3), Task 8 (§7.1), Task 9 (§4.3), Task 10 (§8). Acceptance criteria mapping в §8 spec'а проверен.
 - [ ] **Placeholder scan:** Нет TBD/TODO без конкретной step-ссылки. `TODO Task 5: ...` маркеры внутри `WatchRecordsLoop.kt` после Step 4.3 — это намеренные in-progress маркеры внутри одного TDD-серии (закрываются в Step 5.2 / 5.8), не настоящие placeholders. Допустимо.
 - [ ] **Type consistency:** `IterationResult(processedEvents, lastCleanupAt)` — одинаковая сигнатура везде. `computeHealth(now: Instant): Health` — одинаковая в task и в тестах. `WatchRecordsLoop` параметры одинаковы во всех вызовах. Метод `userService.findActiveByUsername(...)` — единственный owner-discovery механизм.
