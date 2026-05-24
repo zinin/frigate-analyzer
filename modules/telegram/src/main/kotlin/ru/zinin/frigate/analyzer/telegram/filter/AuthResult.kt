@@ -4,6 +4,10 @@ import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 
 sealed class AuthResult {
+    /**
+     * Invariant: [user] is guaranteed `status == ACTIVE` and `chatId != null`
+     * (enforced by `TelegramUserService.activateUser`'s contract).
+     */
     data class Active(
         val role: UserRole,
         val user: TelegramUserDto,
