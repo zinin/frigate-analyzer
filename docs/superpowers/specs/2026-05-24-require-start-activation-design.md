@@ -36,8 +36,13 @@
 ## Non-goals
 
 - Поведение `/start` не меняется. `StartCommandHandler` сам обрабатывает invite + activate.
-- Callback-обработчики (`QuickExportHandler`, `nfs:`-callback в `FrigateAnalyzerBot`, `CancelExportHandler`) не получают новую логику отказа: до `/start` пользователь физически не может получить inline-кнопки (рассылка нотификаций идёт только по ACTIVE chatId-ам). `QuickExportHandler` адаптируется только под новую сигнатуру `AuthorizationFilter` (поведение сохраняется).
+- Callback-обработчики (`QuickExportHandler`, `nfs:`-callback в `FrigateAnalyzerBot`, `CancelExportHandler`) не получают новую логику отказа: до `/start` пользователь физически не может получить inline-кнопки (рассылка нотификаций идёт только по ACTIVE chatId-ам). `QuickExportHandler` и `CancelExportHandler` адаптируются только под новую сигнатуру `AuthorizationFilter` (поведение сохраняется: и `NeedsActivation`, и `Unauthorized` отвечают `common.error.unauthorized`).
+- **Принимаемое изменение поведения для callback-flow:** старый `getRole(username)` пускал owner-а по env-конфигу даже без записи в БД. Новый `authorize(username)` для owner-а без записи вернёт `NeedsActivation` → отказ. Сценарий «old inline-кнопка после reset/restore БД» теперь не сработает — приемлемо, т.к. данные за кнопкой всё равно отсутствуют.
 - Не вводим новую сущность владельца — обходимся существующими `UserStatus.INVITED` / `UserStatus.ACTIVE` и фактом отсутствия записи.
+- **Гонка двух параллельных `/start` от owner-а на чистой БД — pre-existing limitation, вне scope.** `inviteUser` делает check-then-insert и при concurrent-вызовах может упереться в unique-constraint на `username`. Исправление выходит за рамки данной задачи (требуется upsert / транзакция с retry). Документируется как known issue.
+- **Username-only авторизация — pre-existing модель**, не меняется. `authorize` ищет по username без проверки `userId`/`chatId`. Если Telegram-username переиспользован другим аккаунтом, новый владелец username получит доступ. Закрепляется как осознанное ограничение.
+- **Bot — private-only invariant.** `extractUsername()` принимает только `PrivateContentMessage`, group/channel-сообщения игнорируются (возвращается `Unauthorized`). Поведение существующее, явно фиксируется.
+- **Owner-меню при boot для owner-а без записи — pre-existing limitation, не исправляется.** `FrigateAnalyzerBot.start()` использует `userService.findActiveByUsername(properties.owner)`; на чистой БД вернёт `null`, и owner-меню не зарегистрируется до первого `/start`. Out of scope.
 
 ## Architecture
 
@@ -53,7 +58,7 @@ sealed class AuthResult {
 }
 ```
 
-- `Active(role, user)` — активный owner или активный user. `user` гарантированно не null и `status == ACTIVE`.
+- `Active(role, user)` — активный owner или активный user. `user` гарантированно не null, `status == ACTIVE`, **и `chatId != null` по контракту `activateUser` (инвариант: ACTIVE-запись всегда имеет chatId, заполняемый в `activateUser` через `UPDATE … SET chat_id=…`)**.
 - `NeedsActivation` — пользователь известен (либо это сконфигурированный owner, либо есть `INVITED`-запись), но активация ещё не завершена.
 - `Unauthorized` — не сконфигурирован как owner и нет записи в БД.
 
@@ -78,8 +83,8 @@ record = repository.findByUsername(username)
 isOwner = (username == properties.owner)
 
 return when {
-    record?.status == ACTIVE && isOwner  -> Active(OWNER, record.toDto())
-    record?.status == ACTIVE && !isOwner -> Active(USER, record.toDto())
+    record?.status == ACTIVE && isOwner  -> Active(OWNER, record)
+    record?.status == ACTIVE && !isOwner -> Active(USER, record)
     record?.status == INVITED            -> NeedsActivation
     record == null && isOwner            -> NeedsActivation
     else                                  -> Unauthorized
@@ -124,7 +129,11 @@ val resolvedUser: TelegramUserDto? = when (val result = authorizationFilter.auth
 
 Для `/start` (`requiredRole == null`) — проверка авторизации в роутере не запускается, `resolvedUser = null`. `StartCommandHandler` сам обрабатывает invite/activate.
 
-#### onContentMessage (некомандный текст)
+#### onContentMessage (non-command content: text, photo, sticker, voice и т.д.)
+
+> Блок реагирует на любой `ContentMessage` (не только текст): early-return срабатывает только для текста, начинающегося с `/`. Фото, стикеры, voice от неавторизованных пользователей получают локализованный отказ. Это существующее поведение.
+
+> **Ограничение scope:** `onContentMessage` не покрывает неизвестные команды (`/foo`) — `onCommand(...)` зарегистрирован только для известных handler-ов из `CommandHandler`-списка, а early-return `text.startsWith("/")` пропускает любой слэш-текст. То есть для неактивированного owner-а `/foo` останется без ответа — pre-existing поведение, не регрессия.
 
 ```kotlin
 val lang = StartCommandHandler.detectLanguage(message.telegramLanguageCode())
@@ -190,9 +199,13 @@ authorize(message) ↓
 | Не-приглашённый пишет `/start` | `StartCommandHandler` сам отвечает `common.error.unauthorized` (текущая логика). ✅ |
 | Owner после `/start` пишет команду | `Active(OWNER, ACTIVE-запись)` → работает как сейчас. ✅ |
 | USER без `@username` в Telegram | `extractUsername == null` → `Unauthorized`. ✅ |
-| Owner с записью INVITED (восстановили снапшот) | `NeedsActivation` → "сначала /start". После `/start` — `activate` (INVITED → ACTIVE). ✅ |
-| Гонка двух `/start` от owner-а | SQL `UPDATE ... WHERE status = 'INVITED'` идемпотентен: второй вызов вернёт 0 строк. Поведение `StartCommandHandler` не меняется. ✅ |
-| Callback от INVITED-юзера (теоретически) | `QuickExportHandler` ответит `common.error.unauthorized` — приемлемо, рассылка идёт только ACTIVE. ✅ |
+| Owner с записью INVITED (теоретически, например после restore from snapshot) | `NeedsActivation` → "сначала /start". После `/start` — `activate` (INVITED → ACTIVE). ✅ |
+| Гонка двух `/start` от owner-а на чистой БД | **Pre-existing limitation, out of scope.** `inviteUser` делает check-then-insert: оба вызова видят `null`, оба пытаются `INSERT`, второй упирается в unique-constraint на `username`. Существующий баг, не вводится этим PR. См. Non-goals. ⚠️ |
+| ACTIVE owner шлёт `/start` повторно | `StartCommandHandler` отвечает `command.start.welcome.owner` / `command.start.already.subscribed`; `activateUser` обновит 0 строк, состояние не меняется. Не регрессия. ✅ |
+| ACTIVE-запись без `chatId` | По инварианту `activateUser` невозможно: `chatId` устанавливается в той же транзакции, что и `status=ACTIVE`. Документируется как DB-invariant. ✅ |
+| Callback от INVITED-юзера (теоретически) | `QuickExportHandler` / `CancelExportHandler` ответят `common.error.unauthorized` — приемлемо, рассылка идёт только ACTIVE. ✅ |
+| Callback от owner-а без записи (старая inline-кнопка после reset БД) | Раньше: пускался по env owner. Теперь: `NeedsActivation` → отказ `common.error.unauthorized`. **Принимаемое изменение поведения** (см. Non-goals), данные за кнопкой всё равно отсутствуют. ⚠️ |
+| Group/channel-сообщение от реального пользователя | `extractUsername` принимает только `PrivateContentMessage` → возвращает `null` → `Unauthorized`. Бот private-only by design. ✅ |
 
 ## Тестирование
 
@@ -215,13 +228,17 @@ authorize(message) ↓
 
 | # | Вход | Ожидание |
 |---|---|---|
-| 7 | message без username (extractUsername == null) | `Unauthorized` |
+| 7 | `PrivateContentMessage` с `user.username == null` | `Unauthorized` (extractUsername вернул null) |
+| 8 | `PrivateContentMessage` с валидным `user.username` (ACTIVE user) | `Active(USER, ...)` — happy-path делегации `authorize(message) → extractUsername → authorize(username)` |
+
+> **Реализация тестов #7 и #8:** не использовать `mockk<CommonMessage<MessageContent>>(relaxed = true)` — это хрупко (зависит от деталей реализации MockK и от того, что `extractUsername` использует именно `as? PrivateContentMessage<*>`). Вместо этого построить настоящий `PrivateContentMessage` mock через `mockk<PrivateContentMessage<MessageContent>>()` со stub-ом `user.username` (паттерн уже используется в `QuickExportHandlerTest.createCallbackWithUser`).
 
 Стиль — JUnit5 + MockK (как в существующих тестах модуля), моки `TelegramProperties` и `TelegramUserService`/`TelegramUserRepository`.
 
 ### Существующие тесты
 
 - `QuickExportHandlerTest` — обновить моки `authorizationFilter.getRole(...)` на `authorize(...)`, возвращающий `AuthResult.Active(...)` / `AuthResult.Unauthorized`.
+- `CancelExportHandlerTest` — обновить 8 моков `authFilter.getRole(...)` на `authorize(...)` с теми же возвращаемыми ветками. Поведение `CancelExportHandler` сохраняется (callback flow, `NeedsActivation` и `Unauthorized` обе мапятся в `common.error.unauthorized`).
 - Прочие handler-тесты (`LanguageCommandHandlerTest`, `NotificationsCommandHandlerTest`, и т.д.) — проверка, что `AuthorizationFilter` не упоминается; handler-ы получают `user` параметром, auth — в роутере.
 - `MessageKeyParityTest` — без правок, автоматически проверит парность нового ключа.
 
@@ -237,11 +254,13 @@ authorize(message) ↓
 
 **Изменяемые:**
 - `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/filter/AuthorizationFilter.kt`
-- `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt`
+- `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt` (включая inline-комментарий про `nfs:`-callback, который намеренно использует `findActiveByUsername` напрямую)
 - `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandler.kt`
+- `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/cancel/CancelExportHandler.kt` — миграция сигнатуры `getRole` → `authorize`, поведение сохраняется (callback flow)
+- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/cancel/CancelExportHandlerTest.kt` — обновление 8 моков `authFilter.getRole(...)` → `authFilter.authorize(...)`
 - `modules/telegram/src/main/resources/messages_ru.properties`
 - `modules/telegram/src/main/resources/messages_en.properties`
-- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandlerTest.kt` (если содержит mock-и фильтра)
+- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandlerTest.kt`
 
 ## Документация
 

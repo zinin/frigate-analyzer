@@ -28,9 +28,11 @@
 
 **Изменяются:**
 - `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/filter/AuthorizationFilter.kt` — добавляется `authorize(...)`, после миграции callers удаляется `getRole(...)`.
-- `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt` — переписываются `onCommand` (resolution блок) и `onContentMessage`.
+- `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt` — переписываются `onCommand` (resolution блок) и `onContentMessage`; добавляется inline-комментарий про `nfs:`-callback (намеренно использует `findActiveByUsername` напрямую).
 - `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandler.kt` — `handle(...)` использует `authorize`.
 - `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/quickexport/QuickExportHandlerTest.kt` — все моки `authorizationFilter.getRole(...)` переписаны на `authorize(...)`.
+- `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/cancel/CancelExportHandler.kt` — миграция сигнатуры `getRole` → `authorize` (Task 6b). Поведение сохраняется.
+- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/cancel/CancelExportHandlerTest.kt` — обновление 8 моков `authFilter.getRole(...)` → `authFilter.authorize(...)`.
 - `modules/telegram/src/main/resources/messages_ru.properties` — новый ключ.
 - `modules/telegram/src/main/resources/messages_en.properties` — новый ключ.
 - `.claude/rules/telegram.md` — описание `AuthorizationFilter`.
@@ -113,7 +115,28 @@ git commit -m "i18n(telegram): add common.error.activation.required (ru/en)"
 **Files:**
 - Create: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/filter/AuthorizationFilterTest.kt`
 
-- [ ] **Step 1: Создать тестовый файл с полным покрытием 7 кейсов**
+- [ ] **Step 0: Аудит call-sites `getRole` (для уверенности перед Task 7)**
+
+Запустить перед началом реализации, чтобы убедиться, что список call-sites в плане полный:
+
+```bash
+grep -rn 'authorizationFilter\.getRole\|authFilter\.getRole' modules/ --include='*.kt'
+```
+
+Ожидаемые production-файлы (3 шт):
+- `modules/telegram/.../bot/FrigateAnalyzerBot.kt` — `onContentMessage` (Task 5)
+- `modules/telegram/.../bot/handler/quickexport/QuickExportHandler.kt` — `handle()` (Task 6)
+- `modules/telegram/.../bot/handler/cancel/CancelExportHandler.kt` — `handle()` (Task 6b — добавлен после ревью)
+
+Ожидаемые тестовые файлы (2 шт):
+- `modules/telegram/.../bot/handler/quickexport/QuickExportHandlerTest.kt` — ~6 моков (Task 6)
+- `modules/telegram/.../bot/handler/cancel/CancelExportHandlerTest.kt` — 8 моков (Task 6b)
+
+Если grep вернёт что-то ещё — STOP, добавить в plan дополнительный шаг миграции перед Task 7.
+
+- [ ] **Step 1: Создать тестовый файл с полным покрытием 8 кейсов**
+
+> **Заметка по тестам #7 и #8 (path `authorize(message)`):** не использовать `mockk<CommonMessage<MessageContent>>(relaxed = true)` — это хрупко (зависит от деталей реализации MockK). Вместо этого строить настоящий `PrivateContentMessage` mock через `mockk<PrivateContentMessage<MessageContent>>()` со stub-ом `user.username` (паттерн используется в существующем `QuickExportHandlerTest`).
 
 ```kotlin
 package ru.zinin.frigate.analyzer.telegram.filter
@@ -226,14 +249,40 @@ class AuthorizationFilterTest {
         }
 
     @Test
-    fun `authorize(message) returns Unauthorized when extractUsername returns null`() =
+    fun `authorize(message) returns Unauthorized when PrivateContentMessage has null username`() =
         runTest {
-            // CommonMessage без PrivateContentMessage-каста → extractUsername вернёт null
-            val message = mockk<CommonMessage<MessageContent>>(relaxed = true)
+            // Реальный PrivateContentMessage с user.username == null → extractUsername вернёт null
+            val tgUser = mockk<dev.inmo.tgbotapi.types.chat.User>(relaxed = true) {
+                every { username } returns null
+            }
+            val message = mockk<dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage<MessageContent>>(relaxed = true) {
+                every { user } returns tgUser
+            }
 
             val result = filter.authorize(message)
 
             assertEquals(AuthResult.Unauthorized, result)
+        }
+
+    @Test
+    fun `authorize(message) returns Active(USER) for PrivateContentMessage with active user`() =
+        runTest {
+            val user = makeUser("alice", UserStatus.ACTIVE)
+            coEvery { userService.findByUsername("alice") } returns user
+
+            val tgUsername = mockk<dev.inmo.tgbotapi.types.Username> {
+                every { withoutAt } returns "alice"
+            }
+            val tgUser = mockk<dev.inmo.tgbotapi.types.chat.User>(relaxed = true) {
+                every { username } returns tgUsername
+            }
+            val message = mockk<dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage<MessageContent>>(relaxed = true) {
+                every { this@mockk.user } returns tgUser
+            }
+
+            val result = filter.authorize(message)
+
+            assertEquals(AuthResult.Active(UserRole.USER, user), result)
         }
 }
 ```
@@ -383,12 +432,21 @@ git commit -m "feat(telegram): introduce AuthorizationFilter.authorize() with Ne
 
 В этом таске переписываются два блока: `onCommand` resolution (строки 115-157) и `onContentMessage` (строки 292-305). Остальные блоки (`onDataCallbackQuery`-обработчики) не трогаем.
 
-- [ ] **Step 1: Добавить импорт `AuthResult` в `FrigateAnalyzerBot.kt`**
+- [ ] **Step 1: Добавить импорт `AuthResult` в `FrigateAnalyzerBot.kt` + комментарий про `nfs:`-callback**
 
 В блоке imports добавить:
 
 ```kotlin
 import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
+```
+
+В обработчике `nfs:`-callback (около строки 221, где сейчас `userService.findActiveByUsername(senderUsername)`) добавить inline-комментарий:
+
+```kotlin
+// nfs:-callback намеренно использует findActiveByUsername напрямую, а не authorize(...):
+// рассылка уведомлений идёт только на ACTIVE chatId-ы (getAllActiveChatIds), поэтому
+// callback физически не может прийти от INVITED/Unauthorized пользователя.
+val senderUser = userService.findActiveByUsername(senderUsername)
 ```
 
 - [ ] **Step 2: Заменить блок resolution внутри `onCommand`**
@@ -577,29 +635,36 @@ import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 ```
 
-- [ ] **Step 4: Добавить хелпер `makeActiveUser` в `QuickExportHandlerTest.kt`**
+- [ ] **Step 4: Добавить импорты и хелпер `makeActiveUser` в `QuickExportHandlerTest.kt`**
 
-В классе `QuickExportHandlerTest`, рядом с другими private-хелперами (например, после `tearDown()`), добавить:
+Сначала добавить недостающие импорты в шапку файла:
 
 ```kotlin
-    private fun makeActiveUser(username: String): ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto =
-        ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto(
-            id = java.util.UUID.randomUUID(),
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.model.UserStatus
+import java.time.Instant
+import java.util.UUID
+```
+
+Затем в классе `QuickExportHandlerTest`, рядом с другими private-хелперами (например, после `tearDown()`), добавить хелпер на коротких именах:
+
+```kotlin
+    private fun makeActiveUser(username: String): TelegramUserDto =
+        TelegramUserDto(
+            id = UUID.randomUUID(),
             username = username,
             chatId = 1L,
             userId = 1L,
             firstName = "First",
             lastName = null,
-            status = ru.zinin.frigate.analyzer.telegram.model.UserStatus.ACTIVE,
-            creationTimestamp = java.time.Instant.now(),
-            activationTimestamp = java.time.Instant.now(),
+            status = UserStatus.ACTIVE,
+            creationTimestamp = Instant.now(),
+            activationTimestamp = Instant.now(),
             languageCode = "en",
             notificationsRecordingEnabled = true,
             notificationsSignalEnabled = true,
         )
 ```
-
-(Полные FQN в теле — чтобы избежать массового добавления импортов, при этом тип уже импортирован MockK-блоками выше косвенно. Если linter настаивает на импортах — добавить `import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto`, `import ru.zinin.frigate.analyzer.telegram.model.UserStatus`, `import java.time.Instant`, `import java.util.UUID` в шапку файла и переписать вызов через короткие имена.)
 
 - [ ] **Step 5: Заменить глобальный stub в `HandleTest.init`**
 
@@ -737,12 +802,152 @@ git commit -m "refactor(telegram): QuickExportHandler uses AuthorizationFilter.a
 
 ---
 
+## Task 6b: Обновить `CancelExportHandler.handle()` + тесты
+
+**Files:**
+- Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/cancel/CancelExportHandler.kt`
+- Modify: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/cancel/CancelExportHandlerTest.kt`
+
+Полная аналогия с Task 6. Поведение `CancelExportHandler` остаётся прежним: и `NeedsActivation`, и `Unauthorized` отвечают `common.error.unauthorized`. Меняется только сигнатура.
+
+> **Почему этот таск нужен:** review-итерация 1 обнаружила, что `CancelExportHandler.kt:71` использует `authFilter.getRole(username)`, а `CancelExportHandlerTest.kt` содержит 8 моков `coEvery { authFilter.getRole(...) }` (строки 85, 115, 159, 197, 234, 269, 303, 342). Без миграции этого файла Task 7 (удаление legacy `getRole`) сломает компиляцию.
+
+- [ ] **Step 1: Добавить импорт `AuthResult` в `CancelExportHandler.kt`**
+
+```kotlin
+import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
+```
+
+- [ ] **Step 2: Заменить блок авторизации в `handle()`**
+
+Найти:
+
+```kotlin
+        if (username == null || authFilter.getRole(username) == null) {
+            answerSafely(callback, msg.get("common.error.unauthorized", lang))
+            return
+        }
+```
+
+Заменить на:
+
+```kotlin
+        if (username == null) {
+            answerSafely(callback, msg.get("common.error.unauthorized", lang))
+            return
+        }
+        when (authFilter.authorize(username)) {
+            is AuthResult.Active -> Unit
+            AuthResult.NeedsActivation, AuthResult.Unauthorized -> {
+                answerSafely(callback, msg.get("common.error.unauthorized", lang))
+                return
+            }
+        }
+```
+
+- [ ] **Step 3: Добавить импорт `AuthResult` в `CancelExportHandlerTest.kt`**
+
+```kotlin
+import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
+```
+
+- [ ] **Step 4: Добавить хелпер `makeActiveUser` в `CancelExportHandlerTest.kt`**
+
+Если в файле ещё нет нужных импортов, добавить:
+
+```kotlin
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.model.UserStatus
+import java.time.Instant
+import java.util.UUID
+```
+
+Затем рядом с другими private-хелперами добавить:
+
+```kotlin
+    private fun makeActiveUser(username: String): TelegramUserDto =
+        TelegramUserDto(
+            id = UUID.randomUUID(),
+            username = username,
+            chatId = 1L,
+            userId = 1L,
+            firstName = "First",
+            lastName = null,
+            status = UserStatus.ACTIVE,
+            creationTimestamp = Instant.now(),
+            activationTimestamp = Instant.now(),
+            languageCode = "en",
+            notificationsRecordingEnabled = true,
+            notificationsSignalEnabled = true,
+        )
+```
+
+- [ ] **Step 5: Заменить 8 моков `getRole` на `authorize`**
+
+В каждой из 8 строк (85, 115, 159, 197, 234, 269, 303, 342) заменить:
+
+```kotlin
+coEvery { authFilter.getRole("alice") } returns UserRole.USER
+```
+
+на:
+
+```kotlin
+coEvery { authFilter.authorize("alice") } returns AuthResult.Active(UserRole.USER, makeActiveUser("alice"))
+```
+
+Для строки 269 (`returns null`):
+
+```kotlin
+coEvery { authFilter.getRole("bob") } returns null
+```
+
+→
+
+```kotlin
+coEvery { authFilter.authorize("bob") } returns AuthResult.Unauthorized
+```
+
+- [ ] **Step 6: Запустить тесты `CancelExportHandlerTest`**
+
+```bash
+./gradlew :frigate-analyzer-telegram:test --tests "ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandlerTest"
+```
+Ожидание: все тесты PASS.
+
+- [ ] **Step 7: Запустить полный набор тестов модуля**
+
+```bash
+./gradlew :frigate-analyzer-telegram:test
+```
+Ожидание: все тесты проходят.
+
+- [ ] **Step 8: Стейджинг и коммит**
+
+```bash
+git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/cancel/CancelExportHandler.kt \
+        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/cancel/CancelExportHandlerTest.kt
+git commit -m "refactor(telegram): CancelExportHandler uses AuthorizationFilter.authorize()"
+```
+
+---
+
 ## Task 7: Удалить legacy `getRole(...)` из `AuthorizationFilter`
 
 **Files:**
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/filter/AuthorizationFilter.kt`
 
-После Tasks 5 и 6 ни один call-site не использует `getRole`. Удаляем.
+После Tasks 5, 6 и 6b ни один call-site не использует `getRole`. Удаляем.
+
+- [ ] **Step 0: Финальный grep-аудит call-sites `getRole`**
+
+Перед удалением убедиться, что не осталось ни одного использования:
+
+```bash
+grep -rn 'authorizationFilter\.getRole\|authFilter\.getRole\|filter\.getRole\|AuthorizationFilter.*\.getRole' modules/ --include='*.kt'
+```
+
+Ожидается пустой результат. Если что-то найдётся — STOP, добавить миграцию ДО удаления legacy.
 
 - [ ] **Step 1: Удалить блок legacy `getRole(...)` из `AuthorizationFilter.kt`**
 
@@ -922,10 +1127,11 @@ git log --oneline master..fix/require-start-activation
 3. `feat(telegram): introduce AuthorizationFilter.authorize() with NeedsActivation`
 4. `feat(telegram): require /start activation before non-/start commands and text`
 5. `refactor(telegram): QuickExportHandler uses AuthorizationFilter.authorize()`
-6. `refactor(telegram): remove legacy AuthorizationFilter.getRole()`
-7. `docs(telegram): document AuthorizationFilter.authorize() and NeedsActivation`
+6. `refactor(telegram): CancelExportHandler uses AuthorizationFilter.authorize()`
+7. `refactor(telegram): remove legacy AuthorizationFilter.getRole()`
+8. `docs(telegram): document AuthorizationFilter.authorize() and NeedsActivation`
 
-(Плюс design-doc-коммит, который уже в ветке.)
+(Плюс design-doc-коммит и review-iter-1-коммит, которые уже в ветке.)
 
 - [ ] **Step 3: Перед созданием PR**
 
