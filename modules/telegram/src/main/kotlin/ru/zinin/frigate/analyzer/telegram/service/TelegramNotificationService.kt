@@ -36,4 +36,11 @@ interface TelegramNotificationService {
         camId: String,
         downtime: Duration,
     )
+
+    /**
+     * Send a plain text message to the bot owner (defined by application.telegram.owner).
+     * No-op when telegram is disabled or the owner has not activated the bot yet.
+     * Used for system-level admin signals such as the startup notification.
+     */
+    suspend fun sendOwnerMessage(text: String)
 }
