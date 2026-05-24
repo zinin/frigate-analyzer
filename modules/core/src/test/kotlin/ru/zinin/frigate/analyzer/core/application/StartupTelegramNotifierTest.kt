@@ -7,6 +7,10 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
+import kotlinx.coroutines.job
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.boot.info.BuildProperties
@@ -36,6 +40,18 @@ class StartupTelegramNotifierTest {
         clearMocks(telegramNotificationService, gitProperties, buildProperties)
     }
 
+    @AfterEach
+    fun tearDown() {
+        notifier.shutdown()
+    }
+
+    private fun awaitStartupNotification() =
+        runBlocking {
+            notifier.scope.coroutineContext.job.children
+                .toList()
+                .joinAll()
+        }
+
     @Test
     fun `onReady sends owner message with version commit buildTime and started`() {
         every { gitProperties.commitId } returns "abc1234567890def"
@@ -44,6 +60,7 @@ class StartupTelegramNotifierTest {
         coEvery { telegramNotificationService.sendOwnerMessage(any()) } just Runs
 
         notifier.onReady()
+        awaitStartupNotification()
 
         coVerify(exactly = 1) {
             telegramNotificationService.sendOwnerMessage(
@@ -67,6 +84,7 @@ class StartupTelegramNotifierTest {
 
         // Should not throw:
         notifier.onReady()
+        awaitStartupNotification()
 
         coVerify(exactly = 1) { telegramNotificationService.sendOwnerMessage(any()) }
     }
@@ -79,6 +97,7 @@ class StartupTelegramNotifierTest {
         coEvery { telegramNotificationService.sendOwnerMessage(any()) } just Runs
 
         notifier.onReady()
+        awaitStartupNotification()
 
         coVerify(exactly = 1) {
             telegramNotificationService.sendOwnerMessage(
@@ -98,13 +117,14 @@ class StartupTelegramNotifierTest {
         every { buildProperties.time } returns Instant.parse("2026-05-20T10:00:00Z")
         // We throw a plain CancellationException — kotlinx.coroutines.TimeoutCancellationException
         // extends it but has an internal constructor, so we can't instantiate it directly.
-        // This still exercises the same runCatching.onFailure path: any Throwable (including
-        // CancellationException subtypes) thrown from inside runBlocking must be swallowed.
+        // The fire-and-forget launch isolates the cancellation to the child coroutine;
+        // it must never surface out of onReady().
         coEvery { telegramNotificationService.sendOwnerMessage(any()) } throws
             CancellationException("simulated timeout")
 
         // Must not throw:
         notifier.onReady()
+        awaitStartupNotification()
 
         coVerify(exactly = 1) { telegramNotificationService.sendOwnerMessage(any()) }
     }

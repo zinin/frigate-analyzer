@@ -1,7 +1,15 @@
 package ru.zinin.frigate.analyzer.core.application
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.runBlocking
+import jakarta.annotation.PreDestroy
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -30,6 +38,12 @@ class StartupTelegramNotifier(
     private val buildProperties: BuildProperties,
     private val clock: Clock,
 ) {
+    // Fire-and-forget scope: keeps the startup notification off the ApplicationReadyEvent
+    // publisher thread so slow Telegram delivery cannot delay boot/readiness. Lifecycle-bound
+    // via @PreDestroy below; SupervisorJob isolates failures of the single child launch.
+    internal val scope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("startup-telegram-notifier"))
+
     @EventListener(ApplicationReadyEvent::class)
     fun onReady() {
         // iter-2 CONCERN-5: BuildProperties / GitProperties getters may return null
@@ -43,17 +57,28 @@ class StartupTelegramNotifier(
                 appendLine("Build time: ${buildProperties.time ?: UNKNOWN}")
                 append("Started: ${Instant.now(clock)}")
             }
-        runCatching {
-            runBlocking {
+        scope.launch {
+            try {
                 // iter-1 review §D5 — safety net for future regressions (notificationQueue.enqueue is
                 // microsec in normal path but may become blocking if the buffer ever fills).
                 withTimeout(STARTUP_NOTIFICATION_TIMEOUT.toMillis()) {
                     telegramNotificationService.sendOwnerMessage(text)
                 }
+            } catch (e: TimeoutCancellationException) {
+                logger.warn { "Startup notification timed out after $STARTUP_NOTIFICATION_TIMEOUT: ${e.message}" }
+            } catch (e: CancellationException) {
+                // Scope was cancelled (shutdown). Let cancellation propagate so the coroutine
+                // terminates in the expected state instead of being recorded as a failure.
+                throw e
+            } catch (e: Throwable) {
+                logger.warn(e) { "Failed to send startup notification" }
             }
-        }.onFailure { e ->
-            logger.warn(e) { "Failed to send startup notification" }
         }
+    }
+
+    @PreDestroy
+    fun shutdown() {
+        scope.cancel()
     }
 
     private companion object {
