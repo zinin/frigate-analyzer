@@ -25,13 +25,15 @@
 
 ## Goal
 
-Все команды кроме `/start` (и весь некомандный текст) должны **отказывать с явным сообщением "сначала /start"** для:
+Все **известные** команды (зарегистрированные в `CommandHandler`-списке — `/help`, `/timezone`, `/language`, `/notifications`, `/export`, `/version`, `/adduser`, `/removeuser`, `/users`) кроме `/start` (и весь non-command content: текст, фото, стикеры, voice) должны **отказывать с явным сообщением "сначала /start"** для:
 
 1. Owner-а, у которого нет записи в БД (чистая БД).
 2. Owner-а с записью `INVITED` (теоретически — например, после восстановления из снапшота).
 3. Любого пользователя с записью `INVITED`.
 
 Не-приглашённые пользователи (никогда не упоминавшиеся в `/adduser`) продолжают получать `common.error.unauthorized`.
+
+> **Out of scope:** unknown slash-команды (`/foo`, etc., не зарегистрированные в `CommandHandler`). Pre-existing behavior — `onCommand` не реагирует, `onContentMessage` early-return-ит для любого `/`-текста. Бот остаётся silent для unknown commands от любых пользователей. Не считается регрессией.
 
 ## Non-goals
 
@@ -79,8 +81,8 @@ fun extractUsername(message: CommonMessage<MessageContent>): String?  // как 
 Логика `authorize(username)`:
 
 ```
-record = repository.findByUsername(username)
-isOwner = (username == properties.owner)
+record = userService.findByUsername(username)
+isOwner = userService.isOwner(username)   // case-insensitive, единая точка истины
 
 return when {
     record?.status == ACTIVE && isOwner  -> Active(OWNER, record)
@@ -90,6 +92,8 @@ return when {
     else                                  -> Unauthorized
 }
 ```
+
+> **Заметка по case-insensitivity:** `userService.isOwner(username)` уже выполняет `username.equals(configured, ignoreCase = true)`. Используем его вместо локального `username == properties.owner`, чтобы починить pre-existing onboarding-баг (если в env-конфиге `MyOwner`, а Telegram отдаёт `myowner` — раньше owner получал `Unauthorized` вместо `NeedsActivation`, и onboarding ломался).
 
 `authorize(message)`:
 

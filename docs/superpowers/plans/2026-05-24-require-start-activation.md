@@ -165,6 +165,16 @@ class AuthorizationFilterTest {
         }
     private val filter = AuthorizationFilter(properties, userService)
 
+    @org.junit.jupiter.api.BeforeEach
+    fun setupOwnerCheck() {
+        // userService.isOwner делает case-insensitive сравнение с properties.owner ("ownerUser").
+        // Мокаем тут единожды; per-test тест с другим регистром переопределит.
+        every { userService.isOwner(any()) } answers {
+            val u = firstArg<String?>()
+            u != null && u.equals("ownerUser", ignoreCase = true)
+        }
+    }
+
     private fun makeUser(
         username: String,
         status: UserStatus,
@@ -284,6 +294,20 @@ class AuthorizationFilterTest {
 
             assertEquals(AuthResult.Active(UserRole.USER, user), result)
         }
+
+    @Test
+    fun `authorize(username) returns Active(OWNER) for owner with different case`() =
+        runTest {
+            // env-конфиг: "ownerUser". Telegram отдаёт: "OWNERUSER". Должно работать благодаря
+            // userService.isOwner(case-insensitive). Запись в БД сохранена в том регистре, как
+            // прислал Telegram при /start (т.е. "OWNERUSER").
+            val owner = makeUser("OWNERUSER", UserStatus.ACTIVE)
+            coEvery { userService.findByUsername("OWNERUSER") } returns owner
+
+            val result = filter.authorize("OWNERUSER")
+
+            assertEquals(AuthResult.Active(UserRole.OWNER, owner), result)
+        }
 }
 ```
 
@@ -342,7 +366,7 @@ class AuthorizationFilter(
 
     suspend fun authorize(username: String): AuthResult {
         val record = userService.findByUsername(username)
-        val isOwner = username == properties.owner
+        val isOwner = userService.isOwner(username)   // case-insensitive
 
         return when {
             record?.status == UserStatus.ACTIVE && isOwner -> {
@@ -358,7 +382,7 @@ class AuthorizationFilter(
                 AuthResult.NeedsActivation
             }
             record == null && isOwner -> {
-                logger.debug { "Configured owner without DB record: @$username" }
+                logger.info { "Configured owner without DB record (waiting for /start): @$username" }
                 AuthResult.NeedsActivation
             }
             else -> {
@@ -577,7 +601,30 @@ val senderUser = userService.findActiveByUsername(senderUsername)
 ```
 Ожидание: все тесты проходят.
 
-- [ ] **Step 5: Стейджинг и коммит**
+- [ ] **Step 5: Manual smoke-test чеклист (router behavior)**
+
+> Поскольку `FrigateAnalyzerBot.registerRoutes()` напрямую не покрыт юнит-тестами (`BehaviourContext` ktgbotapi сложно мокать), проверяем ключевые ветки роутера руками после Task 5. Цель — отловить опечатки в i18n-ключах, перепутанный `lang`, забытый `return@onCommand`, или сломанный `/start` bypass.
+>
+> **Окружение:** локальная сборка с пустой БД (или `DROP TABLE telegram_users; CREATE TABLE ...` через Liquibase rollback). Owner в env-конфиге выставлен на ваш Telegram-username.
+>
+> **Сценарии:**
+>
+> | # | Действие | Ожидание |
+> |---|---|---|
+> | 1 | Owner на чистой БД: `/help` | reply: `common.error.activation.required` («Для использования бота сначала отправьте /start.»). Handler НЕ вызван. |
+> | 2 | Owner на чистой БД: `/start` | StartCommandHandler работает: invite + activate, ответ `command.start.welcome.owner`. |
+> | 3 | Owner после `/start`: `/help` | full help-меню (owner-секция включена). |
+> | 4 | Owner после `/start`: `/timezone Europe/Moscow` | TZ сохраняется (был баг до этой задачи). |
+> | 5 | Owner после `/start`: non-command текст «привет» | бот молчит (no-op). |
+> | 6 | Не-приглашённый user (другой Telegram-аккаунт): `/help` | reply: `common.error.unauthorized` («Доступ запрещён»). |
+> | 7 | Не-приглашённый user: «привет» (non-command) | reply: `common.error.unauthorized`. |
+> | 8 | INVITED user (вручную добавлен через `/adduser alice` от owner-а, но alice не делала `/start`): `/help` от имени alice | reply: `common.error.activation.required`. |
+> | 9 | INVITED user (alice): `/start` | StartCommandHandler: activate (INVITED → ACTIVE), ответ `command.start.welcome.user`. |
+> | 10 | Owner в env-конфиге `MyOwner`, реальный Telegram username `myowner`, чистая БД, `/help` | reply: `common.error.activation.required` (а не unauthorized). Проверка case-insensitivity. |
+>
+> Если какой-то сценарий не сходится — STOP, исправить.
+
+- [ ] **Step 6: Стейджинг и коммит**
 
 ```bash
 git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt
@@ -1012,7 +1059,7 @@ class AuthorizationFilter(
 
     suspend fun authorize(username: String): AuthResult {
         val record = userService.findByUsername(username)
-        val isOwner = username == properties.owner
+        val isOwner = userService.isOwner(username)   // case-insensitive
 
         return when {
             record?.status == UserStatus.ACTIVE && isOwner -> {
@@ -1028,7 +1075,7 @@ class AuthorizationFilter(
                 AuthResult.NeedsActivation
             }
             record == null && isOwner -> {
-                logger.debug { "Configured owner without DB record: @$username" }
+                logger.info { "Configured owner without DB record (waiting for /start): @$username" }
                 AuthResult.NeedsActivation
             }
             else -> {
