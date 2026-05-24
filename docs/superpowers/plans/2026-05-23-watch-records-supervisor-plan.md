@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Закрыть архитектурный bug `WatchRecordsTask` (silent death на любом необработанном исключении), повторно срабатывавший в инцидентах [2026-05-17](../../incidents/2026-05-17-postgres-corruption.md) и [2026-05-23](../../incidents/2026-05-23-sata-cable-corruption.md), путём введения coroutine-supervisor с retry/backoff, Spring `HealthIndicator` (отвечающий за docker auto-restart на permanent ошибки), и одного startup-уведомления владельцу бота (косвенный сигнал о частоте рестартов).
+**Goal:** Закрыть архитектурный bug `WatchRecordsTask` (silent death на любом необработанном исключении), повторно срабатывавший в инцидентах [2026-05-17](../../incidents/2026-05-17-postgres-corruption.md) и [2026-05-23](../../incidents/2026-05-23-sata-cable-corruption.md), путём введения coroutine-supervisor с retry/backoff, Spring `HealthIndicator` как **пассивного** сигнала (`docker ps` + `/actuator/health`, **не** trigger автоматического рестарта — см. iter-1 review §D1), и одного startup-уведомления владельцу бота на каждый `docker restart`/deploy.
 
-**Architecture:** `WatchRecordsTask` переписан как Spring `@Component` с `@PostConstruct`/`@PreDestroy` — запускает coroutine на dedicated `Dispatchers.IO.limitedParallelism(1)` scope. Одна итерация цикла вынесена в `WatchRecordsLoop` (stateless logic). Supervisor catch'ает любое не-Cancellation исключение, делает exponential backoff (5s → 60s, reset после 5 успехов), при `ClosedWatchServiceException` пересоздаёт `WatchService`. `WatchRecordsTaskHealthIndicator` отдаёт UP/OUT_OF_SERVICE/DOWN на основе времени последней успешной итерации — попадает в общий `/actuator/health`, при DOWN docker healthcheck помечает контейнер unhealthy и `restart: unless-stopped` рестартует. `StartupTelegramNotifier` на `ApplicationReadyEvent` шлёт владельцу одно сообщение через расширенный `TelegramNotificationService.sendOwnerMessage(text)`.
+**Architecture:** `WatchRecordsTask` переписан как Spring `@Component` с `@EventListener(ApplicationReadyEvent)` / `@PreDestroy` (iter-1 §D6 — сохраняет старый порядок относительно `FirstTimeScanTask`) — запускает coroutine на dedicated `Dispatchers.IO.limitedParallelism(1)` scope. Одна итерация цикла вынесена в `WatchRecordsLoop` (stateless logic). Supervisor catch'ает любое не-Cancellation исключение (кроме fatal `Error`'ов), делает exponential backoff (5s → 60s, reset после 5 успехов), при `ClosedWatchServiceException` пересоздаёт `WatchService`. `WatchRecordsTaskHealthIndicator` отдаёт UP/OUT_OF_SERVICE/DOWN на основе времени последней успешной итерации — попадает в общий `/actuator/health`. **Self-healing через автоматический рестарт контейнера НЕ реализуется** — `restart: unless-stopped` в обычном docker compose unhealthy-контейнеры не рестартует, а вариант `System.exit`/autoheal sidecar явно отклонён (iter-1 §D1). Оператор мониторит `unhealthy` вручную. `StartupTelegramNotifier` на `ApplicationReadyEvent` шлёт владельцу одно сообщение через расширенный `TelegramNotificationService.sendOwnerMessage(text)`.
 
 **Tech Stack:** Kotlin 2.3.10, Spring Boot 4.0.3 (WebFlux, Actuator), Kotlinx Coroutines, JUnit 5, MockK 1.14.9, kotlinx-coroutines-test (virtual time).
 
@@ -18,8 +18,8 @@
 
 | File | Что меняется |
 |---|---|
-| `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTask.kt` | Rewrite: убрать `@Async`, поставить `@PostConstruct`/`@PreDestroy`, добавить coroutine supervisor, state-поля для health, метод `computeHealth(now)`. Pure-функции `extractDateFromPath` / `isWithinWatchPeriod` переезжают в `WatchRecordsLoop.kt`. |
-| `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt` | Убрать вызов `watchRecordsTask.run()` из `initializeApplication()` и весь handler `ContextClosedEvent` (lifecycle теперь через `@PostConstruct`/`@PreDestroy`). |
+| `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTask.kt` | Rewrite: убрать `@Async`, поставить `@EventListener(ApplicationReadyEvent)` + `@PreDestroy` (iter-1 §D6), добавить coroutine supervisor, расширенное state-поле для health (iter-1 §D2), метод `computeHealth(now)`. Pure-функции `extractDateFromPath` / `isWithinWatchPeriod` переезжают в `WatchRecordsLoop.kt`. |
+| `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt` | Убрать вызов `watchRecordsTask.run()` из `initializeApplication()` и весь handler `ContextClosedEvent` (lifecycle теперь внутри WatchRecordsTask — он сам подписан на `ApplicationReadyEvent`). |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/TelegramNotificationService.kt` | Добавить `suspend fun sendOwnerMessage(text: String)`. |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt` | Реализовать `sendOwnerMessage` через `userService.findActiveByUsername(properties.owner)` + `SimpleTextNotificationTask` + `notificationQueue.enqueue`. |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/NoOpTelegramNotificationService.kt` | Пустой `override suspend fun sendOwnerMessage(text: String)`. |
@@ -31,10 +31,10 @@
 | File | Назначение |
 |---|---|
 | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsLoop.kt` | Stateless logic одной итерации цикла. Метод `runIteration(...)` возвращает `IterationResult`. Метод `registerAllDirs(...)`. Pure-функции `extractDateFromPath`/`isWithinWatchPeriod` (переезжают из WatchRecordsTask.kt). |
-| `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskHealthIndicator.kt` | `@Component`-bean, `ReactiveHealthIndicator`. Делегирует логику в `task.computeHealth(now)`. |
+| `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskHealthIndicator.kt` | `@Component`-bean, `HealthIndicator`. Делегирует логику в `task.computeHealth(now)`. |
 | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/StartupTelegramNotifier.kt` | `@Component`+`@ConditionalOnProperty(application.telegram.enabled=true)`. `@EventListener(ApplicationReadyEvent::class)` шлёт одно сообщение владельцу. |
 | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsLoopTest.kt` | Unit-тесты iteration в изоляции + переезд pure-fn тестов. |
-| `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskHealthIndicatorTest.kt` | Unit-тест ReactiveHealthIndicator. |
+| `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskHealthIndicatorTest.kt` | Unit-тест HealthIndicator. |
 | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/application/StartupTelegramNotifierTest.kt` | Unit-тесты `onReady()`. |
 | `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImplOwnerMessageTest.kt` | Unit-тест `sendOwnerMessage` impl-а. |
 
@@ -396,9 +396,12 @@ import java.time.Instant
 
 private val logger = KotlinLogging.logger {}
 
+// iter-1 review §D7: @ConditionalOnBean защищает от NoSuchBeanDefinitionException в минимальных context'ах,
+// где GitProperties/BuildProperties может не быть (например, тесты без actuator git-info / spring-boot build-info).
 @Component
 @Profile("!test")
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
+@ConditionalOnBean(GitProperties::class, BuildProperties::class)
 class StartupTelegramNotifier(
     private val telegramNotificationService: TelegramNotificationService,
     private val gitProperties: GitProperties,
@@ -416,10 +419,19 @@ class StartupTelegramNotifier(
                 append("Started: ${Instant.now(clock)}")
             }
         runCatching {
-            runBlocking { telegramNotificationService.sendOwnerMessage(text) }
+            runBlocking {
+                kotlinx.coroutines.withTimeout(STARTUP_NOTIFICATION_TIMEOUT.toMillis()) {
+                    telegramNotificationService.sendOwnerMessage(text)
+                }
+            }
         }.onFailure { e ->
             logger.warn(e) { "Failed to send startup notification" }
         }
+    }
+
+    private companion object {
+        // iter-1 review §D5 — страховка от регрессии notificationQueue.enqueue (microsec в норме, но может стать блокирующим при переполнении буфера)
+        val STARTUP_NOTIFICATION_TIMEOUT: java.time.Duration = java.time.Duration.ofSeconds(5)
     }
 }
 ```
@@ -1095,7 +1107,10 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
 
 ## Task 6: Rewrite `WatchRecordsTask` — lifecycle (`@PostConstruct`/`@PreDestroy`), supervisor skeleton
 
-> **Context:** spec §4.1 (полностью). Параметры testability — `dispatcher` и `watchServiceFactory` с дефолтами. После этого Task'а класс компилируется и стартует, но supervisor пока пустой — backoff/exception handling добавим в Task 8.
+> **Context:** spec §4.1 (полностью) + iter-1 review §D2 (расширенный health-state). Параметры testability — `dispatcher` и `watchServiceFactory` с дефолтами. После этого Task'а класс компилируется и стартует, но supervisor пока пустой — backoff/exception handling добавим в Task 8.
+>
+> **ВАЖНО из iter-1 review §D2 (Variant A — расширенный state):**
+> Состояние теперь раздельное: `lastSuccessfulPollAt` (heartbeat), `lastEventProcessedAt` (только при processed > 0), `lastSuccessfulRegistrationAt`, `consecutiveEventFailures`, `consecutiveRegistrationFailures`, `consecutiveFailures`, `startupAt`. Транзишн-методы — `onPollCompleted(events, failures)`, `onRegistrationSuccess()`, `onRegistrationFailure(t)`. `IterationResult` расширяется до `(eventsProcessed, eventFailures, lastCleanupAt)`. `WatchRecordsLoop.runIteration` ловит per-event exception'ы внутри и считает их (не пробрасывает наверх, за исключением `ClosedWatchServiceException`). Health-таблица — 8 веток в указанном порядке (см. spec §5.2). Скелетный код в Step 6.1 ниже даёт только поля и пустые транзишн-методы; настоящая логика заполняется в Task 8 совместно с supervisor body. Тесты — Step 8.x.
 
 **Files:**
 - Modify (rewrite): `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTask.kt`
@@ -1164,13 +1179,16 @@ class WatchRecordsTask(
     @Volatile internal var currentBackoff: Duration = INITIAL_BACKOFF
     @Volatile internal var lastFailure: Throwable? = null
 
-    @PostConstruct
+    // iter-1 review §D6 — старт из ApplicationReadyEvent (а не @PostConstruct), чтобы FirstTimeScanTask успел отработать
+    // и watcher не подхватил тот же файл одновременно со scan'ом.
+    @EventListener(ApplicationReadyEvent::class)
     fun start() {
         if (springProfileHelper.isTestProfile()) {
             logger.info { "Test profile detected. Watch records task skipped." }
             return
         }
         logger.info { "Starting watch records in folder: ${recordsWatcherProperties.folder}" }
+        startupAt = Instant.now(clock)
         supervisorJob = scope.launch { runSupervised() }
     }
 
@@ -1379,7 +1397,7 @@ class ApplicationListener(
         logger.info { "Build version: ${buildProperties.getVersion()}" }
         logger.info { "Build time: ${buildProperties.getTime()}" }
 
-        // WatchRecordsTask now starts itself via @PostConstruct (see WatchRecordsTask.start).
+        // WatchRecordsTask now starts itself via @EventListener(ApplicationReadyEvent) (see WatchRecordsTask.start) — iter-1 §D6.
 
         if (springProfileHelper.isTestProfile()) {
             logger.info { "Test profile detected. First time scan task skipped." }
@@ -1781,7 +1799,7 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §7.1
 
 ## Task 9: `WatchRecordsTaskHealthIndicator` (TDD)
 
-> **Context:** spec §4.3. ReactiveHealthIndicator делегирует в `task.computeHealth(now)`.
+> **Context:** spec §4.3. HealthIndicator делегирует в `task.computeHealth(now)`.
 
 **Files:**
 - Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskHealthIndicator.kt`
@@ -1800,7 +1818,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.springframework.boot.actuate.health.Health
 import org.springframework.boot.actuate.health.Status
-import reactor.test.StepVerifier
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -1811,16 +1828,14 @@ class WatchRecordsTaskHealthIndicatorTest {
     private val indicator = WatchRecordsTaskHealthIndicator(task, clock)
 
     @Test
-    fun `health delegates to computeHealth and wraps in Mono`() {
+    fun `health delegates to computeHealth`() {
         val expectedHealth = Health.Builder().up().withDetail("reason", "starting up").build()
         every { task.computeHealth(Instant.parse("2026-05-23T12:00:00Z")) } returns expectedHealth
 
-        StepVerifier.create(indicator.health())
-            .assertNext { actual ->
-                assertEquals(Status.UP, actual.status)
-                assertEquals("starting up", actual.details["reason"])
-            }
-            .verifyComplete()
+        val actual = indicator.health()
+
+        assertEquals(Status.UP, actual.status)
+        assertEquals("starting up", actual.details["reason"])
     }
 }
 ```
@@ -1843,18 +1858,18 @@ Expected: компиляция падает — класс не существу
 package ru.zinin.frigate.analyzer.core.task
 
 import org.springframework.boot.actuate.health.Health
-import org.springframework.boot.actuate.health.ReactiveHealthIndicator
+import org.springframework.boot.actuate.health.HealthIndicator
 import org.springframework.stereotype.Component
-import reactor.core.publisher.Mono
 import java.time.Clock
 import java.time.Instant
 
+// iter-1 review §D9: sync HealthIndicator достаточен (computeHealth — pure sync); Spring Actuator на WebFlux адаптирует автоматически.
 @Component
 class WatchRecordsTaskHealthIndicator(
     private val task: WatchRecordsTask,
     private val clock: Clock,
-) : ReactiveHealthIndicator {
-    override fun health(): Mono<Health> = Mono.fromSupplier { task.computeHealth(Instant.now(clock)) }
+) : HealthIndicator {
+    override fun health(): Health = task.computeHealth(Instant.now(clock))
 }
 ```
 
@@ -1873,11 +1888,12 @@ Expected: BUILD SUCCESSFUL.
 ```bash
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskHealthIndicator.kt \
         modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTaskHealthIndicatorTest.kt
-git commit -m "feat(records-watcher): expose health via ReactiveHealthIndicator
+git commit -m "feat(records-watcher): expose health via HealthIndicator
 
 Bean name watchRecordsTaskHealthIndicator → 'watchRecordsTask' component
 inside /actuator/health. DOWN propagates to aggregated status → docker
-healthcheck unhealthy → restart: unless-stopped self-heals.
+healthcheck marks container unhealthy (passive signal — no automatic restart;
+operator monitors via docker ps / actuator endpoint). See iter-1 review §D1.
 Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.3"
 ```
 
@@ -1919,7 +1935,7 @@ WatchRecordsTask parses `.mp4` filenames to extract camera ID, date, time, times
 |------|---------|
 | WatchRecordsTask | Coroutine supervisor that drives WatchRecordsLoop; owns lifecycle, backoff, health state |
 | WatchRecordsLoop | Stateless logic of a single iteration: poll + handle ENTRY_CREATE + periodic cleanup |
-| WatchRecordsTaskHealthIndicator | ReactiveHealthIndicator that exposes task state via `/actuator/health` |
+| WatchRecordsTaskHealthIndicator | HealthIndicator that exposes task state via `/actuator/health` |
 | StartupTelegramNotifier | Sends owner one Telegram message on ApplicationReadyEvent (indirect restart-frequency signal) |
 | FirstTimeScanTask | Initial scan on startup (disable: `DISABLE_FIRST_SCAN=true`) |
 
@@ -1941,18 +1957,18 @@ WatchRecordsTask runs the loop on a dedicated `Dispatchers.IO.limitedParallelism
 
 All supervision thresholds (`INITIAL_BACKOFF`, `MAX_BACKOFF`, `SUCCESSES_TO_RESET_BACKOFF`, `HEALTH_STALENESS`) are hardcoded constants in `WatchRecordsTask.kt` — by intent (single-deployment project, no operator-tuning expected).
 
-### Health & self-healing
+### Health (passive signal, no automatic restart)
 
 WatchRecordsTaskHealthIndicator exposes `watchRecordsTask` component in `/actuator/health` with one of:
 - **UP** — supervisor running normally, last successful iteration within `HEALTH_STALENESS=2m`, or just started up.
 - **OUT_OF_SERVICE** — in backoff after one or more consecutive failures (transient).
 - **DOWN** — supervisor coroutine not active, OR no successful iteration for longer than `HEALTH_STALENESS` while failures keep happening (permanent).
 
-`/actuator/health` aggregation propagates DOWN → docker healthcheck returns non-200 → after `retries=3 × interval=30s ≈ 90s` docker marks unhealthy → `restart: unless-stopped` recreates the container. Self-healing for permanent errors (PG corruption, IO errors, etc).
+`/actuator/health` aggregation propagates DOWN → docker healthcheck returns non-200 → after `retries=3 × interval=30s ≈ 90s` docker marks the container `unhealthy`. **This does NOT trigger an automatic restart** — `restart: unless-stopped` in plain docker compose reacts only to `exited`/non-zero exit codes, not to `unhealthy`. Self-healing would require either `System.exit(...)` from within the application on sustained DOWN, or an autoheal sidecar (`willfarrell/autoheal`) in docker-compose; both are explicitly out of scope (see iter-1 review §D1). Operator must monitor `docker ps` and the actuator endpoint and run `docker restart` manually.
 
 ### Startup notification
 
-StartupTelegramNotifier listens for `ApplicationReadyEvent` and sends the bot owner one plain-text message containing version, commit hash, build time, and current timestamp. Indirect signal for an operator: if startup messages arrive frequently, the container is restarting often — investigate logs and `/actuator/health`. Gated by `@ConditionalOnProperty(application.telegram.enabled=true)` — no-op when Telegram is disabled. Failures during send are caught and logged at WARN; they do NOT prevent application startup.
+StartupTelegramNotifier listens for `ApplicationReadyEvent` and sends the bot owner one plain-text message containing version, commit hash, build time, and current timestamp. Since there is no automatic restart on DOWN, this message arrives only on manual `docker restart`/deploy or JVM-level fatal exit (e.g. OOM). Treat it as a sanity signal that the container has actually come up — not as a restart-frequency metric. Gated by `@ConditionalOnProperty(application.telegram.enabled=true)` AND `@Profile("!test")` — no-op when Telegram is disabled or running under test profile. Failures during send are caught and logged at WARN; they do NOT prevent application startup.
 ```
 
 - [ ] **Step 10.2: Commit**
@@ -2080,11 +2096,14 @@ failures in [docs/incidents/2026-05-17-postgres-corruption.md](docs/incidents/20
   catches non-cancellation exceptions, exponential backoff (5s → 60s, reset after 5
   successes), recreates WatchService on ClosedWatchServiceException.
 - New `WatchRecordsTaskHealthIndicator` exposes UP/OUT_OF_SERVICE/DOWN under
-  `/actuator/health.components.watchRecordsTask`. Permanent failures eventually
-  flip aggregated status to DOWN → docker healthcheck unhealthy → `restart:
-  unless-stopped` self-heals.
-- New `StartupTelegramNotifier` sends bot owner one message on every ApplicationReadyEvent
-  (indirect restart-frequency signal).
+  `/actuator/health.components.watchRecordsTask`. Permanent failures flip
+  aggregated status to DOWN → docker healthcheck marks container `unhealthy`
+  as a **passive signal** (operator monitors via `docker ps` and the actuator
+  endpoint; **no automatic container restart** — see iter-1 review §D1 for
+  trade-off discussion).
+- New `StartupTelegramNotifier` sends bot owner one message on every
+  ApplicationReadyEvent (signals successful startup after a manual `docker
+  restart`/deploy or JVM-level fatal exit).
 
 ## Test plan
 
