@@ -56,32 +56,6 @@ class AuthorizationFilter(
         }
     }
 
-    // Legacy API — kept temporarily so existing callers continue to compile during the migration.
-    // Removed in the same series of commits after FrigateAnalyzerBot and QuickExportHandler switch
-    // to authorize(...).
-    suspend fun getRole(message: CommonMessage<MessageContent>): UserRole? {
-        val username = extractUsername(message) ?: return null
-        return getRole(username)
-    }
-
-    suspend fun getRole(username: String): UserRole? =
-        when {
-            username == properties.owner -> {
-                logger.debug { "Owner access: @$username" }
-                UserRole.OWNER
-            }
-
-            userService.findActiveByUsername(username) != null -> {
-                logger.debug { "User access: @$username" }
-                UserRole.USER
-            }
-
-            else -> {
-                logger.warn { "Unauthorized access attempt from user: @$username" }
-                null
-            }
-        }
-
     fun extractUsername(message: CommonMessage<MessageContent>): String? {
         val privateMessage = message as? PrivateContentMessage<*> ?: return null
         return privateMessage.user.username?.withoutAt
