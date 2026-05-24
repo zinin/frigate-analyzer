@@ -38,4 +38,8 @@ class NoOpTelegramNotificationService : TelegramNotificationService {
     ) {
         logger.debug { "Telegram notifications disabled, skipping signal-recovery for camera $camId" }
     }
+
+    override suspend fun sendOwnerMessage(text: String) {
+        logger.debug { "Telegram notifications disabled, skipping owner message" }
+    }
 }

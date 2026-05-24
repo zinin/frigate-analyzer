@@ -17,6 +17,7 @@ import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.service.AppSettingsService
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
@@ -49,6 +50,7 @@ class TelegramNotificationServiceImplTest {
     private val signalLossFormatter = mockk<SignalLossMessageFormatter>(relaxed = true)
     private val rateLimiterProvider = mockk<ObjectProvider<DescriptionRateLimiter>>(relaxed = true)
     private val appSettings = mockk<AppSettingsService>()
+    private val telegramProperties = TelegramProperties(enabled = true, botToken = "test", owner = "test")
     private val service: TelegramNotificationService =
         TelegramNotificationServiceImpl(
             userService,
@@ -58,6 +60,7 @@ class TelegramNotificationServiceImplTest {
             signalLossFormatter,
             rateLimiterProvider,
             appSettings,
+            telegramProperties,
         )
 
     private val taskId = UUID.randomUUID()

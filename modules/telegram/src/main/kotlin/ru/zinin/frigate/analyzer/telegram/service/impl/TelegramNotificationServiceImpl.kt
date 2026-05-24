@@ -13,6 +13,7 @@ import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
@@ -38,6 +39,7 @@ class TelegramNotificationServiceImpl(
     private val signalLossFormatter: SignalLossMessageFormatter,
     private val rateLimiterProvider: ObjectProvider<DescriptionRateLimiter>,
     private val appSettings: AppSettingsService,
+    private val telegramProperties: TelegramProperties,
 ) : TelegramNotificationService {
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
@@ -233,6 +235,31 @@ class TelegramNotificationServiceImpl(
             )
         }
         logger.info { "Enqueued signal-recovery alert for camera $camId to ${recipients.size} recipients" }
+    }
+
+    override suspend fun sendOwnerMessage(text: String) {
+        val owner = userService.findActiveByUsername(telegramProperties.owner)
+        if (owner == null) {
+            logger.warn {
+                "Cannot send owner message: owner '${telegramProperties.owner}' has not activated the bot yet"
+            }
+            return
+        }
+        val chatId = owner.chatId
+        if (chatId == null) {
+            logger.warn {
+                "Cannot send owner message: owner '${telegramProperties.owner}' has no chatId (bot not started yet?)"
+            }
+            return
+        }
+        notificationQueue.enqueue(
+            SimpleTextNotificationTask(
+                id = uuidGeneratorHelper.generateV1(),
+                chatId = chatId,
+                text = text,
+            ),
+        )
+        logger.info { "Enqueued owner message to chat $chatId" }
     }
 
     private suspend fun signalNotificationsGloballyEnabled(

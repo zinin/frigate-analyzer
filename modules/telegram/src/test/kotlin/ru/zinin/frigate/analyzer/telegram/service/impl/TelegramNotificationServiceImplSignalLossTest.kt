@@ -12,6 +12,7 @@ import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
+import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
@@ -40,6 +41,7 @@ class TelegramNotificationServiceImplSignalLossTest {
         }
     private val rateLimiterProvider = mockk<ObjectProvider<DescriptionRateLimiter>>(relaxed = true)
     private val appSettings = mockk<AppSettingsService>()
+    private val telegramProperties = TelegramProperties(enabled = true, botToken = "test", owner = "test")
     private val service =
         TelegramNotificationServiceImpl(
             userService = userService,
@@ -49,6 +51,7 @@ class TelegramNotificationServiceImplSignalLossTest {
             signalLossFormatter = formatter,
             rateLimiterProvider = rateLimiterProvider,
             appSettings = appSettings,
+            telegramProperties = telegramProperties,
         )
 
     init {
