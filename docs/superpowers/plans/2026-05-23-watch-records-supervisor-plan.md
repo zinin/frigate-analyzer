@@ -410,12 +410,15 @@ class StartupTelegramNotifier(
 ) {
     @EventListener(ApplicationReadyEvent::class)
     fun onReady() {
+        // iter-2 CONCERN-5: BuildProperties / GitProperties fields могут быть null
+        // (см. Spring Javadoc). Null-safe formatting гарантирует, что startup-сообщение
+        // не сломается с "Version: null" даже если build/git plugin не отработали.
         val text =
             buildString {
                 appendLine("🟢 Frigate Analyzer запущен")
-                appendLine("Version: ${buildProperties.version}")
-                appendLine("Commit: ${gitProperties.commitId.take(8)}")
-                appendLine("Build time: ${buildProperties.time}")
+                appendLine("Version: ${buildProperties.version ?: "<unknown>"}")
+                appendLine("Commit: ${gitProperties.commitId?.take(8) ?: "<unknown>"}")
+                appendLine("Build time: ${buildProperties.time ?: "<unknown>"}")
                 append("Started: ${Instant.now(clock)}")
             }
         runCatching {
@@ -561,8 +564,13 @@ import java.util.concurrent.TimeUnit
 
 private val logger = KotlinLogging.logger {}
 
+// iter-2 CRITICAL-1: расширено до 3 полей per design §5.2.1 — eventsProcessed (renamed from
+// processedEvents для соответствия design), eventFailures (для onPollCompleted),
+// lastCleanupAt. WatchRecordsLoop.runIteration ловит per-event exceptions
+// внутри и считает их в eventFailures (см. Task 5 — runIteration body).
 data class IterationResult(
-    val processedEvents: Int,
+    val eventsProcessed: Int,
+    val eventFailures: Int,
     val lastCleanupAt: Instant,
 )
 
@@ -582,7 +590,7 @@ class WatchRecordsLoop(
         var processed = 0
         // TODO Task 5: обработка key.pollEvents()
         // TODO Task 5: cleanup if Duration.between(lastCleanupAt, now) >= cleanupInterval
-        return IterationResult(processedEvents = processed, lastCleanupAt = lastCleanupAt)
+        return IterationResult(eventsProcessed = processed, eventFailures = 0, lastCleanupAt = lastCleanupAt)
     }
 
     private companion object {
@@ -683,7 +691,7 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
 
                 val result = loop.runIteration(watchService, ConcurrentHashMap(), Instant.now(clock))
 
-                assertEquals(1, result.processedEvents)
+                assertEquals(1, result.eventsProcessed)
                 io.mockk.coVerify(exactly = 1) { recordingEntityHelper.createRecording(any()) }
             } finally {
                 tmpDir.toFile().deleteRecursively()
@@ -703,9 +711,9 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
     ): IterationResult {
         val key = watchService.poll(POLL_PERIOD_MS, TimeUnit.MILLISECONDS)
         var processed = 0
+        var eventFailures = 0
         if (key != null) {
             val dir = key.watchable() as Path
-            var iterationError: Throwable? = null
             try {
                 for (event in key.pollEvents()) {
                     if (event.kind() != java.nio.file.StandardWatchEventKinds.ENTRY_CREATE) continue
@@ -714,42 +722,53 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
                     val fullPath = dir.resolve(ev.context())
                     logger.info { "New file created: $fullPath" }
 
-                    if (java.nio.file.Files.isDirectory(fullPath)) {
-                        if (isWithinWatchPeriod(fullPath, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
-                            registerAllDirs(fullPath, watchService, registeredDirs)
+                    // iter-2 CRITICAL-1 / D2 per-event isolation: per-event exceptions
+                    // не убивают весь poll-batch. ClosedWatchServiceException — special case,
+                    // пробрасывается наверх (supervisor пересоздаёт WatchService).
+                    try {
+                        if (java.nio.file.Files.isDirectory(fullPath)) {
+                            if (isWithinWatchPeriod(fullPath, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
+                                registerAllDirs(fullPath, watchService, registeredDirs)
+                            } else {
+                                logger.info { "Skipping old directory: $fullPath" }
+                            }
                         } else {
-                            logger.info { "Skipping old directory: $fullPath" }
+                            val attrs = java.nio.file.Files.readAttributes(fullPath, java.nio.file.attribute.BasicFileAttributes::class.java)
+                            val recordingFile = recordingFileHelper.parse(fullPath)
+                            val recordingId =
+                                recordingEntityHelper.createRecording(
+                                    ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest(
+                                        filePath = fullPath.toAbsolutePath().toString(),
+                                        fileCreationTimestamp = attrs.creationTime().toInstant(),
+                                        camId = recordingFile.camId,
+                                        recordDate = recordingFile.date,
+                                        recordTime = recordingFile.time,
+                                        recordTimestamp = recordingFile.timestamp,
+                                    ),
+                                )
+                            logger.info { "Recording id: $recordingId" }
                         }
-                    } else {
-                        val attrs = java.nio.file.Files.readAttributes(fullPath, java.nio.file.attribute.BasicFileAttributes::class.java)
-                        val recordingFile = recordingFileHelper.parse(fullPath)
-                        val recordingId =
-                            recordingEntityHelper.createRecording(
-                                ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest(
-                                    filePath = fullPath.toAbsolutePath().toString(),
-                                    fileCreationTimestamp = attrs.creationTime().toInstant(),
-                                    camId = recordingFile.camId,
-                                    recordDate = recordingFile.date,
-                                    recordTime = recordingFile.time,
-                                    recordTimestamp = recordingFile.timestamp,
-                                ),
-                            )
-                        logger.info { "Recording id: $recordingId" }
+                        processed++
+                    } catch (e: java.nio.file.ClosedWatchServiceException) {
+                        // bubble up — supervisor пересоздаст WatchService
+                        throw e
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // per-event failure: count + log, continue с остальными событиями
+                        logger.warn(e) { "Event processing failed for $fullPath; will count in eventFailures" }
+                        eventFailures++
                     }
-                    processed++
                 }
-            } catch (e: Throwable) {
-                iterationError = e
             } finally {
                 if (!key.reset()) {
                     registeredDirs.remove(dir)
                 }
             }
-            if (iterationError != null) throw iterationError
         }
 
         // TODO Step 5.5: cleanup if Duration.between(lastCleanupAt, now) >= cleanupInterval
-        return IterationResult(processedEvents = processed, lastCleanupAt = lastCleanupAt)
+        return IterationResult(eventsProcessed = processed, eventFailures = eventFailures, lastCleanupAt = lastCleanupAt)
     }
 ```
 
@@ -953,7 +972,7 @@ Expected: BUILD SUCCESSFUL, 2 tests pass.
                 val result = loopWithTmpRoot.runIteration(watchService, ConcurrentHashMap(), Instant.now(clock))
 
                 io.mockk.coVerify(exactly = 0) { recordingEntityHelper.createRecording(any()) }
-                assertEquals(1, result.processedEvents)
+                assertEquals(1, result.eventsProcessed)
             } finally {
                 watchService.close()
                 tmpDir.toFile().deleteRecursively()
@@ -965,11 +984,13 @@ Expected: BUILD SUCCESSFUL, 2 tests pass.
 
 Запустить, проверить что green (имплементация в Step 5.2 уже это покрывает). Если красный — отлаживать.
 
-- [ ] **Step 5.6: Failing test #4 — `parse` бросает `IllegalArgumentException` → пробрасывается**
+- [ ] **Step 5.6: Failing test #4 — `parse` бросает `IllegalArgumentException` → считается в `eventFailures`, не пробрасывается**
+
+> **iter-2 CRITICAL-1 / D2:** Per-event exceptions теперь ловятся в `runIteration` и считаются в `IterationResult.eventFailures`. Поведение изменилось с iter-1 — раньше пробрасывали наверх (где supervisor backoff'ался на каждый bogus файл). Теперь per-event isolation: один битый файл не убивает обработку следующих файлов в том же poll-batch'е. `ClosedWatchServiceException` и `CancellationException` — единственные что пробрасываются.
 
 ```kotlin
     @Test
-    fun `runIteration propagates parse exception`() =
+    fun `runIteration counts parse failure in eventFailures and continues`() =
         runTest {
             val watchService = mockk<WatchService>()
             val key = mockk<WatchKey>()
@@ -988,18 +1009,18 @@ Expected: BUILD SUCCESSFUL, 2 tests pass.
                 every { key.pollEvents() } returns listOf(event)
                 io.mockk.every { recordingFileHelper.parse(any()) } throws IllegalArgumentException("bogus filename")
 
-                org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
-                    kotlinx.coroutines.runBlocking {
-                        loop.runIteration(watchService, ConcurrentHashMap(), Instant.now(clock))
-                    }
-                }
+                val result = loop.runIteration(watchService, ConcurrentHashMap(), Instant.now(clock))
+
+                assertEquals(0, result.eventsProcessed)
+                assertEquals(1, result.eventFailures)
+                io.mockk.coVerify(exactly = 0) { recordingEntityHelper.createRecording(any()) }
             } finally {
                 tmpDir.toFile().deleteRecursively()
             }
         }
 ```
 
-Запустить — должен пройти без изменений в коде (текущий `runIteration` не ловит исключения).
+Запустить — должен пройти, имплементация в Step 5.2 уже содержит per-event catch.
 
 - [ ] **Step 5.7: Failing test #5 — cleanup interval прошёл → cleanup отработал, lastCleanupAt обновлён**
 
@@ -1056,7 +1077,7 @@ Expected: BUILD SUCCESSFUL, 2 tests pass.
             } else {
                 lastCleanupAt
             }
-        return IterationResult(processedEvents = processed, lastCleanupAt = newLastCleanup)
+        return IterationResult(eventsProcessed = processed, eventFailures = eventFailures, lastCleanupAt = newLastCleanup)
     }
 
     // Single-writer invariant: cleanupExpiredDirs() and event processing run on the same
@@ -1105,12 +1126,17 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
 
 ---
 
-## Task 6: Rewrite `WatchRecordsTask` — lifecycle (`@PostConstruct`/`@PreDestroy`), supervisor skeleton
+## Task 6: Rewrite `WatchRecordsTask` — lifecycle (`@EventListener(ApplicationReadyEvent)` / `@PreDestroy`) + supervisor body
 
-> **Context:** spec §4.1 (полностью) + iter-1 review §D2 (расширенный health-state). Параметры testability — `dispatcher` и `watchServiceFactory` с дефолтами. После этого Task'а класс компилируется и стартует, но supervisor пока пустой — backoff/exception handling добавим в Task 8.
+> **Context:** spec §4.1 (полностью) + iter-1 review §D2 (расширенный health-state) + iter-2 CRITICAL-1 (план приведён в соответствие с design §4.1/§5.2 — было: 5-полевая pre-D2 модель, стало: 10-полевая Variant A с 8-ветвевой health-таблицей и 3 транзишн-методами `onPollCompleted`/`onRegistrationSuccess`/`onRegistrationFailure`). После этого Task'а класс компилируется, стартует и держит supervisor с полным backoff / exception handling / health state machine. Тесты для всех 8 веток health-таблицы — в Task 8.
 >
-> **ВАЖНО из iter-1 review §D2 (Variant A — расширенный state):**
-> Состояние теперь раздельное: `lastSuccessfulPollAt` (heartbeat), `lastEventProcessedAt` (только при processed > 0), `lastSuccessfulRegistrationAt`, `consecutiveEventFailures`, `consecutiveRegistrationFailures`, `consecutiveFailures`, `startupAt`. Транзишн-методы — `onPollCompleted(events, failures)`, `onRegistrationSuccess()`, `onRegistrationFailure(t)`. `IterationResult` расширяется до `(eventsProcessed, eventFailures, lastCleanupAt)`. `WatchRecordsLoop.runIteration` ловит per-event exception'ы внутри и считает их (не пробрасывает наверх, за исключением `ClosedWatchServiceException`). Health-таблица — 8 веток в указанном порядке (см. spec §5.2). Скелетный код в Step 6.1 ниже даёт только поля и пустые транзишн-методы; настоящая логика заполняется в Task 8 совместно с supervisor body. Тесты — Step 8.x.
+> **Архитектурно расширенный state (iter-1 §D2 + iter-2 CRITICAL-1):**
+> - 10 `@Volatile` полей: `lastSuccessfulPollAt` (poll heartbeat), `lastEventProcessedAt` (только при `eventsProcessed > 0`), `lastSuccessfulRegistrationAt`, `consecutiveEventFailures`, `consecutiveRegistrationFailures`, `consecutiveFailures` (общий для backoff), `successesSinceLastFailure`, `currentBackoff`, `lastFailure`, `startupAt`.
+> - 3 транзишн-метода: `onPollCompleted(events, failures)`, `onRegistrationSuccess()`, `onRegistrationFailure(t)`.
+> - Дополнительные константы: `STARTUP_GRACE=2m`, `STARTUP_FAILURE_THRESHOLD=5L`.
+> - `IterationResult(eventsProcessed, eventFailures, lastCleanupAt)` (3 поля; см. Task 4/5).
+> - `WatchRecordsLoop.runIteration` ловит per-event exception'ы внутри и возвращает их count в `eventFailures` (не пробрасывает наверх, за исключением `ClosedWatchServiceException`).
+> - `computeHealth` — 8 priority-ordered веток (см. design §5.2).
 
 **Files:**
 - Modify (rewrite): `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTask.kt`
@@ -1123,7 +1149,6 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
 package ru.zinin.frigate.analyzer.core.task
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -1132,12 +1157,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.springframework.boot.actuate.health.Health
+import org.springframework.boot.context.event.ApplicationReadyEvent
+import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
 import ru.zinin.frigate.analyzer.core.helper.SpringProfileHelper
@@ -1153,10 +1181,14 @@ import java.util.concurrent.ConcurrentHashMap
 
 private val logger = KotlinLogging.logger {}
 
+// iter-2 CONCERN-3: добавлены `EventListener`, `ApplicationReadyEvent` imports; убран unused `PostConstruct`.
+// iter-2 CRITICAL-1: добавлены константы STARTUP_GRACE / STARTUP_FAILURE_THRESHOLD для health-веток 2/3 (design §5.2).
 private val INITIAL_BACKOFF: Duration = Duration.ofSeconds(5)
 private val MAX_BACKOFF: Duration = Duration.ofSeconds(60)
 private const val SUCCESSES_TO_RESET_BACKOFF: Int = 5
 private val HEALTH_STALENESS: Duration = Duration.ofMinutes(2)
+private val STARTUP_GRACE: Duration = Duration.ofMinutes(2)
+private const val STARTUP_FAILURE_THRESHOLD: Long = 5L
 
 @Component
 class WatchRecordsTask(
@@ -1173,11 +1205,19 @@ class WatchRecordsTask(
     private var watchService: WatchService? = null
     internal val registeredDirs: ConcurrentHashMap<Path, WatchKey> = ConcurrentHashMap()
 
-    @Volatile internal var lastSuccessfulIterationAt: Instant? = null
+    // iter-2 CRITICAL-1 (D2 Variant A): 10-полевое раздельное состояние per design §4.1.
+    // poll heartbeat — обновляется при любом не-throwing poll; event-processing — только при events > 0;
+    // registration tracking — для startup-failure detection через STARTUP_GRACE / STARTUP_FAILURE_THRESHOLD.
+    @Volatile internal var lastSuccessfulPollAt: Instant? = null
+    @Volatile internal var lastEventProcessedAt: Instant? = null
+    @Volatile internal var lastSuccessfulRegistrationAt: Instant? = null
+    @Volatile internal var consecutiveEventFailures: Long = 0
+    @Volatile internal var consecutiveRegistrationFailures: Long = 0
     @Volatile internal var consecutiveFailures: Long = 0
     @Volatile private var successesSinceLastFailure: Int = 0
     @Volatile internal var currentBackoff: Duration = INITIAL_BACKOFF
     @Volatile internal var lastFailure: Throwable? = null
+    @Volatile internal var startupAt: Instant? = null
 
     // iter-1 review §D6 — старт из ApplicationReadyEvent (а не @PostConstruct), чтобы FirstTimeScanTask успел отработать
     // и watcher не подхватил тот же файл одновременно со scan'ом.
@@ -1197,11 +1237,26 @@ class WatchRecordsTask(
         logger.info { "Shutting down watch records..." }
         supervisorJob?.cancel()
         runBlocking { supervisorJob?.join() }
+        // INVARIANT (iter-2 CONCERN-7): scope.cancel() must follow supervisorJob.join().
+        // Любой будущий child корутина scope-а должна индивидуально дождаться join перед этой строкой —
+        // scope.cancel() отменяет всех детей без ожидания.
         scope.cancel()
         registeredDirs.values.forEach { it.cancel() }
         registeredDirs.clear()
         closeWatchServiceQuietly()
         logger.info { "Watch records shut down." }
+    }
+
+    // iter-2 CONCERN-1: suspend-helper для тестов вместо runBlocking-shutdown.
+    // shutdown() для production использует runBlocking (через @PreDestroy), а тесты вызывают stopAndJoin()
+    // напрямую из suspend-контекста (runTest) — это избегает дедлока StandardTestDispatcher + runBlocking.
+    internal suspend fun stopAndJoin() {
+        supervisorJob?.cancel()
+        supervisorJob?.join()
+        scope.cancel()
+        registeredDirs.values.forEach { it.cancel() }
+        registeredDirs.clear()
+        closeWatchServiceQuietly()
     }
 
     internal suspend fun runSupervised() {
@@ -1212,19 +1267,30 @@ class WatchRecordsTask(
                 ensureWatchService()
                 val result = loop.runIteration(watchService!!, registeredDirs, lastCleanup)
                 lastCleanup = result.lastCleanupAt
-                onIterationSuccess()
+                // iter-2 CRITICAL-1 (D2): onPollCompleted разделяет poll-heartbeat от event-processing.
+                // empty poll (events=0, failures=0) обновляет ТОЛЬКО lastSuccessfulPollAt — НЕ сбрасывает счётчики.
+                onPollCompleted(result.eventsProcessed, result.eventFailures)
+                if (result.eventFailures > 0) {
+                    // backoff progression при per-event failures — supervisor "пинается" даже когда
+                    // ClosedWatchServiceException не сработал, но события не обрабатываются.
+                    delay(currentBackoff.toMillis())
+                    currentBackoff = nextBackoff(currentBackoff)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: ClosedWatchServiceException) {
                 logger.warn { "WatchService closed; will recreate next iteration" }
                 closeWatchServiceQuietly()
                 registeredDirs.clear()
-                onIterationFailure(e)
+                onIterationFailureLegacy(e)
                 delay(currentBackoff.toMillis())
                 currentBackoff = nextBackoff(currentBackoff)
             } catch (e: Exception) {
+                // Registration / unexpected loop failures (не per-event — те ловятся внутри runIteration).
                 logger.error(e) { "WatchRecordsTask iteration failed; backing off for $currentBackoff" }
-                onIterationFailure(e)
+                // Если упало в ensureWatchService — это registration failure (см. ensureWatchService body).
+                // Иначе — generic loop failure: обновляем оба счётчика.
+                onIterationFailureLegacy(e)
                 delay(currentBackoff.toMillis())
                 currentBackoff = nextBackoff(currentBackoff)
             }
@@ -1233,16 +1299,24 @@ class WatchRecordsTask(
 
     private fun ensureWatchService() {
         if (watchService == null) {
-            val ws = watchServiceFactory()
+            val ws =
+                try {
+                    watchServiceFactory()
+                } catch (e: Exception) {
+                    onRegistrationFailure(e)
+                    throw e
+                }
             try {
                 registeredDirs.clear()  // guarantee clean state
                 loop.registerAllDirs(recordsWatcherProperties.folder, ws, registeredDirs)
             } catch (e: Exception) {
                 runCatching { ws.close() }
                 registeredDirs.clear()
+                onRegistrationFailure(e)
                 throw e  // supervisor catches → backoff → retry from scratch
             }
             watchService = ws
+            onRegistrationSuccess()
             logger.info { "Watch service created; registered ${registeredDirs.size} directories." }
         }
     }
@@ -1252,9 +1326,45 @@ class WatchRecordsTask(
         watchService = null
     }
 
-    private fun onIterationSuccess() {
-        lastSuccessfulIterationAt = Instant.now(clock)
-        consecutiveFailures = 0
+    // iter-2 CRITICAL-1 (D2): 3 транзишн-метода вместо 2 — разделение event/registration/general failure tracking.
+
+    private fun onPollCompleted(eventsProcessed: Int, eventFailures: Int) {
+        lastSuccessfulPollAt = Instant.now(clock)
+        if (eventsProcessed > 0) {
+            lastEventProcessedAt = Instant.now(clock)
+            consecutiveEventFailures = 0
+            consecutiveFailures = 0  // полный сброс на «реально что-то сделали»
+            maybeResetBackoff()
+        }
+        if (eventFailures > 0) {
+            consecutiveEventFailures += eventFailures
+            consecutiveFailures++
+            successesSinceLastFailure = 0
+        }
+        // empty poll (events=0, failures=0): только lastSuccessfulPollAt обновлён — счётчики НЕ трогаем
+    }
+
+    private fun onRegistrationSuccess() {
+        lastSuccessfulRegistrationAt = Instant.now(clock)
+        consecutiveRegistrationFailures = 0
+        // Регистрация — не «полный успех» итерации; consecutiveFailures сбрасывается только при processed > 0.
+    }
+
+    private fun onRegistrationFailure(t: Throwable) {
+        consecutiveRegistrationFailures++
+        consecutiveFailures++
+        successesSinceLastFailure = 0
+        lastFailure = t
+    }
+
+    // Используется для ClosedWatchServiceException и generic loop failures (не registration / не per-event).
+    private fun onIterationFailureLegacy(t: Throwable) {
+        consecutiveFailures++
+        successesSinceLastFailure = 0
+        lastFailure = t
+    }
+
+    private fun maybeResetBackoff() {
         if (currentBackoff > INITIAL_BACKOFF) {
             successesSinceLastFailure++
             if (successesSinceLastFailure >= SUCCESSES_TO_RESET_BACKOFF) {
@@ -1265,19 +1375,18 @@ class WatchRecordsTask(
         }
     }
 
-    private fun onIterationFailure(t: Throwable) {
-        consecutiveFailures++
-        successesSinceLastFailure = 0
-        lastFailure = t
-    }
-
     private fun nextBackoff(current: Duration): Duration =
         minOf(current.multipliedBy(2), MAX_BACKOFF)
 
+    // iter-2 CRITICAL-1 (D2): 8-ветвевая health-таблица per design §5.2 (priority-ordered, first-match wins).
     fun computeHealth(now: Instant): Health {
         val builder =
             Health.Builder()
-                .withDetail("lastSuccessfulIterationAt", lastSuccessfulIterationAt?.toString() ?: "never")
+                .withDetail("lastSuccessfulPollAt", lastSuccessfulPollAt?.toString() ?: "never")
+                .withDetail("lastEventProcessedAt", lastEventProcessedAt?.toString() ?: "never")
+                .withDetail("lastSuccessfulRegistrationAt", lastSuccessfulRegistrationAt?.toString() ?: "never")
+                .withDetail("consecutiveEventFailures", consecutiveEventFailures)
+                .withDetail("consecutiveRegistrationFailures", consecutiveRegistrationFailures)
                 .withDetail("consecutiveFailures", consecutiveFailures)
                 .withDetail("currentBackoff", currentBackoff.toString())
                 .withDetail("registeredDirs", registeredDirs.size)
@@ -1288,31 +1397,87 @@ class WatchRecordsTask(
             )
         }
 
+        // ВЕТКА 1: supervisor не активен
         val job = supervisorJob
         if (job == null || !job.isActive) {
             return builder.down().withDetail("reason", "supervisor not active").build()
         }
-        val last = lastSuccessfulIterationAt
-        return when {
-            last == null && consecutiveFailures == 0 ->
-                builder.up().withDetail("reason", "starting up").build()
-            last == null && consecutiveFailures > 0 ->
-                builder
-                    .outOfService()
-                    .withDetail("reason", "no successful iteration yet, in backoff")
-                    .build()
-            Duration.between(last, now) > HEALTH_STALENESS && consecutiveFailures > 0 ->
-                builder
-                    .down()
-                    .withDetail("reason", "stale: no success for ${Duration.between(last, now)}")
-                    .build()
-            consecutiveFailures > 0 ->
-                builder
-                    .outOfService()
-                    .withDetail("reason", "in backoff after $consecutiveFailures consecutive failures")
-                    .build()
-            else -> builder.up().build()
+
+        val regAt = lastSuccessfulRegistrationAt
+        val started = startupAt
+        val sinceStartup = if (started != null) Duration.between(started, now) else Duration.ZERO
+
+        // ВЕТКА 2: startup failure — registration никогда не было, threshold достигнут ИЛИ grace истёк
+        if (regAt == null &&
+            (consecutiveRegistrationFailures >= STARTUP_FAILURE_THRESHOLD || sinceStartup > STARTUP_GRACE)
+        ) {
+            return builder
+                .down()
+                .withDetail(
+                    "reason",
+                    "startup failed: no successful registration after " +
+                        "$consecutiveRegistrationFailures attempts / $sinceStartup",
+                )
+                .build()
         }
+
+        // ВЕТКА 3: registration ещё не было, но grace не истёк — стартуем
+        if (regAt == null) {
+            return builder
+                .outOfService()
+                .withDetail("reason", "registering... attempts=$consecutiveRegistrationFailures")
+                .build()
+        }
+
+        val lastEvent = lastEventProcessedAt
+
+        // ВЕТКА 4: event-failures + stale processed event → DOWN
+        if (consecutiveEventFailures > 0 &&
+            lastEvent != null &&
+            Duration.between(lastEvent, now) > HEALTH_STALENESS
+        ) {
+            return builder
+                .down()
+                .withDetail(
+                    "reason",
+                    "stale: events failing for ${Duration.between(lastEvent, now)} " +
+                        "(last processed at $lastEvent)",
+                )
+                .build()
+        }
+
+        // ВЕТКА 5: event-failures, но не stale → transient OUT_OF_SERVICE
+        if (consecutiveEventFailures > 0) {
+            return builder
+                .outOfService()
+                .withDetail(
+                    "reason",
+                    "transient event-processing failures ($consecutiveEventFailures consecutive)",
+                )
+                .build()
+        }
+
+        // ВЕТКА 6: общий backoff (например, ClosedWatchServiceException recovery cycle)
+        if (consecutiveFailures > 0) {
+            return builder
+                .outOfService()
+                .withDetail(
+                    "reason",
+                    "in backoff after $consecutiveFailures consecutive iteration failures",
+                )
+                .build()
+        }
+
+        // ВЕТКА 7: idle (камера выключена / событий не было) — UP с пометкой
+        if (lastEvent == null && sinceStartup > HEALTH_STALENESS.multipliedBy(2)) {
+            return builder
+                .up()
+                .withDetail("reason", "idle: registered but no events yet (camera offline?)")
+                .build()
+        }
+
+        // ВЕТКА 8: всё ок
+        return builder.up().withDetail("reason", "healthy").build()
     }
 }
 ```
@@ -1345,10 +1510,11 @@ Expected: loop tests pass; WatchRecordsTaskTest либо empty (если из н
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTask.kt
 git commit -m "refactor(records-watcher): rewrite WatchRecordsTask as coroutine supervisor
 
-Replaces @Async + while(!stopped.get()) with @PostConstruct/@PreDestroy +
-SupervisorJob coroutine. Catches non-cancellation throwables, exponential
-backoff (5s→60s, reset after 5 successes), recreates WatchService on
-ClosedWatchServiceException. computeHealth() exposes UP/OUT_OF_SERVICE/DOWN.
+Replaces @Async + while(!stopped.get()) with @EventListener(ApplicationReadyEvent)
++ @PreDestroy + SupervisorJob coroutine. Catches non-cancellation throwables,
+exponential backoff (5s→60s, reset after 5 successes), recreates WatchService on
+ClosedWatchServiceException. Extended 10-field SupervisorState + 8-branch
+computeHealth() table per iter-1 §D2 + iter-2 CRITICAL-1.
 Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.1, §5"
 ```
 
@@ -1356,7 +1522,7 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.1
 
 ## Task 7: Обновить `ApplicationListener` (cleanup)
 
-> **Context:** spec §3 — `ApplicationListener` больше не отвечает за lifecycle WatchRecordsTask. Запуск через @PostConstruct в самом классе, shutdown через @PreDestroy.
+> **Context:** spec §3 — `ApplicationListener` больше не отвечает за lifecycle WatchRecordsTask. Запуск через `@EventListener(ApplicationReadyEvent::class)` в самом классе (iter-1 §D6), shutdown через `@PreDestroy`. **iter-2 CRITICAL-3 — see disputed:** если по обсуждению выбран Variant A (explicit orchestration), то старт WatchRecordsTask переедет обратно сюда после `firstTimeScanTask.run()`; иначе текущая `@EventListener` схема сохраняется.
 
 **Files:**
 - Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt`
@@ -1425,7 +1591,9 @@ class ApplicationListener(
 Build target: ./gradlew :frigate-analyzer-core:compileKotlin :frigate-analyzer-core:test
 ```
 
-Expected: BUILD SUCCESSFUL. Если падает на `FrigateAnalyzerApplicationTests` (Spring context test) — скорее всего из-за `@PostConstruct fun start()` пытающегося создать `WatchService` в тестовом профиле. Решение: убедиться, что `springProfileHelper.isTestProfile()` возвращает `true` в test-контексте (это уже было в pre-existing коде — должно работать). Если нет — отлаживать.
+Expected: BUILD SUCCESSFUL. Если падает на `FrigateAnalyzerApplicationTests` (Spring context test) — несколько возможных причин:
+1. `@EventListener(ApplicationReadyEvent::class) fun start()` пытается создать `WatchService` в тестовом профиле — решение: убедиться, что `springProfileHelper.isTestProfile()` возвращает `true` (early return в `start()`).
+2. (iter-2 CRITICAL-4 — already fixed in Step 9.3) Если `WatchRecordsTaskHealthIndicator` зарегистрирован без `@Profile("!test")` — он вернёт DOWN (supervisorJob=null в test profile) → агрегированный `/actuator/health` станет DOWN → `actuatorHealth()` тест упадёт. Step 9.3 уже добавил `@Profile("!test")` на indicator.
 
 - [ ] **Step 7.3: Commit**
 
@@ -1434,7 +1602,7 @@ git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/
 git commit -m "refactor(application): move WatchRecordsTask lifecycle ownership into task
 
 Listener no longer triggers watchRecordsTask.run() or shutdown — that's now
-done by @PostConstruct/@PreDestroy inside WatchRecordsTask itself.
+done by @EventListener(ApplicationReadyEvent) / @PreDestroy inside WatchRecordsTask itself.
 Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §3, §4.1"
 ```
 
@@ -1527,7 +1695,7 @@ class WatchRecordsTaskTest {
                 when (iterations) {
                     1 -> throw RuntimeException("boom1")
                     2 -> throw RuntimeException("boom2")
-                    3 -> IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
+                    3 -> IterationResult(eventsProcessed = 0, eventFailures = 0, lastCleanupAt = Instant.now(clock))
                     else -> throw CancellationException("test done")  // self-terminate loop
                 }
             }
@@ -1538,7 +1706,8 @@ class WatchRecordsTaskTest {
             advanceUntilIdle()  // safe — loop self-terminates via CancellationException
             job.join()
 
-            assertNotNull(task.lastSuccessfulIterationAt, "Expected at least one successful iteration")
+            // iter-2 CRITICAL-1: lastSuccessfulIterationAt → lastSuccessfulPollAt (D2 split).
+            assertNotNull(task.lastSuccessfulPollAt, "Expected at least one successful poll")
             assertEquals(0, task.consecutiveFailures, "Counter should reset on success")
             assertTrue(task.lastFailure is RuntimeException)
         }
@@ -1567,7 +1736,7 @@ Run, expect green (supervisor logic уже на месте от Task 6).
                 iterations++
                 when (iterations) {
                     1 -> throw ClosedWatchServiceException()
-                    2 -> IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
+                    2 -> IterationResult(eventsProcessed = 0, eventFailures = 0, lastCleanupAt = Instant.now(clock))
                     else -> throw CancellationException("test done")
                 }
             }
@@ -1577,7 +1746,7 @@ Run, expect green (supervisor logic уже на месте от Task 6).
             job.join()
 
             assertTrue(factoryCallCount >= 2, "WatchService should be recreated after ClosedWatchServiceException; got $factoryCallCount calls")
-            assertNotNull(task.lastSuccessfulIterationAt)
+            assertNotNull(task.lastSuccessfulPollAt)
         }
 ```
 
@@ -1589,7 +1758,7 @@ Run, expect green (supervisor logic уже на месте от Task 6).
         runTest {
             val task = newTask(dispatcher = StandardTestDispatcher(testScheduler))
             coEvery { loop.runIteration(any(), any(), any()) } returns
-                IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
+                IterationResult(eventsProcessed = 0, eventFailures = 0, lastCleanupAt = Instant.now(clock))
 
             val job = launch { task.runSupervised() }
             advanceTimeBy(1_000)
@@ -1609,7 +1778,7 @@ Run, expect green (supervisor logic уже на месте от Task 6).
     fun `backoff resets after 5 consecutive successes after failures`() =
         runTest {
             val task = newTask(dispatcher = StandardTestDispatcher(testScheduler))
-            val successResult = IterationResult(processedEvents = 0, lastCleanupAt = Instant.now(clock))
+            val successResult = IterationResult(eventsProcessed = 0, eventFailures = 0, lastCleanupAt = Instant.now(clock))
             // 3 failures (backoff: 5s→10s→20s→40s), then 5 successes (resets backoff to 5s),
             // then CancellationException to exit the loop cleanly.
             var iterations = 0
@@ -1632,11 +1801,13 @@ Run, expect green (supervisor logic уже на месте от Task 6).
         }
 ```
 
-- [ ] **Step 8.6: Failing test #5 — `computeHealth` covers all 5 states**
+- [ ] **Step 8.6: Failing test #5 — `computeHealth` covers all 8 branches**
+
+> **iter-2 CRITICAL-1 (D2):** Тесты переписаны под 8-branch health-таблицу design §5.2. Branch 1 (`supervisor not active`) — единственный, что покрывается без `taskWithActiveJob` helper'а. Branches 2-8 покрываются helper'ом (определён ниже после первого теста).
 
 ```kotlin
     @Test
-    fun `computeHealth returns DOWN when supervisor not started`() {
+    fun `computeHealth branch 1 — returns DOWN when supervisor not started`() {
         val task = newTask()
         val now = Instant.parse("2026-05-23T12:05:00Z")
         val health = task.computeHealth(now)
@@ -1644,96 +1815,174 @@ Run, expect green (supervisor logic уже на месте от Task 6).
         assertEquals("supervisor not active", health.details["reason"])
     }
 
-    @Test
-    fun `computeHealth returns UP when starting up (no failures yet)`() =
-        runTest {
-            val task = newTask(dispatcher = StandardTestDispatcher(testScheduler))
-            coEvery { loop.runIteration(any(), any(), any()) } coAnswers {
-                kotlinx.coroutines.delay(Long.MAX_VALUE / 2)
-                IterationResult(0, Instant.now(clock))
-            }
-            val job = launch { task.runSupervised() }
-            yield()  // let coroutine start; loop is blocked inside delay
-            val now = Instant.parse("2026-05-23T12:00:01Z")
-            val health = task.computeHealth(now)
-            assertEquals(Status.UP, health.status)
-            assertEquals("starting up", health.details["reason"])
-            job.cancel()
-        }
-
-    @Test
-    fun `computeHealth returns OUT_OF_SERVICE in backoff after no successful iteration yet`() =
-        runTest {
-            val task = newTask(dispatcher = StandardTestDispatcher(testScheduler))
-            coEvery { loop.runIteration(any(), any(), any()) } coAnswers {
-                throw RuntimeException("always fails")
-            }
-            val job = launch { task.runSupervised() }
-            advanceTimeBy(100)  // first failure happens
-            yield()
-            val now = Instant.parse("2026-05-23T12:00:00.001Z")
-            val health = task.computeHealth(now)
-            assertEquals(Status.OUT_OF_SERVICE, health.status)
-            assertTrue(health.details["reason"].toString().contains("no successful iteration yet"))
-            job.cancel()
-        }
-
-    // Helper: build a task and inject a real `Job()` with isActive=true into supervisorJob
-    // so computeHealth's active-job branches can be exercised without launching a real coroutine.
-    // Requires `supervisorJob` to be declared `@Volatile internal var` (see Step 6.1).
+    // iter-2 CRITICAL-1: helper расширен для 10-полевого state. Все необязательные поля имеют дефолты,
+    // тест задаёт только те, что нужны для проверяемой ветки. Реальный `Job()` подменяет supervisorJob
+    // для покрытия веток 2-8 без запуска корутины (test seam через `internal var`).
     private fun taskWithActiveJob(
-        last: Instant?,
-        fails: Long,
+        startupAt: Instant? = Instant.parse("2026-05-23T12:00:00Z"),
+        lastSuccessfulPollAt: Instant? = null,
+        lastEventProcessedAt: Instant? = null,
+        lastSuccessfulRegistrationAt: Instant? = null,
+        consecutiveEventFailures: Long = 0,
+        consecutiveRegistrationFailures: Long = 0,
+        consecutiveFailures: Long = 0,
         lastFailure: Throwable? = null,
     ): WatchRecordsTask {
         val task = newTask()
         task.supervisorJob = kotlinx.coroutines.Job().apply { /* fresh, isActive=true */ }
-        task.lastSuccessfulIterationAt = last
-        task.consecutiveFailures = fails
+        task.startupAt = startupAt
+        task.lastSuccessfulPollAt = lastSuccessfulPollAt
+        task.lastEventProcessedAt = lastEventProcessedAt
+        task.lastSuccessfulRegistrationAt = lastSuccessfulRegistrationAt
+        task.consecutiveEventFailures = consecutiveEventFailures
+        task.consecutiveRegistrationFailures = consecutiveRegistrationFailures
+        task.consecutiveFailures = consecutiveFailures
         task.lastFailure = lastFailure
         return task
     }
 
+    // iter-2 CRITICAL-1 / CN5 (D2): тесты на ВСЕ 8 веток health-таблицы (design §5.2).
+    // Branch 1 уже покрыт `computeHealth returns DOWN when supervisor not started` выше.
+
     @Test
-    fun `computeHealth returns DOWN when stale beyond staleness`() {
+    fun `computeHealth branch 2 — startup failed by threshold returns DOWN`() {
         val task =
             taskWithActiveJob(
-                last = Instant.parse("2026-05-23T11:00:00Z"),
-                fails = 3,
-                lastFailure = RuntimeException("PG XX000"),
+                startupAt = Instant.parse("2026-05-23T12:00:00Z"),
+                lastSuccessfulRegistrationAt = null,
+                consecutiveRegistrationFailures = 5,  // == STARTUP_FAILURE_THRESHOLD
+                consecutiveFailures = 5,
             )
-        val now = Instant.parse("2026-05-23T12:05:00Z")  // 1h05m since last success > 2m staleness
+        val now = Instant.parse("2026-05-23T12:00:30Z")  // 30s < grace=2m, но threshold реached
         val health = task.computeHealth(now)
         assertEquals(Status.DOWN, health.status)
-        assertTrue(
-            health.details["reason"].toString().contains("stale"),
-            "Expected 'stale' reason when active job + stale lastSuccessful + failures > 0; got ${health.details["reason"]}",
-        )
+        assertTrue(health.details["reason"].toString().contains("startup failed"))
     }
 
     @Test
-    fun `computeHealth returns OUT_OF_SERVICE in backoff with fresh successful iteration`() {
+    fun `computeHealth branch 2 — startup failed by grace expiry returns DOWN`() {
         val task =
             taskWithActiveJob(
-                last = Instant.parse("2026-05-23T12:00:00Z"),
-                fails = 1,
-                lastFailure = RuntimeException("transient"),
+                startupAt = Instant.parse("2026-05-23T12:00:00Z"),
+                lastSuccessfulRegistrationAt = null,
+                consecutiveRegistrationFailures = 2,  // < threshold
+                consecutiveFailures = 2,
             )
-        val now = Instant.parse("2026-05-23T12:00:05Z")  // 5s after last success < staleness=2m
+        val now = Instant.parse("2026-05-23T12:03:00Z")  // 3m > grace=2m
+        val health = task.computeHealth(now)
+        assertEquals(Status.DOWN, health.status)
+    }
+
+    @Test
+    fun `computeHealth branch 3 — registering during startup grace returns OUT_OF_SERVICE`() {
+        val task =
+            taskWithActiveJob(
+                startupAt = Instant.parse("2026-05-23T12:00:00Z"),
+                lastSuccessfulRegistrationAt = null,
+                consecutiveRegistrationFailures = 2,
+                consecutiveFailures = 2,
+            )
+        val now = Instant.parse("2026-05-23T12:00:30Z")  // 30s < grace=2m
         val health = task.computeHealth(now)
         assertEquals(Status.OUT_OF_SERVICE, health.status)
+        assertTrue(health.details["reason"].toString().contains("registering"))
+    }
+
+    @Test
+    fun `computeHealth branch 4 — event failures stale returns DOWN`() {
+        val task =
+            taskWithActiveJob(
+                startupAt = Instant.parse("2026-05-23T10:00:00Z"),
+                lastSuccessfulRegistrationAt = Instant.parse("2026-05-23T10:00:01Z"),
+                lastEventProcessedAt = Instant.parse("2026-05-23T11:00:00Z"),
+                consecutiveEventFailures = 10,
+                lastFailure = RuntimeException("PG XX000"),
+            )
+        val now = Instant.parse("2026-05-23T12:05:00Z")  // 1h05m > staleness=2m
+        val health = task.computeHealth(now)
+        assertEquals(Status.DOWN, health.status)
+        assertTrue(health.details["reason"].toString().contains("stale"))
+    }
+
+    @Test
+    fun `computeHealth branch 5 — event failures transient returns OUT_OF_SERVICE`() {
+        val task =
+            taskWithActiveJob(
+                startupAt = Instant.parse("2026-05-23T12:00:00Z"),
+                lastSuccessfulRegistrationAt = Instant.parse("2026-05-23T12:00:01Z"),
+                lastEventProcessedAt = Instant.parse("2026-05-23T12:00:30Z"),
+                consecutiveEventFailures = 2,
+                lastFailure = RuntimeException("transient"),
+            )
+        val now = Instant.parse("2026-05-23T12:01:00Z")  // 30s после last processed < staleness=2m
+        val health = task.computeHealth(now)
+        assertEquals(Status.OUT_OF_SERVICE, health.status)
+        assertTrue(health.details["reason"].toString().contains("transient"))
+    }
+
+    @Test
+    fun `computeHealth branch 6 — general backoff returns OUT_OF_SERVICE`() {
+        // Например, во время ClosedWatchServiceException recovery cycle: registration OK,
+        // event failures == 0, но consecutiveFailures > 0 (от ClosedWatchServiceException).
+        val task =
+            taskWithActiveJob(
+                startupAt = Instant.parse("2026-05-23T12:00:00Z"),
+                lastSuccessfulPollAt = Instant.parse("2026-05-23T12:00:05Z"),
+                lastSuccessfulRegistrationAt = Instant.parse("2026-05-23T12:00:01Z"),
+                lastEventProcessedAt = Instant.parse("2026-05-23T12:00:05Z"),
+                consecutiveEventFailures = 0,
+                consecutiveFailures = 1,
+                lastFailure = java.nio.file.ClosedWatchServiceException(),
+            )
+        val now = Instant.parse("2026-05-23T12:00:10Z")
+        val health = task.computeHealth(now)
+        assertEquals(Status.OUT_OF_SERVICE, health.status)
+        assertTrue(health.details["reason"].toString().contains("backoff"))
+    }
+
+    @Test
+    fun `computeHealth branch 7 — idle camera returns UP with note`() {
+        val task =
+            taskWithActiveJob(
+                startupAt = Instant.parse("2026-05-23T11:00:00Z"),
+                lastSuccessfulRegistrationAt = Instant.parse("2026-05-23T11:00:01Z"),
+                lastEventProcessedAt = null,  // никогда не обрабатывали
+                consecutiveEventFailures = 0,
+                consecutiveFailures = 0,
+            )
+        val now = Instant.parse("2026-05-23T12:00:00Z")  // 1h > 2 × HEALTH_STALENESS=4m
+        val health = task.computeHealth(now)
+        assertEquals(Status.UP, health.status)
+        assertTrue(health.details["reason"].toString().contains("idle"))
+    }
+
+    @Test
+    fun `computeHealth branch 8 — healthy returns UP`() {
+        val task =
+            taskWithActiveJob(
+                startupAt = Instant.parse("2026-05-23T12:00:00Z"),
+                lastSuccessfulPollAt = Instant.parse("2026-05-23T12:00:05Z"),
+                lastSuccessfulRegistrationAt = Instant.parse("2026-05-23T12:00:01Z"),
+                lastEventProcessedAt = Instant.parse("2026-05-23T12:00:05Z"),
+                consecutiveEventFailures = 0,
+                consecutiveFailures = 0,
+            )
+        val now = Instant.parse("2026-05-23T12:00:10Z")
+        val health = task.computeHealth(now)
+        assertEquals(Status.UP, health.status)
+        assertEquals("healthy", health.details["reason"])
     }
 ```
 
 **Test seam:** `supervisorJob` is declared `@Volatile internal var` (see Step 6.1 / design D-FIX-2) specifically to allow the `taskWithActiveJob(...)` helper to inject a `Job()` instance whose `isActive` returns `true`. This lets us exercise `computeHealth`'s active-job branches (stale → DOWN; fresh + failures → OUT_OF_SERVICE) without needing to launch a real coroutine.
 
-- [ ] **Step 8.7: Lifecycle test — `shutdown()` cancels supervisor, closes watchService, clears registeredDirs**
+- [ ] **Step 8.7: Lifecycle test — `stopAndJoin()` cancels supervisor, closes watchService, clears registeredDirs**
 
-Добавить test, который покрывает `@PreDestroy.shutdown()` поведение после `@PostConstruct.start()`:
+> **iter-2 CONCERN-1:** Тест использует suspend `stopAndJoin()` вместо production `shutdown()` (который использует `runBlocking`). На `StandardTestDispatcher` + `runTest` блокирующий `runBlocking` приведёт к dead-lock'у — test thread заблокирован, test scheduler не может продвинуть cancellation для `supervisorJob`. `stopAndJoin()` — suspend-helper в `WatchRecordsTask`, который делает `cancel + join + scope.cancel + cleanup` без `runBlocking`. Production-инстанс по-прежнему вызывает `shutdown()` через `@PreDestroy`.
 
 ```kotlin
     @Test
-    fun `shutdown cancels supervisorJob closes watchService and clears registeredDirs`() =
+    fun `stopAndJoin cancels supervisorJob closes watchService and clears registeredDirs`() =
         runTest {
             val watchService = mockk<WatchService>(relaxed = true)
             val task =
@@ -1743,17 +1992,17 @@ Run, expect green (supervisor logic уже на месте от Task 6).
                 )
             coEvery { loop.runIteration(any(), any(), any()) } coAnswers {
                 kotlinx.coroutines.delay(Long.MAX_VALUE / 2)  // park inside loop
-                IterationResult(0, Instant.now(clock))
+                IterationResult(eventsProcessed = 0, eventFailures = 0, lastCleanupAt = Instant.now(clock))
             }
             // Prime registeredDirs to mimic post-start state
             task.registeredDirs[Path.of("/tmp/dir1")] = mockk(relaxed = true)
             task.registeredDirs[Path.of("/tmp/dir2")] = mockk(relaxed = true)
 
-            task.start()  // would normally come from @PostConstruct
+            task.start()  // would normally come from @EventListener(ApplicationReadyEvent)
             yield()
             assertTrue(task.supervisorJob != null && task.supervisorJob!!.isActive)
 
-            task.shutdown()
+            task.stopAndJoin()  // suspend helper — avoids runBlocking dead-lock in runTest
 
             assertEquals(0, task.registeredDirs.size, "registeredDirs should be cleared after shutdown")
             assertTrue(task.supervisorJob!!.isCancelled, "supervisorJob should be cancelled")
@@ -1765,13 +2014,13 @@ Run, expect green (supervisor logic уже на месте от Task 6).
 
 Добавить три теста-сценария:
 
-1. **`exception during event processing still resets key (CRITICAL-5 follow-up)`** — verify that когда `loop.runIteration` бросает exception из тела обработки event'а, `key.reset()` всё равно отрабатывает (try/finally в Step 5.2). Тест использует реальный tempdir + реальный WatchService и мок recordingFileHelper, бросающий exception.
+1. **`exception during event processing still resets key (CRITICAL-5 follow-up)`** — verify что когда per-event handler бросает exception (например, `recordingFileHelper.parse` падает с `IllegalArgumentException`), `key.reset()` всё равно отрабатывает в `finally`-блоке `runIteration`. Тест использует реальный tempdir + реальный WatchService и мок recordingFileHelper, бросающий exception. Verify result: `eventFailures > 0`, `eventsProcessed == 0`, key reset вызван.
 
-2. **`partial registerAllDirs failure leaves watchService=null for next-iteration retry (CRITICAL-4 follow-up)`** — verify, что когда `loop.registerAllDirs` throws (например, `IOException`) из `ensureWatchService()`, локальный `ws` закрывается, `watchService` поле остаётся `null`, `registeredDirs.clear()` отработал, и следующий iteration пересоздаёт всё с нуля.
+2. **`partial registerAllDirs failure leaves watchService=null for next-iteration retry (CRITICAL-4 follow-up)`** — verify, что когда `loop.registerAllDirs` throws (например, `IOException`) из `ensureWatchService()`, локальный `ws` закрывается, поле `watchService` остаётся `null`, `registeredDirs.clear()` отработал, и следующий iteration пересоздаёт всё с нуля. **iter-2 CRITICAL-1 follow-up:** verify также что `onRegistrationFailure(e)` был вызван — `consecutiveRegistrationFailures` инкрементирован, `lastFailure` обновлён.
 
-3. **`ensureWatchService failing 3x in a row triggers backoff progression and DOWN after HEALTH_STALENESS (CRITICAL-8 follow-up — pending architectural decision in iter-1 review)`** — verify backoff progression 5s→10s→20s + что после HEALTH_STALENESS период `computeHealth()` flip'ает в DOWN.
+3. **`ensureWatchService failing 5x in a row → DOWN via branch 2 (CRITICAL-8 / iter-2 CRITICAL-1 D2 startup-failure path)`** — verify backoff progression 5s→10s→20s→40s→60s + что после `STARTUP_FAILURE_THRESHOLD=5` registration failures `computeHealth()` возвращает DOWN с reason "startup failed: no successful registration after 5 attempts" (ветка 2 health-таблицы). Не нужен HEALTH_STALENESS wait — STARTUP_FAILURE_THRESHOLD сработает первым.
 
-> **Note (architectural):** Тест #3 depends on resolution of disputed health-state architecture in iter-1 review §D2. Если решение — оставить текущую модель (DOWN только когда `last != null && stale`), тест должен manually прокрутить как минимум одну успешную итерацию перед серией провалов. Если решение поменяется (DOWN сразу после N consecutive failures without success), тест упрощается. Финализировать пo результатам итерации.
+> **iter-2 CRITICAL-1 (architectural resolved):** Тест #3 теперь имеет чёткую спецификацию — D2 решение применено: ветка 2 health-таблицы переходит в DOWN либо при `consecutiveRegistrationFailures >= STARTUP_FAILURE_THRESHOLD`, либо при `sinceStartup > STARTUP_GRACE`. Старое iter-1 pending-замечание удалено.
 
 - [ ] **Step 8.9: Запустить все WatchRecordsTaskTest — green**
 
@@ -1859,12 +2108,18 @@ package ru.zinin.frigate.analyzer.core.task
 
 import org.springframework.boot.actuate.health.Health
 import org.springframework.boot.actuate.health.HealthIndicator
+import org.springframework.context.annotation.Profile
 import org.springframework.stereotype.Component
 import java.time.Clock
 import java.time.Instant
 
 // iter-1 review §D9: sync HealthIndicator достаточен (computeHealth — pure sync); Spring Actuator на WebFlux адаптирует автоматически.
+// iter-2 CRITICAL-4: @Profile("!test") предотвращает регрессию FrigateAnalyzerApplicationTests.actuatorHealth() —
+// в test profile WatchRecordsTask.start() short-circuits (early return), supervisorJob = null,
+// и без @Profile("!test") indicator вернул бы DOWN → агрегированный /actuator/health стал бы DOWN →
+// тест-ожидание UP упало бы. Тот же паттерн что у StartupTelegramNotifier.
 @Component
+@Profile("!test")
 class WatchRecordsTaskHealthIndicator(
     private val task: WatchRecordsTask,
     private val clock: Clock,
@@ -1950,7 +2205,7 @@ WatchRecordsLoop parses `.mp4` filenames to extract camera ID, date, time, times
 
 ### Supervision
 
-WatchRecordsTask runs the loop on a dedicated `Dispatchers.IO.limitedParallelism(1)` coroutine (lifecycle via `@PostConstruct`/`@PreDestroy`):
+WatchRecordsTask runs the loop on a dedicated `Dispatchers.IO.limitedParallelism(1)` coroutine (lifecycle via `@EventListener(ApplicationReadyEvent)` / `@PreDestroy`):
 - Any non-cancellation exception is logged at ERROR, then exponential backoff (5s → 60s, capped). `currentBackoff` resets to 5s after `SUCCESSES_TO_RESET_BACKOFF=5` consecutive successes after a failure.
 - `ClosedWatchServiceException` triggers WatchService recreation in the next iteration (`registeredDirs` is cleared and re-registered from scratch).
 - `CancellationException` propagates cleanly — no backoff, no failure-bookkeeping.
@@ -1997,7 +2252,7 @@ Build target: ./gradlew build
 Expected: BUILD SUCCESSFUL.
 
 Если ktlint падает — `./gradlew ktlintFormat` и retry.
-Если test падает в test-профиле из-за `@PostConstruct fun start()` пытающегося реально создать WatchService — убедиться что `springProfileHelper.isTestProfile()` возвращает `true` (проверь `@ActiveProfiles` в `FrigateAnalyzerApplicationTests`).
+Если test падает в test-профиле из-за `@EventListener(ApplicationReadyEvent) fun start()` пытающегося реально создать WatchService — убедиться что `springProfileHelper.isTestProfile()` возвращает `true` (проверь `@ActiveProfiles` в `FrigateAnalyzerApplicationTests`). Дополнительно `WatchRecordsTaskHealthIndicator` гейтится `@Profile("!test")` (iter-2 CRITICAL-4) — без этого agg health = DOWN в test profile.
 
 - [ ] **Step 11.2: Manual sanity на локальном Docker (optional но рекомендуется)**
 
@@ -2092,7 +2347,7 @@ failures in [docs/incidents/2026-05-17-postgres-corruption.md](docs/incidents/20
 (~30h downtime) and [docs/incidents/2026-05-23-sata-cable-corruption.md](docs/incidents/2026-05-23-sata-cable-corruption.md)
 (~7h downtime).
 
-- `WatchRecordsTask` rewritten as coroutine supervisor (@PostConstruct/@PreDestroy);
+- `WatchRecordsTask` rewritten as coroutine supervisor (`@EventListener(ApplicationReadyEvent)` / `@PreDestroy`);
   catches non-cancellation exceptions, exponential backoff (5s → 60s, reset after 5
   successes), recreates WatchService on ClosedWatchServiceException.
 - New `WatchRecordsTaskHealthIndicator` exposes UP/OUT_OF_SERVICE/DOWN under
