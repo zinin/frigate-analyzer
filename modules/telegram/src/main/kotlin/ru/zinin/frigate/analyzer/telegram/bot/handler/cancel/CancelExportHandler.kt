@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ExportCoroutineScope
+import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -68,9 +69,19 @@ class CancelExportHandler(
         val username = user.username?.withoutAt
         val lang = resolveLang(chatId.chatId.long, user.ietfLanguageCode?.code)
 
-        if (username == null || authFilter.getRole(username) == null) {
+        if (username == null) {
             answerSafely(callback, msg.get("common.error.unauthorized", lang))
             return
+        }
+        when (authFilter.authorize(username)) {
+            is AuthResult.Active -> {
+                Unit
+            }
+
+            AuthResult.NeedsActivation, AuthResult.Unauthorized -> {
+                answerSafely(callback, msg.get("common.error.unauthorized", lang))
+                return
+            }
         }
 
         val exportId = parseExportId(data)
