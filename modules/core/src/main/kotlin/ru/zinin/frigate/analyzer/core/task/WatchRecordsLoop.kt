@@ -62,7 +62,7 @@ class WatchRecordsLoop(
                     @Suppress("UNCHECKED_CAST")
                     val ev = event as WatchEvent<Path>
                     val fullPath = dir.resolve(ev.context())
-                    logger.info { "New file created: $fullPath" }
+                    logger.debug { "New file created: $fullPath" }
 
                     // iter-2 CRITICAL-1 / D2: per-event exception isolation. Generic Exception is counted
                     // in eventFailures so one bad file doesn't kill the whole batch. ClosedWatchServiceException

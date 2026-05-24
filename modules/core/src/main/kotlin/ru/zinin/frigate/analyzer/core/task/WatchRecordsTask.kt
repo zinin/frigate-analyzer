@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.context.event.ApplicationReadyEvent
 import org.springframework.boot.health.contributor.Health
 import org.springframework.context.event.EventListener
@@ -41,6 +42,7 @@ private const val SUCCESSES_TO_RESET_BACKOFF: Int = 5
 private val HEALTH_STALENESS: Duration = Duration.ofMinutes(2)
 private val STARTUP_GRACE: Duration = Duration.ofMinutes(2)
 private const val STARTUP_FAILURE_THRESHOLD: Long = 5L
+private val SHUTDOWN_JOIN_TIMEOUT: Duration = Duration.ofSeconds(30)
 
 @Component
 class WatchRecordsTask(
@@ -79,6 +81,8 @@ class WatchRecordsTask(
 
     @Volatile internal var lastFailure: Throwable? = null
 
+    @Volatile internal var lastFailureAt: Instant? = null
+
     @Volatile internal var startupAt: Instant? = null
 
     // iter-1 D6 + iter-2 CRITICAL-3 Variant B: @EventListener(ApplicationReadyEvent::class) — consistent with
@@ -104,7 +108,19 @@ class WatchRecordsTask(
     fun shutdown() {
         logger.info { "Shutting down watch records..." }
         supervisorJob?.cancel()
-        runBlocking { supervisorJob?.join() }
+        // Bound the join — worst case loop is parked in delay(MAX_BACKOFF=60s) and won't observe cancel
+        // until that wakes; Spring's default shutdown timeout (30s) would interrupt us first otherwise.
+        // After timeout, scope.cancel() + closeWatchServiceQuietly() force the loop out via CWS.
+        val joined =
+            runBlocking {
+                withTimeoutOrNull(SHUTDOWN_JOIN_TIMEOUT.toMillis()) {
+                    supervisorJob?.join()
+                    true
+                }
+            }
+        if (joined == null) {
+            logger.warn { "Supervisor did not exit within ${SHUTDOWN_JOIN_TIMEOUT.toSeconds()}s; forcing cleanup" }
+        }
         // INVARIANT (iter-2 CONCERN-7): scope.cancel() must follow supervisorJob.join().
         // Future scope children must join individually before this line — scope.cancel() does not wait.
         scope.cancel()
@@ -137,9 +153,11 @@ class WatchRecordsTask(
                 // iter-2 CRITICAL-1 (D2): onPollCompleted splits poll-heartbeat from event-processing.
                 // Empty poll (events=0, failures=0) updates ONLY lastSuccessfulPollAt — counters untouched.
                 onPollCompleted(result.eventsProcessed, result.eventFailures)
-                if (result.eventFailures > 0) {
-                    // Backoff progression on per-event failures — supervisor "pinged" even when
-                    // ClosedWatchServiceException didn't fire but events keep failing.
+                if (result.eventFailures > 0 && result.eventsProcessed == 0) {
+                    // Backoff progression only when an iteration produced ZERO successes — partial
+                    // success (some events processed + some failed) means the supervisor and
+                    // WatchService are alive; BRANCH 5 already surfaces event-failures as transient,
+                    // no need to also throttle the loop.
                     delay(currentBackoff.toMillis())
                     currentBackoff = nextBackoff(currentBackoff)
                 }
@@ -210,8 +228,12 @@ class WatchRecordsTask(
             consecutiveEventFailures += eventFailures
             consecutiveFailures++
             successesSinceLastFailure = 0
+        } else if (eventsProcessed == 0) {
+            // Empty poll with no failures — supervisor reached a clean iteration end (e.g. CWS
+            // recovery followed by an idle period in a quiet deployment). Clear the general-
+            // failure signal so BRANCH 6 doesn't latch until the next real event.
+            consecutiveFailures = 0
         }
-        // empty poll (events=0, failures=0): only lastSuccessfulPollAt updated — counters NOT touched
     }
 
     private fun onRegistrationSuccess() {
@@ -225,6 +247,7 @@ class WatchRecordsTask(
         consecutiveFailures++
         successesSinceLastFailure = 0
         lastFailure = t
+        lastFailureAt = Instant.now(clock)
     }
 
     // Used for ClosedWatchServiceException and generic loop failures (not registration / not per-event).
@@ -232,6 +255,7 @@ class WatchRecordsTask(
         consecutiveFailures++
         successesSinceLastFailure = 0
         lastFailure = t
+        lastFailureAt = Instant.now(clock)
     }
 
     private fun maybeResetBackoff() {
@@ -266,6 +290,7 @@ class WatchRecordsTask(
                 "${it.javaClass.simpleName}: ${it.message?.take(500) ?: "<no-message>"}",
             )
         }
+        lastFailureAt?.let { builder.withDetail("lastFailureAt", it.toString()) }
 
         // Health branches are priority-ordered, first match wins (see design §5.2).
 
@@ -300,21 +325,34 @@ class WatchRecordsTask(
                 .build()
         }
 
+        // BRANCH 3.5: registry collapsed after a successful start (root folder deleted, NFS mount
+        // dropped, all WatchKeys invalidated). The supervisor keeps polling an empty key set —
+        // BRANCH 7 "idle" would mask the real problem. Surface as DOWN so operator restarts the
+        // process / re-mounts the volume.
+        if (registeredDirs.isEmpty()) {
+            return builder
+                .down()
+                .withDetail("reason", "registry empty after successful start (root folder gone?)")
+                .build()
+        }
+
         val lastEvent = lastEventProcessedAt
 
-        // BRANCH 4: event-failures + stale processed event → DOWN
-        // Guard: lastEvent != null because staleness is measured against the last successful event;
-        // if no events have ever been processed (lastEvent == null), fall through to BRANCH 5 (transient).
+        // BRANCH 4: event-failures + stale → DOWN.
+        // Staleness reference falls back to lastSuccessfulRegistrationAt when no event ever
+        // succeeded — catches "parser is completely broken from the first event" (e.g. Frigate
+        // file-naming convention changed and createRecording rejects everything). Without the
+        // fallback, we'd stay in BRANCH 5 (transient) forever for such regressions.
+        val staleReference = lastEvent ?: regAt
         if (consecutiveEventFailures > 0 &&
-            lastEvent != null &&
-            Duration.between(lastEvent, now) > HEALTH_STALENESS
+            Duration.between(staleReference, now) > HEALTH_STALENESS
         ) {
+            val anchor = if (lastEvent != null) "last processed at $lastEvent" else "no event ever processed (registered at $regAt)"
             return builder
                 .down()
                 .withDetail(
                     "reason",
-                    "stale: events failing for ${Duration.between(lastEvent, now)} " +
-                        "(last processed at $lastEvent)",
+                    "stale: events failing for ${Duration.between(staleReference, now)} ($anchor)",
                 ).build()
         }
 

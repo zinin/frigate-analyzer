@@ -208,6 +208,7 @@ class WatchRecordsTaskTest {
         consecutiveRegistrationFailures: Long = 0,
         consecutiveFailures: Long = 0,
         lastFailure: Throwable? = null,
+        registerDummyDir: Boolean = true,
     ): WatchRecordsTask {
         val task = newTask()
         task.supervisorJob = Job() // fresh Job is active until completed/cancelled
@@ -219,6 +220,13 @@ class WatchRecordsTaskTest {
         task.consecutiveRegistrationFailures = consecutiveRegistrationFailures
         task.consecutiveFailures = consecutiveFailures
         task.lastFailure = lastFailure
+        // BRANCH 3.5 guard: a successful registration in real code always leaves at least one
+        // entry in registeredDirs; tests that simulate "post-registration" state must populate
+        // the registry, otherwise BRANCH 3.5 (empty registry → DOWN) fires before the branch
+        // under test. Opt-out with registerDummyDir=false when explicitly testing BRANCH 3.5.
+        if (registerDummyDir && lastSuccessfulRegistrationAt != null) {
+            task.registeredDirs[Path.of("/tmp/wrt-test")] = mockk(relaxed = true)
+        }
         return task
     }
 
@@ -265,6 +273,23 @@ class WatchRecordsTaskTest {
         val health = task.computeHealth(now)
         assertEquals(Status.OUT_OF_SERVICE, health.status)
         assertTrue(health.details["reason"].toString().contains("registering"))
+    }
+
+    @Test
+    fun `computeHealth branch 3_5 — registry empty after successful start returns DOWN`() {
+        val task =
+            taskWithActiveJob(
+                startupAt = Instant.parse("2026-05-23T11:00:00Z"),
+                lastSuccessfulPollAt = Instant.parse("2026-05-23T11:59:00Z"),
+                lastSuccessfulRegistrationAt = Instant.parse("2026-05-23T11:00:01Z"),
+                consecutiveEventFailures = 0,
+                consecutiveFailures = 0,
+                registerDummyDir = false, // simulate post-collapse: root folder gone, all WatchKeys invalidated
+            )
+        val now = Instant.parse("2026-05-23T12:00:00Z")
+        val health = task.computeHealth(now)
+        assertEquals(Status.DOWN, health.status)
+        assertTrue(health.details["reason"].toString().contains("registry empty"))
     }
 
     @Test
