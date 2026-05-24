@@ -18,7 +18,7 @@
 
 | File | Что меняется |
 |---|---|
-| `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTask.kt` | Rewrite: убрать `@Async`, поставить `@EventListener(ApplicationReadyEvent)` + `@PreDestroy` (iter-1 §D6), добавить coroutine supervisor, расширенное state-поле для health (iter-1 §D2), метод `computeHealth(now)`. Pure-функции `extractDateFromPath` / `isWithinWatchPeriod` переезжают в `WatchRecordsLoop.kt`. |
+| `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/task/WatchRecordsTask.kt` | Rewrite: убрать `@Async`, поставить `@EventListener(ApplicationReadyEvent::class)` + `@PreDestroy` (iter-1 §D6, iter-2 CRITICAL-3 Variant B — concurrent start с `FirstTimeScanTask` принят, DB unique constraint защищает), добавить coroutine supervisor, расширенное 10-полевое state (iter-1 §D2 + iter-2 CRITICAL-1), метод `computeHealth(now)` с 8-ветвевой таблицей. Pure-функции `extractDateFromPath` / `isWithinWatchPeriod` переезжают в `WatchRecordsLoop.kt`. |
 | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt` | Убрать вызов `watchRecordsTask.run()` из `initializeApplication()` и весь handler `ContextClosedEvent` (lifecycle теперь внутри WatchRecordsTask — он сам подписан на `ApplicationReadyEvent`). |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/TelegramNotificationService.kt` | Добавить `suspend fun sendOwnerMessage(text: String)`. |
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/TelegramNotificationServiceImpl.kt` | Реализовать `sendOwnerMessage` через `userService.findActiveByUsername(properties.owner)` + `SimpleTextNotificationTask` + `notificationQueue.enqueue`. |
@@ -1128,7 +1128,16 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.2
 
 ## Task 6: Rewrite `WatchRecordsTask` — lifecycle (`@EventListener(ApplicationReadyEvent)` / `@PreDestroy`) + supervisor body
 
-> **Context:** spec §4.1 (полностью) + iter-1 review §D2 (расширенный health-state) + iter-2 CRITICAL-1 (план приведён в соответствие с design §4.1/§5.2 — было: 5-полевая pre-D2 модель, стало: 10-полевая Variant A с 8-ветвевой health-таблицей и 3 транзишн-методами `onPollCompleted`/`onRegistrationSuccess`/`onRegistrationFailure`). После этого Task'а класс компилируется, стартует и держит supervisor с полным backoff / exception handling / health state machine. Тесты для всех 8 веток health-таблицы — в Task 8.
+> **⚠️ iter-2 CRITICAL-5 (Variant A — execution order swap):** Несмотря на нумерацию в этом документе, **выполнять в порядке Task 7 → Task 6 → Task 8** (не 6 → 7 → 8). Причина: текущий `Task 6` overwrite'ит `WatchRecordsTask.kt` удаляя `fun run()`, в то время как старый `ApplicationListener.kt` ещё содержит `watchRecordsTask.run()` вызов — **branch перестаёт компилироваться** между Task 6 commit и Task 7 commit. Iter-1 fix CCS#8 перенумеровал tasks, но coupling остался (renumbering был cosmetic, см. iter-2 review CRITICAL-5).
+>
+> **Новый порядок выполнения:**
+> 1. **Task 7 (ApplicationListener cleanup)** — убрать вызов `watchRecordsTask.run()` и `ContextClosedEvent`. После Task 7 commit `WatchRecordsTask.run()` ещё существует (dead method, никем не вызывается) — но branch компилируется.
+> 2. **Task 6 (WatchRecordsTask rewrite)** — переписать `WatchRecordsTask.kt`, удалить `run()`, добавить supervisor + 10-полевое state + 8-branch computeHealth. Branch компилируется (никто больше не вызывает `run()`).
+> 3. **Task 8 (supervisor tests)** — последним.
+>
+> **Sub-agent executor:** при следовании этому plan'у в новой сессии обработай Task 7 как блок шагов 7.1 → 7.2 → 7.3 (commit), затем сразу шаги 6.1 → 6.2 → 6.3 → 6.4 (commit), затем Task 8. Numbering задач в файле сохранено для обратной совместимости со ссылками из других мест плана.
+>
+> **Context (Task 6 content unchanged):** spec §4.1 (полностью) + iter-1 review §D2 (расширенный health-state) + iter-2 CRITICAL-1 (план приведён в соответствие с design §4.1/§5.2 — было: 5-полевая pre-D2 модель, стало: 10-полевая Variant A с 8-ветвевой health-таблицей и 3 транзишн-методами `onPollCompleted`/`onRegistrationSuccess`/`onRegistrationFailure`). После этого Task'а класс компилируется, стартует и держит supervisor с полным backoff / exception handling / health state machine. Тесты для всех 8 веток health-таблицы — в Task 8.
 >
 > **Архитектурно расширенный state (iter-1 §D2 + iter-2 CRITICAL-1):**
 > - 10 `@Volatile` полей: `lastSuccessfulPollAt` (poll heartbeat), `lastEventProcessedAt` (только при `eventsProcessed > 0`), `lastSuccessfulRegistrationAt`, `consecutiveEventFailures`, `consecutiveRegistrationFailures`, `consecutiveFailures` (общий для backoff), `successesSinceLastFailure`, `currentBackoff`, `lastFailure`, `startupAt`.
@@ -1219,8 +1228,12 @@ class WatchRecordsTask(
     @Volatile internal var lastFailure: Throwable? = null
     @Volatile internal var startupAt: Instant? = null
 
-    // iter-1 review §D6 — старт из ApplicationReadyEvent (а не @PostConstruct), чтобы FirstTimeScanTask успел отработать
-    // и watcher не подхватил тот же файл одновременно со scan'ом.
+    // iter-1 review §D6 + iter-2 CRITICAL-3 (Variant B): @EventListener(ApplicationReadyEvent::class)
+    // consistent с FirstTimeScanTask lifecycle pattern. Original iter-1 ordering-claim был неверен:
+    // Spring не гарантирует ordering между @EventListener'ами без @Order, а FirstTimeScanTask @Async
+    // всё равно run'ит scan параллельно. Concurrent execution accepted — DB unique constraint на
+    // recordings.file_path mitigates duplicate-processing (per-event catch ловит R2dbcException
+    // и считает в eventFailures). См. design §4.1 D6 note для полного rationale.
     @EventListener(ApplicationReadyEvent::class)
     fun start() {
         if (springProfileHelper.isTestProfile()) {
@@ -1492,7 +1505,7 @@ class WatchRecordsTask(
 Build target: ./gradlew :frigate-analyzer-core:compileKotlin
 ```
 
-Expected: BUILD SUCCESSFUL. Падение на `ApplicationListener.kt` (там вызов `watchRecordsTask.run()` который теперь не существует) исправляется следующим Task 7 (ApplicationListener cleanup) — порядок Task 6 → Task 7 → Task 8 (already in this order) гарантирует, что ветка компилируется после каждого commit'а.
+Expected: BUILD SUCCESSFUL. Если выполняется в swapped-порядке iter-2 CRITICAL-5 (Task 7 уже выполнен раньше), `ApplicationListener.kt` не содержит вызова `watchRecordsTask.run()` → compile OK сразу. **Не запускать Task 6 ДО Task 7** — иначе будет broken intermediate commit с unresolved reference на удалённый `run()`.
 
 - [ ] **Step 6.3: Запустить существующий test set (только pure-fn в WatchRecordsTaskTest — если ещё не пустой)**
 
@@ -1522,7 +1535,9 @@ Refs: docs/superpowers/specs/2026-05-23-watch-records-supervisor-design.md §4.1
 
 ## Task 7: Обновить `ApplicationListener` (cleanup)
 
-> **Context:** spec §3 — `ApplicationListener` больше не отвечает за lifecycle WatchRecordsTask. Запуск через `@EventListener(ApplicationReadyEvent::class)` в самом классе (iter-1 §D6), shutdown через `@PreDestroy`. **iter-2 CRITICAL-3 — see disputed:** если по обсуждению выбран Variant A (explicit orchestration), то старт WatchRecordsTask переедет обратно сюда после `firstTimeScanTask.run()`; иначе текущая `@EventListener` схема сохраняется.
+> **⚠️ iter-2 CRITICAL-5 (Variant A — execution order swap):** Этот Task **выполнять первым** перед Task 6 (см. note в Task 6 header). Содержание задачи не меняется, но повышенная важность — он становится compile-safe gateway: до Task 7 commit'а старый `ApplicationListener` ссылается на старый `WatchRecordsTask.run()`; после Task 7 commit'а dead-method `WatchRecordsTask.run()` ещё в коде, но nobody references — branch компилируется.
+>
+> **Context:** spec §3 — `ApplicationListener` больше не отвечает за lifecycle WatchRecordsTask. Запуск через `@EventListener(ApplicationReadyEvent::class)` в самом классе (iter-1 §D6 + iter-2 CRITICAL-3 Variant B — concurrent start с FirstTimeScanTask accepted, DB unique constraint mitigates), shutdown через `@PreDestroy`.
 
 **Files:**
 - Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/application/ApplicationListener.kt`
@@ -2288,6 +2303,51 @@ docker logs deploy-frigate-analyzer-1 | tail -20
 - `WatchRecordsTask iteration failed; backing off for PT5S`
 - Через ~5 сек — продолжение iterations
 - `/actuator/health` → `outOfService` для `watchRecordsTask` в момент backoff'а, обратно `UP` после следующего успеха
+
+После проверки — `docker compose down`.
+
+**iter-2 CRITICAL-2 smoke-сценарий (Variant A — transient DB outage, manual recovery):**
+
+Проверяет accepted gap: при недоступности PostgreSQL события `ENTRY_CREATE` теряются, recovery требует restart (далее `FirstTimeScanTask` back-fill'ит).
+
+```bash
+# 1. Удостовериться что app + PG UP, recordings создаются.
+curl -s http://localhost:8080/frigate-analyzer/actuator/health | jq .components.watchRecordsTask
+
+# 2. Положить mp4 файл — verify recording created (baseline).
+TODAY=$(date +%Y-%m-%d)
+cp baseline.mp4 /path/to/host/mount/$TODAY/cam1/cam1-$TODAY-12.00.00.mp4
+sleep 2
+# Проверить psql: SELECT count(*) FROM recordings WHERE file_path LIKE '%cam1-$TODAY-12.00.00.mp4'; → 1
+
+# 3. Stop PostgreSQL.
+docker compose stop postgres
+
+# 4. Положить ещё один mp4 — recording НЕ создаётся (PG down), event в eventFailures.
+cp baseline.mp4 /path/to/host/mount/$TODAY/cam1/cam1-$TODAY-12.00.01.mp4
+sleep 65  # подождать > HEALTH_STALENESS=2m? нет, 65s достаточно для увидеть transient OUT_OF_SERVICE
+
+# 5. Verify health: должен быть OUT_OF_SERVICE (transient), затем DOWN после 2m staleness.
+curl -s http://localhost:8080/frigate-analyzer/actuator/health | jq .components.watchRecordsTask
+
+# 6. Restart PostgreSQL.
+docker compose start postgres
+sleep 30  # PG warm-up
+
+# 7. Verify health поднимется обратно к UP (event-failures счётчик не сбросится сразу — recovery начнётся
+# с empty polls'ов, потом первый успешный event сбросит счётчики). Но recording 12.00.01 НЕ появится в БД —
+# WatchService уже отдал ENTRY_CREATE один раз.
+psql -U postgres -d frigate_analyzer -c "SELECT count(*) FROM recordings WHERE file_path LIKE '%cam1-$TODAY-12.00.01.mp4';"
+# Expected: 0 (gap accepted)
+
+# 8. Manual recovery — restart frigate-analyzer; FirstTimeScanTask back-fill'ит.
+docker compose restart frigate-analyzer
+sleep 30  # FirstTimeScanTask отработает на startup
+psql -U postgres -d frigate_analyzer -c "SELECT count(*) FROM recordings WHERE file_path LIKE '%cam1-$TODAY-12.00.01.mp4';"
+# Expected: 1 (back-fill сработал)
+```
+
+Этот сценарий **document'ирует ожидание оператора**: при DB outage записи теряются до manual restart. Если в production это unacceptable — переоткрываем CRITICAL-2 Variant B (retry queue) в отдельной итерации.
 
 После проверки — `docker compose down`.
 

@@ -35,6 +35,7 @@
 - Hardware/PG side (`pg_checksums --enable`, `btrfs scrub`, REINDEX) — отдельный план в incident-репортах.
 - Изменение контракта `WatchRecordsTask.shutdown()` (теперь это `@PreDestroy`, semantics — те же: остановить и закрыть всё).
 - Касание `FirstTimeScanTask`.
+- **Per-event retry / rescan after transient failure (iter-2 CRITICAL-2 — Variant A accepted).** При transient `R2dbcException` / `IOException` во время обработки `ENTRY_CREATE` событие безвозвратно теряется: `WatchService` отдаёт `ENTRY_CREATE` ровно один раз, повторный poll не сработает. После применённого per-event try/catch (iter-2 CRITICAL-1) failure ловится и считается в `eventFailures` (→ health DOWN после staleness), но файла в БД не появится. Recovery — manual `docker restart`, после чего `FirstTimeScanTask` отсканирует FS и back-fill'ит. Trade-off accepted сознательно: consistent с D1 (passive signal + manual recovery); существующий `FirstTimeScanTask` уже решает back-fill при restart, retry-queue был бы дублированием. Smoke-сценарий проверки — plan Step 11.2.
 
 ## 3. Архитектурный обзор
 
@@ -141,7 +142,13 @@ fun shutdown() {
 
 > **Note:** `scope.cancel()` releases the dedicated `Dispatchers.IO.limitedParallelism(1)` view so multiple Spring context refreshes (tests) do not leak slots.
 
-> **iter-1 review §D6:** Старт через `@EventListener(ApplicationReadyEvent)`, а не `@PostConstruct` — сохраняет порядок относительно `FirstTimeScanTask` (который тоже стартует из `ApplicationReadyEvent` в `ApplicationListener`). Гарантирует, что `FirstTimeScanTask` отработает до того, как watcher примет первое событие — иначе один и тот же файл мог бы пройти и через scan, и через ENTRY_CREATE. `@PreDestroy` остаётся как есть — Spring корректно вызывает destroy-callback'и при shutdown context'а независимо от того, кто стартовал bean.
+> **iter-1 review §D6 + iter-2 CRITICAL-3 (Variant B — D6 rationale исправлен):** Старт через `@EventListener(ApplicationReadyEvent::class)`, а не `@PostConstruct` — **consistent с lifecycle pattern'ом `FirstTimeScanTask`** (тоже стартует из `ApplicationReadyEvent` в `ApplicationListener`), что упрощает понимание lifecycle для maintainer'а.
+>
+> **iter-2 CRITICAL-3 correction:** Изначальный iter-1 D6 claim — "сохраняет порядок относительно `FirstTimeScanTask`" — **документально неверен**: (a) Spring **не гарантирует** ordering между двумя `@EventListener`-методами на разных bean'ах без `@Order`; (b) `FirstTimeScanTask.run()` сам `@Async` — даже при guaranteed dispatch ordering scan-coroutine и watcher-coroutine стартуют параллельно. Реальный execution ordering без касания `FirstTimeScanTask` (`@Async` removal или `awaitFirstScanCompletion()` mechanism) недостижим, а касание `FirstTimeScanTask` явно out-of-scope per §2 non-goals.
+>
+> **Текущее поведение (принято осознанно):** `WatchRecordsTask` и `FirstTimeScanTask` могут работать concurrently при старте. Duplicate-processing того же файла обоими — теоретически возможно, но **mitigated by DB unique constraint** на `recordings.file_path` (см. `.claude/rules/database.md` schema). При гонке второй `createRecording(...)` упадёт с `R2dbcException(constraint violation)` — это поймается per-event try/catch (iter-2 CRITICAL-1) и посчитается в `eventFailures` (короткое окно ~секунд на старте). Defense-in-depth достаточен; explicit ordering — over-engineering.
+>
+> `@PreDestroy` остаётся как есть — Spring корректно вызывает destroy-callback'и при shutdown context'а независимо от того, кто стартовал bean.
 
 Константы (захардкожено в файле):
 
