@@ -6,7 +6,6 @@ import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
@@ -17,7 +16,6 @@ import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class AddUserCommandHandler(
     private val userService: TelegramUserService,
-    private val properties: TelegramProperties,
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "adduser"
@@ -43,12 +41,15 @@ class AddUserCommandHandler(
             return
         }
 
-        if (targetUsername == properties.owner) {
+        if (userService.isOwner(targetUsername)) {
             reply(message, msg.get("command.adduser.error.owner", lang))
             return
         }
 
-        val existing = userService.findByUsername(targetUsername)
+        // Case-insensitive lookup keeps /adduser graceful post UNIQUE LOWER(username) migration:
+        // an attempt to invite a case-variant of an existing username should reply "already
+        // exists" instead of tripping the new DB constraint with an unhandled exception.
+        val existing = userService.findByUsernameIgnoreCase(targetUsername)
         if (existing != null) {
             val statusText = msg.get("common.status.${existing.status.name.lowercase()}", lang)
             reply(message, msg.get("command.adduser.already.exists", lang, targetUsername, statusText))

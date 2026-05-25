@@ -25,12 +25,16 @@ import org.junit.jupiter.api.Test
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ExportCoroutineScope
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
+import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
+import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertTrue
@@ -62,6 +66,22 @@ class CancelExportHandlerTest {
         scope.shutdown()
     }
 
+    private fun makeActiveUser(username: String): TelegramUserDto =
+        TelegramUserDto(
+            id = UUID.randomUUID(),
+            username = username,
+            chatId = 1L,
+            userId = 1L,
+            firstName = "First",
+            lastName = null,
+            status = UserStatus.ACTIVE,
+            creationTimestamp = Instant.now(),
+            activationTimestamp = Instant.now(),
+            languageCode = "en",
+            notificationsRecordingEnabled = true,
+            notificationsSignalEnabled = true,
+        )
+
     @Test
     fun `handle on noop prefix answers silently without side effects`() =
         runTest {
@@ -82,7 +102,7 @@ class CancelExportHandlerTest {
                             username = Username("@alice"),
                         )
                 }
-            coEvery { authFilter.getRole("alice") } returns UserRole.USER
+            coEvery { authFilter.authorize("alice") } returns AuthResult.Active(UserRole.USER, makeActiveUser("alice"))
 
             handler.handle(cb)
 
@@ -112,7 +132,7 @@ class CancelExportHandlerTest {
                             username = Username("@alice"),
                         )
                 }
-            coEvery { authFilter.getRole("alice") } returns UserRole.USER
+            coEvery { authFilter.authorize("alice") } returns AuthResult.Active(UserRole.USER, makeActiveUser("alice"))
             coEvery { userService.getUserLanguage(any()) } returns "en"
 
             handler.handle(cb)
@@ -156,7 +176,7 @@ class CancelExportHandlerTest {
                             username = Username("@alice"),
                         )
                 }
-            coEvery { authFilter.getRole("alice") } returns UserRole.USER
+            coEvery { authFilter.authorize("alice") } returns AuthResult.Active(UserRole.USER, makeActiveUser("alice"))
             coEvery { userService.getUserLanguage(any()) } returns "en"
 
             handler.handle(cb)
@@ -194,7 +214,7 @@ class CancelExportHandlerTest {
                             username = Username("@alice"),
                         )
                 }
-            coEvery { authFilter.getRole("alice") } returns UserRole.USER
+            coEvery { authFilter.authorize("alice") } returns AuthResult.Active(UserRole.USER, makeActiveUser("alice"))
             coEvery { userService.getUserLanguage(any()) } returns "en"
 
             handler.handle(cb)
@@ -231,7 +251,7 @@ class CancelExportHandlerTest {
                             username = Username("@alice"),
                         )
                 }
-            coEvery { authFilter.getRole("alice") } returns UserRole.USER
+            coEvery { authFilter.authorize("alice") } returns AuthResult.Active(UserRole.USER, makeActiveUser("alice"))
             coEvery { userService.getUserLanguage(any()) } returns "en"
 
             handler.handle(cb)
@@ -266,7 +286,43 @@ class CancelExportHandlerTest {
                             username = Username("@bob"),
                         )
                 }
-            coEvery { authFilter.getRole("bob") } returns null
+            coEvery { authFilter.authorize("bob") } returns AuthResult.Unauthorized
+            coEvery { userService.getUserLanguage(any()) } returns "en"
+
+            handler.handle(cb)
+
+            val answerSlot = slot<AnswerCallbackQuery>()
+            coVerify { bot.execute(capture(answerSlot)) }
+            assertTrue(
+                answerSlot.captured.text!!.contains("not authorized"),
+                "actual: ${answerSlot.captured.text}",
+            )
+        }
+
+    @Test
+    fun `handle for NeedsActivation user responds with unauthorized message`() =
+        runTest {
+            // Design: NeedsActivation в callback flow маппится в common.error.unauthorized
+            // (callback физически не приходит от не-ACTIVE юзера, но fail-closed маппинг
+            // гарантирует корректное поведение, если придёт).
+            val chatId = ChatId(RawChatId(111L))
+            val msgMock =
+                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                    every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@bob"))
+                }
+            val cb =
+                mockk<MessageDataCallbackQuery>(relaxed = true).also {
+                    every { it.data } returns "${CancelExportHandler.CANCEL_PREFIX}${UUID.randomUUID()}"
+                    every { it.id } returns CallbackQueryId("cbq-needs-activation")
+                    every { it.message } returns msgMock
+                    every { it.user } returns
+                        CommonUser(
+                            id = ChatId(RawChatId(123L)),
+                            firstName = "Bob",
+                            username = Username("@bob"),
+                        )
+                }
+            coEvery { authFilter.authorize("bob") } returns AuthResult.NeedsActivation
             coEvery { userService.getUserLanguage(any()) } returns "en"
 
             handler.handle(cb)
@@ -300,7 +356,7 @@ class CancelExportHandlerTest {
                             username = Username("@alice"),
                         )
                 }
-            coEvery { authFilter.getRole("alice") } returns UserRole.USER
+            coEvery { authFilter.authorize("alice") } returns AuthResult.Active(UserRole.USER, makeActiveUser("alice"))
             coEvery { userService.getUserLanguage(any()) } returns "en"
 
             handler.handle(cb)
@@ -339,7 +395,7 @@ class CancelExportHandlerTest {
                             username = Username("@alice"),
                         )
                 }
-            coEvery { authFilter.getRole("alice") } returns UserRole.USER
+            coEvery { authFilter.authorize("alice") } returns AuthResult.Active(UserRole.USER, makeActiveUser("alice"))
             coEvery { userService.getUserLanguage(any()) } returns "en"
             // Simulate the edit keyboard call failing (e.g. Telegram API error / message deleted).
             coEvery { bot.execute(any<EditChatMessageReplyMarkup>()) } throws RuntimeException("api down")

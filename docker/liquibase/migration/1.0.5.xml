@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-5.0.xsd">
+    <changeSet author="zinin" id="20260525-01-telegram-users-username-lower-unique">
+        <preConditions onFail="HALT">
+            <tableExists tableName="telegram_users"/>
+        </preConditions>
+        <comment>
+            Enforce case-insensitive uniqueness of telegram_users.username so case-variant rows
+            (e.g. 'Alice' and 'alice') cannot coexist. Case-sensitive findByUsername lookups in
+            AddUserCommandHandler and the non-owner /start branch would otherwise be able to
+            create duplicate rows that case-insensitive lookups (AuthorizationFilter, /start
+            owner branch) cannot disambiguate, risking IncorrectResultSizeDataAccessException.
+            If existing data already contains case-variant duplicates this changeset will fail —
+            the duplicates must be reconciled manually before re-running the migration.
+        </comment>
+        <sql>
+            CREATE UNIQUE INDEX uk_telegram_users_username_lower
+              ON telegram_users (LOWER(username));
+        </sql>
+        <rollback>
+            DROP INDEX IF EXISTS uk_telegram_users_username_lower;
+        </rollback>
+    </changeSet>
+</databaseChangeLog>

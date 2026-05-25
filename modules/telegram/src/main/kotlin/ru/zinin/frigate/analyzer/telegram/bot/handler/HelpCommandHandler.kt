@@ -7,16 +7,16 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Lazy
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class HelpCommandHandler(
     @Lazy private val handlers: List<CommandHandler>,
-    private val properties: TelegramProperties,
+    private val userService: TelegramUserService,
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "help"
@@ -41,7 +41,7 @@ class HelpCommandHandler(
                     appendLine("/${handler.command} - ${msg.get("command.${handler.command}.description", lang)}")
                 }
 
-                if (user?.username == properties.owner && ownerCommands.isNotEmpty()) {
+                if (userService.isOwner(user?.username) && ownerCommands.isNotEmpty()) {
                     appendLine()
                     appendLine(msg.get("command.help.owner.header", lang))
                     ownerCommands.forEach { handler ->

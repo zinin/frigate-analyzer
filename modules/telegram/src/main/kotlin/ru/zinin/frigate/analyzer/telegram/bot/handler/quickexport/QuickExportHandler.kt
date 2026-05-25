@@ -30,6 +30,7 @@ import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ExportCoroutineScope
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -83,10 +84,16 @@ class QuickExportHandler(
             return null
         }
 
-        if (authorizationFilter.getRole(username) == null) {
-            val lang = StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
-            bot.answer(callback, msg.get("common.error.unauthorized", lang))
-            return null
+        when (authorizationFilter.authorize(username)) {
+            is AuthResult.Active -> {
+                Unit
+            }
+
+            AuthResult.NeedsActivation, AuthResult.Unauthorized -> {
+                val lang = StartCommandHandler.detectLanguage(user.ietfLanguageCode?.code)
+                bot.answer(callback, msg.get("common.error.unauthorized", lang))
+                return null
+            }
         }
 
         val lang = resolveLang(chatIdLong, user.ietfLanguageCode?.code)

@@ -137,12 +137,20 @@ future refactor from introducing a dual-lock deadlock, the following ordering mu
 
 - `FrigateAnalyzerBot` registers commands dynamically from `List<CommandHandler>`.
 - Command ordering is controlled by handler metadata (`order`, then command name as tie-breaker).
-- Authorization is centralized in bot router via `AuthorizationFilter.getRole()` and `requiredRole`.
+- Authorization is centralized in bot router via `AuthorizationFilter.authorize()` and `requiredRole`.
 - Owner menu registration uses `OwnerActivatedEvent` + `@EventListener` bridge with coroutine launch.
 
 ## Authorization
 
-AuthorizationFilter returns UserRole (OWNER, USER) or null for unauthorized.
+`AuthorizationFilter.authorize(...)` returns a `sealed AuthResult`:
+
+| Result | Meaning |
+|---|---|
+| `Active(role: UserRole, user: TelegramUserDto)` | ACTIVE record found; `role` is `OWNER` or `USER`. |
+| `NeedsActivation` | Owner without a DB row (clean DB), or any user with `INVITED` status. Router replies `common.error.activation.required` for every command except `/start` and for non-command text. |
+| `Unauthorized` | Not the configured owner and no DB record. Router replies `common.error.unauthorized`. |
+
+The router (`FrigateAnalyzerBot.registerRoutes()`) does an exhaustive `when` over the three branches. `/start` (`requiredRole == null`) bypasses the auth check and is handled directly by `StartCommandHandler`, which performs invite + activate.
 
 ## Configuration
 

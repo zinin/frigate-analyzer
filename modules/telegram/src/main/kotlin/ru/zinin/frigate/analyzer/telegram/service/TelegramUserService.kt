@@ -7,6 +7,8 @@ import java.time.ZoneId
 interface TelegramUserService {
     suspend fun findByUsername(username: String): TelegramUserDto?
 
+    suspend fun findByUsernameIgnoreCase(username: String): TelegramUserDto?
+
     suspend fun findActiveByUsername(username: String): TelegramUserDto?
 
     suspend fun inviteUser(username: String): TelegramUserDto

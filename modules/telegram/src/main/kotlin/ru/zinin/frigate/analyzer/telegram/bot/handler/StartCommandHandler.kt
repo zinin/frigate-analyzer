@@ -9,7 +9,6 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
@@ -20,7 +19,6 @@ import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class StartCommandHandler(
     private val userService: TelegramUserService,
-    private val properties: TelegramProperties,
     private val eventPublisher: ApplicationEventPublisher,
     private val msg: MessageResolver,
 ) : CommandHandler {
@@ -50,16 +48,22 @@ class StartCommandHandler(
                 .chatId
                 .long
 
-        if (username == properties.owner) {
-            val existing = userService.findByUsername(username)
+        if (userService.isOwner(username)) {
+            // Case-insensitive lookup: if Telegram now sends a different casing than what was
+            // stored at first activation, we must find the existing row instead of inviting a
+            // duplicate (which would later trip the unique chat_id/user_id constraints during
+            // activateUser). When the stored row is found, reuse its canonical username so the
+            // (case-sensitive) activate UPDATE matches it.
+            val existing = userService.findByUsernameIgnoreCase(username)
             if (existing == null) {
                 userService.inviteUser(username)
             }
+            val canonicalUsername = existing?.username ?: username
             val lang =
                 if (existing?.status != UserStatus.ACTIVE) {
                     val detectedLang = detectLanguage(telegramLang)
                     userService.activateUser(
-                        username = username,
+                        username = canonicalUsername,
                         chatId = chatId,
                         userId = userId,
                         firstName = privateMessage.user.firstName,

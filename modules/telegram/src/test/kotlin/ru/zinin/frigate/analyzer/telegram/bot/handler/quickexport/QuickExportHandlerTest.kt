@@ -39,14 +39,18 @@ import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ExportCoroutineScope
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
+import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
+import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import java.nio.file.Files
 import java.time.Duration
+import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -77,6 +81,22 @@ class QuickExportHandlerTest {
         createdScopes.forEach { runCatching { it.shutdown() } }
         createdScopes.clear()
     }
+
+    private fun makeActiveUser(username: String): TelegramUserDto =
+        TelegramUserDto(
+            id = UUID.randomUUID(),
+            username = username,
+            chatId = 1L,
+            userId = 1L,
+            firstName = "First",
+            lastName = null,
+            status = UserStatus.ACTIVE,
+            creationTimestamp = Instant.now(),
+            activationTimestamp = Instant.now(),
+            languageCode = "en",
+            notificationsRecordingEnabled = true,
+            notificationsSignalEnabled = true,
+        )
 
     // Helper: creates a test-backed ExportCoroutineScope that honors runTest's virtual time.
     // The internal delegate-taking ctor accepts any CoroutineScope — we pass UnconfinedTestDispatcher
@@ -259,7 +279,8 @@ class QuickExportHandlerTest {
         private val recordingId = UUID.randomUUID()
 
         init {
-            coEvery { authorizationFilter.getRole(any<String>()) } returns UserRole.USER
+            coEvery { authorizationFilter.authorize(any<String>()) } returns
+                AuthResult.Active(UserRole.USER, makeActiveUser("default"))
             coEvery { userService.getUserLanguage(any()) } returns "ru"
         }
 
@@ -479,7 +500,7 @@ class QuickExportHandlerTest {
                 // Verify no export was attempted
                 coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any(), any(), any()) }
                 // Verify authorizationFilter was never consulted (early return before auth check)
-                coVerify(exactly = 0) { authorizationFilter.getRole(any<String>()) }
+                coVerify(exactly = 0) { authorizationFilter.authorize(any<String>()) }
             }
 
         @Test
@@ -488,7 +509,7 @@ class QuickExportHandlerTest {
                 val handler = createHandler()
                 val callback = createMessageCallback()
 
-                coEvery { authorizationFilter.getRole("testuser") } returns null
+                coEvery { authorizationFilter.authorize("testuser") } returns AuthResult.Unauthorized
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
 
@@ -516,7 +537,43 @@ class QuickExportHandlerTest {
                 )
 
                 // Verify authorizationFilter was consulted
-                coVerify { authorizationFilter.getRole("testuser") }
+                coVerify { authorizationFilter.authorize("testuser") }
+            }
+
+        @Test
+        fun `handle rejects NeedsActivation user with unauthorized message`() =
+            runTest {
+                // Design: NeedsActivation and Unauthorized in callback flow both map to
+                // common.error.unauthorized (callback физически не приходит от не-ACTIVE юзера,
+                // но fail-closed маппинг гарантирует корректное поведение, если придёт).
+                val handler = createHandler()
+                val callback = createMessageCallback()
+
+                coEvery { authorizationFilter.authorize("testuser") } returns AuthResult.NeedsActivation
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+
+                handler.handle(callback)?.join()
+
+                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any(), any(), any()) }
+
+                val expectedText = msg.get("common.error.unauthorized", "en")
+                val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
+                assertTrue(
+                    answerRequests.any { it.text == expectedText },
+                    "Expected AnswerCallbackQuery with text '$expectedText', but got: ${answerRequests.map {
+                        it.text
+                    }}",
+                )
+
+                val nonAnswerRequests = capturedRequests.filter { it !is AnswerCallbackQuery }
+                assertTrue(
+                    nonAnswerRequests.isEmpty(),
+                    "Expected only AnswerCallbackQuery requests, but also found: " +
+                        nonAnswerRequests.map { it::class.simpleName },
+                )
+
+                coVerify { authorizationFilter.authorize("testuser") }
             }
 
         @Test
@@ -526,7 +583,8 @@ class QuickExportHandlerTest {
                 val callback = createOwnerCallback()
                 val tempFile = Files.createTempFile("test-export", ".mp4")
 
-                coEvery { authorizationFilter.getRole(properties.owner) } returns UserRole.OWNER
+                coEvery { authorizationFilter.authorize(properties.owner) } returns
+                    AuthResult.Active(UserRole.OWNER, makeActiveUser(properties.owner))
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
                 coEvery {
                     videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any(), any())
@@ -550,7 +608,8 @@ class QuickExportHandlerTest {
                 val callback = createMessageCallback()
                 val tempFile = Files.createTempFile("test-export", ".mp4")
 
-                coEvery { authorizationFilter.getRole("testuser") } returns UserRole.USER
+                coEvery { authorizationFilter.authorize("testuser") } returns
+                    AuthResult.Active(UserRole.USER, makeActiveUser("testuser"))
                 coEvery { bot.execute(any<Request<*>>()) } returns mockk(relaxed = true)
                 coEvery {
                     videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any(), any())
@@ -566,7 +625,7 @@ class QuickExportHandlerTest {
                 // Verify export was called (active user is authorized)
                 coVerify { videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any(), any()) }
                 // Verify authorizationFilter was consulted
-                coVerify { authorizationFilter.getRole("testuser") }
+                coVerify { authorizationFilter.authorize("testuser") }
             }
 
         @Test
@@ -1192,7 +1251,8 @@ class QuickExportHandlerTest {
                         registry = registry,
                         exportScope = scope,
                     )
-                coEvery { authFilter.getRole(any<String>()) } returns UserRole.USER
+                coEvery { authFilter.authorize(any<String>()) } returns
+                    AuthResult.Active(UserRole.USER, makeActiveUser("testuser"))
                 coEvery { userService.getUserLanguage(any()) } returns "en"
                 coEvery {
                     videoExportService.exportByRecordingId(any(), any(), any(), any(), any())

@@ -65,7 +65,7 @@ class TelegramNotificationServiceImplOwnerMessageTest {
         runTest {
             val ownerId = UUID.randomUUID()
             every { uuidGeneratorHelper.generateV1() } returns ownerId
-            coEvery { userService.findActiveByUsername(ownerUsername) } returns ownerDto(chatId = 42L)
+            coEvery { userService.findByUsernameIgnoreCase(ownerUsername) } returns ownerDto(chatId = 42L)
             coEvery { notificationQueue.enqueue(any()) } just Runs
 
             service.sendOwnerMessage("Hello, admin!")
@@ -82,7 +82,7 @@ class TelegramNotificationServiceImplOwnerMessageTest {
     @Test
     fun `sendOwnerMessage does nothing when owner is not active yet`() =
         runTest {
-            coEvery { userService.findActiveByUsername(ownerUsername) } returns null
+            coEvery { userService.findByUsernameIgnoreCase(ownerUsername) } returns null
 
             service.sendOwnerMessage("Hello, admin!")
 
@@ -92,7 +92,7 @@ class TelegramNotificationServiceImplOwnerMessageTest {
     @Test
     fun `sendOwnerMessage does nothing when owner has no chatId`() =
         runTest {
-            coEvery { userService.findActiveByUsername(ownerUsername) } returns ownerDto(chatId = null)
+            coEvery { userService.findByUsernameIgnoreCase(ownerUsername) } returns ownerDto(chatId = null)
 
             service.sendOwnerMessage("Hello, admin!")
 
