@@ -176,4 +176,18 @@ class AuthorizationFilterTest {
 
             assertEquals(AuthResult.Active(UserRole.OWNER, owner), result)
         }
+
+    @Test
+    fun `authorize(username) returns NeedsActivation for ACTIVE record with null chatId (invariant violation)`() =
+        runTest {
+            // Defensive guard: AuthResult.Active декларирует chatId != null (enforced by
+            // activateUser). При нарушении (restore из снапшота, ручная правка БД) отдаём
+            // NeedsActivation, чтобы /start ре-активировал и установил chatId.
+            val brokenOwner = makeUser("ownerUser", UserStatus.ACTIVE).copy(chatId = null)
+            coEvery { userService.findByUsername("ownerUser") } returns brokenOwner
+
+            val result = filter.authorize("ownerUser")
+
+            assertEquals(AuthResult.NeedsActivation, result)
+        }
 }
