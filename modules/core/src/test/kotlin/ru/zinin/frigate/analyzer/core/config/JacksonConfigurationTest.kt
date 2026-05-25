@@ -1,6 +1,5 @@
 package ru.zinin.frigate.analyzer.core.config
 
-import com.fasterxml.jackson.module.kotlin.readValue
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import java.time.Duration
