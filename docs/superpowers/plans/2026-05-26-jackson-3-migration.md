@@ -382,6 +382,8 @@ package ru.zinin.frigate.analyzer.core.config
 
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.boot.autoconfigure.AutoConfigurations
+import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import tools.jackson.databind.json.JsonMapper
 import java.time.Duration
@@ -429,15 +431,18 @@ class JacksonConfigurationTest {
     }
 
     @Test
-    fun `Spring context registers internalObjectMapper as Primary JsonMapper bean`() {
-        // Verifies the bean is actually visible to Spring (not just constructible by hand)
-        // and has the @Primary marker so codec/parser DI picks it deterministically.
+    fun `Spring context with JacksonAutoConfiguration still picks internalObjectMapper as Primary`() {
+        // Realistic check: loads our JacksonConfiguration alongside Spring Boot's
+        // JacksonAutoConfiguration. Even if auto-config registers its own JsonMapper bean,
+        // our @Primary internalObjectMapper must be selected by type-based DI.
+        // This is the proof that wire-format codec wiring picks our mapper, not auto-config's.
         ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration::class.java))
             .withUserConfiguration(JacksonConfiguration::class.java)
             .run { ctx ->
-                assertThat(ctx).hasSingleBean(JsonMapper::class.java)
+                // The @Primary bean must win type-based resolution even if multiple are present
                 val bean = ctx.getBean(JsonMapper::class.java)
-                assertThat(bean).isInstanceOf(JsonMapper::class.java)
+                assertThat(bean).isSameAs(ctx.getBean("internalObjectMapper", JsonMapper::class.java))
                 // BeanDefinition primary flag check
                 val bd = ctx.beanFactory.getBeanDefinition("internalObjectMapper")
                 assertThat(bd.isPrimary).isTrue()

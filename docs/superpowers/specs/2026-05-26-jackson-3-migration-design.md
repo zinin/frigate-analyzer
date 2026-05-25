@@ -78,7 +78,9 @@ class JacksonConfiguration {
 }
 ```
 
-Импорты — все `tools.jackson.databind.*` плюс `tools.jackson.databind.json.JsonMapper`. Метод `findAndAddModules()` подхватит `tools.jackson.module.kotlin` через ServiceLoader (артефакт `tools.jackson.module:jackson-module-kotlin:3.0.4` шипит `META-INF/services/tools.jackson.databind.JacksonModule`). Тест на round-trip Kotlin data class в `JacksonConfigurationTest` — regression guard на случай если ServiceLoader-discovery сломается.
+Импорты — все `tools.jackson.databind.*` плюс `tools.jackson.databind.json.JsonMapper`. Метод `findAndAddModules()` подхватит `tools.jackson.module.kotlin` через ServiceLoader (артефакт `tools.jackson.module:jackson-module-kotlin:3.0.4` шипит `META-INF/services/tools.jackson.databind.JacksonModule`). Тест на round-trip Kotlin data class в `JacksonConfigurationTest` (см. § 4.3) — обязательный regression guard на случай если ServiceLoader-discovery сломается (например, при упаковке fat-jar с агрессивным `mergeServiceFiles`); тест мгновенно покажет проблему в CI до того как она дойдёт до runtime.
+
+**Альтернатива (rejected):** явная регистрация `.addModule(KotlinModule.Builder().build())` была рассмотрена. Отвергнута: создаёт coupling с internal Jackson 3 builder API (молодой, может эволюционировать в минорных версиях), скрывает тот факт что подключение модулей в Jackson 3 — стандартизированный ServiceLoader-contract. Test guard выше — достаточная защита.
 
 ### 3.2. `WebFluxJacksonCodecConfigurer` (новый файл/бин)
 
@@ -100,6 +102,8 @@ class WebFluxJacksonCodecConfigurer(
 **`@Order(Ordered.LOWEST_PRECEDENCE)`** гарантирует, что наш configurer выполняется последним в цепочке `WebFluxConfigurer`'ов: даже если другой configurer (наш собственный в будущем или auto-config Spring Boot) зарегистрирует свой `jacksonJsonEncoder`, наша явная регистрация перезапишет его. Без `@Order` порядок определяется именами beans / порядком обнаружения — слишком хрупко.
 
 Это **явная** регистрация: если бин удалят, дефолтная регистрация Spring Boot auto-config возьмёт верх, но wire-format регрессирует на дефолты — regression-тест поймает (см. § 4.3 про `StatusControllerTest` extension с `FAIL_ON_UNKNOWN_PROPERTIES`).
+
+**Про взаимодействие с Spring Boot 4 auto-config:** мы намеренно НЕ углубляемся в анализ `JacksonAutoConfiguration` / `JacksonCodecCustomizer` source code для Spring Boot 4.0.6, потому что эта реализация меняется между minor releases. Вместо этого используем **behavioural verification**: расширенный `StatusControllerTest` (§ 4.3) проверяет `FAIL_ON_UNKNOWN_PROPERTIES=false` end-to-end. Если auto-config делает то же что и наш configurer — тест проходит обоими путями (наш бин безвреден). Если auto-config делает что-то другое — тест требует именно наш configurer. В обоих случаях `@Order(LOWEST_PRECEDENCE)` гарантирует что наша явная регистрация — последняя и побеждает.
 
 Может быть в отдельном файле `WebFluxJacksonCodecConfigurer.kt` или внутри `JacksonConfiguration.kt`. Решение оставлено имплементации (предпочтительнее отдельный файл — single-responsibility).
 
@@ -180,6 +184,8 @@ outbound: WebClient к detect-серверу (snake_case JSON)
 - Возможных других транзитивов
 Cделать «удалить bundle» можно отдельной follow-up задачей после успешной миграции.
 
+**Про co-existence Jackson 2 и Jackson 3 в одном classpath:** namespace разный (`com.fasterxml.jackson.*` vs `tools.jackson.*`) — артефакты физически не конфликтуют на JVM уровне. Build verification (поэтапные `./gradlew build` после Tasks 1, 4, 5, 6, 7, 8) — primary способ убедиться что transitive resolution здоровое; реальный конфликт классов вызвал бы immediate compile/runtime failure. Полный formal audit `./gradlew :*:dependencies | grep jackson` — useful follow-up (вместе с CONCERN-3 bundles.jackson cleanup), не блокирует миграцию.
+
 ### 4.3. Тесты
 
 **Новый файл `modules/core/src/test/.../testsupport/TestObjectMappers.kt`:**
@@ -202,6 +208,8 @@ object TestObjectMappers {
 ```
 
 Аналогичный файл создаётся в `modules/ai-description/src/test/.../testsupport/TestObjectMappers.kt` (между модулями нет shared test-source — допустимо дублирование двух фабрик).
+
+**Альтернатива (rejected):** Gradle `java-test-fixtures` plugin для shared test utilities. Отвергнута: дублирование 5 строк не оправдывает Gradle complexity (новый source set, новый classpath, потенциальные конфликты с MockK/JUnit5 setup). KDoc «Adding a setting in production? Add it here too» + JacksonConfigurationTest на production бине дают достаточную социальную/поведенческую защиту от drift. Если коллекция test utilities вырастет — рефакторинг под test-fixtures можно сделать отдельной задачей с понятным ROI.
 
 **Существующие тесты — рефакторинг:**
 - `DetectServiceTest.kt`, `DetectServiceCancelJobTest.kt`: удалить `as FasterxmlObjectMapper` alias, удалить локальные `buildObjectMapper()`/`buildJsonMapper()`, заменить на `TestObjectMappers.internalMapper()`/`detectServerMapper()`.
@@ -265,6 +273,7 @@ object TestObjectMappers {
 ## 8. Out of scope (явно)
 
 - Замена springdoc-openapi на Jackson-3-совместимую альтернативу — отдельная задача, требует upstream-релиза springdoc или альтернативной библиотеки
-- Удаление `bundles.jackson` из явных deps — отдельная follow-up задача после успешной миграции (нужно убедиться, что Spring Boot YAML/springdoc не сломаются)
+- Удаление `bundles.jackson` из явных deps `modules/core/build.gradle.kts` — отдельная follow-up задача после успешной миграции. Сейчас bundle подключён явно (`jackson-databind`, `jackson-jsr310`, `jackson-kotlin`, `jackson-yaml`); большая часть нужна транзитивно через springdoc + `spring-boot-jackson2` (YAML config loading). Cleanup требует поэтапной проверки что транзитивная связь действительно достаточна — рискованно объединять с текущей миграцией.
+- Удаление `implementation(libs.bundles.jackson)` из `modules/ai-description/build.gradle.kts` — потенциально безопасное cleanup (springdoc там не используется), но требует отдельной проверки и тестов. Отложено follow-up'ом.
 - Изменение SNAKE_CASE контракта detect-сервера — внешний API, не наш контроль
 - Миграция Claude SDK на Jackson 3 — внешняя зависимость
