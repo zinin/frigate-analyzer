@@ -541,6 +541,42 @@ class QuickExportHandlerTest {
             }
 
         @Test
+        fun `handle rejects NeedsActivation user with unauthorized message`() =
+            runTest {
+                // Design: NeedsActivation and Unauthorized in callback flow both map to
+                // common.error.unauthorized (callback физически не приходит от не-ACTIVE юзера,
+                // но fail-closed маппинг гарантирует корректное поведение, если придёт).
+                val handler = createHandler()
+                val callback = createMessageCallback()
+
+                coEvery { authorizationFilter.authorize("testuser") } returns AuthResult.NeedsActivation
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+
+                handler.handle(callback)?.join()
+
+                coVerify(exactly = 0) { videoExportService.exportByRecordingId(any(), any(), any(), any(), any()) }
+
+                val expectedText = msg.get("common.error.unauthorized", "en")
+                val answerRequests = capturedRequests.filterIsInstance<AnswerCallbackQuery>()
+                assertTrue(
+                    answerRequests.any { it.text == expectedText },
+                    "Expected AnswerCallbackQuery with text '$expectedText', but got: ${answerRequests.map {
+                        it.text
+                    }}",
+                )
+
+                val nonAnswerRequests = capturedRequests.filter { it !is AnswerCallbackQuery }
+                assertTrue(
+                    nonAnswerRequests.isEmpty(),
+                    "Expected only AnswerCallbackQuery requests, but also found: " +
+                        nonAnswerRequests.map { it::class.simpleName },
+                )
+
+                coVerify { authorizationFilter.authorize("testuser") }
+            }
+
+        @Test
         fun `handle allows owner access even when userService returns null`() =
             runTest {
                 val handler = createHandler()

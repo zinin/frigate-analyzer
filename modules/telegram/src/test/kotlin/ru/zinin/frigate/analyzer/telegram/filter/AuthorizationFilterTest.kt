@@ -12,7 +12,6 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
@@ -23,11 +22,7 @@ import kotlin.test.assertEquals
 
 class AuthorizationFilterTest {
     private val userService = mockk<TelegramUserService>()
-    private val properties =
-        mockk<TelegramProperties>().also {
-            every { it.owner } returns "ownerUser"
-        }
-    private val filter = AuthorizationFilter(properties, userService)
+    private val filter = AuthorizationFilter(userService)
 
     @BeforeEach
     fun setupOwnerCheck() {

@@ -6,7 +6,6 @@ import dev.inmo.tgbotapi.types.message.content.MessageContent
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -16,7 +15,6 @@ private val logger = KotlinLogging.logger {}
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class AuthorizationFilter(
-    private val properties: TelegramProperties,
     private val userService: TelegramUserService,
 ) {
     suspend fun authorize(message: CommonMessage<MessageContent>): AuthResult {

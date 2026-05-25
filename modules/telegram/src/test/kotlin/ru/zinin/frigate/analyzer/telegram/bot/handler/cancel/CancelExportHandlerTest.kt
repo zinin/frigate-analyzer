@@ -300,6 +300,42 @@ class CancelExportHandlerTest {
         }
 
     @Test
+    fun `handle for NeedsActivation user responds with unauthorized message`() =
+        runTest {
+            // Design: NeedsActivation в callback flow маппится в common.error.unauthorized
+            // (callback физически не приходит от не-ACTIVE юзера, но fail-closed маппинг
+            // гарантирует корректное поведение, если придёт).
+            val chatId = ChatId(RawChatId(111L))
+            val msgMock =
+                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                    every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@bob"))
+                }
+            val cb =
+                mockk<MessageDataCallbackQuery>(relaxed = true).also {
+                    every { it.data } returns "${CancelExportHandler.CANCEL_PREFIX}${UUID.randomUUID()}"
+                    every { it.id } returns CallbackQueryId("cbq-needs-activation")
+                    every { it.message } returns msgMock
+                    every { it.user } returns
+                        CommonUser(
+                            id = ChatId(RawChatId(123L)),
+                            firstName = "Bob",
+                            username = Username("@bob"),
+                        )
+                }
+            coEvery { authFilter.authorize("bob") } returns AuthResult.NeedsActivation
+            coEvery { userService.getUserLanguage(any()) } returns "en"
+
+            handler.handle(cb)
+
+            val answerSlot = slot<AnswerCallbackQuery>()
+            coVerify { bot.execute(capture(answerSlot)) }
+            assertTrue(
+                answerSlot.captured.text!!.contains("not authorized"),
+                "actual: ${answerSlot.captured.text}",
+            )
+        }
+
+    @Test
     fun `handle answers with format error on malformed cancel data`() =
         runTest {
             // Guards iter-2 codex TEST-2: design §8 requires test for malformed callback data.
