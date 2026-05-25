@@ -166,13 +166,14 @@ Stop the app. If any step failed, fix and re-run from Step 1. If all six steps p
 
 ### Task 13: Code review
 
-✅ Done — see review commits: `5327ba4` (auto-fixes), `d0866df` (decisions).
+✅ Done — see review commits: `5327ba4` (iter-2 auto-fixes), `d0866df` (iter-2 decisions), `94b4927` (iter-3 auto-fixes), `176bdf8` (iter-3 decisions).
 
-Two passes of full-branch external code review against `master..HEAD`:
+Three passes of full-branch external code review against `master..HEAD`:
 - **First pass** (Opus, single-agent): **Ready to merge**, 0 Critical, 0 Important, 9 Minor (M1–M9). Per plan directive, only Critical/High auto-fixed; Minor left as follow-ups.
 - **Second pass** (5-agent parallel: claude, codex, ccs-glm, ollama-deepseek, ollama-minimax; ollama-kimi skipped — stalled): 5/5 verdict **Ready to merge**, 0 Critical. Auto-fixes: `@Operation method="GET"` cleanup, `docs/incidents` runbook `/statistics`→`/status`. Decisions applied: real wire-format ISO-8601 test in `StatusControllerTest` (mocked `StatusService`), `JacksonConfiguration` KDoc-warning about dual Jackson stack, conditional date prefix for OFFLINE last-seen when `offlineFor >= 24h`. Two follow-up issues filed:
   - `docs/issues/2026-05-25-recordings-counts-mask-errors.md` — Recordings counts mask errors (inherited from `/statistics`).
   - `docs/issues/2026-05-25-dual-jackson-stack.md` — legacy `com.fasterxml.jackson` + new `tools.jackson` coexistence.
+- **Third pass** (6-agent parallel: claude, codex, ccs-glm, ollama-kimi, ollama-deepseek, ollama-minimax; ccs-glm + ollama-kimi + ollama-minimax stalled after ~10 minutes with no watchdog heartbeat for 15+ min — skipped by user decision): 3/3 responding reviewers verdict **Ready to merge**, 0 Critical, 0 valid Important (deepseek's "5 serial SQL queries" is a REPEAT of iter-1 CONCERN-11, accepted as inherited behaviour). Auto-fixes: defensive HTML-escape of `appendByCamera` headers after padding (claude M1); cleanup of review-process reference in `StatusService` cam_id sort comment (codex). Decisions applied: replace `lateinit var startedAt` with eager `val startedAt = Instant.now(clock)` in `SignalLossMonitorTask` (claude M3); add KDoc warning to `JacksonConfigurationTest` explaining it covers only the legacy bean — real wire format covered by `StatusControllerTest` (claude M4). Build verified after fixes: BUILD SUCCESSFUL, 528 tests passing (1 skipped), 0 failures.
 
 Each per-task implementation in this session also passed independent spec-compliance ✅ + code-quality ✅ reviews (both Opus).
 
