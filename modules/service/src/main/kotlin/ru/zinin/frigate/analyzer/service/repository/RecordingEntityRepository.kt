@@ -99,15 +99,6 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         @Param("errorMessage") errorMessage: String,
     ): Long
 
-    @Query("SELECT COUNT(*) FROM recordings")
-    suspend fun countAll(): Long
-
-    @Query("SELECT COUNT(*) FROM recordings WHERE process_timestamp IS NOT NULL")
-    suspend fun countProcessed(): Long
-
-    @Query("SELECT COUNT(*) FROM recordings WHERE process_timestamp IS NULL")
-    suspend fun countUnprocessed(): Long
-
     @Query(
         """
         SELECT

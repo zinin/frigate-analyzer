@@ -426,4 +426,30 @@ class StatusMessageFormatterI18nTest {
         assertFalse(out.contains("frame srv-a"), "server id leaked into ALIVE placeholders: $out")
         assertTrue(out.contains("Статус Frigate Analyzer"), "expected RU title in: $out")
     }
+
+    @Test
+    fun `format renders EN recordings rows with localized labels and no raw keys`() {
+        val out = formatter.format(sampleSnapshot(), language = "en", zone = zone, now = now)
+        assertTrue(out.contains("Success"), "EN: missing localized 'Success' label: $out")
+        assertTrue(out.contains("Errors"), "EN: missing localized 'Errors' label: $out")
+        assertFalse(
+            out.contains("status.recordings.label.success") ||
+                out.contains("status.recordings.label.errors") ||
+                out.contains("status.recordings.value.withPct"),
+            "EN: raw i18n key leaked through MessageResolver fallback: $out",
+        )
+    }
+
+    @Test
+    fun `format renders RU recordings rows with localized labels and no raw keys`() {
+        val out = formatter.format(sampleSnapshot(), language = "ru", zone = zone, now = now)
+        assertTrue(out.contains("Успешно"), "RU: missing localized 'Успешно' label: $out")
+        assertTrue(out.contains("Ошибки"), "RU: missing localized 'Ошибки' label: $out")
+        assertFalse(
+            out.contains("status.recordings.label.success") ||
+                out.contains("status.recordings.label.errors") ||
+                out.contains("status.recordings.value.withPct"),
+            "RU: raw i18n key leaked through MessageResolver fallback: $out",
+        )
+    }
 }
