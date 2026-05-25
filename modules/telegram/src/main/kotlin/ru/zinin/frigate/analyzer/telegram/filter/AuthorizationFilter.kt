@@ -26,17 +26,17 @@ class AuthorizationFilter(
         val record = userService.findByUsername(username)
         val isOwner = userService.isOwner(username) // case-insensitive
 
-        return when {
-            // AuthResult.Active декларирует инвариант `chatId != null` (enforced by activateUser).
-            // Если ACTIVE-запись приехала без chatId (восстановление снапшота, ручная правка БД),
-            // не нарушаем контракт типа — отдаём NeedsActivation, чтобы /start ре-активировал.
-            record?.status == UserStatus.ACTIVE && record.chatId == null -> {
-                logger.warn {
-                    "ACTIVE record with null chatId — invariant violation, treating as NeedsActivation: @$username"
-                }
-                AuthResult.NeedsActivation
+        if (record?.status == UserStatus.ACTIVE && record.chatId == null) {
+            // Pathological state (manual DB edit, partial snapshot restore). /start cannot
+            // re-activate an already-ACTIVE row (UPDATE ... WHERE status='INVITED'), so
+            // returning NeedsActivation here would create a permanent lockout. Log + continue;
+            // downstream handlers will surface the corruption via their own errors.
+            logger.warn {
+                "ACTIVE record with null chatId — invariant violation, returning Active anyway: @$username"
             }
+        }
 
+        return when {
             record?.status == UserStatus.ACTIVE && isOwner -> {
                 logger.debug { "Owner access: @$username" }
                 AuthResult.Active(UserRole.OWNER, record)

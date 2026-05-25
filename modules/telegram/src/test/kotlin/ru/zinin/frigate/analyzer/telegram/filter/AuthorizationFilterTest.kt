@@ -178,16 +178,17 @@ class AuthorizationFilterTest {
         }
 
     @Test
-    fun `authorize(username) returns NeedsActivation for ACTIVE record with null chatId (invariant violation)`() =
+    fun `authorize(username) returns Active for ACTIVE record with null chatId (invariant violation, warn-logged)`() =
         runTest {
-            // Defensive guard: AuthResult.Active декларирует chatId != null (enforced by
-            // activateUser). При нарушении (restore из снапшота, ручная правка БД) отдаём
-            // NeedsActivation, чтобы /start ре-активировал и установил chatId.
+            // Pathological state (manual DB edit, partial snapshot restore): status=ACTIVE && chatId=null.
+            // Returning NeedsActivation would lock the user out — /start cannot re-activate an
+            // already-ACTIVE row (UPDATE ... WHERE status='INVITED'). Filter logs warn and still
+            // returns Active so handlers surface the corruption via their own errors.
             val brokenOwner = makeUser("ownerUser", UserStatus.ACTIVE).copy(chatId = null)
             coEvery { userService.findByUsername("ownerUser") } returns brokenOwner
 
             val result = filter.authorize("ownerUser")
 
-            assertEquals(AuthResult.NeedsActivation, result)
+            assertEquals(AuthResult.Active(UserRole.OWNER, brokenOwner), result)
         }
 }
