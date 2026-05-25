@@ -45,18 +45,16 @@ class StatusMessageFormatter(
         language: String,
     ) {
         appendLine("📹 <b>${escape(msg.get("status.section.recordings", language))}</b>")
-        val pct =
-            if (r.total > 0) {
-                "%.1f".format(Locale.ROOT, r.processed.toDouble() * 100.0 / r.total.toDouble())
-            } else {
-                "0.0"
-            }
+        val successPct = pct(r.success, r.total)
+        val errorsPct = pct(r.errors, r.total)
         val rateFormatted = "%.1f".format(Locale.ROOT, r.processingRatePerMinute)
         val rows =
             listOf(
                 msg.get("status.recordings.label.total", language) to r.total.toString(),
-                msg.get("status.recordings.label.processed", language) to
-                    msg.get("status.recordings.value.processed", language, r.processed.toString(), pct),
+                msg.get("status.recordings.label.success", language) to
+                    msg.get("status.recordings.value.withPct", language, r.success.toString(), successPct),
+                msg.get("status.recordings.label.errors", language) to
+                    msg.get("status.recordings.value.withPct", language, r.errors.toString(), errorsPct),
                 msg.get("status.recordings.label.unprocessed", language) to r.unprocessed.toString(),
                 msg.get("status.recordings.label.rate", language) to
                     msg.get("status.recordings.value.rate", language, rateFormatted),
@@ -69,6 +67,13 @@ class StatusMessageFormatter(
             },
         )
     }
+
+    private fun pct(part: Long, total: Long): String =
+        if (total > 0) {
+            "%.1f".format(Locale.ROOT, part.toDouble() * 100.0 / total.toDouble())
+        } else {
+            "0.0"
+        }
 
     private fun StringBuilder.appendByCamera(
         cams: List<CameraStatistics>,
@@ -230,15 +235,6 @@ class StatusMessageFormatter(
         append(lines.joinToString("\n"))
         appendLine("</pre>")
     }
-
-    private fun formatRow(
-        cells: List<String>,
-        widths: List<Int>,
-        leftAlignCol: Int,
-    ): String =
-        cells
-            .mapIndexed { i, c -> if (i == leftAlignCol) c.padEnd(widths[i]) else c.padStart(widths[i]) }
-            .joinToString(" | ")
 
     private fun escape(s: String): String =
         s
