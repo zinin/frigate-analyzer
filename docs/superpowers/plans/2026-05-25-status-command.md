@@ -452,6 +452,19 @@ class StatusServiceTest {
         }
 
     @Test
+    fun `collect returns monitoringEnabled=true with empty items when snapshot empty`() =
+        runBlocking {
+            val monitor =
+                mockk<SignalLossMonitorTask>().apply {
+                    every { snapshotStates() } returns emptyMap()
+                }
+            val service = StatusService(recordings, lb, monitorProvider(monitor), clock)
+            val resp = service.collect()
+            assertThat(resp.cameras.monitoringEnabled).isTrue()
+            assertThat(resp.cameras.items).isEmpty()
+        }
+
+    @Test
     fun `collect maps Healthy and SignalLost to HEALTHY and OFFLINE`() =
         runBlocking {
             val monitor =
@@ -556,6 +569,11 @@ class StatusService(
         val total = recordingRepository.countAll()
         val processed = recordingRepository.countProcessed()
         val unprocessed = recordingRepository.countUnprocessed()
+        // Two near-identical types with the same positional fields: `CameraStatisticsDto`
+        // (`model.dto`, SQL projection from RecordingEntityRepository) → `CameraStatistics`
+        // (`model.response`, JSON contract). Mapping is mandatory to avoid leaking the
+        // SQL/R2DBC layer into the response. SQL already orders by `cam_id ASC`, so no
+        // additional sort is needed here (see SUGGESTION-4 invariant).
         val byCameras =
             recordingRepository.getStatisticsByCameras().map { dto ->
                 CameraStatistics(
@@ -650,6 +668,11 @@ import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWeb
 import org.springframework.test.web.reactive.server.WebTestClient
 import ru.zinin.frigate.analyzer.core.IntegrationTestBase
 
+// Note: `IntegrationTestBase` spins up Docker Compose (PostgreSQL + Liquibase) in its
+// `companion object init {}`. This test inherits that dependency for parity with all
+// other endpoint tests in the project. The ISO-8601 contract is verified independently
+// by the DB-free `JacksonConfigurationTest` (Step 1a), so the structural assertions
+// below need only confirm the endpoint exists and produces the expected JSON shape.
 @AutoConfigureWebTestClient
 class StatusControllerTest : IntegrationTestBase() {
     @Autowired
@@ -657,9 +680,11 @@ class StatusControllerTest : IntegrationTestBase() {
 
     @Test
     fun `GET status returns 200 with expected structure and ISO-8601 datetimes`() {
+        // application.yaml sets `spring.webflux.base-path: /frigate-analyzer` so the test
+        // must include the base path to reflect the real external contract.
         webTestClient
             .get()
-            .uri("/status")
+            .uri("/frigate-analyzer/status")
             .exchange()
             .expectStatus()
             .isOk
@@ -827,7 +852,7 @@ status.byCamera.header.det=det
 status.cameras.line.online=online ({0} ago)
 status.cameras.line.offline=offline {0} (last {1})
 status.cameras.empty=No cameras observed yet
-status.cameras.disabled=Monitoring disabled (set APPLICATION_SIGNAL_LOSS_ENABLED=true to enable)
+status.cameras.disabled=Monitoring disabled (set SIGNAL_LOSS_ENABLED=true to enable)
 status.servers.line.alive=ALIVE  frame {0}/{1}  ext {2}/{3}  vis {4}/{5}  vvis {6}/{7}
 status.servers.line.dead=DEAD
 status.empty=(none)
@@ -857,7 +882,7 @@ status.byCamera.header.det=дет
 status.cameras.line.online=онлайн ({0} назад)
 status.cameras.line.offline=оффлайн {0} (последняя {1})
 status.cameras.empty=Нет наблюдаемых камер
-status.cameras.disabled=Мониторинг отключён (установите APPLICATION_SIGNAL_LOSS_ENABLED=true)
+status.cameras.disabled=Мониторинг отключён (установите SIGNAL_LOSS_ENABLED=true)
 status.servers.line.alive=ALIVE  frame {0}/{1}  ext {2}/{3}  vis {4}/{5}  vvis {6}/{7}
 status.servers.line.dead=DEAD
 status.empty=(нет)
@@ -1107,57 +1132,41 @@ class StatusMessageFormatterTest {
         // server id "srv-a" (DEAD in snapshot()) should appear exactly once
         assertEquals(1, out.split("srv-a").size - 1, "server id duplicated in: $out")
     }
-}
-```
-
-**Plus add a real-bundle i18n integration test** (catches placeholder-index regressions of the
-kind that almost shipped in CRITICAL-2). Same file `StatusMessageFormatterTest.kt`, additional
-inner class or sibling test class:
-
-```kotlin
-class StatusMessageFormatterI18nTest {
-    private val realMessageResolver: MessageResolver =
-        MessageResolver(
-            ReloadableResourceBundleMessageSource().apply {
-                setBasename("classpath:messages")
-                setDefaultEncoding("UTF-8")
-            },
-        )
-    private val duration = SignalLossMessageFormatter(realMessageResolver)
-    private val formatter = StatusMessageFormatter(realMessageResolver, duration)
-
-    private val now = Instant.parse("2026-04-25T10:00:00Z")
-    private val zone = ZoneOffset.UTC
 
     @Test
-    fun `real bundle EN renders offline line with both duration and last-seen`() {
+    fun `format escapes HTML special chars in byCameras camId`() {
+        // Build a snapshot whose byCameras list contains a camId with HTML special chars.
         val snap =
             StatusResponse(
                 recordings =
                     RecordingsStatistics(
-                        total = 0,
-                        processed = 0,
+                        total = 1,
+                        processed = 1,
                         unprocessed = 0,
-                        byCameras = emptyList(),
+                        byCameras =
+                            listOf(
+                                CameraStatistics(camId = "cam<&>", recordingsCount = 1, recordingsProcessed = 1, detectionsCount = 0),
+                            ),
                         processingRatePerMinute = 0.0,
                     ),
-                cameras =
-                    CamerasSection(
-                        monitoringEnabled = true,
-                        items =
-                            listOf(
-                                CameraStatusDto(
-                                    camId = "cam1",
-                                    state = CameraState.OFFLINE,
-                                    lastSeenAt = Instant.parse("2026-04-25T09:53:00Z"),
-                                    offlineFor = Duration.ofMinutes(7),
-                                ),
-                            ),
-                    ),
+                cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
+                detectServers = emptyList(),
+            )
+        val out = formatter.format(snap, language = "en", zone = zone, now = now)
+        assertTrue(out.contains("cam&lt;&amp;&gt;"), "expected escaped camId in byCameras: $out")
+        assertFalse(out.contains("cam<&>"), "raw < & > leaked in byCameras: $out")
+    }
+
+    @Test
+    fun `format escapes HTML special chars in server id`() {
+        val snap =
+            StatusResponse(
+                recordings = RecordingsStatistics(0, 0, 0, emptyList(), 0.0),
+                cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
                 detectServers =
                     listOf(
                         DetectServerStatistics(
-                            id = "srv-a",
+                            id = "srv<a>",
                             status = ServerStatus.ALIVE,
                             frameRequests = ServerLoad(1, 4),
                             frameExtractionRequests = ServerLoad(0, 2),
@@ -1167,21 +1176,107 @@ class StatusMessageFormatterI18nTest {
                     ),
             )
         val out = formatter.format(snap, language = "en", zone = zone, now = now)
+        assertTrue(out.contains("srv&lt;a&gt;"), "expected escaped server id: $out")
+        assertFalse(out.contains("srv<a>"), "raw < > leaked in server id: $out")
+    }
+}
+```
 
-        // Catch CRITICAL-2 regressions: ensure offline line has duration AND last-seen.
-        assertThat(out).contains("offline 7 min")
-        assertThat(out).contains("(last 09:53:00)")
+**Plus add a real-bundle i18n integration test** (catches placeholder-index regressions of the
+kind that almost shipped in CRITICAL-2). Sibling test class in the same file
+`StatusMessageFormatterTest.kt`, using `kotlin.test` API (the `telegram` module's test
+dependencies are only `kotlin.test.junit5`, `coroutines.test`, and `mockk` — no AssertJ,
+no `spring-boot-starter-test`). The `MessageSource` setup mirrors `MessageResolverTest.kt:8-17`:
+
+```kotlin
+class StatusMessageFormatterI18nTest {
+    private val messageSource =
+        ReloadableResourceBundleMessageSource().apply {
+            setBasename("classpath:messages")
+            setDefaultEncoding("UTF-8")
+            setFallbackToSystemLocale(false)
+            setDefaultLocale(Locale.forLanguageTag("en"))
+        }
+    private val realMessageResolver = MessageResolver(messageSource)
+    private val duration = SignalLossMessageFormatter(realMessageResolver)
+    private val formatter = StatusMessageFormatter(realMessageResolver, duration)
+
+    private val now = Instant.parse("2026-04-25T10:00:00Z")
+    private val zone = ZoneOffset.UTC
+
+    private fun sampleSnapshot(): StatusResponse =
+        StatusResponse(
+            recordings =
+                RecordingsStatistics(
+                    total = 0,
+                    processed = 0,
+                    unprocessed = 0,
+                    byCameras = emptyList(),
+                    processingRatePerMinute = 0.0,
+                ),
+            cameras =
+                CamerasSection(
+                    monitoringEnabled = true,
+                    items =
+                        listOf(
+                            CameraStatusDto(
+                                camId = "cam1",
+                                state = CameraState.OFFLINE,
+                                lastSeenAt = Instant.parse("2026-04-25T09:53:00Z"),
+                                offlineFor = Duration.ofMinutes(7),
+                            ),
+                        ),
+                ),
+            detectServers =
+                listOf(
+                    DetectServerStatistics(
+                        id = "srv-a",
+                        status = ServerStatus.ALIVE,
+                        frameRequests = ServerLoad(1, 4),
+                        frameExtractionRequests = ServerLoad(0, 2),
+                        visualizeRequests = ServerLoad(0, 1),
+                        videoVisualizeRequests = ServerLoad(0, 1),
+                    ),
+                ),
+        )
+
+    @Test
+    fun `real bundle EN renders offline line with both duration and last-seen`() {
+        val out = formatter.format(sampleSnapshot(), language = "en", zone = zone, now = now)
+
+        // Catch CRITICAL-2 (iter-1) regressions: ensure offline line has duration AND last-seen.
+        assertTrue(out.contains("offline 7 min"), "expected `offline 7 min` in: $out")
+        assertTrue(out.contains("(last 09:53:00)"), "expected `(last 09:53:00)` in: $out")
         // Catch server-id placeholder shift: ALIVE line must contain "frame 1/4", not "frame srv-a/1".
-        assertThat(out).contains("frame 1/4")
-        assertThat(out).doesNotContain("frame srv-a")
+        assertTrue(out.contains("frame 1/4"), "expected `frame 1/4` in: $out")
+        assertFalse(out.contains("frame srv-a"), "server id leaked into ALIVE placeholders: $out")
     }
 
     @Test
-    fun `real bundle RU renders correctly`() {
-        // Same snapshot, language = "ru", assert "оффлайн 7 мин (последняя 09:53:00)" and "frame 1/4".
-        // [body omitted for brevity — mirror EN test]
+    fun `real bundle RU renders offline line with duration and last-seen`() {
+        val out = formatter.format(sampleSnapshot(), language = "ru", zone = zone, now = now)
+
+        // Russian offline text — keys: status.cameras.line.offline=оффлайн {0} (последняя {1})
+        // SignalLossMessageFormatter.formatDuration уже даёт "7 мин" для Duration.ofMinutes(7).
+        assertTrue(out.contains("оффлайн 7 мин"), "expected `оффлайн 7 мин` in: $out")
+        assertTrue(out.contains("(последняя 09:53:00)"), "expected `(последняя 09:53:00)` in: $out")
+        // ALIVE line is language-agnostic (technical labels frame/ext/vis/vvis stay in English).
+        assertTrue(out.contains("frame 1/4"), "expected `frame 1/4` in: $out")
+        assertFalse(out.contains("frame srv-a"), "server id leaked into ALIVE placeholders: $out")
+        // Section titles localised.
+        assertTrue(out.contains("Статус Frigate Analyzer"), "expected RU title in: $out")
     }
 }
+```
+
+Imports for this class (sibling-class file `StatusMessageFormatterTest.kt`, append to the
+existing imports):
+
+```kotlin
+import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import java.time.ZoneOffset
+import java.util.Locale
+import kotlin.test.assertFalse
 ```
 
 Mocked-MessageResolver unit tests remain useful for structural assertions (escape, padding,
@@ -1193,7 +1288,7 @@ real bundle = i18n contract validation.
 Delegate to build-runner agent:
 
 ```
-./gradlew :frigate-analyzer-telegram:test --tests StatusMessageFormatterTest
+./gradlew :frigate-analyzer-telegram:test --tests "StatusMessageFormatter*Test"
 ```
 
 Expected: FAIL — `StatusMessageFormatter` unresolved.
@@ -1299,19 +1394,23 @@ class StatusMessageFormatter(
                     c.detectionsCount.toString(),
                 )
             }
+        // Compute column widths on RAW (pre-escape) lengths. In <pre>, `&lt;` renders as `<`
+        // (1 visual char) but the escaped string is longer in char count — so padding must use
+        // raw lengths and escape must be applied AFTER padding, not before.
         val widths =
             (0 until 4).map { col ->
                 (rows.map { it[col].length } + headers[col].length).max()
             }
         val lines = mutableListOf<String>()
         lines.add(formatRow(headers, widths, leftAlignCol = 0))
-        // escape() is applied per-cell (camId may contain HTML special chars);
-        // headers come from a controlled i18n bundle so they are escaped via formatRow
-        // result + escape() once at the end below.
         rows.forEach { row ->
-            val escaped =
-                row.mapIndexed { i, c -> if (i == 0) escape(c) else c }
-            lines.add(formatRow(escaped, widths, leftAlignCol = 0))
+            val padded =
+                row.mapIndexed { i, c ->
+                    if (i == 0) c.padEnd(widths[i]) else c.padStart(widths[i])
+                }
+            // Only camId (column 0) is user-derived — escape it; numeric columns are safe.
+            val cells = padded.mapIndexed { i, c -> if (i == 0) escape(c) else c }
+            lines.add(cells.joinToString(" | "))
         }
         appendPreBlock(lines)
     }
@@ -1352,9 +1451,13 @@ class StatusMessageFormatter(
                     }
 
                     CameraState.OFFLINE -> {
+                        // `StatusService.toDto()` guarantees offlineFor != null for OFFLINE.
+                        // Fail loud here if the contract is broken rather than silently masking the bug.
                         val offlineFor =
-                            (item.offlineFor ?: Duration.between(item.lastSeenAt, now))
-                                .coerceAtLeast(Duration.ZERO)
+                            requireNotNull(item.offlineFor) {
+                                "offlineFor must not be null for OFFLINE camera ${item.camId} " +
+                                    "(StatusService.toDto contract violation)"
+                            }.coerceAtLeast(Duration.ZERO)
                         val lastSeen = item.lastSeenAt.atZone(zone).format(timeFormatter)
                         // Renumbered keys: {0}=duration, {1}=lastSeen.
                         val line =
@@ -1442,7 +1545,7 @@ class StatusMessageFormatter(
 Delegate to build-runner agent:
 
 ```
-./gradlew :frigate-analyzer-telegram:test --tests StatusMessageFormatterTest
+./gradlew :frigate-analyzer-telegram:test --tests "StatusMessageFormatter*Test"
 ```
 
 Expected: PASS (6 tests).
@@ -1522,8 +1625,9 @@ Expected: FAIL — `StatusCommandHandler` unresolved.
 ```kotlin
 package ru.zinin.frigate.analyzer.core.bot.handler
 
-import dev.inmo.tgbotapi.extensions.api.send.reply
+import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
+import dev.inmo.tgbotapi.types.ReplyParameters
 import dev.inmo.tgbotapi.types.message.HTMLParseMode
 import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
@@ -1565,7 +1669,12 @@ class StatusCommandHandler(
                 zone = zone,
                 now = Instant.now(clock),
             )
-        reply(message, text, parseMode = HTMLParseMode)
+        sendTextMessage(
+            message.chat,
+            text,
+            parseMode = HTMLParseMode,
+            replyParameters = ReplyParameters(message.metaInfo),
+        )
     }
 }
 ```
@@ -1576,6 +1685,13 @@ User zone comes from `TelegramUserService.getUserZone(chatId)` — same pattern 
 (value 6 is taken by `LanguageCommandHandler`). `Clock` is injected so tests see the same
 `now` as `StatusService`.
 
+**Send-API choice:** `sendTextMessage(chat, ..., replyParameters = ReplyParameters(message.metaInfo))`
+is the same pattern used by `TimezoneCommandHandler` and `TelegramNotificationSender` (verified to
+work with the project's ktgbotapi version). The simpler `reply(message, text, parseMode = ...)`
+overload is **not used anywhere in the project with `parseMode`** — `VersionCommandHandler` uses
+`reply(message, text)` without parseMode. To avoid a runtime-only contingency, we adopt the
+known-good API up front.
+
 - [ ] **Step 4: Run test, expect pass**
 
 Delegate to build-runner agent:
@@ -1585,16 +1701,6 @@ Delegate to build-runner agent:
 ```
 
 Expected: PASS.
-
-If compilation fails because `reply(message, text, parseMode = HTMLParseMode)` overload signature differs in your ktgbotapi version, substitute with:
-
-```kotlin
-import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
-...
-sendTextMessage(message.chat, text, parseMode = HTMLParseMode, replyParameters = dev.inmo.tgbotapi.types.ReplyParameters(message.metaInfo))
-```
-
-(The reference implementation `TelegramNotificationSender` already uses `bot.sendTextMessage(...)` from this package — check there for the exact signature.)
 
 - [ ] **Step 5: Commit**
 
@@ -1746,7 +1852,7 @@ Send `/help` as OWNER. Verify `/status` appears under "👑 Owner commands:" sec
 
 - [ ] **Step 5: Signal-loss disabled check**
 
-Restart app with `APPLICATION_SIGNAL_LOSS_ENABLED=false`. Send `/status`. Expect the Cameras section to show "Monitoring disabled (signal-loss.enabled=false)".
+Restart app with `SIGNAL_LOSS_ENABLED=false`. Send `/status`. Expect the Cameras section to show "Monitoring disabled (set SIGNAL_LOSS_ENABLED=true to enable)".
 
 - [ ] **Step 6: Report**
 

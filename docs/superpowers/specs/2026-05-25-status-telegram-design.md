@@ -124,7 +124,7 @@ User /status → FrigateAnalyzerBot.registerRoutes (OWNER auth via Authorization
      → val zone = telegramUserService.getUserZone(message.chat.id.chatId.long)
      → StatusService.collect(): StatusResponse
      → StatusMessageFormatter.format(snapshot, user.languageCode, zone): String
-     → reply(message, html, parseMode = HTMLParseMode)
+     → sendTextMessage(message.chat, html, parseMode = HTMLParseMode, replyParameters = ReplyParameters(message.metaInfo))
 ```
 
 Зона пользователя берётся через `TelegramUserService.getUserZone(chatId)` (тот же
@@ -288,10 +288,19 @@ class StatusCommandHandler(
             zone = zone,
             now = Instant.now(clock),
         )
-        reply(message, text, parseMode = HTMLParseMode)
+        sendTextMessage(
+            message.chat,
+            text,
+            parseMode = HTMLParseMode,
+            replyParameters = ReplyParameters(message.metaInfo),
+        )
     }
 }
 ```
+
+`sendTextMessage` is the proven pattern in the project (`TimezoneCommandHandler`,
+`TelegramNotificationSender`). The `reply(message, text, parseMode = ...)` overload is not
+used anywhere in the project with `parseMode`, so we avoid relying on it.
 
 Авторизация выполняется централизованно в `FrigateAnalyzerBot.registerRoutes()` через
 `AuthorizationFilter` — handler в неё не лезет, просто декларирует `requiredRole = OWNER`.
@@ -345,11 +354,11 @@ srv-c DEAD</pre>
 
 ### Disabled monitoring
 
-При `signal-loss.enabled=false`:
+При `SIGNAL_LOSS_ENABLED=false`:
 
 ```
 📷 <b>Cameras</b>
-<pre>Monitoring disabled (signal-loss.enabled=false)</pre>
+<pre>Monitoring disabled (set SIGNAL_LOSS_ENABLED=true to enable)</pre>
 ```
 
 ### Empty observed
@@ -438,24 +447,25 @@ status.empty=(none)
 
 | Случай | Поведение |
 |---|---|
-| `signal-loss.enabled=false` | `CamerasSection(monitoringEnabled=false, items=emptyList())`; бот рисует "Monitoring disabled" |
+| `SIGNAL_LOSS_ENABLED=false` (`application.signal-loss.enabled=false`) | `CamerasSection(monitoringEnabled=false, items=emptyList())`; бот рисует "Monitoring disabled" |
 | `state` map пуст (signal-loss on, но первый tick ещё не прошёл) | `items=emptyList()`; бот рисует "No cameras observed yet" |
 | В startup grace | `state` уже наполняется в первый tick — спец-индикатора не делаем |
 | `recordings.total = 0` | бот рисует нули; никакого спец-сообщения |
 | `cam_id` содержит `<`/`&` | HTML-escape в форматтере |
 | OFFLINE'ная камера выпала из `activeWindow` | остаётся в state map (`SignalLostMonitorTask.tick()` чистит только Healthy); в `/status` всё ещё видна как OFFLINE |
-| `user.olsonCode` отсутствует | fallback `ZoneOffset.UTC` (как в других местах проекта) |
+| `TelegramUserService.getUserZone(chatId)` не нашёл валидную TZ | возвращает `ZoneOffset.UTC` (контракт `getUserZone` — fallback применяется внутри сервиса; `TelegramUserDto` поля `olsonCode` не имеет) |
 | `user.languageCode` отсутствует | fallback `"en"` |
 
 ## Testing
 
 | Тест | Что покрываем |
 |---|---|
-| `core/src/test/.../service/StatusServiceTest.kt` (new) | сбор snapshot'а; signal-loss on/off; пустая state map; маппинг Healthy/SignalLost; сортировка OFFLINE first / DEAD first |
-| `core/src/test/.../controller/StatusControllerTest.kt` (new) | WebFlux slice — GET `/status` возвращает 200 + правильный JSON; ISO-8601 для `Instant`/`Duration` |
-| `core/src/test/.../task/SignalLossMonitorTaskTest.kt` (existing) | добавить тест: `snapshotStates()` возвращает defensive copy (изменения внутреннего state не видны в полученной мапе) |
-| `telegram/src/test/.../handler/StatusCommandHandlerTest.kt` (new) | owner-only auth (router-level); выбор `languageCode` и `olsonCode` пользователя; exception → `common.error.generic` |
-| `telegram/src/test/.../service/impl/StatusMessageFormatterTest.kt` (new) | HTML escape `cam_id` со спецсимволами; padding в `<pre>`; форматирование durations; disabled monitoring; пустой items; правильные locale (ru/en); правильный TZ; offline-first / alive-first сортировка |
+| `core/src/test/.../service/StatusServiceTest.kt` (new) | сбор snapshot'а; signal-loss on/off; пустая state map при `monitoringEnabled=true`; маппинг Healthy/SignalLost; сортировка OFFLINE first / DEAD first |
+| `core/src/test/.../controller/StatusControllerTest.kt` (new) | integration через `IntegrationTestBase` — GET `/frigate-analyzer/status` возвращает 200 + правильный JSON shape (ISO-8601 контракт верифицируется отдельным `JacksonConfigurationTest`) |
+| `core/src/test/.../config/JacksonConfigurationTest.kt` (new) | DB-independent — `Instant` → `"2026-04-25T10:00:00Z"`, `Duration` → `"PT7M"` |
+| `core/src/test/.../task/SignalLossMonitorTaskSnapshotTest.kt` (new) | `snapshotStates()` возвращает defensive copy (изменения внутреннего state не видны в полученной мапе); detached-after-mutation |
+| `core/src/test/.../bot/handler/StatusCommandHandlerTest.kt` (new, в `core` — handler живёт в `core`) | command metadata (command="status", role=OWNER, order=8); behavioural assertions covered downstream by formatter/service tests; нет local-error-path теста (router-level try/catch в `FrigateAnalyzerBot`) |
+| `telegram/src/test/.../service/impl/StatusMessageFormatterTest.kt` (new) | HTML escape `camId`/`server.id` со спецсимволами; padding в `<pre>` визуально корректен после escape; форматирование durations; disabled monitoring; пустой items; layered defence — mocked structural тесты + `StatusMessageFormatterI18nTest` real-bundle для ru/en placeholder regression detection |
 
 Тесты с реальной БД — через существующий test-конфиг проекта.
 
