@@ -31,6 +31,10 @@ class TelegramUserServiceImpl(
     override suspend fun findByUsername(username: String): TelegramUserDto? = repository.findByUsername(username)?.toDto()
 
     @Transactional(readOnly = true)
+    override suspend fun findByUsernameIgnoreCase(username: String): TelegramUserDto? =
+        repository.findByUsernameIgnoreCase(username)?.toDto()
+
+    @Transactional(readOnly = true)
     override suspend fun findActiveByUsername(username: String): TelegramUserDto? =
         repository.findByUsernameAndStatus(username, UserStatus.ACTIVE.name)?.toDto()
 

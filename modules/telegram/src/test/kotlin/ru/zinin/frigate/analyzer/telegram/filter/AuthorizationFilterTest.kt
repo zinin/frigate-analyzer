@@ -57,7 +57,7 @@ class AuthorizationFilterTest {
     fun `authorize(username) returns Active(OWNER) for active owner record`() =
         runTest {
             val owner = makeUser("ownerUser", UserStatus.ACTIVE)
-            coEvery { userService.findByUsername("ownerUser") } returns owner
+            coEvery { userService.findByUsernameIgnoreCase("ownerUser") } returns owner
 
             val result = filter.authorize("ownerUser")
 
@@ -68,7 +68,7 @@ class AuthorizationFilterTest {
     fun `authorize(username) returns Active(USER) for active non-owner record`() =
         runTest {
             val user = makeUser("alice", UserStatus.ACTIVE)
-            coEvery { userService.findByUsername("alice") } returns user
+            coEvery { userService.findByUsernameIgnoreCase("alice") } returns user
 
             val result = filter.authorize("alice")
 
@@ -79,7 +79,7 @@ class AuthorizationFilterTest {
     fun `authorize(username) returns NeedsActivation for INVITED owner record`() =
         runTest {
             val owner = makeUser("ownerUser", UserStatus.INVITED)
-            coEvery { userService.findByUsername("ownerUser") } returns owner
+            coEvery { userService.findByUsernameIgnoreCase("ownerUser") } returns owner
 
             val result = filter.authorize("ownerUser")
 
@@ -90,7 +90,7 @@ class AuthorizationFilterTest {
     fun `authorize(username) returns NeedsActivation for INVITED non-owner record`() =
         runTest {
             val user = makeUser("alice", UserStatus.INVITED)
-            coEvery { userService.findByUsername("alice") } returns user
+            coEvery { userService.findByUsernameIgnoreCase("alice") } returns user
 
             val result = filter.authorize("alice")
 
@@ -100,7 +100,7 @@ class AuthorizationFilterTest {
     @Test
     fun `authorize(username) returns NeedsActivation for owner without DB record`() =
         runTest {
-            coEvery { userService.findByUsername("ownerUser") } returns null
+            coEvery { userService.findByUsernameIgnoreCase("ownerUser") } returns null
 
             val result = filter.authorize("ownerUser")
 
@@ -110,7 +110,7 @@ class AuthorizationFilterTest {
     @Test
     fun `authorize(username) returns Unauthorized for non-owner without DB record`() =
         runTest {
-            coEvery { userService.findByUsername("stranger") } returns null
+            coEvery { userService.findByUsernameIgnoreCase("stranger") } returns null
 
             val result = filter.authorize("stranger")
 
@@ -143,7 +143,7 @@ class AuthorizationFilterTest {
     fun `authorize(message) returns Active(USER) for PrivateContentMessage with active user`() =
         runTest {
             val activeUser = makeUser("alice", UserStatus.ACTIVE)
-            coEvery { userService.findByUsername("alice") } returns activeUser
+            coEvery { userService.findByUsernameIgnoreCase("alice") } returns activeUser
 
             // Реальный CommonUser с Username("@alice") — .withoutAt вернёт "alice".
             // MockK 1.14.x не может стабильно мокать inline value class Username.
@@ -170,11 +170,29 @@ class AuthorizationFilterTest {
             // userService.isOwner(case-insensitive). Запись в БД сохранена в том регистре, как
             // прислал Telegram при /start (т.е. "OWNERUSER").
             val owner = makeUser("OWNERUSER", UserStatus.ACTIVE)
-            coEvery { userService.findByUsername("OWNERUSER") } returns owner
+            coEvery { userService.findByUsernameIgnoreCase("OWNERUSER") } returns owner
 
             val result = filter.authorize("OWNERUSER")
 
             assertEquals(AuthResult.Active(UserRole.OWNER, owner), result)
+        }
+
+    @Test
+    fun `authorize(username) returns Active(OWNER) when stored DB username has different case than Telegram username`() =
+        runTest {
+            // Codex P1 (PR #27, commit 1e6b3b4). env-конфиг: "ownerUser".
+            // Owner активировался ранее с username = "OwnerUser" (этот регистр Telegram отдал в
+            // тот момент); запись в БД хранится как "OwnerUser" ACTIVE.
+            // Теперь Telegram отдаёт "owneruser" (owner изменил регистр Telegram-handle после
+            // активации). findByUsername (case-sensitive) не нашёл бы запись → NeedsActivation
+            // на каждой команде → /start даёт welcome но не может re-активировать ACTIVE row →
+            // permanent loop. Filter должен находить запись через case-insensitive lookup.
+            val storedOwner = makeUser("OwnerUser", UserStatus.ACTIVE)
+            coEvery { userService.findByUsernameIgnoreCase("owneruser") } returns storedOwner
+
+            val result = filter.authorize("owneruser")
+
+            assertEquals(AuthResult.Active(UserRole.OWNER, storedOwner), result)
         }
 
     @Test
@@ -185,7 +203,7 @@ class AuthorizationFilterTest {
             // already-ACTIVE row (UPDATE ... WHERE status='INVITED'). Filter logs warn and still
             // returns Active so handlers surface the corruption via their own errors.
             val brokenOwner = makeUser("ownerUser", UserStatus.ACTIVE).copy(chatId = null)
-            coEvery { userService.findByUsername("ownerUser") } returns brokenOwner
+            coEvery { userService.findByUsernameIgnoreCase("ownerUser") } returns brokenOwner
 
             val result = filter.authorize("ownerUser")
 

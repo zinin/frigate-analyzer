@@ -23,7 +23,10 @@ class AuthorizationFilter(
     }
 
     suspend fun authorize(username: String): AuthResult {
-        val record = userService.findByUsername(username)
+        // Lookup is case-insensitive so that a Telegram-handle casing change after activation
+        // still matches the stored row; otherwise non-/start commands would route to
+        // NeedsActivation and /start could not re-activate the already-ACTIVE record.
+        val record = userService.findByUsernameIgnoreCase(username)
         val isOwner = userService.isOwner(username) // case-insensitive
 
         if (record?.status == UserStatus.ACTIVE && record.chatId == null) {

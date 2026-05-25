@@ -49,15 +49,21 @@ class StartCommandHandler(
                 .long
 
         if (userService.isOwner(username)) {
-            val existing = userService.findByUsername(username)
+            // Case-insensitive lookup: if Telegram now sends a different casing than what was
+            // stored at first activation, we must find the existing row instead of inviting a
+            // duplicate (which would later trip the unique chat_id/user_id constraints during
+            // activateUser). When the stored row is found, reuse its canonical username so the
+            // (case-sensitive) activate UPDATE matches it.
+            val existing = userService.findByUsernameIgnoreCase(username)
             if (existing == null) {
                 userService.inviteUser(username)
             }
+            val canonicalUsername = existing?.username ?: username
             val lang =
                 if (existing?.status != UserStatus.ACTIVE) {
                     val detectedLang = detectLanguage(telegramLang)
                     userService.activateUser(
-                        username = username,
+                        username = canonicalUsername,
                         chatId = chatId,
                         userId = userId,
                         firstName = privateMessage.user.firstName,

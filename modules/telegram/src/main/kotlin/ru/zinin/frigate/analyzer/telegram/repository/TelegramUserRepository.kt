@@ -13,6 +13,11 @@ import java.util.UUID
 interface TelegramUserRepository : CoroutineCrudRepository<TelegramUserEntity, UUID> {
     suspend fun findByUsername(username: String): TelegramUserEntity?
 
+    @Query("SELECT * FROM telegram_users WHERE LOWER(username) = LOWER(:username)")
+    suspend fun findByUsernameIgnoreCase(
+        @Param("username") username: String,
+    ): TelegramUserEntity?
+
     suspend fun findByUsernameAndStatus(
         username: String,
         status: String,
