@@ -52,11 +52,16 @@ class SignalLossMonitorTask(
     // invocations — protects against future JMX/test access without a measurable cost.
     private val state = ConcurrentHashMap<String, CameraSignalState>()
 
-    // Eagerly initialised from the injected `clock`. Eager (vs lateinit + @PostConstruct) so that
-    // even an out-of-order lifecycle (e.g. a future BeanPostProcessor that invokes `tick()` before
-    // @PostConstruct ran) still observes a valid value rather than throwing
-    // UninitializedPropertyAccessException.
-    private val startedAt: Instant = Instant.now(clock)
+    // Lazily initialised at the first `tick()` rather than at bean construction or @PostConstruct.
+    // The `startupGrace` window is meant to suppress alerts for `startupGrace` AFTER monitoring
+    // actually begins. Capturing `startedAt` earlier (at construction or @PostConstruct) shifts the
+    // window forward by however long Spring takes to reach scheduling (Liquibase, DataSource
+    // readiness, ApplicationReadyEvent): on a slow startup the grace can fully expire before the
+    // first tick, and pre-existing outages then alert immediately on the first scan. `@Volatile`
+    // because `@Scheduled fixedDelay` serializes tick invocations, but `snapshotStates()` / future
+    // JMX access can race the first-tick assignment from another thread.
+    @Volatile
+    private var startedAt: Instant? = null
 
     @PostConstruct
     fun init() {
@@ -71,7 +76,8 @@ class SignalLossMonitorTask(
     suspend fun tick() {
         try {
             val now = Instant.now(clock)
-            val inGrace = now.isBefore(startedAt.plus(properties.startupGrace))
+            val origin = startedAt ?: now.also { startedAt = it }
+            val inGrace = now.isBefore(origin.plus(properties.startupGrace))
             val activeSince = now.minus(properties.activeWindow)
 
             val stats = repository.findLastRecordingPerCamera(activeSince)
@@ -162,4 +168,17 @@ class SignalLossMonitorTask(
      * map, and vice versa.
      */
     fun snapshotStates(): Map<String, CameraSignalState> = state.toMap()
+
+    /**
+     * Test-only seam to pin `startedAt` to a deterministic wall-clock value before the first
+     * `tick()`. Production code never calls this — `startedAt` is set lazily at first tick.
+     *
+     * Needed by tests that want to assert `inGrace=false` paths: they construct the task at
+     * `baseInstant`, pin `startedAt = baseInstant`, then advance the clock past
+     * `startupGrace` before invoking `tick()`. Without this seam, lazy init would always pin
+     * `startedAt` to the same `now` the test ticks at, trivially keeping `inGrace=true`.
+     */
+    internal fun pinStartedAtForTest(at: Instant) {
+        startedAt = at
+    }
 }
