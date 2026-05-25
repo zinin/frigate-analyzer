@@ -166,9 +166,13 @@ Stop the app. If any step failed, fix and re-run from Step 1. If all six steps p
 
 ### Task 13: Code review
 
-✅ Done — no fix commits.
+✅ Done — see review commits: `5327ba4` (auto-fixes), `d0866df` (decisions).
 
-Final whole-branch code review (Opus, against `master..HEAD`) returned: **Ready to merge**. Zero Critical, zero Important findings. Nine Minor polish nits (M1–M9: debug-log per-request in controller, magic-number `0 until 4` in formatter padding, `escape()` four sequential `String.replace` calls, etc.) — per plan directive to fix only CRITICAL/HIGH, deliberately left as follow-ups.
+Two passes of full-branch external code review against `master..HEAD`:
+- **First pass** (Opus, single-agent): **Ready to merge**, 0 Critical, 0 Important, 9 Minor (M1–M9). Per plan directive, only Critical/High auto-fixed; Minor left as follow-ups.
+- **Second pass** (5-agent parallel: claude, codex, ccs-glm, ollama-deepseek, ollama-minimax; ollama-kimi skipped — stalled): 5/5 verdict **Ready to merge**, 0 Critical. Auto-fixes: `@Operation method="GET"` cleanup, `docs/incidents` runbook `/statistics`→`/status`. Decisions applied: real wire-format ISO-8601 test in `StatusControllerTest` (mocked `StatusService`), `JacksonConfiguration` KDoc-warning about dual Jackson stack, conditional date prefix for OFFLINE last-seen when `offlineFor >= 24h`. Two follow-up issues filed:
+  - `docs/issues/2026-05-25-recordings-counts-mask-errors.md` — Recordings counts mask errors (inherited from `/statistics`).
+  - `docs/issues/2026-05-25-dual-jackson-stack.md` — legacy `com.fasterxml.jackson` + new `tools.jackson` coexistence.
 
 Each per-task implementation in this session also passed independent spec-compliance ✅ + code-quality ✅ reviews (both Opus).
 
