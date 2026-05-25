@@ -131,7 +131,15 @@ class StatusMessageFormatter(
             appendPreBlock(listOf(escape(msg.get("status.cameras.empty", language))))
             return
         }
-        val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss").withLocale(Locale.forLanguageTag(language))
+        val locale = Locale.forLanguageTag(language)
+        val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss").withLocale(locale)
+        // When the camera has been offline for ≥ 24h, time alone (`09:53:00`) is ambiguous —
+        // it could be today's or last week's. Prepend the date in those cases so the operator
+        // can correctly interpret a long outage. SignalLoss notifications use HH:mm:ss only
+        // because they arrive at the moment of loss (fresh context); /status is read on demand
+        // and may surface week-old OFFLINE state.
+        val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withLocale(locale)
+        val longOfflineThreshold = Duration.ofHours(24)
         val camWidth = cameras.items.maxOf { it.camId.length }
         val lines =
             cameras.items.map { item ->
@@ -153,7 +161,9 @@ class StatusMessageFormatter(
                                 "offlineFor must not be null for OFFLINE camera ${item.camId} " +
                                     "(StatusService.toDto contract violation)"
                             }.coerceAtLeast(Duration.ZERO)
-                        val lastSeen = item.lastSeenAt.atZone(zone).format(timeFormatter)
+                        val lastSeenFormatter =
+                            if (offlineFor >= longOfflineThreshold) dateTimeFormatter else timeFormatter
+                        val lastSeen = item.lastSeenAt.atZone(zone).format(lastSeenFormatter)
                         val line =
                             msg.get(
                                 "status.cameras.line.offline",

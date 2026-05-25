@@ -146,6 +146,26 @@ class StatusMessageFormatterTest {
         val moscow = ZoneId.of("Europe/Moscow") // UTC+3
         val out = formatter.format(snapshot(cameras = items), language = "en", zone = moscow, now = now)
         assertTrue(out.contains("18:31:22"), "expected zone-shifted time in: $out")
+        assertFalse(out.contains("2026-04-25 18:31:22"), "did not expect date prefix for short offline: $out")
+    }
+
+    @Test
+    fun `format prepends date to last-seen when offlineFor is at least 24h`() {
+        val items =
+            listOf(
+                CameraStatusDto(
+                    camId = "cam1",
+                    state = CameraState.OFFLINE,
+                    lastSeenAt = Instant.parse("2026-04-25T15:31:22Z"),
+                    offlineFor = Duration.ofHours(48),
+                ),
+            )
+        val moscow = ZoneId.of("Europe/Moscow") // UTC+3
+        val out = formatter.format(snapshot(cameras = items), language = "en", zone = moscow, now = now)
+        assertTrue(
+            out.contains("2026-04-25 18:31:22"),
+            "expected date-prefixed last-seen for long offline (>=24h) in: $out",
+        )
     }
 
     @Test
