@@ -21,7 +21,7 @@ private val logger = KotlinLogging.logger {}
 class StatusController(
     private val statusService: StatusService,
 ) {
-    @Operation(summary = "Get system status", method = "GET")
+    @Operation(summary = "Get system status")
     @ApiResponse(
         responseCode = "200",
         content = [Content(schema = Schema(implementation = StatusResponse::class))],
