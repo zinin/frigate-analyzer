@@ -68,7 +68,10 @@ class StatusMessageFormatter(
         )
     }
 
-    private fun pct(part: Long, total: Long): String =
+    private fun pct(
+        part: Long,
+        total: Long,
+    ): String =
         if (total > 0) {
             "%.1f".format(Locale.ROOT, part.toDouble() * 100.0 / total.toDouble())
         } else {

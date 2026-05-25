@@ -224,15 +224,16 @@ class StatusMessageFormatterTest {
     fun `format escapes HTML special chars in server id`() {
         val snap =
             StatusResponse(
-                recordings = RecordingsStatistics(
-                    total = 0,
-                    processed = 0,
-                    unprocessed = 0,
-                    success = 0,
-                    errors = 0,
-                    byCameras = emptyList(),
-                    processingRatePerMinute = 0.0,
-                ),
+                recordings =
+                    RecordingsStatistics(
+                        total = 0,
+                        processed = 0,
+                        unprocessed = 0,
+                        success = 0,
+                        errors = 0,
+                        byCameras = emptyList(),
+                        processingRatePerMinute = 0.0,
+                    ),
                 cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
                 detectServers =
                     listOf(
