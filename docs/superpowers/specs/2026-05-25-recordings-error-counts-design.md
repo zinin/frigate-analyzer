@@ -143,8 +143,11 @@ data class RecordingsStatistics(
 **Свойства контракта (REST):**
 
 - `total = processed + unprocessed` (всегда — по определению `process_timestamp NULL` vs `NOT NULL`).
-- `processed = success + errors` (**сегодня** — т.к. `markProcessedWithError` всегда соседом ставит `process_timestamp` и `error_message`; всякая ошибка попадает в `processed`). Будущая state-machine для retry-pending может нарушить это равенство в любую сторону (например, error без `process_timestamp`) — в коде **намеренно нет ассерта** этого инварианта; счётчики `success`/`errors` независимы.
-- `errors` — `error_message IS NOT NULL` (terminal или будущий retry-pending — без различения).
+- `processed`, `success`, `errors` — **независимые FILTER-агрегаты**, и проектировались как независимые (Q3). Никакого формального инварианта между ними нет:
+  - НЕТ инварианта `success + errors == processed`.
+  - НЕТ инварианта `errors ⊆ processed`.
+  - Соотношения, которые случайно выполняются сегодня (потому что `markProcessedWithError` всегда одновременно ставит `process_timestamp` и `error_message`), — **incidental**, а не контрактные. Любая будущая state-machine (retry-pending, acquire-failed) допустимо нарушит их в любую сторону.
+- `errors` — `error_message IS NOT NULL`, без условия на `process_timestamp`. Это сознательный выбор: сегодня все ошибки попадают и в `processed`; в будущем возможные «acquire-failed» / «retry-pending» записи (с непустым `error_message`, но пустым `process_timestamp`) тоже сразу будут видны оператору через `errors`, без дополнительного code change — то есть operator visibility сохранится по умолчанию (это прямое следование задаче #28).
 
 ## 7. StatusService
 
