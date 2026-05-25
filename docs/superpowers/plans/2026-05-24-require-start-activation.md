@@ -132,6 +132,35 @@
 
 Final code review confirmed: ✅ Ready for PR.
 
+---
+
+## External code review iteration (2026-05-25)
+
+✅ Done — 5 ревьюеров (Claude superpowers, Codex, Ollama Kimi / DeepSeek / MiniMax; GLM пропущен из-за таймаута).
+
+**Auto-fixes** (commit `bbb2fca`):
+- Removed unused `properties: TelegramProperties` from `AuthorizationFilter` (после CRITICAL-4 случайный artefact).
+- Added `AuthResult.NeedsActivation` coverage в `QuickExportHandlerTest` и `CancelExportHandlerTest`.
+
+**Disputed decisions** (commit `7c75e22`):
+- Defensive guard в `AuthorizationFilter.authorize()`: `ACTIVE && chatId == null` → `logger.warn` + `NeedsActivation` вместо invariant-breaking `Active`. Защищает от снапшот-восстановления / ручной правки БД.
+
+**Auto-decided "не исправлять":**
+- `makeActiveUser` duplication между 2 test файлами — over-DRY для маленького helper-а.
+- Inconsistent `-> Unit` vs `-> { Unit }` для no-op when-веток — structural artefact ktlint (single-line vs multi-line when arms).
+
+**Reviewer findings, отклонённые как pre-existing / out of scope:**
+- Codex Critical (`authorize` отбрасывает chatId/userId) — pre-existing username-only auth, design § Non-goals.
+- `StartCommandHandler.kt:53` case-sensitive `==` — pre-existing follow-up issue.
+- `onCommand` case-sensitive routing — pre-existing ktgbotapi поведение.
+- `onContentMessage` отвечает на photos/stickers/voice — pre-existing, documented.
+- `registerRoutes()` без юнит-тестов — Non-goal в design.
+- Остальное (smoke-test, docs/superpowers cleanup, type-system invariants) — out of scope / запланированные шаги user-а.
+
+Build verification после правок: 205 telegram тестов, 0 fail. Один flaky `ExportExecutorTest > second parallel execute` зарегистрирован — прошёл при retry, не связан с правками.
+
+---
+
 ### Remaining (manual, deferred to user)
 
 1. **`git rm -r docs/superpowers/`** + commit `chore: remove design/plan docs from tree before PR` (per global CLAUDE.md superpowers workflow — plan documents must NOT appear in the PR diff; remain accessible in branch git history).
