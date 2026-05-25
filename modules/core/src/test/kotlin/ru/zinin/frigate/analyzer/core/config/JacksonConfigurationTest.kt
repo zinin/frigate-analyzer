@@ -5,6 +5,13 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 
+/**
+ * Verifies the legacy `com.fasterxml.jackson.databind.ObjectMapper` bean only.
+ *
+ * Does NOT verify the REST wire format — Spring Boot 4 WebFlux uses `tools.jackson`
+ * (Jackson 3) at runtime, independently of this bean. See `StatusControllerTest` for the
+ * real wire-format coverage and [JacksonConfiguration] KDoc for the dual-stack context.
+ */
 class JacksonConfigurationTest {
     private val mapper = JacksonConfiguration().objectMapper()
 

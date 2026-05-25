@@ -51,11 +51,15 @@ class SignalLossMonitorTask(
     // ConcurrentHashMap is intentionally defensive even though `@Scheduled fixedDelay` serializes
     // invocations — protects against future JMX/test access without a measurable cost.
     private val state = ConcurrentHashMap<String, CameraSignalState>()
-    private lateinit var startedAt: Instant
+
+    // Eagerly initialised from the injected `clock`. Eager (vs lateinit + @PostConstruct) so that
+    // even an out-of-order lifecycle (e.g. a future BeanPostProcessor that invokes `tick()` before
+    // @PostConstruct ran) still observes a valid value rather than throwing
+    // UninitializedPropertyAccessException.
+    private val startedAt: Instant = Instant.now(clock)
 
     @PostConstruct
     fun init() {
-        startedAt = Instant.now(clock)
         logger.info {
             "SignalLossMonitorTask started: threshold=${properties.threshold}, " +
                 "pollInterval=${properties.pollInterval}, activeWindow=${properties.activeWindow}, " +
