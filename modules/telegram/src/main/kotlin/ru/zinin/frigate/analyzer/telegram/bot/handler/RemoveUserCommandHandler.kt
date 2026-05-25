@@ -6,7 +6,6 @@ import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
@@ -16,7 +15,6 @@ import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class RemoveUserCommandHandler(
     private val userService: TelegramUserService,
-    private val properties: TelegramProperties,
     private val msg: MessageResolver,
 ) : CommandHandler {
     override val command: String = "removeuser"
@@ -42,7 +40,7 @@ class RemoveUserCommandHandler(
             return
         }
 
-        if (targetUsername == properties.owner) {
+        if (userService.isOwner(targetUsername)) {
             reply(message, msg.get("command.removeuser.error.owner", lang))
             return
         }

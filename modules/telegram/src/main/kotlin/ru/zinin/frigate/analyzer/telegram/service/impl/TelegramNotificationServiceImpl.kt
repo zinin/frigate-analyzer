@@ -15,6 +15,7 @@ import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
+import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
@@ -238,7 +239,12 @@ class TelegramNotificationServiceImpl(
     }
 
     override suspend fun sendOwnerMessage(text: String) {
-        val owner = userService.findActiveByUsername(telegramProperties.owner)
+        // Case-insensitive lookup so an owner whose DB-stored username differs in case from
+        // TELEGRAM_OWNER (or vice versa) still receives owner-targeted notifications.
+        val owner =
+            userService
+                .findByUsernameIgnoreCase(telegramProperties.owner)
+                ?.takeIf { it.status == UserStatus.ACTIVE }
         if (owner == null) {
             logger.warn {
                 "Cannot send owner message: owner '${telegramProperties.owner}' has not activated the bot yet"

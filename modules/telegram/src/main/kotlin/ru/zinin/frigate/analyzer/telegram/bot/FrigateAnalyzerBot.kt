@@ -51,6 +51,7 @@ import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
+import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.impl.TelegramUserServiceImpl
 
@@ -91,7 +92,12 @@ class FrigateAnalyzerBot(
                 registerDefaultCommands()
 
                 try {
-                    val owner = userService.findActiveByUsername(properties.owner)
+                    // Case-insensitive lookup so owner-command registration survives a casing
+                    // difference between `TELEGRAM_OWNER` env and the DB-stored username.
+                    val owner =
+                        userService
+                            .findByUsernameIgnoreCase(properties.owner)
+                            ?.takeIf { it.status == UserStatus.ACTIVE }
                     if (owner?.chatId != null) {
                         registerOwnerCommands(owner.chatId)
                     }
