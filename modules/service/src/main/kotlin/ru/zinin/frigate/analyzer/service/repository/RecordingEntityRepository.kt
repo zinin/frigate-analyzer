@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository
 import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.model.dto.CameraStatisticsDto
 import ru.zinin.frigate.analyzer.model.dto.LastRecordingPerCameraDto
+import ru.zinin.frigate.analyzer.model.dto.RecordingCountsDto
 import ru.zinin.frigate.analyzer.model.persistent.RecordingEntity
 import java.time.Instant
 import java.util.UUID
@@ -106,6 +107,20 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
 
     @Query("SELECT COUNT(*) FROM recordings WHERE process_timestamp IS NULL")
     suspend fun countUnprocessed(): Long
+
+    @Query(
+        """
+        SELECT
+            COUNT(*)                                                AS total,
+            COUNT(*) FILTER (WHERE process_timestamp IS NOT NULL)   AS processed,
+            COUNT(*) FILTER (WHERE process_timestamp IS NULL)       AS unprocessed,
+            COUNT(*) FILTER (WHERE process_timestamp IS NOT NULL
+                               AND error_message IS NULL)           AS success,
+            COUNT(*) FILTER (WHERE error_message IS NOT NULL)       AS errors
+        FROM recordings
+        """,
+    )
+    suspend fun getRecordingCounts(): RecordingCountsDto
 
     @Query(
         """
