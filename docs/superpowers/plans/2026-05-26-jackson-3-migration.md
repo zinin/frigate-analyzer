@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate internal Jackson usage from `com.fasterxml` (Jackson 2) to `tools.jackson` (Jackson 3) and explicitly wire the @Primary ObjectMapper into the WebFlux REST codec, so `JacksonConfiguration` truly governs wire-format (closes #29).
+**Goal:** Migrate internal Jackson usage from `com.fasterxml` (Jackson 2) to `tools.jackson` (Jackson 3) and explicitly wire the @Primary `JsonMapper` into the WebFlux REST codec, so `JacksonConfiguration` truly governs wire-format (closes #29).
 
-**Architecture:** Two role-based ObjectMapper beans — `@Primary internalObjectMapper` (tools.jackson, camelCase, ISO-8601; used by REST codec + DetectService + ClaudeResponseParser) and `@Qualifier("detectServerObjectMapper")` (tools.jackson, SNAKE_CASE; used only by outbound WebClient to detect-server). New `WebFluxJacksonCodecConfigurer` explicitly registers Jackson codecs built from the @Primary mapper. Jackson 2 remains as transitive only (springdoc-openapi, Spring Boot YAML config).
+**Architecture:** Two role-based `JsonMapper` beans — `@Primary internalObjectMapper` (tools.jackson `JsonMapper`, camelCase, ISO-8601; used by REST codec + DetectService + ClaudeResponseParser) and `@Qualifier("detectServerObjectMapper")` (tools.jackson `JsonMapper`, SNAKE_CASE; used only by outbound WebClient to detect-server). New `WebFluxJacksonCodecConfigurer` (with `@Order(Ordered.LOWEST_PRECEDENCE)`) explicitly registers Jackson codecs built from the @Primary mapper. Jackson 2 remains as transitive only (springdoc-openapi, Spring Boot YAML config).
+
+**Critical type note:** Spring 7 `JacksonJsonEncoder`/`JacksonJsonDecoder` constructors accept **only** `tools.jackson.databind.json.JsonMapper`, not `ObjectMapper`. Therefore the `internalObjectMapper` bean returns `JsonMapper`. Since `JsonMapper extends ObjectMapper`, DI into consumers declaring `ObjectMapper` parameter (DetectService, ClaudeResponseParser) still works transparently.
 
 **Tech Stack:** Kotlin 2.3.21, Spring Boot 4.0.6, WebFlux, tools.jackson 3.0.4, JUnit5, MockK 1.14.9
 
@@ -53,6 +55,9 @@
 After the existing `jackson-yaml` line (~line 55), insert:
 
 ```toml
+# tools.jackson (Jackson 3) Kotlin module — required for findAndAddModules() to discover KotlinModule
+# via ServiceLoader (META-INF/services/tools.jackson.databind.JacksonModule). Without explicit
+# declaration the module is not on classpath in Spring Boot 4.0.6 default deps.
 jackson-kotlin-3 = { module = "tools.jackson.module:jackson-module-kotlin" }
 ```
 
@@ -149,22 +154,24 @@ Create `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/testsupport/
 package ru.zinin.frigate.analyzer.core.testsupport
 
 import tools.jackson.databind.DeserializationFeature
-import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.PropertyNamingStrategies
 import tools.jackson.databind.SerializationFeature
 import tools.jackson.databind.json.JsonMapper
 
 /**
- * Test-side factories matching production ObjectMapper beans configured in
+ * Test-side factories matching production JsonMapper beans configured in
  * [ru.zinin.frigate.analyzer.core.config.JacksonConfiguration] and
  * [ru.zinin.frigate.analyzer.core.config.WebClientConfiguration].
  *
  * Use these so tests stay aligned with production wire-format and parser configuration.
  * Adding a setting in production? Add it here too.
+ *
+ * Return type is `JsonMapper` to match production (Spring 7 codec API requires JsonMapper).
+ * `JsonMapper extends ObjectMapper`, so callers that accept `ObjectMapper` still work.
  */
 object TestObjectMappers {
     /** Matches production `@Primary internalObjectMapper`. */
-    fun internalMapper(): ObjectMapper =
+    fun internalMapper(): JsonMapper =
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
             .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
@@ -254,7 +261,6 @@ Create `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/desc
 package ru.zinin.frigate.analyzer.ai.description.testsupport
 
 import tools.jackson.databind.DeserializationFeature
-import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.SerializationFeature
 import tools.jackson.databind.json.JsonMapper
 
@@ -262,9 +268,12 @@ import tools.jackson.databind.json.JsonMapper
  * Test-side factory matching the production `@Primary internalObjectMapper` bean from the
  * core module's `JacksonConfiguration`. Duplicated here because Gradle modules don't share
  * test sources; keep the body in sync with the core copy.
+ *
+ * Return type is `JsonMapper` to match production. `JsonMapper extends ObjectMapper`, so
+ * `ClaudeResponseParser`'s `ObjectMapper` parameter is satisfied transparently.
  */
 object TestObjectMappers {
-    fun internalMapper(): ObjectMapper =
+    fun internalMapper(): JsonMapper =
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
             .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
@@ -319,33 +328,42 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Primary
 import tools.jackson.databind.DeserializationFeature
-import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.SerializationFeature
 import tools.jackson.databind.json.JsonMapper
 
 /**
- * Primary tools.jackson (Jackson 3) ObjectMapper used by:
+ * Primary tools.jackson (Jackson 3) JSON mapper used by:
  *  - WebFlux REST inbound/outbound JSON codec (wired in [WebFluxJacksonCodecConfigurer])
- *  - [ru.zinin.frigate.analyzer.core.service.DetectService] (parses detect-server error bodies)
+ *  - [ru.zinin.frigate.analyzer.core.service.DetectService] (parses detect-server error bodies as raw JsonNode)
  *  - [ru.zinin.frigate.analyzer.ai.description.claude.ClaudeResponseParser] (parses Claude responses)
  *
  * Settings:
  *  - camelCase (default property naming)
  *  - ISO-8601 strings for `Instant`/`Duration` (no numeric timestamps)
  *  - tolerant deserialization (unknown properties ignored)
- *  - `findAndAddModules()` picks up `tools.jackson.module.kotlin` from classpath
+ *  - `findAndAddModules()` picks up `tools.jackson.module.kotlin` from classpath via ServiceLoader
  *
- * NOTE on the dual-stack reality: springdoc-openapi-starter declares its own legacy
- * `com.fasterxml.jackson.databind.ObjectMapper` bean via its auto-configuration. That bean
- * is out of our scope — springdoc uses it internally for OpenAPI spec generation, and we
- * deliberately do not interfere. See `docs/issues/2026-05-25-dual-jackson-stack.md` for the
- * full history.
+ * **Return type is `JsonMapper`, not `ObjectMapper`.** Spring 7's `JacksonJsonEncoder`/
+ * `JacksonJsonDecoder` constructors require `JsonMapper` (verified via javap of spring-web-7.0.5).
+ * `JsonMapper extends ObjectMapper`, so DI into consumers declaring `ObjectMapper` (DetectService,
+ * ClaudeResponseParser) still works.
+ *
+ * **Dual-stack rationale (self-contained):**
+ * `tools.jackson` governs all internal and REST wire-format JSON. Legacy `com.fasterxml.jackson`
+ * is retained ONLY as a transitive dependency of:
+ *  - `springdoc-openapi-starter` 3.0.3 (requires `com.fasterxml.jackson.module.kotlin.KotlinModule`
+ *    via its own `SpringDocJacksonKotlinModuleConfiguration` for OpenAPI spec generation).
+ *  - `spring-boot-jackson2` compat starter (Spring Boot 4 ships this exactly for the springdoc case).
+ *
+ * The `@Primary` annotation scopes only within `tools.jackson.databind.*` classes; springdoc
+ * injects `com.fasterxml.jackson.databind.ObjectMapper` (a different class), so there is no
+ * type collision. Spring will never substitute incompatible types.
  */
 @Configuration
 class JacksonConfiguration {
     @Bean
     @Primary
-    fun internalObjectMapper(): ObjectMapper =
+    fun internalObjectMapper(): JsonMapper =
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
             .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
@@ -364,6 +382,8 @@ package ru.zinin.frigate.analyzer.core.config
 
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import tools.jackson.databind.json.JsonMapper
 import java.time.Duration
 import java.time.Instant
 
@@ -372,7 +392,7 @@ import java.time.Instant
  *
  * End-to-end wire-format coverage for REST endpoints lives in
  * [ru.zinin.frigate.analyzer.core.controller.StatusControllerTest]; this test exercises the
- * bean in isolation (settings + KotlinModule discovery).
+ * bean in isolation (settings + KotlinModule discovery + Spring-context registration).
  */
 class JacksonConfigurationTest {
     private val mapper = JacksonConfiguration().internalObjectMapper()
@@ -391,6 +411,8 @@ class JacksonConfigurationTest {
 
     @Test
     fun `KotlinModule is auto-discovered — data class round-trips`() {
+        // Regression guard for findAndAddModules() ServiceLoader discovery — fails if
+        // jackson-module-kotlin-3 artifact is missing or its META-INF/services file is not packaged.
         data class Foo(val name: String, val count: Int)
         val original = Foo("x", 42)
         val json = mapper.writeValueAsString(original)
@@ -399,15 +421,32 @@ class JacksonConfigurationTest {
     }
 
     @Test
-    fun `unknown properties are tolerated on deserialization`() {
+    fun `FAIL_ON_UNKNOWN_PROPERTIES is disabled — unknown JSON fields tolerated`() {
+        // Explicit guard on the most behaviour-changing feature configured in production.
         data class Foo(val known: String)
         val parsed = mapper.readValue("""{"known":"x","unknown":"ignored"}""", Foo::class.java)
         assertThat(parsed.known).isEqualTo("x")
     }
+
+    @Test
+    fun `Spring context registers internalObjectMapper as Primary JsonMapper bean`() {
+        // Verifies the bean is actually visible to Spring (not just constructible by hand)
+        // and has the @Primary marker so codec/parser DI picks it deterministically.
+        ApplicationContextRunner()
+            .withUserConfiguration(JacksonConfiguration::class.java)
+            .run { ctx ->
+                assertThat(ctx).hasSingleBean(JsonMapper::class.java)
+                val bean = ctx.getBean(JsonMapper::class.java)
+                assertThat(bean).isInstanceOf(JsonMapper::class.java)
+                // BeanDefinition primary flag check
+                val bd = ctx.beanFactory.getBeanDefinition("internalObjectMapper")
+                assertThat(bd.isPrimary).isTrue()
+            }
+    }
 }
 ```
 
-- [ ] **Step 3: Update `DetectService.kt` import**
+- [ ] **Step 3: Update `DetectService.kt` import + add explanatory comment**
 
 Edit `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/service/DetectService.kt`. Change line 3:
 
@@ -421,7 +460,17 @@ To:
 import tools.jackson.databind.ObjectMapper
 ```
 
-No other changes in this file — the `objectMapper.readTree(body).path("detail").isTextual`/`asText()` API is identical between Jackson 2 and Jackson 3.
+Add inline comment immediately above `private val objectMapper: ObjectMapper` in the constructor:
+
+```kotlin
+    // Used only for raw JsonNode parsing of detect-server error-detail bodies via
+    // objectMapper.readTree(body).path("detail"). Property access is case-sensitive on the JSON
+    // text "detail" — PropertyNamingStrategy is irrelevant here. Spring injects the @Primary
+    // JsonMapper bean (which extends ObjectMapper).
+    private val objectMapper: ObjectMapper,
+```
+
+No other changes in this file — the `readTree(...).path("detail").isTextual`/`asText()` API is identical between Jackson 2 and Jackson 3.
 
 - [ ] **Step 4: Update `DetectServiceTest.kt`**
 
@@ -478,11 +527,11 @@ To (delete `buildJsonMapper` and `buildObjectMapper` entirely, simplify `buildWe
     }
 ```
 
-(e) Remove the now-unused imports near the top:
+(e) Remove the now-unused imports near the top (these were correct `tools.jackson` imports needed by the soon-to-be-deleted `buildJsonMapper()` helper — after Step (d) they become unused, IDE "Optimize Imports" will pick them up):
 ```kotlin
-import tools.jackson.databind.DeserializationFeature        // remove
-import tools.jackson.databind.PropertyNamingStrategies      // remove
-import tools.jackson.databind.json.JsonMapper               // remove
+import tools.jackson.databind.DeserializationFeature        // remove (unused after buildJsonMapper deleted)
+import tools.jackson.databind.PropertyNamingStrategies      // remove (unused after buildJsonMapper deleted)
+import tools.jackson.databind.json.JsonMapper               // remove (unused after buildJsonMapper deleted)
 ```
 
 - [ ] **Step 5: Update `DetectServiceCancelJobTest.kt`**
@@ -538,6 +587,8 @@ import tools.jackson.databind.json.JsonMapper               // remove
 
 Edit `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/VideoVisualizationServiceTest.kt`:
 
+**Context warning:** the existing `buildObjectMapper()` helper in this file returns `com.fasterxml.jackson.databind.ObjectMapper` (Jackson 2). After this step, all 4 call sites use `TestObjectMappers.internalMapper()` (Jackson 3 `JsonMapper`) — `buildObjectMapper()` becomes dead code and is deleted entirely in (e). Same for `buildJsonMapper()`.
+
 (a) Remove line 3:
 ```kotlin
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -556,7 +607,7 @@ DetectService(webClient, ..., TestObjectMappers.internalMapper())
 
 (d) Replace line 468 `buildJsonMapper()` call with `TestObjectMappers.detectServerMapper()`.
 
-(e) Delete the `buildJsonMapper` (line 481) and `buildObjectMapper` (line 488) helper methods entirely.
+(e) Delete the `buildJsonMapper` (line 481) and `buildObjectMapper` (line 488) helper methods entirely — they are now dead code.
 
 (f) Remove the now-unused tools.jackson imports if no other use:
 ```kotlin
@@ -640,14 +691,13 @@ From (lines 35-37):
 ```
 To:
 ```kotlin
-            is JsonProcessingException,
-            is JacksonException,
-            -> {
+            is JsonProcessingException, is JacksonException ->
                 DescriptionException.InvalidResponse(throwable)
-            }
 ```
 
 Keep the `import com.fasterxml.jackson.core.JsonProcessingException` line — Claude SDK and other transitive libs may still emit Jackson 2 exceptions.
+
+Add KDoc above the `map` method explaining the `is JacksonException` branch is defensive code: `ClaudeResponseParser.parse()` currently wraps `readTree(...)` in `try/catch (e: Exception)`, so `JacksonException` doesn't reach this mapper today. The branch exists for future call sites that may use `internalObjectMapper` directly without local try-catch.
 
 - [ ] **Step 3: Update `ClaudeResponseParserTest.kt`**
 
@@ -681,15 +731,15 @@ Same pattern as Step 3:
 
 (a) Remove imports of `com.fasterxml.jackson.databind.ObjectMapper` and `com.fasterxml.jackson.module.kotlin.registerKotlinModule`.
 
-(b) Add `import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers`.
+(b) Explicitly add (do NOT rely on IDE auto-import in scripted runs): `import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers`.
 
-(c) Replace `ObjectMapper().registerKotlinModule()` (wherever it appears) with `TestObjectMappers.internalMapper()`.
+(c) Replace `ObjectMapper().registerKotlinModule()` (wherever it appears, including line 59 `ClaudeResponseParser(ObjectMapper().registerKotlinModule())` → `ClaudeResponseParser(TestObjectMappers.internalMapper())`) with `TestObjectMappers.internalMapper()`.
 
 (d) If the `ObjectMapper` parameter type appears in a constructor or property, switch its declared type to `tools.jackson.databind.ObjectMapper` (add the import).
 
 - [ ] **Step 5: Update `ClaudeDescriptionAgentIntegrationTest.kt`**
 
-Same as Step 4.
+Same as Step 4. **Important:** this file is annotated `@Disabled`, but Kotlin compiles disabled test bodies — leaving `ObjectMapper().registerKotlinModule()` at line 102 will cause compilation failure after migration. Explicitly replace `val mapper = ObjectMapper().registerKotlinModule()` (line 102) with `val mapper = TestObjectMappers.internalMapper()` and add the import as in Step 4(b).
 
 - [ ] **Step 6: Update `ClaudeExceptionMapperTest.kt`**
 
@@ -697,13 +747,13 @@ Edit `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/descri
 
 (a) Replace `import com.fasterxml.jackson.core.JsonParseException` (line 3) with imports for whatever Jackson 2 exception types are used; verify they still exist (`JsonParseException` is still in Jackson 2 — keep this import as-is since the test exercises Jackson-2 SDK exceptions for the existing `JsonProcessingException` branch).
 
-(b) **ADD a new test case** verifying the Jackson 3 branch:
+(b) **ADD a new test case** verifying the Jackson 3 branch. Use a concrete subclass (`StreamReadException`) instead of an anonymous `object : JacksonException("boom") {}` — Jackson 3.0.4's `JacksonException` constructor visibility is not guaranteed across point releases, and `StreamReadException` is a stable public subclass representing the most common Jackson 3 exception thrown by `readTree`:
 
 ```kotlin
     @Test
     fun `map wraps tools_jackson JacksonException as InvalidResponse`() {
         val mapper = ClaudeExceptionMapper()
-        val cause = object : tools.jackson.core.JacksonException("boom") {}
+        val cause = tools.jackson.core.exc.StreamReadException(null, "boom")
         val result = mapper.map(cause)
         assertThat(result).isInstanceOf(DescriptionException.InvalidResponse::class.java)
         assertThat(result.cause).isSameAs(cause)
@@ -714,7 +764,29 @@ Edit `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/descri
 
 - [ ] **Step 7: Update `AiDescriptionAutoConfigurationTest.kt`**
 
-Same pattern as Step 3 — replace `ObjectMapper().registerKotlinModule()` with `TestObjectMappers.internalMapper()` and switch `ObjectMapper` type import to `tools.jackson.databind.ObjectMapper` where it appears.
+**This is NOT the same pattern as Step 3** — the file declares an `@Bean` whose return type must also change.
+
+(a) Replace line 32:
+
+From:
+```kotlin
+@Bean
+fun objectMapper(): ObjectMapper = ObjectMapper().registerKotlinModule()
+```
+To:
+```kotlin
+@Bean
+fun objectMapper(): tools.jackson.databind.json.JsonMapper = TestObjectMappers.internalMapper()
+```
+
+(b) Add the import:
+```kotlin
+import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
+```
+
+(c) Remove imports of `com.fasterxml.jackson.databind.ObjectMapper` and `com.fasterxml.jackson.module.kotlin.registerKotlinModule` (they are now unused).
+
+**Why this is different:** with the Jackson 2 `ObjectMapper` return type, Spring would register a `com.fasterxml.jackson.databind.ObjectMapper` bean — but post-migration `ClaudeResponseParser` is wired with `tools.jackson.databind.ObjectMapper`, an incompatible type. Spring cannot find a matching bean, autowiring fails. Changing both the body and the return type fixes both compile-time and DI resolution.
 
 - [ ] **Step 8: Run all ai-description tests**
 
@@ -807,19 +879,25 @@ With:
     ): JacksonJsonDecoder = JacksonJsonDecoder(mapper)
 ```
 
-- [ ] **Step 2: Run all core tests**
+- [ ] **Step 2: Verify single mapper instance per WebClient**
+
+After the refactor, confirm that `jsonEncoder()` and `jsonDecoder()` accept the `detectServerObjectMapper` bean via parameter injection and do NOT construct fresh `JsonMapper.builder()...build()` instances inside their bodies. The bean is constructed once; both encoder and decoder reuse the same instance.
+
+Quick verification: `grep -A2 "fun jsonEncoder\|fun jsonDecoder" modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/WebClientConfiguration.kt` — bodies should only contain `JacksonJsonEncoder(mapper)` / `JacksonJsonDecoder(mapper)`.
+
+- [ ] **Step 3: Run all core tests**
 
 Run: `./gradlew :frigate-analyzer-core:test`
 
 Expected: BUILD SUCCESSFUL. The refactor preserves behaviour — `JacksonJsonEncoder(mapper)` accepts a built `JsonMapper`; tests that go through the WebClient should pass unchanged.
 
-- [ ] **Step 3: ktlint**
+- [ ] **Step 4: ktlint**
 
 Run: `./gradlew ktlintFormat && ./gradlew ktlintCheck`
 
 Expected: clean.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/WebClientConfiguration.kt
@@ -893,11 +971,13 @@ Create `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/WebFl
 package ru.zinin.frigate.analyzer.core.config
 
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.Ordered
+import org.springframework.core.annotation.Order
 import org.springframework.http.codec.ServerCodecConfigurer
 import org.springframework.http.codec.json.JacksonJsonDecoder
 import org.springframework.http.codec.json.JacksonJsonEncoder
 import org.springframework.web.reactive.config.WebFluxConfigurer
-import tools.jackson.databind.ObjectMapper
+import tools.jackson.databind.json.JsonMapper
 
 /**
  * Wires the project's `@Primary internalObjectMapper` (configured in [JacksonConfiguration])
@@ -908,11 +988,21 @@ import tools.jackson.databind.ObjectMapper
  * Without this configurer the wire-format works by coincidence — Spring Boot 4 auto-config
  * defaults happen to match our requirements (ISO-8601, camelCase). With this configurer the
  * relationship is **explicit**: regression guards in `WebFluxJacksonCodecConfigurerTest` and
- * the end-to-end `StatusControllerTest` fail if this wiring is removed.
+ * the extended `StatusControllerTest` (unknown-property tolerance) fail if this wiring is
+ * removed.
+ *
+ * `@Order(Ordered.LOWEST_PRECEDENCE)` ensures this configurer runs last in the
+ * `WebFluxConfigurer` chain — even if another configurer (now or in the future) also calls
+ * `jacksonJsonEncoder`, our explicit registration takes effect.
+ *
+ * Constructor parameter is `JsonMapper` (not `ObjectMapper`) because Spring 7's
+ * `JacksonJsonEncoder`/`JacksonJsonDecoder` constructors accept only `JsonMapper`. `JsonMapper`
+ * extends `ObjectMapper` so DI from `@Primary JsonMapper` satisfies both shapes.
  */
 @Configuration
+@Order(Ordered.LOWEST_PRECEDENCE)
 class WebFluxJacksonCodecConfigurer(
-    private val internalObjectMapper: ObjectMapper,
+    private val internalObjectMapper: JsonMapper,
 ) : WebFluxConfigurer {
     override fun configureHttpMessageCodecs(configurer: ServerCodecConfigurer) {
         configurer.defaultCodecs().jacksonJsonEncoder(JacksonJsonEncoder(internalObjectMapper))
@@ -927,24 +1017,59 @@ Run: `./gradlew :frigate-analyzer-core:test --tests 'ru.zinin.frigate.analyzer.c
 
 Expected: 1 test passes.
 
-- [ ] **Step 5: Run full core test suite (verify StatusControllerTest still passes — proves the configurer doesn't break end-to-end wire-format)**
+- [ ] **Step 5: Update `StatusControllerTest` KDoc and add FAIL_ON_UNKNOWN_PROPERTIES regression test**
+
+Edit `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt`:
+
+(a) Replace the obsolete KDoc at lines 20-24 (which claims wire-format goes through "tools.jackson, NOT our com.fasterxml.jackson-based JacksonConfiguration"). New KDoc:
+
+```kotlin
+/**
+ * End-to-end wire-format check for /status: verifies ISO-8601 timestamps + tolerance to
+ * unknown JSON properties. After the Jackson 3 migration (issue #29) these go through codecs
+ * registered by [WebFluxJacksonCodecConfigurer] from our `@Primary internalObjectMapper` —
+ * removing the configurer (or the @Primary marker) breaks the unknown-property tolerance test.
+ */
+```
+
+(b) Add a new test method that POSTs (or otherwise sends body, depending on existing endpoint shape — if `/status` is GET-only, add a small `@WebFluxTest` with a stub controller accepting a body) JSON containing an unknown property and asserts 200 OK:
+
+```kotlin
+@Test
+fun `inbound JSON with unknown properties is tolerated — regression guard for FAIL_ON_UNKNOWN_PROPERTIES`() {
+    // Default Spring Boot 4 tools.jackson mapper would also tolerate unknowns — but if our
+    // WebFluxJacksonCodecConfigurer is removed and SOMEONE in the future flips the default,
+    // this test will fail. The combination of (a) extra field accepted (b) ISO-8601 dates is
+    // specifically what JacksonConfiguration governs.
+    webTestClient.get()  // or .post(...).bodyValue(...)
+        .uri("/status")
+        .exchange()
+        .expectStatus().isOk
+    // Sanity: assert response shape unchanged (ISO-8601 in `startedAt` field etc.)
+}
+```
+
+If `/status` is read-only and cannot accept a JSON body, alternative: add a tiny `@TestConfiguration`-scoped controller in `StatusControllerTest` that echoes a POST body, then exercise it through the same `WebTestClient`.
+
+- [ ] **Step 6: Run full core test suite (verify StatusControllerTest still passes — proves the configurer governs end-to-end wire-format)**
 
 Run: `./gradlew :frigate-analyzer-core:test`
 
-Expected: BUILD SUCCESSFUL. `StatusControllerTest` continues to assert ISO-8601 timestamps in JSON wire-format — that's now governed by our configurer.
+Expected: BUILD SUCCESSFUL. `StatusControllerTest` continues to assert ISO-8601 timestamps in JSON wire-format AND now asserts unknown-property tolerance — both governed by our configurer.
 
-- [ ] **Step 6: ktlint**
+- [ ] **Step 7: ktlint**
 
 Run: `./gradlew ktlintFormat && ./gradlew ktlintCheck`
 
 Expected: clean.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/WebFluxJacksonCodecConfigurer.kt \
-        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/WebFluxJacksonCodecConfigurerTest.kt
-git commit -m "feat(core): explicitly wire @Primary ObjectMapper into WebFlux REST codec"
+        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/WebFluxJacksonCodecConfigurerTest.kt \
+        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt
+git commit -m "feat(core): explicitly wire @Primary JsonMapper into WebFlux REST codec"
 ```
 
 ---
@@ -954,7 +1079,25 @@ git commit -m "feat(core): explicitly wire @Primary ObjectMapper into WebFlux RE
 **Files:**
 - Modify: `docs/issues/2026-05-25-dual-jackson-stack.md`
 
-- [ ] **Step 1: Full build with all tests**
+- [ ] **Step 1a: Audit all Jackson use sites (safety net before final build)**
+
+Run:
+```bash
+grep -rn "ObjectMapper\|registerKotlinModule" \
+    --include="*.kt" --include="*.java" \
+    modules/ | grep -v build/ | grep -v ".gradle/"
+```
+
+Cross-check every result against the plan's covered files:
+- `JacksonConfiguration.kt`, `WebFluxJacksonCodecConfigurer.kt`, `WebClientConfiguration.kt`, `DetectService.kt`, `ClaudeResponseParser.kt`, `ClaudeExceptionMapper.kt`
+- All tests under modules/core/src/test/ and modules/ai-description/src/test/ touched by Tasks 4 and 5
+- `TestObjectMappers.kt` (×2)
+
+If grep returns a use site NOT in the above list, STOP and add it explicitly to the plan before continuing. Common omissions to look for: MapStruct mapper interfaces, Liquibase changelog Java/Kotlin classes, telegram module helpers.
+
+Expected universe: ~19 files (per design § 4.1 and existing grep before migration). Verify the count.
+
+- [ ] **Step 1b: Full build with all tests**
 
 Run: `./gradlew build`
 
