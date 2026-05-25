@@ -336,10 +336,13 @@ cam3  | 4 130 | 4 080 | 412</pre>
 🟢 cam2  online       (4s ago)</pre>
 
 🖥️ <b>{status.section.servers}</b>
-<pre>srv-a ALIVE  frame 2/4  ext 0/2  vis 0/1  vvis 0/1
-srv-b ALIVE  frame 1/4  ext 1/2  vis 0/1  vvis 0/1
-srv-c DEAD</pre>
+<pre>🟢 srv-a  ALIVE  frame 2/4  ext 0/2  vis 0/1  vvis 0/1
+🟢 srv-b  ALIVE  frame 1/4  ext 1/2  vis 0/1  vvis 0/1
+🔴 srv-c  DEAD</pre>
 ```
+
+Маркеры 🟢/🔴 у серверных строк симметричны с секцией камер и ускоряют визуальную
+идентификацию DEAD-сервера на маленьком экране телефона (которому этот вид и адресован).
 
 **Детали:**
 
