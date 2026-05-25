@@ -36,7 +36,7 @@ Additive curated подход:
 |---|---|---|
 | Q1 (счётчики) | (b) добавить `success` + `errors`, сохранить `processed`/`unprocessed` | Backward-compat. Открывает обе метрики: видимость ошибок и явный счёт успешных. Не фиксирует invariant `success+errors=processed` → оставляет место для Q3. |
 | Q2 (категоризация) | Нет, только `errors: Long` | Issue сам рекомендует ("plain errors likely enough"). Категоризация требует миграции и backfill — отдельная история. |
-| Q3 (retry-pending) | Не сейчас. Не делаем `success+errors=processed` инвариантом | `success` и `errors` считаются независимыми FILTER-агрегатами; добавление retry-pending state в будущем не сломает текущий контракт. |
+| Q3 (retry-pending) | Не сейчас. Не делаем `success+errors=processed` инвариантом | `success` и `errors` считаются независимыми FILTER-агрегатами; добавление retry-pending state в будущем не сломает текущий контракт. Текущая модель «единый bucket `errors`» — намеренный временный компромисс до возможной декомпозиции через status-enum follow-up (см. § 12). |
 | Q4 (Telegram layout) | C — 5 строк: Total / Success / Errors / Unprocessed / Rate | Убирает избыточную `Processed = Success + Errors`. Максимум сигнала, минимум строк. REST-ответ остаётся полным (5 счётчиков). |
 | Q5 (i18n) | Удалить `label.processed`+`value.processed`; добавить `label.success`, `label.errors`, общий `value.withPct` | DRY: общий шаблон `{0} ({1}%)` для success/errors. Будущая дивергенция возможна через label-ключи. |
 | Q6 (drop `unprocessed`) | Оставить | Поле осмысленное ("в очереди"), независимо от success/errors. Удаление было бы breaking change без выгоды. |
@@ -78,7 +78,7 @@ data class RecordingCountsDto(
 )
 ```
 
-Паттерн совпадает с существующим `CameraStatisticsDto` (data class + `@Column` per field). Spring Data R2DBC выполняет column-to-property mapping.
+Паттерн совпадает с существующим `CameraStatisticsDto` (data class + `@Column` per field). Spring Data R2DBC выполняет column-to-property mapping. `@Column` сохранена для всех полей ради консистентности с существующим паттерном, хотя для полей, чьё имя совпадает с column-alias'ом, R2DBC мог бы использовать default property-to-column mapping. Defaults `= 0L` намеренно НЕ добавлены — иначе они замаскировали бы потенциальные ошибки маппинга.
 
 ### 5.2 Repository
 
@@ -119,7 +119,7 @@ suspend fun countUnprocessed(): Long
 
 - `COUNT(*) FILTER (WHERE ...)` — SQL standard since PostgreSQL 9.4; поддерживается всеми актуальными PG-версиями.
 - Aliases (`total`, `processed`, `unprocessed`, `success`, `errors`) не пересекаются с reserved words в PG.
-- На текущем объёме (~10⁴ строк) один table scan укладывается в миллисекунды; нового индекса не требуется.
+- На текущем объёме (~10⁴ строк) один table scan укладывается в миллисекунды; нового индекса не требуется. При росте до ~10⁵+ строк стоит рассмотреть partial-index `CREATE INDEX ... ON recordings(error_message) WHERE error_message IS NOT NULL` для ускорения `errors`-фильтра (см. §11 — future consideration). Существующий `idx_recordings_process_timestamp` (`docker/liquibase/migration/1.0.0.xml`) не помогает single-FILTER-aggregate сценарию (он построен для range-сканов rate-запроса).
 - Все 5 чисел из одного снапшота → consistent view (закрывает iter-1 CONCERN-11 для recordings counts; `byCameras` и `processingRatePerMinute` остаются независимыми запросами, что приемлемо — иная shape агрегации).
 
 ## 6. Response model
@@ -189,7 +189,7 @@ Unprocessed              70
 Rate (5 min)    2.3 rec/min
 ```
 
-Ширина каждой строки 27 chars (`padEnd(13) + " " + padStart(13)`); `labelWidth=12` (от "Rate (5 min)"), `valueWidth=13` (от "12370 (99.3%)").
+Ширина каждой строки 27 chars (`padEnd(13) + " " + padStart(13)`); `labelWidth=12` (от "Rate (5 min)"), `valueWidth=13` (от "12370 (99.3%)"). Числовые значения 12/13/27 — иллюстративные для EN; реальная ширина вычисляется динамически (`rows.maxOf { it.first.length }` / `rows.maxOf { it.second.length }`). Для RU max-label = «Скорость (5 мин)» = 15 символов, поэтому RU-блок будет ~30 chars шириной — обе локали помещаются в портретный mobile-viewport.
 
 - Числа без thousand-separator (`Long.toString()`) — сохраняется текущее поведение.
 - Выравнивание — существующим алгоритмом `padEnd(maxLabel+1) + " " + padStart(maxValue)`; новые строки автоматически учитываются.
@@ -275,7 +275,7 @@ Integration-тест против реальной PostgreSQL (через `Integ
 
 | Слой | Compat |
 |---|---|
-| REST JSON | Additive: добавлены 2 поля, существующие неизменны. Старые consumers (если есть) — не ломаются. |
+| REST JSON | Additive: добавлены 2 поля, существующие неизменны. Старые non-strict consumers не ломаются. Известных external generated-DTO consumers (через Swagger/OpenAPI client codegen) у проекта нет — `/status` рассматривается как operator-facing endpoint; если такой consumer появится позже, его строгая модель (`failOnUnknownProperties`) может потребовать regenerate. |
 | Telegram | OWNER-only, нет внешнего API. Внутренний формат сообщения изменён (убрана строка `Processed`). |
 | DB schema | Без изменений — нулевой риск. |
 
@@ -284,16 +284,20 @@ Integration-тест против реальной PostgreSQL (через `Integ
 | Риск | Митигация |
 |---|---|
 | Удалённые i18n-ключи всё ещё где-то ссылаются | `grep "status.recordings.label.processed\|status.recordings.value.processed"` по `modules/**/src/**` перед коммитом. Если найдены вне формат-теста — keep keys. |
-| R2DBC column mapping для нового DTO | Паттерн совпадает с `CameraStatisticsDto`; risk низкий. Регрессия покрывается `StatusServiceTest` через мок. |
+| R2DBC column mapping для нового DTO | Паттерн совпадает с `CameraStatisticsDto`; risk низкий. Реальная гарантия маппинга обеспечивается **integration-тестом** `should return recording counts via FILTER aggregate` в `RecordingEntityRepositoryTest` против реального PG (через `IntegrationTestBase`/Testcontainers). Mock-тест в `StatusServiceTest` покрывает только wiring, но не сам маппинг. |
 | FILTER aggregate не поддерживается | PG 9.4+. Проект уже на современной версии (Liquibase migrations подтверждают). |
 | Будущий retry → `processed != success + errors` | Допустимо в любую сторону. В коде нет ассерта инварианта (см. секцию 6). |
 | Документация рассинхронизация | `.claude/rules/database.md` не меняется (схема та же). Internal docs о пайплайне не затрагиваются. |
+| `markProcessed()` не очищает `error_message` | Сегодня нерелевантно, т.к. `markProcessed` вызывается только для свежих recordings без `error_message`. При появлении retry/manual-repair в будущем corresponding transition обязан очищать `error_message` (или вводить status-enum). Зафиксировано как future consideration, отдельный issue (см. § 12). |
+| `error_message` не индексирован | На ~10⁴ строк seq-scan FILTER-aggregate миллисекунды. На ~10⁵+ строк стоит рассмотреть partial-index `CREATE INDEX ... ON recordings(error_message) WHERE error_message IS NOT NULL`. Не добавляется сейчас (дизайн без миграций), но зафиксировано как future consideration. |
+| i18n missing-key регрессия после удаления `label.processed`/`value.processed` | `MessageResolver.get()` при отсутствии ключа во всех locales возвращает сам ключ (с warn-логом, без throw — `MessageResolver.kt:25-35`). Безопасный fallback — пользователь увидит `status.recordings.label.processed` как plain text, но приложение не упадёт. Дополнительно: real-bundle `StatusMessageFormatterI18nTest` ассертит присутствие новых ключей в EN/RU bundles (см. § 9.3). |
 
 ## 12. Out of scope
 
 - Категоризация ошибок (`error_type` enum, breakdown в `/status`) — отдельный issue.
 - Retry-pending state — отдельный issue, когда появится автоматический retry в pipeline.
-- Per-camera `errors` колонка в `byCameras`-секции — отдельный issue.
+- Полноценный status/state enum column на `recordings` (заменяющий нынешний неявный state-флаг через `error_message IS NOT NULL`) — отдельный follow-up issue. Считается долгосрочным правильным направлением, если retry-pending станет реальным design driver'ом.
+- Per-camera `errors` колонка в `byCameras`-секции — отдельный issue. Текущее `recordingsProcessed` в `CameraStatistics` сохраняет масковую семантику (включает успешные + ошибочные) — рассматривается как known limitation; явный rename/расширение `proc`-колонки в Telegram-byCamera-таблице отложены.
 - Любые БД-миграции.
 - Любая работа с `error_message` text (truncation, parsing, etc.).
 

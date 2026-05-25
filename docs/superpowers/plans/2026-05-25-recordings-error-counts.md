@@ -32,7 +32,7 @@
 - `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt` — +2 jsonPath assertions.
 - `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTestConfig.kt` — compile-fix: + `success`/`errors` args.
 - `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/repository/RecordingEntityRepositoryTest.kt` — remove 3 count tests, add 1 FILTER aggregate test.
-- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/StatusMessageFormatterTest.kt` — compile-fix (4 sites) + layout C asserts + 2 edge-case tests. Same file also contains `StatusMessageFormatterI18nTest` whose `sampleSnapshot()` needs compile-fix.
+- `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/StatusMessageFormatterTest.kt` — compile-fix (5 sites: 4 in outer `StatusMessageFormatterTest` + 1 in nested `StatusMessageFormatterI18nTest.sampleSnapshot()`) + layout C asserts + 3 edge-case tests (errors=0, total=0, success+errors != processed) + real-bundle EN/RU recordings assertion in `StatusMessageFormatterI18nTest`.
 
 ---
 
@@ -103,6 +103,8 @@ Refs #28"
 
 ## Task 2: Backend slice — add `success`/`errors` fields, wire StatusService, update StatusServiceTest
 
+> **Interim-state warning:** Between Task 2 (compile-fix sites in `StatusMessageFormatterTest`) and Task 5 (formatter layout rewrite) the formatter tests will be GREEN at compile but RED at assertion — old asserts expect the legacy `Processed` row that Task 5 removes. This is expected; the suite goes green again after Task 5 Step 3. If you halt between these tasks, do not interpret RED formatter tests as new bugs.
+
 This is the core vertical slice. Adding REQUIRED non-null fields to `RecordingsStatistics` is a breaking change for every constructor call — those compile-fixes happen here so the build stays green at task end.
 
 **Files:**
@@ -119,6 +121,10 @@ Replace the data class in `modules/model/src/main/kotlin/ru/zinin/frigate/analyz
 ```kotlin
 data class RecordingsStatistics(
     val total: Long,
+    /**
+     * Кол-во recordings с непустым `process_timestamp` (успешные + ошибочные).
+     * Для error-visibility предпочитайте новые поля `success` / `errors`.
+     */
     val processed: Long,
     val unprocessed: Long,
     val success: Long,
@@ -231,6 +237,8 @@ fun `collect populates recordings counters with zero errors`() =
         val service = StatusService(emptyRecordings, lb, monitorProvider(null), clock)
         val resp = service.collect()
         assertThat(resp.recordings.total).isEqualTo(0L)
+        assertThat(resp.recordings.processed).isEqualTo(0L)
+        assertThat(resp.recordings.unprocessed).isEqualTo(0L)
         assertThat(resp.recordings.success).isEqualTo(0L)
         assertThat(resp.recordings.errors).isEqualTo(0L)
         assertThat(resp.recordings.byCameras).isEmpty()
@@ -495,6 +503,37 @@ fun `format renders errors row with zero count and zero percent`() {
 }
 
 @Test
+fun `format keeps layout C when success plus errors does not equal processed`() {
+    // Documents that the design intentionally does NOT enforce
+    // `success + errors == processed`; layout C must still render cleanly
+    // when a future retry-pending state breaks the invariant.
+    val divergent =
+        StatusResponse(
+            recordings =
+                RecordingsStatistics(
+                    total = 100L,
+                    processed = 100L,
+                    unprocessed = 0L,
+                    success = 80L,
+                    errors = 10L,
+                    byCameras = emptyList(),
+                    processingRatePerMinute = 0.0,
+                ),
+            cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
+            detectServers = emptyList(),
+        )
+    val out = formatter.format(divergent, language = "en", zone = zone, now = now)
+    assertTrue(
+        out.contains("status.recordings.value.withPct[80,80.0]"),
+        "missing success row 80 (80.0%) in: $out",
+    )
+    assertTrue(
+        out.contains("status.recordings.value.withPct[10,10.0]"),
+        "missing errors row 10 (10.0%) in: $out",
+    )
+}
+
+@Test
 fun `format renders zero percent when total is zero`() {
     val empty =
         StatusResponse(
@@ -570,7 +609,7 @@ private fun pct(part: Long, total: Long): String =
     }
 ```
 
-The unused private helper `formatRow(...)` (currently lines 234-241) is dead code from earlier iterations of the file; leave it for now if untouched by ktlint, or remove it if ktlint flags unused-private — it is not exercised by any caller.
+**Delete the unused private helper `formatRow(...)`** (currently lines 234-241) — dead code from earlier iterations, no callers exist. ktlint does NOT detect unused private methods (only the compiler emits a warning), so the deletion must be explicit. Stage and commit it as part of Task 5.
 
 - [ ] **Step 4: Run tests to verify pass**
 
@@ -640,11 +679,7 @@ status.recordings.value.processed={0} ({1}%)
 
 In `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/repository/RecordingEntityRepositoryTest.kt`:
 
-4a. Add import for the new DTO (alongside existing model imports):
-
-```kotlin
-import ru.zinin.frigate.analyzer.model.dto.RecordingCountsDto
-```
+4a. **(Skipped intentionally.)** No new import is needed — the new test uses `repository.getRecordingCounts()` and accesses fields via inferred type. Adding `import ru.zinin.frigate.analyzer.model.dto.RecordingCountsDto` would trigger a ktlint unused-import failure.
 
 4b. Delete the three tests: `should count all recordings` (currently lines 437-451), `should count processed recordings` (lines 453-477), `should count unprocessed recordings` (lines 479-498).
 
@@ -685,9 +720,95 @@ fun `should return recording counts via FILTER aggregate`() {
         assertEquals(1L, counts.errors)
     }
 }
+
+@Test
+fun `should count error-only recording in errors and unprocessed buckets`() {
+    runBlocking {
+        // Defensive-design check: a recording with `error_message` set but
+        // `process_timestamp` NULL (would be created by a hypothetical future
+        // "error during acquire" pathway). With current code this row cannot
+        // appear via the pipeline, but the FILTER aggregate must handle it
+        // — it falls into BOTH `unprocessed` (process_timestamp IS NULL)
+        // AND `errors` (error_message IS NOT NULL), exposing that
+        // `success + errors == processed` is intentionally not enforced.
+        repository.save(
+            createRecordingEntity(
+                filePath = "/recordings/acquire-failed.mp4",
+                errorMessage = "acquire failed",
+            ),
+        )
+
+        val counts = repository.getRecordingCounts()
+
+        assertEquals(1L, counts.total)
+        assertEquals(0L, counts.processed)
+        assertEquals(1L, counts.unprocessed)
+        assertEquals(0L, counts.success)
+        assertEquals(1L, counts.errors)
+    }
+}
 ```
 
-**Note:** the test fixture helper `createRecordingEntity(...)` must support an `errorMessage` parameter. Verify by looking near the top of the file for its definition (or its earlier overload usage in failure-state tests in the same file). If the helper does not accept `errorMessage`, either extend it with `errorMessage: String? = null` (and forward to `RecordingEntity.errorMessage`), or construct the entity directly via `RecordingEntity(...)` in this test only — match whichever pattern the file already uses elsewhere for tests touching `error_message`.
+**Helper extension (mandatory):** The current `createRecordingEntity(...)` helper at `RecordingEntityRepositoryTest.kt:36-65` has 9 parameters with defaults but does NOT accept `errorMessage` — it hard-codes `errorMessage = null` at line 63. **Extend the helper** by adding the parameter (in the alphabetical-style ordering that matches the existing param block, e.g. after `processAttempts`):
+
+```kotlin
+private fun createRecordingEntity(
+    id: UUID = UUID.randomUUID(),
+    filePath: String = "/recordings/${'$'}{UUID.randomUUID()}.mp4",
+    camId: String? = "cam1",
+    processTimestamp: Instant? = null,
+    startProcessingTimestamp: Instant? = null,
+    detectionsCount: Int? = 0,
+    analyzeTime: Int? = 0,
+    analyzedFramesCount: Int? = 0,
+    processAttempts: Int? = 0,
+    errorMessage: String? = null,    // NEW
+): RecordingEntity {
+```
+
+And forward it in the constructor body (currently line 63):
+
+```kotlin
+errorMessage = errorMessage,    // was: errorMessage = null
+```
+
+All existing test sites pass without changes (default `errorMessage = null` preserved); only the new FILTER-aggregate test uses `errorMessage = "boom"`.
+
+- [ ] **Step 4d: Add real-bundle i18n assertion in `StatusMessageFormatterI18nTest`**
+
+The existing mock-based formatter tests echo i18n keys (`label.success`, `label.errors`) and so do not prove the keys actually exist in `messages_en.properties` / `messages_ru.properties`. Add a small real-bundle assertion in `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/StatusMessageFormatterTest.kt` inside the nested `StatusMessageFormatterI18nTest` class (the one using the real `ResourceBundle`-backed `MessageResolver`), using the same `sampleSnapshot()` (with `success=85L, errors=5L`) and the existing helpers in that test:
+
+```kotlin
+@Test
+fun `format renders EN recordings rows with localized labels and no raw keys`() {
+    val out = formatter.format(snapshotWithRecordings(), language = "en", zone = zone, now = now)
+    assertTrue(out.contains("Success"), "EN: missing localized 'Success' label: $out")
+    assertTrue(out.contains("Errors"), "EN: missing localized 'Errors' label: $out")
+    assertFalse(
+        out.contains("status.recordings.label.success") ||
+            out.contains("status.recordings.label.errors") ||
+            out.contains("status.recordings.value.withPct"),
+        "EN: raw i18n key leaked through MessageResolver fallback: $out",
+    )
+}
+
+@Test
+fun `format renders RU recordings rows with localized labels and no raw keys`() {
+    val out = formatter.format(snapshotWithRecordings(), language = "ru", zone = zone, now = now)
+    assertTrue(out.contains("Успешно"), "RU: missing localized 'Успешно' label: $out")
+    assertTrue(out.contains("Ошибки"), "RU: missing localized 'Ошибки' label: $out")
+    assertFalse(
+        out.contains("status.recordings.label.success") ||
+            out.contains("status.recordings.label.errors") ||
+            out.contains("status.recordings.value.withPct"),
+        "RU: raw i18n key leaked through MessageResolver fallback: $out",
+    )
+}
+```
+
+`snapshotWithRecordings()` is a thin helper that returns the existing `sampleSnapshot()` (the I18nTest's own) — call `sampleSnapshot()` directly if that's the convention in the file. If the I18nTest doesn't have an `assertFalse` import, add `import kotlin.test.assertFalse` alongside `assertTrue`.
+
+If on compile you discover the I18nTest uses different helper names (the existing `sampleSnapshot()` may be private or named differently), adjust to match the file's existing pattern but keep the assertions intact.
 
 - [ ] **Step 5: Run full test suites for both touched modules**
 
@@ -731,6 +852,16 @@ Invoke `superpowers:code-reviewer` against the diff between `master` and `feat/r
 - [ ] **Step 2: Full build**
 
 Dispatch the `build-runner` agent with `./gradlew build` (or run `/build`). Expected: BUILD SUCCESSFUL with all module tests green.
+
+- [ ] **Step 2b: Manual REST verification of new fields**
+
+With the app running locally (`./gradlew :frigate-analyzer-core:bootRun` or via Docker compose), confirm the additive REST contract change with `curl`:
+
+```bash
+curl -s http://localhost:8080/frigate-analyzer/status | jq '.recordings | {total, processed, unprocessed, success, errors}'
+```
+
+Expected: response includes both new fields `success` and `errors` as numbers, with `total == processed + unprocessed` (always) and `processed == success + errors` (today, until any retry-pending state lands — see design § 6).
 
 - [ ] **Step 3: Fix ktlint if needed**
 
