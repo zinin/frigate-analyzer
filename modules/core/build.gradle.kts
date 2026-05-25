@@ -56,6 +56,7 @@ dependencies {
     implementation(libs.bundles.jackson)
     implementation(libs.kotlin.logging)
     implementation(libs.postgresql)
+    implementation(libs.ktgbotapi)
 
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.spring.boot.starter.webclient.test)

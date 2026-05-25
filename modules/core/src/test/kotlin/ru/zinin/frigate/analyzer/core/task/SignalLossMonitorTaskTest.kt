@@ -34,11 +34,12 @@ class SignalLossMonitorTaskTest {
     private val baseInstant: Instant = Instant.parse("2026-04-25T10:00:00Z")
 
     private fun mutableClockTask(initial: Instant): Pair<SignalLossMonitorTask, MutableClock> {
-        // The task's `init()` captures `startedAt = clock.instant()`. We always seed `startedAt` at
-        // [baseInstant] and then advance the clock to `initial` AFTER init, so the first tick can
-        // land before, exactly at, or past the grace window depending on caller intent — without
-        // pinning `startedAt` to the same wall-clock value as the first tick (which would always
-        // make `inGrace=true` regardless of `initial`).
+        // Production wires `startedAt` lazily at the first `tick()` so the `startupGrace` window
+        // starts when monitoring actually begins (not when the bean was constructed). For tests
+        // that want to exercise `inGrace=false` paths we need `startedAt` pinned at a known
+        // wall-clock value BEFORE the first tick — `pinStartedAtForTest(baseInstant)` is the
+        // test-only seam for that. We then advance the clock to `initial` so the first tick
+        // can land before, exactly at, or past the grace window depending on caller intent.
         val mutableClock = MutableClock(baseInstant)
         val task =
             SignalLossMonitorTask(
@@ -46,7 +47,10 @@ class SignalLossMonitorTaskTest {
                 repository = repository,
                 notificationService = notifier,
                 clock = mutableClock,
-            ).also { it.init() }
+            ).also {
+                it.init()
+                it.pinStartedAtForTest(baseInstant)
+            }
         mutableClock.advance(Duration.between(baseInstant, initial))
         return task to mutableClock
     }
@@ -192,6 +196,37 @@ class SignalLossMonitorTaskTest {
             coEvery { notifier.sendCameraSignalLost(any(), any(), any()) } returns Unit
             // Same DB stats → still lost → decide() sees prev=SignalLost(sent=true) → no event.
             task.tick()
+            coVerify(exactly = 0) { notifier.sendCameraSignalLost(any(), any(), any()) }
+        }
+
+    @Test
+    fun `startedAt is lazily pinned at first tick so slow Spring startup does not collapse the grace window`() =
+        runTest {
+            // Regression: previously `startedAt` was set at bean construction (or @PostConstruct),
+            // which fires before scheduling actually starts. On a slow Spring startup (Liquibase,
+            // DataSource readiness, etc.) the `startupGrace` window could fully expire before the
+            // very first tick — and pre-existing outages would alert immediately on that first scan
+            // instead of being suppressed. Lazy-init at first tick makes the window start when
+            // monitoring actually begins, regardless of how long Spring took to get there.
+            val mutableClock = MutableClock(baseInstant)
+            val task =
+                SignalLossMonitorTask(
+                    properties = properties,
+                    repository = repository,
+                    notificationService = notifier,
+                    clock = mutableClock,
+                ).also { it.init() }
+            // Simulate a slow Spring startup: many times the grace window passes before first tick.
+            mutableClock.advance(properties.startupGrace.multipliedBy(3))
+
+            val camLastSeen = mutableClock.instant().minus(properties.threshold).minusSeconds(60)
+            coEvery { repository.findLastRecordingPerCamera(any()) } returns
+                listOf(LastRecordingPerCameraDto("cam_pre_existing_outage", camLastSeen))
+
+            task.tick()
+
+            // First tick set `startedAt = now`, so inGrace=true on this tick — pre-existing outage
+            // is correctly suppressed instead of triggering an immediate alert.
             coVerify(exactly = 0) { notifier.sendCameraSignalLost(any(), any(), any()) }
         }
 
