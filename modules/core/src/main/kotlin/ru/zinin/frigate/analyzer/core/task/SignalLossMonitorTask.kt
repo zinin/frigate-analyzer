@@ -143,4 +143,19 @@ class SignalLossMonitorTask(
             logger.warn(e) { "Failed to dispatch signal-recovery notification for camera ${event.camId}" }
         }
     }
+
+    /**
+     * Returns a snapshot of the current camera state map.
+     *
+     * Used by `StatusService` to expose camera signal status to /status REST and Telegram command
+     * without exposing the mutable internal `ConcurrentHashMap`. Safe to call from any thread; does
+     * not block the `@Scheduled fixedDelay` tick.
+     *
+     * **Semantics:** weakly-consistent snapshot via `ConcurrentHashMap.toMap()`. May observe a state
+     * in which some entries have been updated by a concurrent `tick()` and others have not — no
+     * global atomicity. Acceptable for diagnostic / monitoring use (`/status`). The returned map is
+     * an immutable copy; mutating the original `state` after this call does not affect the returned
+     * map, and vice versa.
+     */
+    fun snapshotStates(): Map<String, CameraSignalState> = state.toMap()
 }
