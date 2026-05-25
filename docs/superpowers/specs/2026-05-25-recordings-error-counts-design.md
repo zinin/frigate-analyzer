@@ -250,12 +250,26 @@ private fun pct(part: Long, total: Long): String =
 
 ### 9.3 `StatusMessageFormatterTest.kt`
 
-- Обновить существующий тест recordings под layout C: ожидаемый `<pre>`-блок содержит 5 строк (Total / Success / Errors / Unprocessed / Rate).
-- Добавить кейс `errors=0`: строка `Errors: 0 (0.0%)` присутствует.
-- Добавить кейс `total=0`: обе % строки → `0.0`.
-- Опционально: кейс `success + errors != processed` (имитация будущего retry-pending) — формат не падает.
+В файле два тест-класса: `StatusMessageFormatterTest` (mock-based, основной) и `StatusMessageFormatterI18nTest` (real ResourceBundle, snapshot-нити).
 
-i18n-snapshot-тестов отдельного класса не создаём (исходный `StatusMessageFormatterI18nTest` в issue был speculative, файла нет — не вводим без необходимости).
+- В `StatusMessageFormatterTest`:
+  - `snapshot()` helper и inline-конструкторы `RecordingsStatistics(...)` дополнить новыми required-полями `success`, `errors` (compile-fix).
+  - Добавить тест layout C: ожидаемый `<pre>`-блок содержит 5 строк (Total / Success / Errors / Unprocessed / Rate).
+  - Добавить кейс `errors=0`: строка `Errors: 0 (0.0%)` присутствует.
+  - Добавить кейс `total=0`: обе % строки → `0.0`.
+  - Опционально: кейс `success + errors != processed` (имитация будущего retry-pending) — формат не падает.
+- В `StatusMessageFormatterI18nTest`:
+  - `sampleSnapshot()` обновить (compile-fix).
+  - Существующие EN/RU тесты на cameras и servers не трогать (не зависят от recordings counts).
+
+### 9.4 `RecordingEntityRepositoryTest.kt` (доп.)
+
+Integration-тест против реальной PostgreSQL (через `IntegrationTestBase`). Сейчас содержит три теста `should count {all,processed,unprocessed} recordings` (lines ~437-498), вызывающих удаляемые методы. После удаления этих методов:
+
+- Тесты `should count all/processed/unprocessed recordings` удалить.
+- Добавить один тест `should return recording counts via FILTER aggregate` (создаёт 4 recordings: один без `process_timestamp` → unprocessed; один с `process_timestamp` без `error_message` → success; один с `process_timestamp` + `error_message` → errors; один без `process_timestamp` для baseline) → ассерт `RecordingCountsDto(total=4, processed=2, unprocessed=2, success=1, errors=1)`.
+
+Это даёт реальное покрытие SQL FILTER aggregate — паттерн совпадает с существующими integration-тестами repository.
 
 ## 10. Backward compatibility
 
@@ -295,7 +309,9 @@ modules/telegram/src/main/resources/messages_en.properties                      
 modules/telegram/src/main/resources/messages_ru.properties                                     (−2 keys, +3 keys)
 modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/StatusServiceTest.kt       (update mock + scenarios)
 modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt (assert new fields)
-modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/StatusMessageFormatterTest.kt (layout C + edge cases)
+modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTestConfig.kt (compile-fix: + success/errors)
+modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/repository/RecordingEntityRepositoryTest.kt (replace 3 count tests with 1 FILTER-aggregate test)
+modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/StatusMessageFormatterTest.kt (compile-fix + layout C + edge cases; same file contains StatusMessageFormatterI18nTest)
 ```
 
 ## 14. Suggested execution flow
