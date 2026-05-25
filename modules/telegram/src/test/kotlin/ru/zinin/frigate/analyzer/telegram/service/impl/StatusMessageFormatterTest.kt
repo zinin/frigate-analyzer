@@ -63,6 +63,8 @@ class StatusMessageFormatterTest {
                     total = 100L,
                     processed = 90L,
                     unprocessed = 10L,
+                    success = 85L,
+                    errors = 5L,
                     byCameras =
                         listOf(
                             CameraStatistics("cam1", 50, 50, 5),
@@ -202,6 +204,8 @@ class StatusMessageFormatterTest {
                         total = 1,
                         processed = 1,
                         unprocessed = 0,
+                        success = 1,
+                        errors = 0,
                         byCameras =
                             listOf(
                                 CameraStatistics(camId = "cam<&>", recordingsCount = 1, recordingsProcessed = 1, detectionsCount = 0),
@@ -220,7 +224,15 @@ class StatusMessageFormatterTest {
     fun `format escapes HTML special chars in server id`() {
         val snap =
             StatusResponse(
-                recordings = RecordingsStatistics(0, 0, 0, emptyList(), 0.0),
+                recordings = RecordingsStatistics(
+                    total = 0,
+                    processed = 0,
+                    unprocessed = 0,
+                    success = 0,
+                    errors = 0,
+                    byCameras = emptyList(),
+                    processingRatePerMinute = 0.0,
+                ),
                 cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
                 detectServers =
                     listOf(
@@ -262,6 +274,8 @@ class StatusMessageFormatterI18nTest {
                     total = 0,
                     processed = 0,
                     unprocessed = 0,
+                    success = 0,
+                    errors = 0,
                     byCameras = emptyList(),
                     processingRatePerMinute = 0.0,
                 ),
