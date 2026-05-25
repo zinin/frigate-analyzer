@@ -1110,11 +1110,83 @@ class StatusMessageFormatterTest {
 }
 ```
 
-**Note (CONCERN-10 partial / DISPUTED):** The above test suite uses mocked `MessageResolver` for
-isolation speed; that means placeholder-index regressions in real `messages_*.properties` are
-not caught here directly. The new `JacksonConfigurationTest` (Task 6 Step 1a), the broader test
-plan, and the manual sanity check (Task 12) cover the integration side. Switching to a real
-`ReloadableResourceBundleMessageSource` for formatter tests is a follow-up — see iter-1 discussion.
+**Plus add a real-bundle i18n integration test** (catches placeholder-index regressions of the
+kind that almost shipped in CRITICAL-2). Same file `StatusMessageFormatterTest.kt`, additional
+inner class or sibling test class:
+
+```kotlin
+class StatusMessageFormatterI18nTest {
+    private val realMessageResolver: MessageResolver =
+        MessageResolver(
+            ReloadableResourceBundleMessageSource().apply {
+                setBasename("classpath:messages")
+                setDefaultEncoding("UTF-8")
+            },
+        )
+    private val duration = SignalLossMessageFormatter(realMessageResolver)
+    private val formatter = StatusMessageFormatter(realMessageResolver, duration)
+
+    private val now = Instant.parse("2026-04-25T10:00:00Z")
+    private val zone = ZoneOffset.UTC
+
+    @Test
+    fun `real bundle EN renders offline line with both duration and last-seen`() {
+        val snap =
+            StatusResponse(
+                recordings =
+                    RecordingsStatistics(
+                        total = 0,
+                        processed = 0,
+                        unprocessed = 0,
+                        byCameras = emptyList(),
+                        processingRatePerMinute = 0.0,
+                    ),
+                cameras =
+                    CamerasSection(
+                        monitoringEnabled = true,
+                        items =
+                            listOf(
+                                CameraStatusDto(
+                                    camId = "cam1",
+                                    state = CameraState.OFFLINE,
+                                    lastSeenAt = Instant.parse("2026-04-25T09:53:00Z"),
+                                    offlineFor = Duration.ofMinutes(7),
+                                ),
+                            ),
+                    ),
+                detectServers =
+                    listOf(
+                        DetectServerStatistics(
+                            id = "srv-a",
+                            status = ServerStatus.ALIVE,
+                            frameRequests = ServerLoad(1, 4),
+                            frameExtractionRequests = ServerLoad(0, 2),
+                            visualizeRequests = ServerLoad(0, 1),
+                            videoVisualizeRequests = ServerLoad(0, 1),
+                        ),
+                    ),
+            )
+        val out = formatter.format(snap, language = "en", zone = zone, now = now)
+
+        // Catch CRITICAL-2 regressions: ensure offline line has duration AND last-seen.
+        assertThat(out).contains("offline 7 min")
+        assertThat(out).contains("(last 09:53:00)")
+        // Catch server-id placeholder shift: ALIVE line must contain "frame 1/4", not "frame srv-a/1".
+        assertThat(out).contains("frame 1/4")
+        assertThat(out).doesNotContain("frame srv-a")
+    }
+
+    @Test
+    fun `real bundle RU renders correctly`() {
+        // Same snapshot, language = "ru", assert "оффлайн 7 мин (последняя 09:53:00)" and "frame 1/4".
+        // [body omitted for brevity — mirror EN test]
+    }
+}
+```
+
+Mocked-MessageResolver unit tests remain useful for structural assertions (escape, padding,
+sections, DEAD vs ALIVE). Together they form a layered defence: mocked = fast structural checks,
+real bundle = i18n contract validation.
 
 - [ ] **Step 2: Run test, expect compile failure**
 
@@ -1272,8 +1344,11 @@ class StatusMessageFormatter(
                                 language,
                             )
                         // camId is rendered ONCE outside MessageFormat (renumbered keys: {0}=ago).
+                        // No escape() on `line` — it's a composition of trusted sources:
+                        //   i18n template (our properties), formatDuration() output (digits + "min"/"h"),
+                        //   DateTimeFormatter result (digits + ":"). User-derived `camPadded` is escaped above.
                         val line = msg.get("status.cameras.line.online", language, ago)
-                        "🟢 ${escape(camPadded)}  ${escape(line)}"
+                        "🟢 ${escape(camPadded)}  $line"
                     }
 
                     CameraState.OFFLINE -> {
@@ -1289,7 +1364,7 @@ class StatusMessageFormatter(
                                 duration.formatDuration(offlineFor, language),
                                 lastSeen,
                             )
-                        "🔴 ${escape(camPadded)}  ${escape(line)}"
+                        "🔴 ${escape(camPadded)}  $line"
                     }
                 }
             }
@@ -1331,7 +1406,9 @@ class StatusMessageFormatter(
                             msg.get("status.servers.line.dead", language)
                     }
                 val marker = if (s.status == ServerStatus.ALIVE) "🟢" else "🔴"
-                "$marker ${escape(idPadded)}  ${escape(tail)}"
+                // No escape() on `tail` — composed from trusted i18n + integers.
+                // User-derived `idPadded` is escaped above.
+                "$marker ${escape(idPadded)}  $tail"
             }
         appendPreBlock(lines)
     }
