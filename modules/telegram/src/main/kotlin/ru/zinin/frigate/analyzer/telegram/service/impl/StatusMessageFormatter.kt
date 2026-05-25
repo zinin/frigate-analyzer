@@ -103,7 +103,14 @@ class StatusMessageFormatter(
                 (rows.map { it[col].length } + headers[col].length).max()
             }
         val lines = mutableListOf<String>()
-        lines.add(formatRow(headers, widths, leftAlignCol = 0))
+        // Pad first, then escape — escape after padding never breaks alignment because raw widths
+        // were used. Header cells are i18n strings (currently HTML-safe) but escape defensively
+        // in case future translations introduce `<`, `>`, `&` or `"`.
+        val paddedHeaders =
+            headers.mapIndexed { i, c ->
+                if (i == 0) c.padEnd(widths[i]) else c.padStart(widths[i])
+            }
+        lines.add(paddedHeaders.map { escape(it) }.joinToString(" | "))
         rows.forEach { row ->
             val padded =
                 row.mapIndexed { i, c ->

@@ -46,8 +46,8 @@ class StatusService(
         // Two near-identical types with the same positional fields: `CameraStatisticsDto`
         // (`model.dto`, SQL projection from RecordingEntityRepository) → `CameraStatistics`
         // (`model.response`, JSON contract). Mapping is mandatory to avoid leaking the
-        // SQL/R2DBC layer into the response. SQL already orders by `cam_id ASC`, so no
-        // additional sort is needed here (see SUGGESTION-4 invariant).
+        // SQL/R2DBC layer into the response. The SQL query already orders by `cam_id ASC`
+        // — relying on that invariant to keep the `byCameras` list stable.
         val byCameras =
             recordingRepository.getStatisticsByCameras().map { dto ->
                 CameraStatistics(
