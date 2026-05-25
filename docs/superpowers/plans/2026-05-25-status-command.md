@@ -95,250 +95,21 @@
 
 ### Task 10: Create StatusCommandHandler (in `core` module)
 
-**Important:** `StatusCommandHandler` lives in `modules/core` (NOT `modules/telegram`). The
-`telegram` module does NOT depend on `core`, but `core → telegram`, so the handler is placed in
-`core` to import `StatusService`. `CommandHandler` interface is imported from `telegram`.
+✅ Done — see commit: `9826dc8`
 
-**Files:**
-- Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandler.kt`
-- Create: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandlerTest.kt`
-
-- [ ] **Step 1: Write failing test StatusCommandHandlerTest.kt**
-
-```kotlin
-package ru.zinin.frigate.analyzer.core.bot.handler
-
-import io.mockk.mockk
-import org.assertj.core.api.Assertions.assertThat
-import org.junit.jupiter.api.Test
-import ru.zinin.frigate.analyzer.core.service.StatusService
-import ru.zinin.frigate.analyzer.telegram.model.UserRole
-import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
-import ru.zinin.frigate.analyzer.telegram.service.impl.StatusMessageFormatter
-import java.time.Clock
-import java.time.Instant
-import java.time.ZoneOffset
-
-class StatusCommandHandlerTest {
-    private val statusService = mockk<StatusService>()
-    private val formatter = mockk<StatusMessageFormatter>()
-    private val userService = mockk<TelegramUserService>()
-    private val clock = Clock.fixed(Instant.parse("2026-04-25T10:00:00Z"), ZoneOffset.UTC)
-    private val handler = StatusCommandHandler(statusService, formatter, userService, clock)
-
-    @Test
-    fun `handler has correct command metadata`() {
-        assertThat(handler.command).isEqualTo("status")
-        assertThat(handler.requiredRole).isEqualTo(UserRole.OWNER)
-        assertThat(handler.ownerOnly).isTrue()
-        assertThat(handler.order).isEqualTo(8)
-    }
-}
-```
-
-Behavior-level integration is exercised in `StatusMessageFormatterTest` and `StatusServiceTest`.
-We do not unit-test the actual `reply()` call because it goes through ktgbotapi's
-`BehaviourContext`, which is hard to mock in isolation. Manual sanity check covers this —
-see Task 12. Note we also do NOT add an error-path test asserting `common.error.generic`:
-`FrigateAnalyzerBot.registerRoutes()` wraps handler dispatch in try/catch at the router level
-(see existing handlers like `VersionCommandHandler` which have no local try/catch).
-
-- [ ] **Step 2: Run test, expect compile failure**
-
-Delegate to build-runner agent:
-
-```
-./gradlew :frigate-analyzer-core:test --tests StatusCommandHandlerTest
-```
-
-Expected: FAIL — `StatusCommandHandler` unresolved.
-
-- [ ] **Step 3: Implement StatusCommandHandler in `core/bot/handler`**
-
-```kotlin
-package ru.zinin.frigate.analyzer.core.bot.handler
-
-import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
-import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
-import dev.inmo.tgbotapi.types.ReplyParameters
-import dev.inmo.tgbotapi.types.message.HTMLParseMode
-import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
-import dev.inmo.tgbotapi.types.message.content.TextContent
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
-import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.core.service.StatusService
-import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
-import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
-import ru.zinin.frigate.analyzer.telegram.model.UserRole
-import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
-import ru.zinin.frigate.analyzer.telegram.service.impl.StatusMessageFormatter
-import java.time.Clock
-import java.time.Instant
-
-@Component
-@ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
-class StatusCommandHandler(
-    private val statusService: StatusService,
-    private val formatter: StatusMessageFormatter,
-    private val userService: TelegramUserService,
-    private val clock: Clock,
-) : CommandHandler {
-    override val command: String = "status"
-    override val requiredRole: UserRole = UserRole.OWNER
-    override val ownerOnly: Boolean = true
-    override val order: Int = 8
-
-    override suspend fun BehaviourContext.handle(
-        message: CommonMessage<TextContent>,
-        user: TelegramUserDto?,
-    ) {
-        val snapshot = statusService.collect()
-        val zone = userService.getUserZone(message.chat.id.chatId.long)
-        val language = user?.languageCode ?: "en"
-        val text =
-            formatter.format(
-                snapshot = snapshot,
-                language = language,
-                zone = zone,
-                now = Instant.now(clock),
-            )
-        sendTextMessage(
-            message.chat,
-            text,
-            parseMode = HTMLParseMode,
-            replyParameters = ReplyParameters(message.metaInfo),
-        )
-    }
-}
-```
-
-User zone comes from `TelegramUserService.getUserZone(chatId)` — same pattern used by
-`TimezoneCommandHandler` and `ExportCommandHandler`. `TelegramUserDto` does NOT contain
-`olsonCode`, only `languageCode`. `order = 8` is the first unused slot after Notifications=7
-(value 6 is taken by `LanguageCommandHandler`). `Clock` is injected so tests see the same
-`now` as `StatusService`.
-
-**Send-API choice:** `sendTextMessage(chat, ..., replyParameters = ReplyParameters(message.metaInfo))`
-is the same pattern used by `TimezoneCommandHandler` and `TelegramNotificationSender` (verified to
-work with the project's ktgbotapi version). The simpler `reply(message, text, parseMode = ...)`
-overload is **not used anywhere in the project with `parseMode`** — `VersionCommandHandler` uses
-`reply(message, text)` without parseMode. To avoid a runtime-only contingency, we adopt the
-known-good API up front.
-
-- [ ] **Step 4: Run test, expect pass**
-
-Delegate to build-runner agent:
-
-```
-./gradlew :frigate-analyzer-core:test --tests StatusCommandHandlerTest
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandler.kt \
-        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandlerTest.kt
-git commit -m "feat(core): add /status command handler (OWNER only, in core module)"
-```
-
+Note: also added `implementation(libs.ktgbotapi)` to `modules/core/build.gradle.kts` because `:frigate-analyzer-telegram` declares ktgbotapi as `implementation` (not `api`) — types not transitively visible to `core`. Targeted addition at the consumer side was preferred over widening `telegram`'s declaration to `api(libs.ktgbotapi)` (latter would have leaked the dep to `ai-description` etc.).
 ---
 
 ### Task 10b: Configure ObjectMapper for ISO-8601 (Instant/Duration)
 
-`JacksonConfiguration.objectMapper()` does NOT currently disable
-`WRITE_DATES_AS_TIMESTAMPS` / `WRITE_DURATIONS_AS_TIMESTAMPS`, so `Instant`/`Duration` in
-`StatusResponse` would be serialised as numeric timestamps instead of the ISO-8601 strings
-promised by the design. Fix:
-
-**Files:**
-- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/JacksonConfiguration.kt`
-
-- [ ] **Step 1: Update JacksonConfiguration**
-
-```kotlin
-package ru.zinin.frigate.analyzer.core.config
-
-import com.fasterxml.jackson.databind.DeserializationFeature
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.databind.SerializationFeature
-import com.fasterxml.jackson.databind.json.JsonMapper
-import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.Configuration
-
-@Configuration
-class JacksonConfiguration {
-    @Bean
-    fun objectMapper(): ObjectMapper =
-        JsonMapper
-            .builder()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-            .configure(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
-            .findAndAddModules()
-            .build()
-}
-```
-
-- [ ] **Step 2: JacksonConfigurationTest already added in Task 6 Step 1a** — run it now:
-
-```
-./gradlew :frigate-analyzer-core:test --tests JacksonConfigurationTest
-```
-
-Expected: PASS.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/JacksonConfiguration.kt \
-        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/JacksonConfigurationTest.kt
-git commit -m "fix(core): serialise Instant/Duration as ISO-8601 strings (not numeric timestamps)"
-```
-
+✅ Done — see commit: `e1b6792`
 ---
 
 ### Task 11: Full build + ktlint
 
-Verify the whole project compiles and tests pass.
+✅ Done — no commits.
 
-- [ ] **Step 1: Run ktlint format** — delegate to build-runner agent:
-
-```
-./gradlew ktlintFormat
-```
-
-Expected: success. Stage any formatting changes.
-
-- [ ] **Step 2: Stage any formatting changes**
-
-```bash
-git status --short
-git add -u
-```
-
-If there are changes (e.g. import reordering), commit:
-
-```bash
-git commit -m "style: apply ktlintFormat to /status changes"
-```
-
-If nothing changed, skip the commit step.
-
-- [ ] **Step 3: Full build** — delegate to build-runner agent:
-
-```
-./gradlew build
-```
-
-Expected: BUILD SUCCESSFUL, all tests pass.
-
-If failures occur:
-- Compile errors → fix and re-run
-- Test failures → fix the underlying issue (not the test) and re-run
-- ktlint check failures → run `./gradlew ktlintFormat` and re-stage
-
+`./gradlew ktlintFormat` produced no changes (all files already ktlint-clean from per-task discipline). `./gradlew build` finished with BUILD SUCCESSFUL in 2m 33s — 94 actionable tasks, zero failures, ~217 tests passing in `:frigate-analyzer-core`. Docker (testcontainers) was available, so `StatusControllerTest` ran and passed.
 ---
 
 ### Task 12: Manual sanity check
@@ -395,30 +166,13 @@ Stop the app. If any step failed, fix and re-run from Step 1. If all six steps p
 
 ### Task 13: Code review
 
-Per project CLAUDE.md: "After implementation: run superpowers:code-reviewer agent first. Fix critical comments, repeat until clean."
+✅ Done — no fix commits.
 
-- [ ] **Step 1: Run code review**
+Final whole-branch code review (Opus, against `master..HEAD`) returned: **Ready to merge**. Zero Critical, zero Important findings. Nine Minor polish nits (M1–M9: debug-log per-request in controller, magic-number `0 until 4` in formatter padding, `escape()` four sequential `String.replace` calls, etc.) — per plan directive to fix only CRITICAL/HIGH, deliberately left as follow-ups.
 
-Invoke `superpowers:requesting-code-review` skill targeting the branch diff against `master`. Address all CRITICAL and HIGH-severity findings inline (apply fixes, re-run affected tests, commit).
+Each per-task implementation in this session also passed independent spec-compliance ✅ + code-quality ✅ reviews (both Opus).
 
-- [ ] **Step 2: Re-run build after fixes** — delegate to build-runner agent:
-
-```
-./gradlew build
-```
-
-Expected: BUILD SUCCESSFUL.
-
-- [ ] **Step 3: Final status**
-
-```bash
-git log --oneline master..HEAD
-git diff --stat master..HEAD
-```
-
-Verify the branch contains a coherent set of commits ready for PR review.
-
-Note: per global CLAUDE.md, before creating a PR you must `git rm` files in `docs/superpowers/` and commit — those design/plan docs are not meant to appear in the PR diff.
+Note: per global CLAUDE.md, before creating a PR `git rm` all files under `docs/superpowers/` and commit — those documents stay on the branch in git history but must NOT appear in the PR diff.
 
 ---
 
