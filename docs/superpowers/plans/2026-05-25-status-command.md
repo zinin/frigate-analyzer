@@ -27,12 +27,13 @@
 | Modify | `modules/telegram/src/main/resources/messages_en.properties` | New `status.*` and `command.status.description` keys |
 | Modify | `modules/telegram/src/main/resources/messages_ru.properties` | Same keys in Russian |
 | Create | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/StatusMessageFormatter.kt` | Render `StatusResponse` to HTML with `<pre>` tables |
-| Create | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/StatusCommandHandler.kt` | OWNER-only `/status` handler |
+| Create | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandler.kt` | OWNER-only `/status` handler (in `core`, not `telegram` — `telegram` does not depend on `core`) |
+| Modify | `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/JacksonConfiguration.kt` | Disable `WRITE_DATES_AS_TIMESTAMPS` / `WRITE_DURATIONS_AS_TIMESTAMPS` for ISO-8601 contract |
 | Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/service/StatusServiceTest.kt` | Unit tests for collect logic |
-| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt` | Integration test GET /status |
-| Modify | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossDeciderTest.kt` (or new file) | Add snapshotStates() defensive-copy test in new `SignalLossMonitorTaskSnapshotTest.kt` |
-| Create | `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/StatusMessageFormatterTest.kt` | HTML format + escape + padding + i18n + tz |
-| Create | `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/StatusCommandHandlerTest.kt` | Command metadata + collaboration |
+| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt` | Integration test GET /status with explicit ISO-8601 assertions |
+| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/task/SignalLossMonitorTaskSnapshotTest.kt` | snapshotStates() defensive-copy + mutation-after-snapshot tests |
+| Create | `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/service/impl/StatusMessageFormatterTest.kt` | HTML format + escape + padding + i18n + tz + id-non-duplication |
+| Create | `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandlerTest.kt` | Command metadata + collaboration |
 
 **Reused unchanged:** `RecordingEntityRepository` (all 5 stats methods), `DetectServerLoadBalancer.getAllServersStatistics()`, `RecordingsStatistics`, `CameraStatistics`, `DetectServerStatistics`, `ServerLoad`, `ServerStatus`, `SignalLossMessageFormatter` (for `formatDuration`), `MessageResolver`, `AuthorizationFilter`, `HelpCommandHandler` (auto-picks up owner commands).
 
@@ -287,16 +288,64 @@ Open `SignalLossMonitorTask.kt`. After the `tick()` method and helper privates, 
 
 ```kotlin
 /**
- * Returns an immutable snapshot of the current camera state map.
+ * Returns a snapshot of the current camera state map.
  *
  * Used by `StatusService` to expose camera signal status to /status REST and Telegram command
  * without exposing the mutable internal `ConcurrentHashMap`. Safe to call from any thread; does
  * not block the `@Scheduled fixedDelay` tick.
+ *
+ * **Semantics:** weakly-consistent snapshot via `ConcurrentHashMap.toMap()`. May observe a state
+ * in which some entries have been updated by a concurrent `tick()` and others have not — no
+ * global atomicity. Acceptable for diagnostic / monitoring use (`/status`). The returned map is
+ * an immutable copy; mutating the original `state` after this call does not affect the returned
+ * map, and vice versa.
  */
 fun snapshotStates(): Map<String, CameraSignalState> = state.toMap()
 ```
 
-- [ ] **Step 4: Run test, expect pass**
+- [ ] **Step 3a: Add defensive-copy verification test**
+
+Extend `SignalLossMonitorTaskSnapshotTest.kt` with a second test that proves the snapshot is
+detached from the internal state — modify the internal map (via another `tick()` that changes
+state) and assert the previously-taken snapshot is unchanged:
+
+```kotlin
+@Test
+fun `snapshotStates is decoupled from subsequent state mutations`() =
+    runBlocking {
+        val now = Instant.parse("2026-04-25T10:00:00Z")
+        val fixedClock = Clock.fixed(now, ZoneOffset.UTC)
+        val repo = mockk<RecordingEntityRepository>()
+        val notify = mockk<TelegramNotificationService>(relaxed = true)
+        val props =
+            SignalLossProperties(
+                enabled = true,
+                threshold = Duration.ofMinutes(3),
+                pollInterval = Duration.ofSeconds(30),
+                activeWindow = Duration.ofMinutes(30),
+                startupGrace = Duration.ZERO,
+            )
+        coEvery { repo.findLastRecordingPerCamera(any()) } returnsMany
+            listOf(
+                listOf(LastRecordingPerCameraDto("cam1", now.minusSeconds(10))),
+                listOf(LastRecordingPerCameraDto("cam1", now.minusSeconds(600))),
+            )
+
+        val task = SignalLossMonitorTask(props, repo, notify, fixedClock)
+        task.init()
+        task.tick()
+        val firstSnapshot = task.snapshotStates()
+        assertThat(firstSnapshot["cam1"]).isInstanceOf(CameraSignalState.Healthy::class.java)
+
+        task.tick()
+        // The first snapshot must NOT observe the second-tick transition to SignalLost.
+        assertThat(firstSnapshot["cam1"]).isInstanceOf(CameraSignalState.Healthy::class.java)
+        // But a fresh snapshot reflects the new state.
+        assertThat(task.snapshotStates()["cam1"]).isInstanceOf(CameraSignalState.SignalLost::class.java)
+    }
+```
+
+- [ ] **Step 4: Run tests, expect pass**
 
 Delegate to build-runner agent:
 
@@ -304,7 +353,7 @@ Delegate to build-runner agent:
 ./gradlew :frigate-analyzer-core:test --tests SignalLossMonitorTaskSnapshotTest
 ```
 
-Expected: PASS.
+Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -596,23 +645,18 @@ git commit -m "feat(core): add StatusService aggregating recordings, cameras, se
 package ru.zinin.frigate.analyzer.core.controller
 
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.extension.ExtendWith
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.web.server.LocalServerPort
-import org.springframework.test.context.junit.jupiter.SpringExtension
+import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient
 import org.springframework.test.web.reactive.server.WebTestClient
 import ru.zinin.frigate.analyzer.core.IntegrationTestBase
 
-@ExtendWith(SpringExtension::class)
+@AutoConfigureWebTestClient
 class StatusControllerTest : IntegrationTestBase() {
-    @LocalServerPort
-    private var port: Int = 0
-
     @Autowired
     private lateinit var webTestClient: WebTestClient
 
     @Test
-    fun `GET status returns 200 with expected structure`() {
+    fun `GET status returns 200 with expected structure and ISO-8601 datetimes`() {
         webTestClient
             .get()
             .uri("/status")
@@ -632,7 +676,45 @@ class StatusControllerTest : IntegrationTestBase() {
 }
 ```
 
-If `WebTestClient` is not already autowired in `IntegrationTestBase`, add `@AutoConfigureWebTestClient` to the test class (place above `@ExtendWith`).
+`@AutoConfigureWebTestClient` is required because `IntegrationTestBase` is
+`@SpringBootTest(webEnvironment = RANDOM_PORT)` without WebTestClient autoconfiguration.
+
+If the test DB happens to contain a HEALTHY camera at fixture-prep time, also assert that
+`lastSeenAt` is an ISO-8601 string and `offlineFor` (if OFFLINE camera present) matches the
+`PT...` pattern. Skip these assertions for cases where the cameras list might be empty —
+add a dedicated `JacksonConfigurationTest` instead (Step 1a below).
+
+- [ ] **Step 1a: Add JacksonConfigurationTest for ISO-8601 contract**
+
+Add a focused unit test that does not depend on DB state, asserting our `ObjectMapper` serialises
+`Instant` and `Duration` as ISO-8601 strings (this catches `WRITE_DATES_AS_TIMESTAMPS`
+regressions independently of `/status` test data):
+
+```kotlin
+package ru.zinin.frigate.analyzer.core.config
+
+import com.fasterxml.jackson.module.kotlin.readValue
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+import java.time.Duration
+import java.time.Instant
+
+class JacksonConfigurationTest {
+    private val mapper = JacksonConfiguration().objectMapper()
+
+    @Test
+    fun `Instant serialised as ISO-8601 string`() {
+        val json = mapper.writeValueAsString(Instant.parse("2026-04-25T10:00:00Z"))
+        assertThat(json).isEqualTo("\"2026-04-25T10:00:00Z\"")
+    }
+
+    @Test
+    fun `Duration serialised as ISO-8601 string`() {
+        val json = mapper.writeValueAsString(Duration.ofMinutes(7))
+        assertThat(json).isEqualTo("\"PT7M\"")
+    }
+}
+```
 
 - [ ] **Step 2: Run test, expect failure**
 
@@ -710,6 +792,15 @@ git commit -m "feat(core): add GET /status REST endpoint"
 - Modify: `modules/telegram/src/main/resources/messages_en.properties`
 - Modify: `modules/telegram/src/main/resources/messages_ru.properties`
 
+**Note on placeholder indices and id duplication:** `camId` and server `id` are NOT passed as
+MessageFormat arguments — the formatter prepends them once before the i18n-rendered fragment
+(`escape(camPadded)` / `escape(idPadded)`). So all placeholders in `status.cameras.line.*` and
+`status.servers.line.*` are renumbered starting at `{0}`.
+
+**Note on encoding:** `messages_ru.properties` is UTF-8 with raw Cyrillic — that is the existing
+file convention (see `common.cancel=Отмена`). Add the new Russian keys the same way; do NOT
+convert to `\uXXXX` escapes.
+
 - [ ] **Step 1: Append to messages_en.properties**
 
 Append at the end of the file (after the existing `/notifications` block):
@@ -733,15 +824,16 @@ status.byCamera.header.cam=cam
 status.byCamera.header.rec=rec
 status.byCamera.header.proc=proc
 status.byCamera.header.det=det
-status.cameras.line.online=online ({1} ago)
-status.cameras.line.offline=offline {2} (last {3})
+status.cameras.line.online=online ({0} ago)
+status.cameras.line.offline=offline {0} (last {1})
 status.cameras.empty=No cameras observed yet
-status.cameras.disabled=Monitoring disabled (signal-loss.enabled=false)
-status.servers.line.alive=ALIVE  frame {1}/{2}  ext {3}/{4}  vis {5}/{6}  vvis {7}/{8}
+status.cameras.disabled=Monitoring disabled (set APPLICATION_SIGNAL_LOSS_ENABLED=true to enable)
+status.servers.line.alive=ALIVE  frame {0}/{1}  ext {2}/{3}  vis {4}/{5}  vvis {6}/{7}
 status.servers.line.dead=DEAD
+status.empty=(none)
 ```
 
-- [ ] **Step 2: Append to messages_ru.properties**
+- [ ] **Step 2: Append to messages_ru.properties (UTF-8 with raw Cyrillic — NO \uXXXX escapes)**
 
 ```properties
 
@@ -762,15 +854,14 @@ status.byCamera.header.cam=кам
 status.byCamera.header.rec=зап
 status.byCamera.header.proc=обр
 status.byCamera.header.det=дет
-status.cameras.line.online=онлайн ({1} назад)
-status.cameras.line.offline=оффлайн {2} (последняя {3})
+status.cameras.line.online=онлайн ({0} назад)
+status.cameras.line.offline=оффлайн {0} (последняя {1})
 status.cameras.empty=Нет наблюдаемых камер
-status.cameras.disabled=Мониторинг отключен (signal-loss.enabled=false)
-status.servers.line.alive=ALIVE  frame {1}/{2}  ext {3}/{4}  vis {5}/{6}  vvis {7}/{8}
+status.cameras.disabled=Мониторинг отключён (установите APPLICATION_SIGNAL_LOSS_ENABLED=true)
+status.servers.line.alive=ALIVE  frame {0}/{1}  ext {2}/{3}  vis {4}/{5}  vvis {6}/{7}
 status.servers.line.dead=DEAD
+status.empty=(нет)
 ```
-
-(`messages_ru.properties` is ISO-8859-1 encoded with `\uXXXX` escapes for Cyrillic — matches the existing file convention. Use the same approach for any Russian addition.)
 
 - [ ] **Step 3: Commit**
 
@@ -790,16 +881,25 @@ Now that `StatusController` is live, the old `StatisticsController` can be remov
 - Delete: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/controller/StatisticsController.kt`
 - Delete: `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/StatisticsResponse.kt`
 
-- [ ] **Step 1: Search for stale references**
+- [ ] **Step 1: Search for stale references (broad scope)**
 
-Run from repo root:
+Run from repo root — include source, config, docs, scripts, and Java files (for OpenAPI/Swagger):
 
 ```bash
-grep -rn "StatisticsController\|StatisticsResponse" modules/ \
-    --include="*.kt" --include="*.kts" --include="*.yaml" --include="*.properties"
+grep -rn "StatisticsController\|StatisticsResponse\|/statistics" \
+    --include="*.kt" --include="*.kts" --include="*.java" \
+    --include="*.yaml" --include="*.yml" --include="*.properties" \
+    --include="*.md" --include="*.sh" --include="*.json" \
+    --exclude-dir=build --exclude-dir=.gradle .
 ```
 
-Expected: only declarations in the two soon-to-be-deleted files, nothing else.
+Expected categories:
+- Declarations inside the two soon-to-be-deleted files — ignore.
+- Historical references in `docs/incidents/**` — leave as historical record (no need to rewrite past incident docs).
+- Any operational scripts or active docs referencing `/statistics` — update to `/status` or remove.
+- OpenAPI/Swagger `@Schema(implementation = StatisticsResponse::class)` in Java/Kotlin — must be 0 hits outside the deleted files.
+
+If unexpected hits appear in active code/config — stop and investigate before deleting.
 
 - [ ] **Step 2: Delete the files**
 
@@ -808,11 +908,14 @@ git rm modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/controller/St
 git rm modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/response/StatisticsResponse.kt
 ```
 
-- [ ] **Step 3: Compile check** — delegate to build-runner agent:
+- [ ] **Step 3: Compile check (per-module, not root)** — delegate to build-runner agent:
 
 ```
-./gradlew compileKotlin
+./gradlew :frigate-analyzer-model:compileKotlin :frigate-analyzer-core:compileKotlin :frigate-analyzer-telegram:compileKotlin
 ```
+
+`./gradlew compileKotlin` at root only triggers the root project's task and would miss
+breakage inside submodules. The explicit list above compiles each subproject.
 
 Expected: success.
 
@@ -986,8 +1089,32 @@ class StatusMessageFormatterTest {
         assertTrue(out.contains("status.servers.line.dead"), "missing dead line key in: $out")
         assertEquals(1, out.split("status.servers.line.dead").size - 1)
     }
+
+    @Test
+    fun `format does not duplicate camId or server id`() {
+        val items =
+            listOf(
+                CameraStatusDto(
+                    camId = "cam-unique",
+                    state = CameraState.OFFLINE,
+                    lastSeenAt = now.minusSeconds(120),
+                    offlineFor = Duration.ofSeconds(120),
+                ),
+            )
+        val out = formatter.format(snapshot(cameras = items), language = "en", zone = zone, now = now)
+        // camId should appear exactly once (no MessageFormat duplication)
+        assertEquals(1, out.split("cam-unique").size - 1, "camId duplicated in: $out")
+        // server id "srv-a" (DEAD in snapshot()) should appear exactly once
+        assertEquals(1, out.split("srv-a").size - 1, "server id duplicated in: $out")
+    }
 }
 ```
+
+**Note (CONCERN-10 partial / DISPUTED):** The above test suite uses mocked `MessageResolver` for
+isolation speed; that means placeholder-index regressions in real `messages_*.properties` are
+not caught here directly. The new `JacksonConfigurationTest` (Task 6 Step 1a), the broader test
+plan, and the manual sanity check (Task 12) cover the integration side. Switching to a real
+`ReloadableResourceBundleMessageSource` for formatter tests is a follow-up — see iter-1 discussion.
 
 - [ ] **Step 2: Run test, expect compile failure**
 
@@ -1081,7 +1208,7 @@ class StatusMessageFormatter(
     ) {
         appendLine("📹 <b>${escape(msg.get("status.section.byCamera", language))}</b>")
         if (cams.isEmpty()) {
-            appendPreBlock(listOf("(none)"))
+            appendPreBlock(listOf(escape(msg.get("status.empty", language))))
             return
         }
         val headers =
@@ -1106,7 +1233,14 @@ class StatusMessageFormatter(
             }
         val lines = mutableListOf<String>()
         lines.add(formatRow(headers, widths, leftAlignCol = 0))
-        rows.forEach { lines.add(formatRow(it, widths, leftAlignCol = 0)) }
+        // escape() is applied per-cell (camId may contain HTML special chars);
+        // headers come from a controlled i18n bundle so they are escaped via formatRow
+        // result + escape() once at the end below.
+        rows.forEach { row ->
+            val escaped =
+                row.mapIndexed { i, c -> if (i == 0) escape(c) else c }
+            lines.add(formatRow(escaped, widths, leftAlignCol = 0))
+        }
         appendPreBlock(lines)
     }
 
@@ -1132,19 +1266,26 @@ class StatusMessageFormatter(
                 val camPadded = item.camId.padEnd(camWidth)
                 when (item.state) {
                     CameraState.HEALTHY -> {
-                        val ago = duration.formatDuration(Duration.between(item.lastSeenAt, now), language)
-                        val line = msg.get("status.cameras.line.online", language, item.camId, ago)
+                        val ago =
+                            duration.formatDuration(
+                                Duration.between(item.lastSeenAt, now).coerceAtLeast(Duration.ZERO),
+                                language,
+                            )
+                        // camId is rendered ONCE outside MessageFormat (renumbered keys: {0}=ago).
+                        val line = msg.get("status.cameras.line.online", language, ago)
                         "🟢 ${escape(camPadded)}  ${escape(line)}"
                     }
 
                     CameraState.OFFLINE -> {
-                        val offlineFor = item.offlineFor ?: Duration.between(item.lastSeenAt, now)
+                        val offlineFor =
+                            (item.offlineFor ?: Duration.between(item.lastSeenAt, now))
+                                .coerceAtLeast(Duration.ZERO)
                         val lastSeen = item.lastSeenAt.atZone(zone).format(timeFormatter)
+                        // Renumbered keys: {0}=duration, {1}=lastSeen.
                         val line =
                             msg.get(
                                 "status.cameras.line.offline",
                                 language,
-                                item.camId,
                                 duration.formatDuration(offlineFor, language),
                                 lastSeen,
                             )
@@ -1161,20 +1302,21 @@ class StatusMessageFormatter(
     ) {
         appendLine("🖥️ <b>${escape(msg.get("status.section.servers", language))}</b>")
         if (servers.isEmpty()) {
-            appendPreBlock(listOf("(none)"))
+            appendPreBlock(listOf(escape(msg.get("status.empty", language))))
             return
         }
         val idWidth = servers.maxOf { it.id.length }
         val lines =
             servers.map { s ->
                 val idPadded = s.id.padEnd(idWidth)
+                // Renumbered keys: server id rendered ONCE via escape(idPadded); ALIVE template
+                // uses {0..7} for frame/ext/vis/vvis current/max; DEAD template has no placeholders.
                 val tail =
                     when (s.status) {
                         ServerStatus.ALIVE ->
                             msg.get(
                                 "status.servers.line.alive",
                                 language,
-                                s.id,
                                 s.frameRequests.current,
                                 s.frameRequests.maximum,
                                 s.frameExtractionRequests.current,
@@ -1186,7 +1328,7 @@ class StatusMessageFormatter(
                             )
 
                         ServerStatus.DEAD ->
-                            msg.get("status.servers.line.dead", language, s.id)
+                            msg.get("status.servers.line.dead", language)
                     }
                 val marker = if (s.status == ServerStatus.ALIVE) "🟢" else "🔴"
                 "$marker ${escape(idPadded)}  ${escape(tail)}"
@@ -1238,56 +1380,70 @@ git commit -m "feat(telegram): add StatusMessageFormatter for /status HTML rende
 
 ---
 
-### Task 10: Create StatusCommandHandler
+### Task 10: Create StatusCommandHandler (in `core` module)
+
+**Important:** `StatusCommandHandler` lives in `modules/core` (NOT `modules/telegram`). The
+`telegram` module does NOT depend on `core`, but `core → telegram`, so the handler is placed in
+`core` to import `StatusService`. `CommandHandler` interface is imported from `telegram`.
 
 **Files:**
-- Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/StatusCommandHandler.kt`
-- Create: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/StatusCommandHandlerTest.kt`
+- Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandler.kt`
+- Create: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandlerTest.kt`
 
 - [ ] **Step 1: Write failing test StatusCommandHandlerTest.kt**
 
 ```kotlin
-package ru.zinin.frigate.analyzer.telegram.bot.handler
+package ru.zinin.frigate.analyzer.core.bot.handler
 
 import io.mockk.mockk
+import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.core.service.StatusService
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.impl.StatusMessageFormatter
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import java.time.Clock
+import java.time.Instant
+import java.time.ZoneOffset
 
 class StatusCommandHandlerTest {
     private val statusService = mockk<StatusService>()
     private val formatter = mockk<StatusMessageFormatter>()
-    private val handler = StatusCommandHandler(statusService, formatter)
+    private val userService = mockk<TelegramUserService>()
+    private val clock = Clock.fixed(Instant.parse("2026-04-25T10:00:00Z"), ZoneOffset.UTC)
+    private val handler = StatusCommandHandler(statusService, formatter, userService, clock)
 
     @Test
     fun `handler has correct command metadata`() {
-        assertEquals("status", handler.command)
-        assertEquals(UserRole.OWNER, handler.requiredRole)
-        assertTrue(handler.ownerOnly)
-        assertEquals(6, handler.order)
+        assertThat(handler.command).isEqualTo("status")
+        assertThat(handler.requiredRole).isEqualTo(UserRole.OWNER)
+        assertThat(handler.ownerOnly).isTrue()
+        assertThat(handler.order).isEqualTo(8)
     }
 }
 ```
 
-(Behavior-level integration is exercised in `StatusMessageFormatterTest` and `StatusServiceTest`. We do not test the actual `reply()` call because it goes through ktgbotapi's `BehaviourContext`, which is hard to mock in isolation. Manual sanity check covers this — see Task 12.)
+Behavior-level integration is exercised in `StatusMessageFormatterTest` and `StatusServiceTest`.
+We do not unit-test the actual `reply()` call because it goes through ktgbotapi's
+`BehaviourContext`, which is hard to mock in isolation. Manual sanity check covers this —
+see Task 12. Note we also do NOT add an error-path test asserting `common.error.generic`:
+`FrigateAnalyzerBot.registerRoutes()` wraps handler dispatch in try/catch at the router level
+(see existing handlers like `VersionCommandHandler` which have no local try/catch).
 
 - [ ] **Step 2: Run test, expect compile failure**
 
 Delegate to build-runner agent:
 
 ```
-./gradlew :frigate-analyzer-telegram:test --tests StatusCommandHandlerTest
+./gradlew :frigate-analyzer-core:test --tests StatusCommandHandlerTest
 ```
 
 Expected: FAIL — `StatusCommandHandler` unresolved.
 
-- [ ] **Step 3: Implement StatusCommandHandler**
+- [ ] **Step 3: Implement StatusCommandHandler in `core/bot/handler`**
 
 ```kotlin
-package ru.zinin.frigate.analyzer.telegram.bot.handler
+package ru.zinin.frigate.analyzer.core.bot.handler
 
 import dev.inmo.tgbotapi.extensions.api.send.reply
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
@@ -1297,52 +1453,58 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.service.StatusService
+import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import ru.zinin.frigate.analyzer.telegram.service.impl.StatusMessageFormatter
+import java.time.Clock
 import java.time.Instant
-import java.time.ZoneId
-import java.time.ZoneOffset
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class StatusCommandHandler(
     private val statusService: StatusService,
     private val formatter: StatusMessageFormatter,
+    private val userService: TelegramUserService,
+    private val clock: Clock,
 ) : CommandHandler {
     override val command: String = "status"
     override val requiredRole: UserRole = UserRole.OWNER
     override val ownerOnly: Boolean = true
-    override val order: Int = 6
+    override val order: Int = 8
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
         val snapshot = statusService.collect()
-        val zone =
-            user?.olsonCode
-                ?.let { runCatching { ZoneId.of(it) }.getOrNull() }
-                ?: ZoneOffset.UTC
+        val zone = userService.getUserZone(message.chat.id.chatId.long)
         val language = user?.languageCode ?: "en"
         val text =
             formatter.format(
                 snapshot = snapshot,
                 language = language,
                 zone = zone,
-                now = Instant.now(),
+                now = Instant.now(clock),
             )
         reply(message, text, parseMode = HTMLParseMode)
     }
 }
 ```
 
+User zone comes from `TelegramUserService.getUserZone(chatId)` — same pattern used by
+`TimezoneCommandHandler` and `ExportCommandHandler`. `TelegramUserDto` does NOT contain
+`olsonCode`, only `languageCode`. `order = 8` is the first unused slot after Notifications=7
+(value 6 is taken by `LanguageCommandHandler`). `Clock` is injected so tests see the same
+`now` as `StatusService`.
+
 - [ ] **Step 4: Run test, expect pass**
 
 Delegate to build-runner agent:
 
 ```
-./gradlew :frigate-analyzer-telegram:test --tests StatusCommandHandlerTest
+./gradlew :frigate-analyzer-core:test --tests StatusCommandHandlerTest
 ```
 
 Expected: PASS.
@@ -1360,9 +1522,63 @@ sendTextMessage(message.chat, text, parseMode = HTMLParseMode, replyParameters =
 - [ ] **Step 5: Commit**
 
 ```bash
-git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/StatusCommandHandler.kt \
-        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/StatusCommandHandlerTest.kt
-git commit -m "feat(telegram): add /status command handler (OWNER only)"
+git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandler.kt \
+        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandlerTest.kt
+git commit -m "feat(core): add /status command handler (OWNER only, in core module)"
+```
+
+---
+
+### Task 10b: Configure ObjectMapper for ISO-8601 (Instant/Duration)
+
+`JacksonConfiguration.objectMapper()` does NOT currently disable
+`WRITE_DATES_AS_TIMESTAMPS` / `WRITE_DURATIONS_AS_TIMESTAMPS`, so `Instant`/`Duration` in
+`StatusResponse` would be serialised as numeric timestamps instead of the ISO-8601 strings
+promised by the design. Fix:
+
+**Files:**
+- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/JacksonConfiguration.kt`
+
+- [ ] **Step 1: Update JacksonConfiguration**
+
+```kotlin
+package ru.zinin.frigate.analyzer.core.config
+
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.SerializationFeature
+import com.fasterxml.jackson.databind.json.JsonMapper
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+
+@Configuration
+class JacksonConfiguration {
+    @Bean
+    fun objectMapper(): ObjectMapper =
+        JsonMapper
+            .builder()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+            .configure(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
+            .findAndAddModules()
+            .build()
+}
+```
+
+- [ ] **Step 2: JacksonConfigurationTest already added in Task 6 Step 1a** — run it now:
+
+```
+./gradlew :frigate-analyzer-core:test --tests JacksonConfigurationTest
+```
+
+Expected: PASS.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/JacksonConfiguration.kt \
+        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/JacksonConfigurationTest.kt
+git commit -m "fix(core): serialise Instant/Duration as ISO-8601 strings (not numeric timestamps)"
 ```
 
 ---
@@ -1490,7 +1706,17 @@ Note: per global CLAUDE.md, before creating a PR you must `git rm` files in `doc
 
 ---
 
-## Self-Review
+## Self-Review (updated after review iter-1)
+
+### Iter-1 review impact summary
+
+Auto-fixes applied from external review (22 issues):
+
+- CRITICAL: olsonCode → `TelegramUserService.getUserZone()` (Task 10); placeholder-index renumbering across `status.cameras.line.*` / `status.servers.line.*` keys + code (Task 7, 9); handler moved to `core` module (Task 10); `order = 8` (Task 10); Jackson `WRITE_DATES_AS_TIMESTAMPS` / `WRITE_DURATIONS_AS_TIMESTAMPS` disabled (Task 10b); `messages_ru.properties` encoding note corrected to UTF-8 (Task 7); REST `/status` explicitly documented as public (design).
+- CONCERN: ISO-8601 assertions added via dedicated `JacksonConfigurationTest` (Task 6 Step 1a); defensive-copy mutation test added (Task 4 Step 3a); router-level try/catch documented (Task 10 — no local error handling needed); test gaps closed (id-non-duplication test, OFFLINE-after-clock-skew via `coerceAtLeast`); `Clock` injected into handler for `now` consistency (Task 10); per-module compileKotlin in Task 8; broader grep scope in Task 8.
+- SUGGESTION: env-var form in `status.cameras.disabled` text; `status.empty` i18n key replacing hardcoded `"(none)"`; `coerceAtLeast(Duration.ZERO)` in formatter fallback.
+
+Deferred to disputed-issue discussion (see iter-1 review log): WebTestClient strategy, 4096-char Telegram limit, HTML double-escape audit scope, formatter test strategy (mocks vs real bundle), `lastUpdatedAt` field addition.
 
 ### Spec coverage
 

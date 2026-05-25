@@ -29,14 +29,20 @@ HTML-форматированном виде, удобном для чтения
 ### In scope
 
 1. **REST.** Удалить `GET /statistics`. Добавить `GET /status`, отдающий
-   recordings + cameras + detectServers в JSON.
-2. **Telegram.** Добавить команду `/status` (OWNER-only), форматирующую тот же
-   snapshot в HTML с `<pre>`-блоками для табличных секций.
+   recordings + cameras + detectServers в JSON. **Публичный** (без авторизации),
+   как и удаляемый `/statistics` — отдельный механизм авторизации REST в проекте
+   отсутствует.
+2. **Telegram.** Добавить команду `/status` (**OWNER-only — относится только к
+   Telegram-команде**, не к REST), форматирующую тот же snapshot в HTML с
+   `<pre>`-блоками для табличных секций.
 3. **Сервисный слой.** Извлечь общую логику сбора snapshot'а в `StatusService`,
    переиспользуемый и REST'ом, и Telegram-handler'ом.
 4. **Snapshot статусов камер.** Добавить публичный метод
    `SignalLossMonitorTask.snapshotStates(): Map<String, CameraSignalState>` —
-   defensive copy.
+   weakly-consistent defensive copy через `ConcurrentHashMap.toMap()`.
+5. **Jackson конфигурация.** Явно выключить timestamp-сериализацию для
+   `Instant`/`Duration`, чтобы REST-контракт ISO-8601 действительно выполнялся
+   (см. ниже Implementation notes).
 
 ### Out of scope
 
@@ -46,6 +52,10 @@ HTML-форматированном виде, удобном для чтения
 - Deprecation/redirect старого `/statistics` (single-deployment, нет внешних клиентов).
 - Кэширование `/status` (вызывается редко).
 - Изменения в `HelpCommandHandler` (он автоматически перечислит `/status`).
+- Транзакционная консистентность 5-запросного сбора `recordings.*` — наследуется
+  от текущего `/statistics`, mild inconsistency между `total/processed` допустима.
+- Авторизация REST-эндпоинта — `/status` публичный, как и был `/statistics`.
+- Hard cap на длину Telegram-сообщения (4096 символов) — отдельный issue если потребуется.
 
 ## Architecture
 
@@ -59,12 +69,22 @@ HTML-форматированном виде, удобном для чтения
 
 ### Модули и новые файлы
 
+**Важно про модульную структуру:** `telegram` НЕ зависит от `core` (зависит только от
+`common/model/service/ai-description`), а `core` зависит от `telegram`. Поэтому
+`StatusCommandHandler` обязан находиться в `core`-модуле (иначе будет циклическая
+зависимость при импорте `StatusService`). `StatusMessageFormatter` остаётся в
+`telegram` — он зависит только от `model` и i18n.
+
 ```
 modules/
 ├── core/
+│   ├── bot/handler/
+│   │   └── StatusCommandHandler.kt       (НОВЫЙ — OWNER only, order=8)
+│   ├── config/
+│   │   └── JacksonConfiguration.kt       (МОДИФИЦИРОВАТЬ — disable timestamps)
 │   ├── controller/
 │   │   ├── StatisticsController.kt       (УДАЛИТЬ)
-│   │   └── StatusController.kt           (НОВЫЙ)
+│   │   └── StatusController.kt           (НОВЫЙ — публичный, без авторизации)
 │   ├── service/
 │   │   └── StatusService.kt              (НОВЫЙ — общая логика сбора snapshot'а)
 │   └── task/
@@ -76,14 +96,16 @@ modules/
 │   └── dto/
 │       └── CameraStatusDto.kt            (НОВЫЙ — camId, state, lastSeenAt, offlineFor)
 └── telegram/
-    ├── bot/handler/
-    │   └── StatusCommandHandler.kt       (НОВЫЙ — OWNER only, order=6)
     ├── service/impl/
     │   └── StatusMessageFormatter.kt     (НОВЫЙ — HTML рендер с <pre>)
     └── src/main/resources/
         ├── messages_en.properties        (НОВЫЕ ключи status.*)
         └── messages_ru.properties        (НОВЫЕ ключи status.*)
 ```
+
+Примечание: `CommandHandler` — интерфейс из модуля `telegram`. `StatusCommandHandler`
+в `core` его реализует, импортируя `ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler`
+(допустимо, так как `core → telegram`).
 
 ### Поток данных
 
@@ -99,10 +121,15 @@ GET /frigate-analyzer/status
 ```
 User /status → FrigateAnalyzerBot.registerRoutes (OWNER auth via AuthorizationFilter)
   → StatusCommandHandler.handle(message, user)
+     → val zone = telegramUserService.getUserZone(message.chat.id.chatId.long)
      → StatusService.collect(): StatusResponse
-     → StatusMessageFormatter.format(snapshot, user.languageCode, user.olsonCode): String
+     → StatusMessageFormatter.format(snapshot, user.languageCode, zone): String
      → reply(message, html, parseMode = HTMLParseMode)
 ```
+
+Зона пользователя берётся через `TelegramUserService.getUserZone(chatId)` (тот же
+паттерн, что в `TimezoneCommandHandler` и `ExportCommandHandler`), потому что
+`TelegramUserDto` сам по себе не содержит поля `olsonCode` — только `languageCode`.
 
 ## DTOs
 
@@ -204,11 +231,36 @@ class StatusController(
 }
 ```
 
-Сериализация: `Instant` → ISO-8601 string (Jackson default), `Duration` → ISO-8601 (`PT7M`).
+Сериализация: `Instant` → ISO-8601 string (`"2026-04-25T10:00:00Z"`), `Duration` →
+ISO-8601 (`"PT7M"`).
+
+**Важно:** текущий `JacksonConfiguration.objectMapper()` НЕ выключает
+`WRITE_DATES_AS_TIMESTAMPS` / `WRITE_DURATIONS_AS_TIMESTAMPS`, поэтому без явной
+настройки `Instant`/`Duration` будут сериализовываться как числа (epoch sec /
+seconds). Необходимо обновить `JacksonConfiguration`:
+
+```kotlin
+@Bean
+fun objectMapper(): ObjectMapper =
+    JsonMapper.builder()
+        .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        .findAndAddModules()
+        .build()
+        .apply {
+            disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            disable(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS)
+        }
+```
+
+REST-эндпоинт публичный (без авторизации). Авторизационный контроль OWNER применяется
+только к Telegram-команде.
 
 ## Telegram-команда
 
 ### `StatusCommandHandler`
+
+Размещение: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/bot/handler/StatusCommandHandler.kt`
+(в `core`, не в `telegram` — см. примечание о модульных зависимостях выше).
 
 ```kotlin
 @Component
@@ -216,22 +268,25 @@ class StatusController(
 class StatusCommandHandler(
     private val statusService: StatusService,
     private val formatter: StatusMessageFormatter,
+    private val userService: TelegramUserService,
+    private val clock: Clock,
 ) : CommandHandler {
     override val command: String = "status"
     override val requiredRole: UserRole = UserRole.OWNER
     override val ownerOnly: Boolean = true
-    override val order: Int = 6
+    override val order: Int = 8
 
     override suspend fun BehaviourContext.handle(
         message: CommonMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
         val snapshot = statusService.collect()
+        val zone = userService.getUserZone(message.chat.id.chatId.long)
         val text = formatter.format(
             snapshot = snapshot,
             language = user?.languageCode ?: "en",
-            zone = user?.olsonCode?.let { ZoneId.of(it) } ?: ZoneOffset.UTC,
-            now = Instant.now(),
+            zone = zone,
+            now = Instant.now(clock),
         )
         reply(message, text, parseMode = HTMLParseMode)
     }
@@ -240,6 +295,12 @@ class StatusCommandHandler(
 
 Авторизация выполняется централизованно в `FrigateAnalyzerBot.registerRoutes()` через
 `AuthorizationFilter` — handler в неё не лезет, просто декларирует `requiredRole = OWNER`.
+Обработка исключений тоже на уровне роутера бота (`FrigateAnalyzerBot` оборачивает
+диспетчеризацию try/catch — handler'у явный try/catch не нужен, как в `VersionCommandHandler`).
+
+`order = 8` выбран как уникальное значение между Notifications=7 и AddUser=10 (значение 6 уже
+занято `LanguageCommandHandler`). `clock` (а не `Instant.now()` без параметров) — для
+консистентности с `StatusService`, чтобы тесты с фиксированным `Clock` видели один и тот же `now`.
 
 ### `StatusMessageFormatter`
 
@@ -302,6 +363,14 @@ srv-c DEAD</pre>
 
 ## i18n
 
+**Контракт между i18n-ключами и кодом форматтера (важно!):**
+
+- `camId` и `server.id` НЕ передаются как аргументы в `MessageFormat` — они
+  выводятся в коде форматтера один раз (через `escape(camPadded)` /
+  `escape(idPadded)`) перед фразой из i18n-ключа. Это устраняет систематические
+  ошибки индексов плейсхолдеров.
+- Все плейсхолдеры в строковых ключах ниже нумеруются с `{0}`.
+
 Новые ключи в `messages_en.properties` (английский каноничный набор):
 
 ```properties
@@ -331,19 +400,25 @@ status.byCamera.header.rec=rec
 status.byCamera.header.proc=proc
 status.byCamera.header.det=det
 
-# Camera status lines (emoji prepended in code; {0}=camId, {1}=relative ago, {2}=duration, {3}=last seen HH:mm:ss)
+# Camera status lines (emoji + camId prepended in code; args:
+#   online: {0}=relative ago duration
+#   offline: {0}=offline-duration, {1}=last seen HH:mm:ss)
 # Padding/alignment between camId and remainder applied in code AFTER MessageFormat.
-status.cameras.line.online=online ({1} ago)
-status.cameras.line.offline=offline {2} (last {3})
+status.cameras.line.online=online ({0} ago)
+status.cameras.line.offline=offline {0} (last {1})
 status.cameras.empty=No cameras observed yet
-status.cameras.disabled=Monitoring disabled (signal-loss.enabled=false)
+status.cameras.disabled=Monitoring disabled (set APPLICATION_SIGNAL_LOSS_ENABLED=true to enable)
 
-# Server status lines (emoji prepended in code; {0}=id; for alive: {1..8}=frame/ext/vis/vvis current,max)
-status.servers.line.alive=ALIVE  frame {1}/{2}  ext {3}/{4}  vis {5}/{6}  vvis {7}/{8}
+# Server status lines (emoji + server id prepended in code; for alive: {0..7}=frame/ext/vis/vvis current,max)
+status.servers.line.alive=ALIVE  frame {0}/{1}  ext {2}/{3}  vis {4}/{5}  vvis {6}/{7}
 status.servers.line.dead=DEAD
+
+# Empty marker reused across sections
+status.empty=(none)
 ```
 
-Параллельный набор в `messages_ru.properties` (русские переводы тех же ключей).
+Параллельный набор в `messages_ru.properties` (русские переводы тех же ключей,
+**в UTF-8 с прямой кириллицей** — как все остальные ключи в этом файле, без `\uXXXX`-escapes).
 
 **Важно:** padding и выравнивание колонок (например, `cam1  ` vs `cam12 `) выполняются
 в коде `StatusMessageFormatter` ПОСЛЕ подстановки MessageFormat. Сами ключи отдают
