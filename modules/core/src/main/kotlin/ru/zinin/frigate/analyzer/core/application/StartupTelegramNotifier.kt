@@ -11,7 +11,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.event.ApplicationReadyEvent
 import org.springframework.boot.info.BuildProperties
@@ -26,12 +25,9 @@ import java.time.Instant
 
 private val logger = KotlinLogging.logger {}
 
-// iter-1 review §D7: @ConditionalOnBean prevents NoSuchBeanDefinitionException in minimal contexts
-// where GitProperties/BuildProperties may not exist (e.g., tests without actuator git-info / spring-boot build-info).
 @Component
 @Profile("!test")
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
-@ConditionalOnBean(GitProperties::class, BuildProperties::class)
 class StartupTelegramNotifier(
     private val telegramNotificationService: TelegramNotificationService,
     private val gitProperties: GitProperties,
