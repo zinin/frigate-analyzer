@@ -9,7 +9,6 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
@@ -20,7 +19,6 @@ import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class StartCommandHandler(
     private val userService: TelegramUserService,
-    private val properties: TelegramProperties,
     private val eventPublisher: ApplicationEventPublisher,
     private val msg: MessageResolver,
 ) : CommandHandler {
@@ -50,7 +48,7 @@ class StartCommandHandler(
                 .chatId
                 .long
 
-        if (username == properties.owner) {
+        if (userService.isOwner(username)) {
             val existing = userService.findByUsername(username)
             if (existing == null) {
                 userService.inviteUser(username)
