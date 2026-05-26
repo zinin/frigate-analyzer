@@ -1,7 +1,5 @@
 package ru.zinin.frigate.analyzer.ai.description.config
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.mockk.mockk
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
@@ -10,6 +8,8 @@ import org.springframework.context.annotation.Configuration
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
+import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
+import tools.jackson.databind.json.JsonMapper
 import java.time.Clock
 import kotlin.test.Test
 
@@ -28,8 +28,12 @@ class AiDescriptionAutoConfigurationTest {
         // ObjectMapper is provided by Spring Boot's JacksonAutoConfiguration in production
         // (via spring-boot-jackson on the runtime classpath of the main application).
         // This module does not depend on spring-boot-jackson, so we supply a plain mapper here.
+        // Return type is tools.jackson JsonMapper so Spring registers the bean as a
+        // tools.jackson.databind.ObjectMapper (its supertype) — matching ClaudeResponseParser's
+        // post-Jackson-3 constructor parameter type. Returning the Jackson 2 ObjectMapper here
+        // would leave the parser bean unresolvable.
         @Bean
-        fun objectMapper(): ObjectMapper = ObjectMapper().registerKotlinModule()
+        fun objectMapper(): JsonMapper = TestObjectMappers.internalMapper()
 
         // Clock is provided in production by `:frigate-analyzer-common`'s ClockConfig.
         // DescriptionRateLimiter (active when enabled=true) requires it via constructor.

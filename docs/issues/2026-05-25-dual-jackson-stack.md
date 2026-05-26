@@ -1,9 +1,22 @@
 # Двойной Jackson stack: legacy `com.fasterxml.jackson` + новый `tools.jackson`
 
+> **STATUS: RESOLVED** (2026-05-26) — closed by PR for #29. Internal Jackson usage migrated to `tools.jackson` (Jackson 3). `JacksonConfiguration` now explicitly governs WebFlux REST wire-format via `WebFluxJacksonCodecConfigurer`. Jackson 2 remains on the classpath both **explicitly** via `implementation(libs.bundles.jackson)` in `modules/core` and `modules/ai-description` (bundle = `[jackson-databind, jackson-jsr310, jackson-kotlin, jackson-yaml]`) AND **transitively** via springdoc-openapi и other transitive consumers (YAML loaders, etc.) — see `JacksonConfiguration.kt` KDoc. Cleanup of the explicit declarations is intentionally out of scope (separate dependency audit). No `spring-boot-starter-jackson2` exists; the deprecated `spring-boot-jackson2` module is not on this app's runtimeClasspath.
+
 **Дата создания:** 2026-05-25
 **Источник:** external code review (codex, feat/status-command branch)
 **Severity:** Important (архитектурный долг; production работает, но конфиг лжёт)
 **Связанный PR:** `feat/status-command` (после `5327ba4` остаётся как known issue)
+
+---
+
+> ⚠️ **PRE-MIGRATION SNAPSHOT BELOW** — the sections that follow describe the codebase
+> state **at the time this issue was opened (2026-05-25)** as design rationale. They are
+> **NOT a description of the current code.** After resolution (2026-05-26 PR for #29):
+> `JacksonConfiguration`, `DetectService`, `ClaudeResponseParser` are on `tools.jackson`
+> (Jackson 3); `WebFluxJacksonCodecConfigurer` explicitly governs REST wire-format;
+> Jackson 2 remains on the classpath only as documented in the RESOLVED banner above and
+> in `JacksonConfiguration.kt` KDoc. Preserved here as historical design context (rationale,
+> inventory, open questions answered during migration).
 
 ## Краткая суть
 

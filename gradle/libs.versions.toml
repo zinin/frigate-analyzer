@@ -53,6 +53,15 @@ jackson-annotations = { module = "com.fasterxml.jackson.core:jackson-annotations
 jackson-jsr310 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr310" }
 jackson-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin" }
 jackson-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml" }
+# tools.jackson (Jackson 3) Kotlin module — required for findAndAddModules() to discover KotlinModule
+# via ServiceLoader (META-INF/services/tools.jackson.databind.JacksonModule). Without explicit
+# declaration the module is not on classpath in Spring Boot 4.0.6 default deps.
+#
+# Naming note: alias is `jackson-kotlin3` (not `jackson-kotlin-3`). In Gradle 9, the Kotlin DSL
+# accessor for a purely numeric segment after a hyphen is either generated with a `v` prefix
+# (`libs.jackson.kotlin.v3`) or invalid as `libs.jackson.kotlin.3` (digit-only Kotlin identifier
+# is illegal). The fused form `kotlin3` yields a clean `libs.jackson.kotlin3` accessor.
+jackson-kotlin3 = { module = "tools.jackson.module:jackson-module-kotlin" }
 
 # Reactor
 reactor-kotlin-extensions = { module = "io.projectreactor.kotlin:reactor-kotlin-extensions" }

@@ -5,6 +5,7 @@ import io.netty.handler.ssl.SslContextBuilder
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory
 import io.netty.handler.timeout.ReadTimeoutHandler
 import io.netty.handler.timeout.WriteTimeoutHandler
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Primary
@@ -59,29 +60,51 @@ class WebClientConfiguration(
             }
     }
 
+    /**
+     * SNAKE_CASE mapper used for **both directions** of JSON exchange with the detect-server
+     * (whose API uses snake_case): `detectServerJsonEncoder` for outbound requests and
+     * `detectServerJsonDecoder` for inbound responses. Separate from the project's `@Primary`
+     * `internalObjectMapper` (camelCase), which governs our own REST wire-format.
+     *
+     * `.findAndAddModules()` — обязателен: detect-server decoder парсит Kotlin data class'ы
+     * (`DetectResponse`, `JobCreatedResponse`, `FrameExtractionResponse`, `JobStatusResponse`).
+     * Без `KotlinModule` constructor-based десериализация для required-параметров ломается.
+     * Текущий `Builder`-overload справлялся за счёт Spring auto-вызова `findModules()`; при
+     * переходе на pre-built `.build()` мы должны явно вызвать `.findAndAddModules()`.
+     *
+     * **No `DateTimeFeature` config — intentional, не drift с `internalObjectMapper`:**
+     * detect-server DTOs используют `String` для timestamps (`JobStatusResponse.created_at: String`,
+     * `DetectResponse.created_at: String`), не Java `Instant`/`Duration`. Default Jackson behaviour
+     * (numeric timestamps для time types) никогда не triggered текущим contract'ом, поэтому
+     * `DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS` / `WRITE_DURATIONS_AS_TIMESTAMPS` здесь —
+     * dead config. Если будущий DTO добавит Java time field, consumer должен явно выбрать
+     * serialization treatment (numeric vs ISO-8601) для detect-server contract и при необходимости
+     * настроить `DateTimeFeature` локально — отдельное архитектурное решение от REST wire-format.
+     */
     @Bean
-    fun jsonEncoder(): JacksonJsonEncoder =
-        JacksonJsonEncoder(
-            JsonMapper
-                .builder()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE),
-        )
+    fun detectServerObjectMapper(): JsonMapper =
+        JsonMapper
+            .builder()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+            .findAndAddModules()
+            .build()
 
     @Bean
-    fun jsonDecoder(): JacksonJsonDecoder =
-        JacksonJsonDecoder(
-            JsonMapper
-                .builder()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE),
-        )
+    fun detectServerJsonEncoder(
+        @Qualifier("detectServerObjectMapper") mapper: JsonMapper,
+    ): JacksonJsonEncoder = JacksonJsonEncoder(mapper)
+
+    @Bean
+    fun detectServerJsonDecoder(
+        @Qualifier("detectServerObjectMapper") mapper: JsonMapper,
+    ): JacksonJsonDecoder = JacksonJsonDecoder(mapper)
 
     @Bean
     fun webClient(
         httpClient: HttpClient,
-        jsonEncoder: JacksonJsonEncoder,
-        jsonDecoder: JacksonJsonDecoder,
+        @Qualifier("detectServerJsonEncoder") jsonEncoder: JacksonJsonEncoder,
+        @Qualifier("detectServerJsonDecoder") jsonDecoder: JacksonJsonDecoder,
     ): WebClient {
         val strategies =
             ExchangeStrategies
