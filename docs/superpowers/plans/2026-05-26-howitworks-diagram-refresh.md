@@ -100,20 +100,23 @@ Expected: only the mermaid block changed, nothing else.
 
 - [ ] **Step 4: Render the diagram to verify mermaid syntax**
 
-Render the updated `README.md` in any of:
-- GitHub preview (push the branch and view on github.com)
-- VS Code Markdown preview with Mermaid extension
-- https://mermaid.live (paste the new block)
+**Primary verification (REQUIRED):** push the WIP branch and view `README.md` on github.com. GitHub uses its own pinned Mermaid version and is the actual target renderer — `mermaid.live` and IDE plugins may pass while GitHub fails.
 
-Expected outcome:
-- 13 nodes visible: `A`, `B`, `P`, `Q`, `V`, `OT`, `DB`, `VIS`, `AI`, `SL`, `BOT`, `EX`, `U`
-- Two subgraphs render with borders/labels: "Detection Pipeline" (LR direction) and "Telegram" (TB direction)
-- Vision API Server (`V`) sits outside both subgraphs and has dotted bidirectional arrows to `P`, `Q`, `VIS`, and `EX`
-- Signal-loss branch (`DB → SL → BOT`) and AI description branch (`OT ⇢ AI ⇢ BOT`) are present
-- Telegram subgraph contains `BOT ↔ U` and `BOT ↔ EX`
-- No mermaid parse errors
+```bash
+git push -u origin docs/refresh-howitworks-diagram
+# open https://github.com/zinin/frigate-analyzer/blob/docs/refresh-howitworks-diagram/README.md
+```
 
-If any of these fail, fix the diagram before continuing.
+**Optional sanity-check (faster iteration if syntax breaks):** paste the new mermaid block into https://mermaid.live or VS Code Markdown preview with Mermaid extension.
+
+Verify the rendered diagram against the spec (node set, subgraph borders, branch shape — final values populated when DIAGRAM-REWRITE disputed issue is resolved). Specific checks:
+- All nodes from the new diagram render with their labels intact (no parse errors / empty blocks).
+- Subgraph borders + titles render.
+- Bidirectional dotted edges (if used) render with arrowheads on both ends — GitHub Mermaid sometimes drops one head.
+- Two-way `<-->` edges inside subgraph (BOT ↔ U) render correctly.
+- No arrows overlap labels or cross other nodes in an unreadable way.
+
+If GitHub preview fails to render the block (shows raw mermaid code or an error), fix the diagram syntax before continuing.
 
 - [ ] **Step 5: Stage and commit**
 
@@ -150,14 +153,19 @@ Per `~/.claude/CLAUDE.md`: documents under `docs/superpowers/` must not appear i
 - Delete: `docs/superpowers/specs/2026-05-26-howitworks-diagram-refresh-design.md`
 - Delete: `docs/superpowers/plans/2026-05-26-howitworks-diagram-refresh.md`
 
-- [ ] **Step 1: Remove both docs via `git rm`**
+- [ ] **Step 1: Remove all `docs/superpowers/` files via `git rm`**
+
+This removes the design, plan, and any review-iteration files that accumulated during external review.
 
 ```bash
 git rm docs/superpowers/specs/2026-05-26-howitworks-diagram-refresh-design.md \
-       docs/superpowers/plans/2026-05-26-howitworks-diagram-refresh.md
+       docs/superpowers/plans/2026-05-26-howitworks-diagram-refresh.md \
+       docs/superpowers/specs/2026-05-26-howitworks-diagram-refresh-review-*.md 2>/dev/null || true
+# safety net — list anything remaining under docs/superpowers/ that this branch added
+git ls-files docs/superpowers/
 ```
 
-Expected: `rm 'docs/superpowers/specs/...'` and `rm 'docs/superpowers/plans/...'` printed; both files disappear from working tree.
+Expected: design + plan + every `review-iter-*` / `review-merged-iter-*` file removed; the final `git ls-files docs/superpowers/` lists nothing tracked on this branch (it may still show files tracked from earlier branches — those are not our concern).
 
 - [ ] **Step 2: Commit the cleanup**
 
@@ -172,13 +180,12 @@ Expected: a commit titled `chore: drop plan docs before PR` with 2 files deleted
 ```bash
 git log --oneline master..HEAD
 git status --short
+git diff --stat master..HEAD
 ```
 
 Expected:
-- `git log` shows exactly two commits ahead of master:
-  - `<hash> chore: drop plan docs before PR`
-  - `<hash> docs(readme): refresh How It Works diagram`
-  - (the older `docs: design refresh of How It Works diagram` commit also lists)
+- `git log` shows several commits ahead of master. Exact count depends on how many review iterations ran (each adds 1-2 commits). At minimum: the original `docs: design refresh of How It Works diagram`, `docs: implementation plan...`, `docs(readme): refresh How It Works diagram`, and `chore: drop plan docs before PR`. Any `docs: review iter N — ...` commits sit in between.
+- `git diff --stat master..HEAD` should show **only `README.md` as net-changed** — every `docs/superpowers/*` file added by earlier commits is removed by the cleanup commit, so it shouldn't appear in the diff vs master.
 - `git status` shows no tracked changes (untracked files like `.codex`, `tmp/` are fine — they were there before this branch).
 
 ---
