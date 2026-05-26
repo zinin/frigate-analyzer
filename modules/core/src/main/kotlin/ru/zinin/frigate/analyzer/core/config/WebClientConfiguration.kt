@@ -81,20 +81,20 @@ class WebClientConfiguration(
             .build()
 
     @Bean
-    fun jsonEncoder(
+    fun detectServerJsonEncoder(
         @Qualifier("detectServerObjectMapper") mapper: JsonMapper,
     ): JacksonJsonEncoder = JacksonJsonEncoder(mapper)
 
     @Bean
-    fun jsonDecoder(
+    fun detectServerJsonDecoder(
         @Qualifier("detectServerObjectMapper") mapper: JsonMapper,
     ): JacksonJsonDecoder = JacksonJsonDecoder(mapper)
 
     @Bean
     fun webClient(
         httpClient: HttpClient,
-        jsonEncoder: JacksonJsonEncoder,
-        jsonDecoder: JacksonJsonDecoder,
+        @Qualifier("detectServerJsonEncoder") jsonEncoder: JacksonJsonEncoder,
+        @Qualifier("detectServerJsonDecoder") jsonDecoder: JacksonJsonDecoder,
     ): WebClient {
         val strategies =
             ExchangeStrategies

@@ -36,18 +36,27 @@ import tools.jackson.databind.json.JsonMapper
  *
  * **Dual-stack rationale (self-contained):**
  * `tools.jackson` governs all internal and REST wire-format JSON. Legacy `com.fasterxml.jackson`
- * (Jackson 2.x, BOM pinned via `gradle/libs.versions.toml`) is retained ONLY as a transitive
- * dependency of:
- *  - `springdoc-openapi-starter` 3.0.3 (requires `com.fasterxml.jackson.module.kotlin.KotlinModule`
- *    via its own `SpringDocJacksonKotlinModuleConfiguration` for OpenAPI spec generation).
- *  - other transitive consumers (YAML loaders, etc.).
+ * (Jackson 2.x, BOM pinned via `gradle/libs.versions.toml`) is retained on the classpath:
+ *  - **explicitly** via `implementation(libs.bundles.jackson)` in `modules/core/build.gradle.kts`
+ *    and `modules/ai-description/build.gradle.kts`
+ *    (bundle = `[jackson-databind, jackson-jsr310, jackson-kotlin, jackson-yaml]`)
+ *  - **transitively** via `springdoc-openapi-starter` 3.0.3 (uses
+ *    `com.fasterxml.jackson.module.kotlin.KotlinModule` through
+ *    `SpringDocJacksonKotlinModuleConfiguration` for OpenAPI spec generation) and other
+ *    transitive consumers (YAML loaders, etc.).
+ *
+ * Cleanup of the explicit declarations is intentionally out of scope of issue #29
+ * (a separate dependency audit). The explicit declarations do not affect runtime
+ * wire-format ownership — `tools.jackson` governs both inbound and outbound JSON.
  *
  * Note: no `spring-boot-starter-jackson2` exists; the deprecated `spring-boot-jackson2`
  * module is not on this app's `runtimeClasspath`. Only `spring-boot-jackson` (using
  * tools.jackson) is present.
- * The `@Primary` annotation scopes only within `tools.jackson.databind.*` classes; springdoc
- * injects `com.fasterxml.jackson.databind.ObjectMapper` (a different class), so there is no
- * type collision. Spring will never substitute incompatible types.
+ * Since `com.fasterxml.jackson.databind.ObjectMapper` (Jackson 2) and
+ * `tools.jackson.databind.ObjectMapper` (Jackson 3) are different Java types, `@Primary` only
+ * participates when Spring resolves the Jackson 3 type; springdoc's Jackson 2 injection
+ * resolves through Boot's separate Jackson 2 bean machinery and is unaffected. Spring will
+ * never substitute incompatible types.
  */
 @Configuration
 class JacksonConfiguration {

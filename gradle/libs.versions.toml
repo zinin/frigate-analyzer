@@ -57,10 +57,10 @@ jackson-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-y
 # via ServiceLoader (META-INF/services/tools.jackson.databind.JacksonModule). Without explicit
 # declaration the module is not on classpath in Spring Boot 4.0.6 default deps.
 #
-# Naming note: алиас `jackson-kotlin3` (а не `jackson-kotlin-3`). В Gradle 9 Kotlin DSL accessor
-# для пурно-цифрового сегмента после дефиса либо генерируется с префиксом `v` (`libs.jackson.kotlin.v3`),
-# либо вообще не валиден как `libs.jackson.kotlin.3` (цифра-only kotlin identifier illegal).
-# Слитное `kotlin3` даёт чистый `libs.jackson.kotlin3`.
+# Naming note: alias is `jackson-kotlin3` (not `jackson-kotlin-3`). In Gradle 9, the Kotlin DSL
+# accessor for a purely numeric segment after a hyphen is either generated with a `v` prefix
+# (`libs.jackson.kotlin.v3`) or invalid as `libs.jackson.kotlin.3` (digit-only Kotlin identifier
+# is illegal). The fused form `kotlin3` yields a clean `libs.jackson.kotlin3` accessor.
 jackson-kotlin3 = { module = "tools.jackson.module:jackson-module-kotlin" }
 
 # Reactor

@@ -8,10 +8,15 @@ import io.mockk.slot
 import io.mockk.verify
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.boot.autoconfigure.AutoConfigurations
+import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration
+import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.http.codec.ServerCodecConfigurer
 import org.springframework.http.codec.json.JacksonJsonDecoder
 import org.springframework.http.codec.json.JacksonJsonEncoder
 import ru.zinin.frigate.analyzer.core.testsupport.TestObjectMappers
+import tools.jackson.databind.PropertyNamingStrategies
+import tools.jackson.databind.json.JsonMapper
 
 class WebFluxJacksonCodecConfigurerTest {
     @Test
@@ -46,5 +51,49 @@ class WebFluxJacksonCodecConfigurerTest {
         // вызов»; в Spring 7.0.7 это уже сделано, поэтому используем публичный API.
         assertThat(encoderSlot.captured.mapper).isSameAs(mapper)
         assertThat(decoderSlot.captured.mapper).isSameAs(mapper)
+    }
+
+    @Test
+    fun `Spring DI picks @Primary internalObjectMapper even when other JsonMapper beans exist`() {
+        // Topology guard: in production there are TWO JsonMapper beans —
+        // `@Primary internalObjectMapper` (camelCase, REST wire-format) и qualified
+        // `detectServerObjectMapper` (SNAKE_CASE, detect-server outbound). Spring must inject
+        // the @Primary one into `WebFluxJacksonCodecConfigurer`; otherwise REST endpoints
+        // would silently serialize via SNAKE_CASE, breaking external camelCase contract.
+        //
+        // We simulate this by registering a second SNAKE_CASE JsonMapper alongside our
+        // configuration and asserting the configurer's captured encoder mapper is the
+        // @Primary one (not the SNAKE_CASE alternative). A regression where someone removes
+        // `@Primary` would surface here as `NoUniqueBeanDefinitionException` (constructor
+        // injection can't disambiguate) — also a valid failure mode.
+        ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration::class.java))
+            .withUserConfiguration(
+                JacksonConfiguration::class.java,
+                WebFluxJacksonCodecConfigurer::class.java,
+            ).withBean(
+                "snakeCaseMapperLike",
+                JsonMapper::class.java,
+                {
+                    JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build()
+                },
+            ).run { ctx ->
+                val configurer = ctx.getBean(WebFluxJacksonCodecConfigurer::class.java)
+                val expectedMapper = ctx.getBean("internalObjectMapper", JsonMapper::class.java)
+
+                val serverCodecConfigurer = mockk<ServerCodecConfigurer>(relaxed = true)
+                val defaultCodecs = mockk<ServerCodecConfigurer.ServerDefaultCodecs>(relaxed = true)
+                every { serverCodecConfigurer.defaultCodecs() } returns defaultCodecs
+
+                val encoderSlot = slot<JacksonJsonEncoder>()
+                val decoderSlot = slot<JacksonJsonDecoder>()
+                every { defaultCodecs.jacksonJsonEncoder(capture(encoderSlot)) } just Runs
+                every { defaultCodecs.jacksonJsonDecoder(capture(decoderSlot)) } just Runs
+
+                configurer.configureHttpMessageCodecs(serverCodecConfigurer)
+
+                assertThat(encoderSlot.captured.mapper).isSameAs(expectedMapper)
+                assertThat(decoderSlot.captured.mapper).isSameAs(expectedMapper)
+            }
     }
 }

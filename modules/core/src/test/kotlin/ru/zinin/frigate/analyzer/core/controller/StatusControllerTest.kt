@@ -7,37 +7,21 @@ import org.springframework.context.annotation.Import
 import org.springframework.test.web.reactive.server.WebTestClient
 import ru.zinin.frigate.analyzer.core.IntegrationTestBase
 
-// Note: `IntegrationTestBase` spins up Docker Compose (PostgreSQL + Liquibase) in its
-// `companion object init {}`. This test inherits that dependency for parity with all
-// other endpoint tests in the project.
+// End-to-end sanity check для `/status` wire-format (ISO-8601 timestamps + JSON structure).
+// `IntegrationTestBase` поднимает Docker Compose (PostgreSQL + Liquibase) — parity со всеми
+// остальными endpoint-тестами проекта. `StatusControllerTestConfig` injects a mocked
+// `StatusService` returning a fixed snapshot so the response contains concrete `Instant` /
+// `Duration` values; see that file's KDoc для объяснения почему `StatusService` (не
+// `SignalLossMonitorTask`).
 //
-// `StatusControllerTestConfig` injects a mocked `StatusService` returning a fixed snapshot
-// (one OFFLINE camera with `lastSeenAt` Instant + `offlineFor` Duration) so the response
-// actually contains `Instant`/`Duration` values — making the ISO-8601 wire-format assertions
-// below meaningful. `StatusService` is mocked (not `SignalLossMonitorTask`) because
-// `ScheduledAnnotationBeanPostProcessor` chokes on mockk-generated `@Scheduled` methods on
-// the task bean (see KDoc on `StatusControllerTestConfig`).
+// **NOT a regression guard for `WebFluxJacksonCodecConfigurer`** — Spring Boot 4's
+// `CodecsAutoConfiguration.jacksonCodecCustomizer` функционально дублирует наш configurer,
+// поэтому этот test пройдёт обоими путями. Реальные regression guards:
+//   - `WebFluxJacksonCodecConfigurerTest` (identity check на нашем mapper'е)
+//   - `JacksonConfigurationTest` (Spring context @Primary topology)
 //
-// The wire-format test below is an end-to-end sanity check для `/status`:
-// ISO-8601 timestamps + ожидаемая структура JSON-ответа. После Jackson 3 migration
-// (issue #29) запрос идёт через codecs, зарегистрированные `WebFluxJacksonCodecConfigurer`
-// от нашего `@Primary internalObjectMapper`.
-//
-// Важно: этот тест НЕ доказывает что наш `WebFluxJacksonCodecConfigurer` фактически
-// управляет codec'ом. Spring Boot 4 `CodecsAutoConfiguration.jacksonCodecCustomizer`
-// автоматически wire'ит `@Primary JsonMapper` бин в WebFlux codec — все наши настройки
-// совпадают с Boot 4 defaults, поэтому удаление нашего configurer'а не сломает ни этот
-// тест, ни поведение `/status`. Это honest sanity check, не regression guard.
-//
-// Реальный regression guard configurer'а:
-//  - `WebFluxJacksonCodecConfigurerTest` — unit test с identity check через публичный
-//    `JacksonCodecSupport.getMapper()`: codec'ы построены ИМЕННО на нашем mapper'е.
-//  - `JacksonConfigurationTest` — `ApplicationContextRunner` с auto-config: `@Primary`
-//    disambiguation в bean topology.
-//
-// См. KDoc на [JacksonConfiguration] (раздел про «Builder vs pre-built — осознанный trade-off»)
-// и [WebFluxJacksonCodecConfigurer] (раздел «Honest narrative про duplication») для полного
-// объяснения.
+// См. KDoc на [WebFluxJacksonCodecConfigurer] (раздел «Honest narrative про duplication»)
+// для полной архитектурной narrative.
 @AutoConfigureWebTestClient
 @Import(StatusControllerTestConfig::class)
 class StatusControllerTest : IntegrationTestBase() {

@@ -11,9 +11,20 @@ import tools.jackson.databind.json.JsonMapper
  * [ru.zinin.frigate.analyzer.core.config.WebClientConfiguration].
  *
  * Use these so tests stay aligned with production wire-format and parser configuration.
- * Adding a setting in production? Add it here too.
  *
- * Return type is `JsonMapper` to match production (Spring 7 codec API requires JsonMapper).
+ * **THREE-WAY SYNC requirement:** when changing [internalMapper] body, mirror the change to
+ * BOTH:
+ *   1. Production [ru.zinin.frigate.analyzer.core.config.JacksonConfiguration.internalObjectMapper]
+ *   2. The duplicate copy in
+ *      `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/testsupport/TestObjectMappers.kt#internalMapper`
+ *
+ * The ai-description module duplicates [internalMapper] (strict subset — no `detectServerMapper`)
+ * because Gradle modules don't share test sources. Extraction to test fixtures or a shared
+ * `testsupport` module is intentionally **out of scope of issue #29**; both copies are stable
+ * and any update touches the test in both modules, surfacing forgotten mirroring at PR-review
+ * time.
+ *
+ * Return type is `JsonMapper` to match production (Spring Framework 7 codec API requires JsonMapper).
  * `JsonMapper extends ObjectMapper`, so callers that accept `ObjectMapper` still work.
  *
  * Jackson 3 note: `WRITE_DATES_AS_TIMESTAMPS` и `WRITE_DURATIONS_AS_TIMESTAMPS` находятся в
