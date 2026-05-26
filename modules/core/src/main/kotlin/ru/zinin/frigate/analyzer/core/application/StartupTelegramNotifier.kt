@@ -18,6 +18,7 @@ import org.springframework.boot.info.GitProperties
 import org.springframework.context.annotation.Profile
 import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.time.Clock
 import java.time.Duration
@@ -30,6 +31,7 @@ private val logger = KotlinLogging.logger {}
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class StartupTelegramNotifier(
     private val telegramNotificationService: TelegramNotificationService,
+    private val messageResolver: MessageResolver,
     private val gitProperties: GitProperties,
     private val buildProperties: BuildProperties,
     private val clock: Clock,
@@ -42,29 +44,27 @@ class StartupTelegramNotifier(
 
     @EventListener(ApplicationReadyEvent::class)
     fun onReady() {
-        // iter-2 CONCERN-5: BuildProperties / GitProperties getters may return null
-        // (per Spring Javadoc). Null-safe formatting guarantees the startup message
-        // doesn't break with "Version: null" if build/git plugin didn't run.
-        val text =
-            buildString {
-                appendLine("🟢 Frigate Analyzer запущен")
-                appendLine("Version: ${buildProperties.version ?: UNKNOWN}")
-                appendLine("Commit: ${gitProperties.commitId?.take(8) ?: UNKNOWN}")
-                appendLine("Build time: ${buildProperties.time ?: UNKNOWN}")
-                append("Started: ${Instant.now(clock)}")
-            }
         scope.launch {
             try {
-                // iter-1 review §D5 — safety net for future regressions (notificationQueue.enqueue is
-                // microsec in normal path but may become blocking if the buffer ever fills).
                 withTimeout(STARTUP_NOTIFICATION_TIMEOUT.toMillis()) {
-                    telegramNotificationService.sendOwnerMessage(text)
+                    // sendOwnerMessage performs the single owner DB lookup and feeds the
+                    // resolved language into the builder, so this whole block stays one DB
+                    // round-trip plus the actual send.
+                    telegramNotificationService.sendOwnerMessage { language ->
+                        // BuildProperties / GitProperties getters may return null (per Spring Javadoc);
+                        // null-safe formatting prevents "Version: null" if the build/git plugin didn't run.
+                        buildString {
+                            appendLine(messageResolver.get("startup.notification.message", language))
+                            appendLine("Version: ${buildProperties.version ?: UNKNOWN}")
+                            appendLine("Commit: ${gitProperties.commitId?.take(8) ?: UNKNOWN}")
+                            appendLine("Build time: ${buildProperties.time ?: UNKNOWN}")
+                            append("Started: ${Instant.now(clock)}")
+                        }
+                    }
                 }
             } catch (e: TimeoutCancellationException) {
                 logger.warn { "Startup notification timed out after $STARTUP_NOTIFICATION_TIMEOUT: ${e.message}" }
             } catch (e: CancellationException) {
-                // Scope was cancelled (shutdown). Let cancellation propagate so the coroutine
-                // terminates in the expected state instead of being recorded as a failure.
                 throw e
             } catch (e: Throwable) {
                 logger.warn(e) { "Failed to send startup notification" }

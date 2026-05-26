@@ -43,6 +43,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 | PostgreSQL 15+ | Stores recordings, detections, and user data |
 | Telegram Bot Token | Obtain from [@BotFather](https://t.me/BotFather) |
 | Docker + Docker Compose | For deployment |
+| Claude Code CLI *(optional)* | Required only if `APP_AI_DESCRIPTION_ENABLED=true`; auto-installed inside the Docker image, for local runs install via `claude.ai/install.sh` and run `claude setup-token` |
 
 ## Quick Start
 
@@ -88,7 +89,7 @@ docker compose up -d
 
 This starts two containers:
 - **frigate-analyzer-liquibase** — runs database migrations, then exits
-- **frigate-analyzer** — the main application
+- **frigate-analyzer** — the main application (port `8080` by default; override with `HOST_PORT`)
 
 ### 4. Activate the Telegram bot
 
@@ -145,6 +146,36 @@ All settings use environment variables with sensible defaults. Key variables:
 | `PIPELINE_FRAME_BUFFER_SIZE` | `500` | Channel buffer capacity |
 | `PIPELINE_BATCH_SIZE` | `10` | Recordings per producer batch |
 
+### Signal-loss detection
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIGNAL_LOSS_ENABLED` | `true` | Master switch for the camera signal-loss monitor |
+| `SIGNAL_LOSS_THRESHOLD` | `3m` | Gap that triggers a "signal lost" alert |
+| `SIGNAL_LOSS_POLL_INTERVAL` | `30s` | Detector tick period (must be < threshold) |
+| `SIGNAL_LOSS_ACTIVE_WINDOW` | `24h` | Camera ages out of monitoring after this. **Must be ≥ Frigate retention.** |
+| `SIGNAL_LOSS_STARTUP_GRACE` | `5m` | Alerts deferred for this window after boot |
+
+### AI description (optional)
+
+When enabled, generates a short and a detailed natural-language description of detections via the
+Claude Code CLI and edits them into the notification. Requires `claude` on `PATH` and an OAuth
+token (`claude setup-token`).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_AI_DESCRIPTION_ENABLED` | `false` | Master switch |
+| `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Provider (only `claude` supported) |
+| `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
+| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous Claude requests |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `10` | Max invocations per sliding window |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
+| `CLAUDE_CODE_OAUTH_TOKEN` | *(required if enabled)* | Token from `claude setup-token` |
+| `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku` |
+
+Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
+[`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.
+
 ## Detection Servers
 
 Detection is performed by one or more [vision-api-server](https://github.com/zinin/vision-api-server) instances. Configure them in `application-docker.yaml`:
@@ -181,22 +212,29 @@ You can define multiple servers — the load balancer distributes requests based
 | `/help` | Show available commands | Authorized users |
 | `/export` | Export camera video (interactive dialog) | Authorized users |
 | `/timezone` | Set your timezone | Authorized users |
+| `/language` | Set your interface language (ru / en) | Authorized users |
 | `/notifications` | Toggle recording / signal-loss notifications (per-user; OWNER also toggles global) | Authorized users |
 | `/version` | Show build and version info | Authorized users |
+| `/status` | Snapshot of recordings, cameras, and detect-servers state | Owner only |
 | `/adduser` | Invite a user (by @username) | Owner only |
 | `/removeuser` | Remove a user | Owner only |
 | `/users` | List all registered users | Owner only |
 
 ### Video Export
 
-The `/export` command starts an interactive dialog:
+There are two ways to export video:
 
+**Interactive `/export` dialog:**
 1. **Select date** — today, yesterday, or enter a custom date
 2. **Select time range** — e.g., `9:15-9:20` (max 5 minutes)
 3. **Select camera** — from cameras with recordings in that period
 4. **Select mode:**
    - **Original** — raw merged video
    - **Annotated** — video with detection bounding boxes overlaid (processed by vision-api-server)
+
+**Quick Export from notifications** — every detection notification ships with two inline buttons ("Original" / "Annotated") that export ±1 minute around the recording (2 minutes total).
+
+Both flows support a cancel button — pressing it stops the merge or annotation job (best-effort for ffmpeg merge, immediate cancel for vision-server annotation jobs).
 
 ### Notifications
 
@@ -216,15 +254,17 @@ A background monitor polls the database for the latest recording per camera. Whe
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /frigate-analyzer/actuator/health` | Health check |
+| `GET /frigate-analyzer/actuator/health` | Health check (used by Docker healthcheck) |
+| `GET /frigate-analyzer/status` | JSON snapshot of recordings / cameras / detect-servers |
+| `GET /frigate-analyzer/version` | Plain-text build version |
 | `GET /frigate-analyzer/swagger-ui/index.html` | Swagger UI |
 
 ## Building from Source
 
 ### Requirements
 
-- JDK 25 ([Azul Zulu](https://www.azul.com/downloads/) recommended)
-- Docker (for test database via Testcontainers)
+- JDK 25 ([Azul Zulu](https://www.azul.com/downloads/) recommended) — Gradle's Java toolchain auto-downloads it on first build if missing
+- Docker (for the test database via Testcontainers)
 
 ### Build
 

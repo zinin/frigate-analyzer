@@ -38,9 +38,12 @@ interface TelegramNotificationService {
     )
 
     /**
-     * Send a plain text message to the bot owner (defined by application.telegram.owner).
-     * No-op when telegram is disabled or the owner has not activated the bot yet.
-     * Used for system-level admin signals such as the startup notification.
+     * Send a localized text message to the bot owner (defined by application.telegram.owner).
+     * The [textBuilder] receives the owner's resolved language code ("en" when the owner has
+     * no stored languageCode) and returns the already-localized text to send. Doing the owner
+     * lookup once inside this service avoids a second DB round-trip at the call site.
+     * No-op when telegram is disabled or the owner has not activated the bot yet (in those
+     * cases [textBuilder] is not invoked).
      */
-    suspend fun sendOwnerMessage(text: String)
+    suspend fun sendOwnerMessage(textBuilder: (language: String) -> String)
 }

@@ -18,9 +18,12 @@ import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
+import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
+import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
+import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -355,5 +358,107 @@ class TelegramNotificationServiceImplTest {
 
             coVerify(exactly = 1) { notificationQueue.enqueue(any()) }
             coVerify(exactly = 0) { appSettings.getBoolean(any(), any()) }
+        }
+
+    private fun ownerDto(
+        languageCode: String?,
+        status: UserStatus = UserStatus.ACTIVE,
+        ownerChatId: Long? = 42L,
+    ) = TelegramUserDto(
+        id = UUID.randomUUID(),
+        username = "test",
+        chatId = ownerChatId,
+        userId = 100L,
+        firstName = "Owner",
+        lastName = null,
+        status = status,
+        creationTimestamp = Instant.now(),
+        activationTimestamp = if (status == UserStatus.ACTIVE) Instant.now() else null,
+        languageCode = languageCode,
+    )
+
+    @Test
+    fun `sendOwnerMessage invokes builder with owner languageCode and enqueues result`() =
+        runTest {
+            coEvery { userService.findByUsernameIgnoreCase("test") } returns ownerDto(languageCode = "ru")
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            val taskSlot = slot<SimpleTextNotificationTask>()
+            coEvery { notificationQueue.enqueue(capture(taskSlot)) } returns Unit
+            val received = mutableListOf<String>()
+
+            service.sendOwnerMessage { language ->
+                received += language
+                "hello-$language"
+            }
+
+            assertEquals(listOf("ru"), received)
+            assertEquals("hello-ru", taskSlot.captured.text)
+            assertEquals(42L, taskSlot.captured.chatId)
+            assertEquals(taskId, taskSlot.captured.id)
+        }
+
+    @Test
+    fun `sendOwnerMessage falls back to en when owner languageCode is null`() =
+        runTest {
+            coEvery { userService.findByUsernameIgnoreCase("test") } returns ownerDto(languageCode = null)
+            coEvery { uuidGeneratorHelper.generateV1() } returns taskId
+            val taskSlot = slot<SimpleTextNotificationTask>()
+            coEvery { notificationQueue.enqueue(capture(taskSlot)) } returns Unit
+            val received = mutableListOf<String>()
+
+            service.sendOwnerMessage { language ->
+                received += language
+                "hello-$language"
+            }
+
+            assertEquals(listOf("en"), received)
+            assertEquals("hello-en", taskSlot.captured.text)
+        }
+
+    @Test
+    fun `sendOwnerMessage skips and does not invoke builder when owner not in database`() =
+        runTest {
+            coEvery { userService.findByUsernameIgnoreCase("test") } returns null
+            var invocations = 0
+
+            service.sendOwnerMessage {
+                invocations++
+                "should-not-be-built"
+            }
+
+            assertEquals(0, invocations)
+            coVerify(exactly = 0) { notificationQueue.enqueue(any()) }
+        }
+
+    @Test
+    fun `sendOwnerMessage skips and does not invoke builder when owner is not yet activated`() =
+        runTest {
+            coEvery { userService.findByUsernameIgnoreCase("test") } returns
+                ownerDto(languageCode = "ru", status = UserStatus.INVITED)
+            var invocations = 0
+
+            service.sendOwnerMessage {
+                invocations++
+                "should-not-be-built"
+            }
+
+            assertEquals(0, invocations)
+            coVerify(exactly = 0) { notificationQueue.enqueue(any()) }
+        }
+
+    @Test
+    fun `sendOwnerMessage skips and does not invoke builder when owner has no chatId`() =
+        runTest {
+            coEvery { userService.findByUsernameIgnoreCase("test") } returns
+                ownerDto(languageCode = "ru", ownerChatId = null)
+            var invocations = 0
+
+            service.sendOwnerMessage {
+                invocations++
+                "should-not-be-built"
+            }
+
+            assertEquals(0, invocations)
+            coVerify(exactly = 0) { notificationQueue.enqueue(any()) }
         }
 }
