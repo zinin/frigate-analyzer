@@ -12,6 +12,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-05-26-jackson-3-migration-design.md`
 
+**Про line numbers в плане:** ссылки вида «line 88» / «line 481» — snapshot на момент написания плана. После применения auto-fix'ов или промежуточных commit'ов номера сдвигаются. **Перед каждым edit'ом в Tasks 4/5** запускать `grep -n "<уникальный текст рядом с целью>" <file>` для подтверждения актуальной позиции. Цели для поиска (use as `grep -n` queries):
+- `DetectServiceTest.kt`: `"ObjectMapper as FasterxmlObjectMapper"`, `"fun buildObjectMapper"`, `"fun buildJsonMapper"`, `"fun buildWebClient"`, `"DetectService(webClient, loadBalancer"`
+- `DetectServiceCancelJobTest.kt`: те же patterns + `"jacksonJsonDecoder(JacksonJsonDecoder(buildJsonMapper"`
+- `VideoVisualizationServiceTest.kt`: `"import com.fasterxml.jackson.databind.ObjectMapper"`, `"fun buildObjectMapper"`, `"fun buildJsonMapper"`
+- `ClaudeDescriptionAgentIntegrationTest.kt`: `"val mapper = ObjectMapper().registerKotlinModule"`
+- `AiDescriptionAutoConfigurationTest.kt`: `"fun objectMapper(): ObjectMapper"`
+
+Pattern-based pointers устойчивее к line-number drift, чем абсолютные позиции.
+
 ---
 
 ## File Structure
@@ -58,7 +67,12 @@ After the existing `jackson-yaml` line (~line 55), insert:
 # tools.jackson (Jackson 3) Kotlin module — required for findAndAddModules() to discover KotlinModule
 # via ServiceLoader (META-INF/services/tools.jackson.databind.JacksonModule). Without explicit
 # declaration the module is not on classpath in Spring Boot 4.0.6 default deps.
-jackson-kotlin-3 = { module = "tools.jackson.module:jackson-module-kotlin" }
+#
+# Naming note: алиас `jackson-kotlin3` (а не `jackson-kotlin-3`). В Gradle 9 Kotlin DSL accessor
+# для пурно-цифрового сегмента после дефиса либо генерируется с префиксом `v` (`libs.jackson.kotlin.v3`),
+# либо вообще не валиден как `libs.jackson.kotlin.3` (цифра-only kotlin identifier illegal).
+# Слитное `kotlin3` даёт чистый `libs.jackson.kotlin3`.
+jackson-kotlin3 = { module = "tools.jackson.module:jackson-module-kotlin" }
 ```
 
 - [ ] **Step 2: Add dep to `modules/core/build.gradle.kts`**
@@ -66,7 +80,7 @@ jackson-kotlin-3 = { module = "tools.jackson.module:jackson-module-kotlin" }
 After the existing line `implementation(libs.bundles.jackson)` (~line 56), insert:
 
 ```kotlin
-    implementation(libs.jackson.kotlin.3)
+    implementation(libs.jackson.kotlin3)
 ```
 
 - [ ] **Step 3: Add dep to `modules/ai-description/build.gradle.kts`**
@@ -74,7 +88,7 @@ After the existing line `implementation(libs.bundles.jackson)` (~line 56), inser
 After the existing line `implementation(libs.bundles.jackson)` (~line 15), insert:
 
 ```kotlin
-    implementation(libs.jackson.kotlin.3)
+    implementation(libs.jackson.kotlin3)
 ```
 
 - [ ] **Step 4: Verify dependency resolution**
@@ -82,6 +96,13 @@ After the existing line `implementation(libs.bundles.jackson)` (~line 15), inser
 Run: `./gradlew :frigate-analyzer-core:dependencies --configuration runtimeClasspath | grep -E 'tools.jackson.module|jackson-module-kotlin'`
 
 Expected: line containing `tools.jackson.module:jackson-module-kotlin:3.0.4` (or whatever version BOM resolves to).
+
+**Pre-flight check на Spring Boot 4.0.6 FQN-ы (для Task 4 Step 2):** заодно проверить что класс `org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration` доступен в classpath проекта:
+```bash
+./gradlew :frigate-analyzer-core:dependencies --configuration testRuntimeClasspath \
+    | awk '/spring-boot-jackson/{print $NF}' | head -1
+```
+Тестовый класс в Task 4 Step 2 импортирует именно этот FQN. Если в текущей версии Spring Boot он переименован — найти актуальный класс через `jar tf .../spring-boot-jackson-*.jar | grep -i 'jacksonautocfg\|JacksonAutoConfiguration'`.
 
 - [ ] **Step 5: Verify build still compiles**
 
@@ -155,7 +176,7 @@ package ru.zinin.frigate.analyzer.core.testsupport
 
 import tools.jackson.databind.DeserializationFeature
 import tools.jackson.databind.PropertyNamingStrategies
-import tools.jackson.databind.SerializationFeature
+import tools.jackson.databind.cfg.DateTimeFeature
 import tools.jackson.databind.json.JsonMapper
 
 /**
@@ -168,14 +189,17 @@ import tools.jackson.databind.json.JsonMapper
  *
  * Return type is `JsonMapper` to match production (Spring 7 codec API requires JsonMapper).
  * `JsonMapper extends ObjectMapper`, so callers that accept `ObjectMapper` still work.
+ *
+ * Jackson 3 note: `WRITE_DATES_AS_TIMESTAMPS` и `WRITE_DURATIONS_AS_TIMESTAMPS` находятся в
+ * `tools.jackson.databind.cfg.DateTimeFeature`, не в `SerializationFeature` (как было в Jackson 2).
  */
 object TestObjectMappers {
     /** Matches production `@Primary internalObjectMapper`. */
     fun internalMapper(): JsonMapper =
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-            .configure(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
+            .configure(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+            .configure(DateTimeFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
             .findAndAddModules()
             .build()
 
@@ -184,6 +208,7 @@ object TestObjectMappers {
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
             .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+            .findAndAddModules()
             .build()
 }
 ```
@@ -261,7 +286,7 @@ Create `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/desc
 package ru.zinin.frigate.analyzer.ai.description.testsupport
 
 import tools.jackson.databind.DeserializationFeature
-import tools.jackson.databind.SerializationFeature
+import tools.jackson.databind.cfg.DateTimeFeature
 import tools.jackson.databind.json.JsonMapper
 
 /**
@@ -271,13 +296,16 @@ import tools.jackson.databind.json.JsonMapper
  *
  * Return type is `JsonMapper` to match production. `JsonMapper extends ObjectMapper`, so
  * `ClaudeResponseParser`'s `ObjectMapper` parameter is satisfied transparently.
+ *
+ * Jackson 3 note: `WRITE_DATES_AS_TIMESTAMPS`/`WRITE_DURATIONS_AS_TIMESTAMPS` находятся в
+ * `tools.jackson.databind.cfg.DateTimeFeature`, не в `SerializationFeature` (Jackson 2 расположение).
  */
 object TestObjectMappers {
     fun internalMapper(): JsonMapper =
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-            .configure(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
+            .configure(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+            .configure(DateTimeFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
             .findAndAddModules()
             .build()
 }
@@ -328,7 +356,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Primary
 import tools.jackson.databind.DeserializationFeature
-import tools.jackson.databind.SerializationFeature
+import tools.jackson.databind.cfg.DateTimeFeature
 import tools.jackson.databind.json.JsonMapper
 
 /**
@@ -366,12 +394,14 @@ class JacksonConfiguration {
     fun internalObjectMapper(): JsonMapper =
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-            .configure(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
+            .configure(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+            .configure(DateTimeFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
             .findAndAddModules()
             .build()
 }
 ```
+
+**Implementation note про DateTime features:** в Jackson 3.0.4 `WRITE_DATES_AS_TIMESTAMPS` и `WRITE_DURATIONS_AS_TIMESTAMPS` находятся в `tools.jackson.databind.cfg.DateTimeFeature`, **не** в `SerializationFeature` (как было в Jackson 2). Использование `SerializationFeature.WRITE_DATES_AS_TIMESTAMPS` не скомпилируется — features были перемещены в Jackson 3.0 в рамках реструктуризации date/time API.
 
 - [ ] **Step 2: Rewrite `JacksonConfigurationTest.kt`**
 
@@ -440,7 +470,20 @@ class JacksonConfigurationTest {
             .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration::class.java))
             .withUserConfiguration(JacksonConfiguration::class.java)
             .run { ctx ->
-                // The @Primary bean must win type-based resolution even if multiple are present
+                // STRENGTHEN: verify auto-config actually registered its own JsonMapper bean —
+                // otherwise this test trivially passes (only one bean present, no disambiguation).
+                // If auto-config skips (e.g. due to @ConditionalOnClass not satisfied) — fail loudly
+                // rather than silently pass; the test promise is "@Primary wins when both present".
+                val allMappers = ctx.getBeansOfType(JsonMapper::class.java)
+                assertThat(allMappers)
+                    .withFailMessage(
+                        "Expected JacksonAutoConfiguration to register its own JsonMapper bean for " +
+                            "real disambiguation test. Found only: %s. If auto-config conditions changed, " +
+                            "investigate before relaxing this assertion.",
+                        allMappers.keys,
+                    ).hasSizeGreaterThanOrEqualTo(2)
+
+                // The @Primary bean must win type-based resolution
                 val bean = ctx.getBean(JsonMapper::class.java)
                 assertThat(bean).isSameAs(ctx.getBean("internalObjectMapper", JsonMapper::class.java))
                 // BeanDefinition primary flag check
@@ -450,6 +493,15 @@ class JacksonConfigurationTest {
     }
 }
 ```
+
+**Pre-flight verification для FQN `JacksonAutoConfiguration`:** в Spring Boot 4.x авто-конфигурации лежат в `org.springframework.boot.<module>.autoconfigure.*` (новая структура vs `org.springframework.boot.autoconfigure.jackson.*` в Spring Boot 3.x). Перед написанием теста подтвердить:
+```bash
+./gradlew :frigate-analyzer-core:dependencies --configuration testRuntimeClasspath \
+    | awk '/spring-boot-jackson-[0-9]/{print $NF}' | head -1 \
+    | xargs -I{} sh -c 'find ~/.gradle/caches -name "{}.jar" 2>/dev/null | head -1' \
+    | xargs jar tf 2>/dev/null | grep -i JacksonAutoConfiguration
+```
+Ожидается: `org/springframework/boot/jackson/autoconfigure/JacksonAutoConfiguration.class`. Если класс на другом пути — обновить import в тесте.
 
 - [ ] **Step 3: Update `DetectService.kt` import + add explanatory comment**
 
@@ -740,7 +792,7 @@ Same pattern as Step 3:
 
 (c) Replace `ObjectMapper().registerKotlinModule()` (wherever it appears, including line 59 `ClaudeResponseParser(ObjectMapper().registerKotlinModule())` → `ClaudeResponseParser(TestObjectMappers.internalMapper())`) with `TestObjectMappers.internalMapper()`.
 
-(d) If the `ObjectMapper` parameter type appears in a constructor or property, switch its declared type to `tools.jackson.databind.ObjectMapper` (add the import).
+(d) **Note про объявления типов:** `ClaudeResponseParser` constructor parameter остаётся как `objectMapper: ObjectMapper` — изменился только import (Step 1: `com.fasterxml.jackson.databind.ObjectMapper` → `tools.jackson.databind.ObjectMapper`). В тестах `val ... = ClaudeResponseParser(TestObjectMappers.internalMapper())` Kotlin сам выводит `JsonMapper` (extends `ObjectMapper`), explicit type annotation не нужна. **Если в тесте встретится** локальная `val mapper: com.fasterxml.jackson.databind.ObjectMapper = ...` declaration — заменить explicit type на `tools.jackson.databind.ObjectMapper` или (предпочтительнее) убрать annotation и положиться на type inference. Иначе никаких type-switch'ей не требуется.
 
 - [ ] **Step 5: Update `ClaudeDescriptionAgentIntegrationTest.kt`**
 
@@ -833,7 +885,9 @@ Edit `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/WebClie
 import org.springframework.beans.factory.annotation.Qualifier
 ```
 
-Then replace the inline `JsonMapper.builder()...` calls inside `jsonEncoder()` and `jsonDecoder()` with a separate qualified bean.
+Then replace the inline `JsonMapper.builder()...` calls inside `jsonEncoder()` and `jsonDecoder()` with a separate `@Bean`-method.
+
+**Context — почему текущий код без `.build()` компилируется:** Spring 7 `JacksonJsonEncoder`/`JacksonJsonDecoder` имеют перегруженные конструкторы — принимают **и** `JsonMapper`, **и** `JsonMapper.Builder`. Текущий код передаёт `JsonMapper.Builder` (без `.build()`) и работает через `JacksonJsonEncoder(JsonMapper.Builder)`-overload. При этом Spring auto-вызывает `MapperBuilder.findModules()` и применяет `JsonMapperBuilderCustomizer`-ы (ProblemDetail mixin и пр.). Переход на pre-built `JsonMapper.build()` — **осознанный trade-off:** теряем auto-customization, выигрываем явный контроль над wire-format. Проект не использует `ProblemDetail` (`grep ProblemDetail` = 0 hits), поэтому отсутствие mixin не влияет на текущее поведение.
 
 Replace the block (lines 62-78):
 
@@ -864,13 +918,19 @@ With:
      * SNAKE_CASE mapper used **only** for outbound JSON to the detect-server (whose API uses
      * snake_case). Separate from the project's `@Primary` `internalObjectMapper` (camelCase),
      * which governs our own REST wire-format.
+     *
+     * `.findAndAddModules()` — обязателен: detect-server decoder парсит Kotlin data class'ы
+     * (`DetectResponse`, `JobCreatedResponse`, `FrameExtractionResponse`, `JobStatusResponse`).
+     * Без `KotlinModule` constructor-based десериализация для required-параметров ломается.
+     * Текущий `Builder`-overload справлялся за счёт Spring auto-вызова `findModules()`; при
+     * переходе на pre-built `.build()` мы должны явно вызвать `.findAndAddModules()`.
      */
     @Bean
-    @Qualifier("detectServerObjectMapper")
     fun detectServerObjectMapper(): JsonMapper =
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
             .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+            .findAndAddModules()
             .build()
 
     @Bean
@@ -883,6 +943,8 @@ With:
         @Qualifier("detectServerObjectMapper") mapper: JsonMapper,
     ): JacksonJsonDecoder = JacksonJsonDecoder(mapper)
 ```
+
+**`@Qualifier` placement note:** аннотация `@Qualifier` ставится **только на injection points** (`jsonEncoder`/`jsonDecoder` параметры), **не** на `@Bean`-определение. Имя метода `detectServerObjectMapper` = имя бина по умолчанию, поэтому `@Qualifier` на самом `@Bean` избыточен и вводит в заблуждение (создаёт впечатление, что qualifier value отличается от bean name).
 
 - [ ] **Step 2: Verify single mapper instance per WebClient**
 
@@ -958,9 +1020,24 @@ class WebFluxJacksonCodecConfigurerTest {
         verify(exactly = 1) { defaultCodecs.jacksonJsonDecoder(any()) }
         assertThat(encoderSlot.captured).isNotNull
         assertThat(decoderSlot.captured).isNotNull
+
+        // IDENTITY GUARD: убедиться что codec'ы построены ИМЕННО на нашем mapper'е, а не
+        // на дефолтных. Без этого тест прошёл бы при баге, где configureHttpMessageCodecs
+        // создаёт новые JsonMapper.builder().build() вместо использования параметра.
+        // Достаём mapper через reflection из private поля JacksonJsonEncoder.mapper (Spring 7
+        // не предоставляет publicного getter'а).
+        val encoderMapperField = encoderSlot.captured.javaClass.superclass
+            .getDeclaredField("mapper").apply { isAccessible = true }
+        assertThat(encoderMapperField.get(encoderSlot.captured)).isSameAs(mapper)
+
+        val decoderMapperField = decoderSlot.captured.javaClass.superclass
+            .getDeclaredField("mapper").apply { isAccessible = true }
+        assertThat(decoderMapperField.get(decoderSlot.captured)).isSameAs(mapper)
     }
 }
 ```
+
+**Reflection note:** Spring 7 `AbstractJacksonHttpMessageWriter`/`Reader` хранит `mapper` в protected/private поле без публичного getter'а; identity check через reflection — единственный способ доказать что codec построен на нашем bean'е, а не на дефолтном. Если в будущем Spring добавит публичный `getMapper()` — заменить на прямой вызов. Альтернатива (десериализовать тестовый JSON через encoder/decoder и убедиться что наши настройки применились) — слишком хрупка и пересекается с интеграционным тестом.
 
 - [ ] **Step 2: Run test to verify it fails (file doesn't exist)**
 
@@ -1086,19 +1163,38 @@ git commit -m "feat(core): explicitly wire @Primary JsonMapper into WebFlux REST
 
 - [ ] **Step 1a: Audit all Jackson use sites (safety net before final build)**
 
-Run:
+Запустить расширенный grep (узкое `ObjectMapper|registerKotlinModule` пропускает множество кейсов — Jackson аннотации, bean-name literals, типы из `tools.jackson.*`, custom serializer'ы):
+
 ```bash
-grep -rn "ObjectMapper\|registerKotlinModule" \
+# Тип- и сигнатуро-ориентированный audit
+grep -rEn "com\.fasterxml\.jackson|tools\.jackson|JsonMapper|ObjectMapper|JsonNode|JsonProcessingException|JacksonException|JacksonJson|@Json[A-Z]" \
     --include="*.kt" --include="*.java" \
-    modules/ | grep -v build/ | grep -v ".gradle/"
+    modules/ docker/ | grep -v build/ | grep -v ".gradle/"
+
+# Bean-name literal references (на случай скрытой зависимости по имени)
+grep -rEn '"objectMapper"|@Qualifier\("objectMapper"\)|getBean\("objectMapper"\)' \
+    --include="*.kt" --include="*.java" \
+    modules/ | grep -v build/
+
+# Compat starter sanity: убедиться что Jackson 2 остаётся ТОЛЬКО транзитивно
+./gradlew :frigate-analyzer-core:dependencies --configuration runtimeClasspath \
+    | grep -E "spring-boot-jackson2|com.fasterxml.jackson"
 ```
 
 Cross-check every result against the plan's covered files:
 - `JacksonConfiguration.kt`, `WebFluxJacksonCodecConfigurer.kt`, `WebClientConfiguration.kt`, `DetectService.kt`, `ClaudeResponseParser.kt`, `ClaudeExceptionMapper.kt`
-- All tests under modules/core/src/test/ and modules/ai-description/src/test/ touched by Tasks 4 and 5
+- All tests under `modules/core/src/test/` and `modules/ai-description/src/test/` touched by Tasks 4 and 5
 - `TestObjectMappers.kt` (×2)
+- **`JobStatus.kt` `@JsonProperty`** — намеренно остаётся на Jackson 2 (`com.fasterxml.jackson.annotation`), pinned BOM 2.20, работает с обоими stacks. Классифицировать как «intentionally allowed».
 
-If grep returns a use site NOT in the above list, STOP and add it explicitly to the plan before continuing. Common omissions to look for: MapStruct mapper interfaces, Liquibase changelog Java/Kotlin classes, telegram module helpers.
+**Модули для явной проверки (audit grep охватывает `modules/`, но reviewer'ы iter-2 настаивали на explicit mention):**
+- `modules/telegram/` — может использовать Jackson для Bot API responses через ktgbotapi или собственные helpers
+- `modules/service/` — MapStruct mapper'ы могут генерировать Jackson-зависимый код
+- `modules/model/` — DTO с `@JsonProperty` (JobStatus.kt известно)
+- `modules/common/`, `modules/ai-description/` — все Jackson use-sites
+- `docker/liquibase/` — JSON-changelog'и (хотя они идут через Liquibase parser, не наш mapper)
+
+If grep returns a use site NOT in the above list, STOP and add it explicitly to the plan before continuing. Common omissions to look for: MapStruct mapper interfaces, Liquibase changelog Java/Kotlin classes, telegram module helpers, slice/integration tests с неявным `WebTestClient` (codec wiring через autowiring `ObjectMapper`).
 
 Expected universe: ~19 files (per design § 4.1 and existing grep before migration). Verify the count.
 
@@ -1107,6 +1203,17 @@ Expected universe: ~19 files (per design § 4.1 and existing grep before migrati
 Run: `./gradlew build`
 
 Expected: BUILD SUCCESSFUL on all modules. If anything fails, STOP and investigate — this is the integration check that all module-level migrations compose correctly.
+
+Дополнительно после успешного build'а — verify dual-stack topology:
+```bash
+./gradlew :frigate-analyzer-core:dependencies --configuration runtimeClasspath \
+    | grep -E "spring-boot-jackson|com.fasterxml.jackson"
+```
+
+Ожидается:
+- `spring-boot-jackson-4.0.x` (Jackson 3 — наш primary, autoconfig'и для `JsonMapper`)
+- `spring-boot-jackson2-4.0.x` (Jackson 2 compat starter — нужен для springdoc-openapi YAML config loading)
+- `com.fasterxml.jackson.*-2.x` присутствует **только** через transitive dependencies springdoc-openapi и `spring-boot-jackson2`. Подтверждает что миграция достигла цели: Jackson 2 — только транзитивно.
 
 - [ ] **Step 2: Mark dual-stack issue resolved**
 

@@ -71,14 +71,14 @@ class JacksonConfiguration {
     fun internalObjectMapper(): JsonMapper =
         JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-            .configure(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
+            .configure(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+            .configure(DateTimeFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
             .findAndAddModules()
             .build()
 }
 ```
 
-Импорты — все `tools.jackson.databind.*` плюс `tools.jackson.databind.json.JsonMapper`. Метод `findAndAddModules()` подхватит `tools.jackson.module.kotlin` через ServiceLoader (артефакт `tools.jackson.module:jackson-module-kotlin:3.0.4` шипит `META-INF/services/tools.jackson.databind.JacksonModule`). Тест на round-trip Kotlin data class в `JacksonConfigurationTest` (см. § 4.3) — обязательный regression guard на случай если ServiceLoader-discovery сломается (например, при упаковке fat-jar с агрессивным `mergeServiceFiles`); тест мгновенно покажет проблему в CI до того как она дойдёт до runtime.
+Импорты — `tools.jackson.databind.DeserializationFeature`, `tools.jackson.databind.cfg.DateTimeFeature`, `tools.jackson.databind.json.JsonMapper`. **Важно:** в Jackson 3.0.4 фичи `WRITE_DATES_AS_TIMESTAMPS` и `WRITE_DURATIONS_AS_TIMESTAMPS` перенесены из `SerializationFeature` (Jackson 2 расположение) в `tools.jackson.databind.cfg.DateTimeFeature`. Использование `SerializationFeature.WRITE_DATES_AS_TIMESTAMPS` в Jackson 3 кодовой базе не компилируется. Метод `findAndAddModules()` подхватит `tools.jackson.module.kotlin` через ServiceLoader (артефакт `tools.jackson.module:jackson-module-kotlin:3.0.4` шипит `META-INF/services/tools.jackson.databind.JacksonModule`). Тест на round-trip Kotlin data class в `JacksonConfigurationTest` (см. § 4.3) — обязательный regression guard на случай если ServiceLoader-discovery сломается (например, при упаковке fat-jar с агрессивным `mergeServiceFiles`); тест мгновенно покажет проблему в CI до того как она дойдёт до runtime.
 
 **Альтернатива (rejected):** явная регистрация `.addModule(KotlinModule.Builder().build())` была рассмотрена. Отвергнута: создаёт coupling с internal Jackson 3 builder API (молодой, может эволюционировать в минорных версиях), скрывает тот факт что подключение модулей в Jackson 3 — стандартизированный ServiceLoader-contract. Test guard выше — достаточная защита.
 
@@ -113,11 +113,11 @@ class WebFluxJacksonCodecConfigurer(
 
 ```kotlin
 @Bean
-@Qualifier("detectServerObjectMapper")
 fun detectServerObjectMapper(): JsonMapper =
     JsonMapper.builder()
         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
         .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+        .findAndAddModules()
         .build()
 
 @Bean
@@ -128,6 +128,10 @@ fun jsonEncoder(@Qualifier("detectServerObjectMapper") mapper: JsonMapper): Jack
 fun jsonDecoder(@Qualifier("detectServerObjectMapper") mapper: JsonMapper): JacksonJsonDecoder =
     JacksonJsonDecoder(mapper)
 ```
+
+**Заметка про `.findAndAddModules()`:** detect-server WebClient декодирует Kotlin data class'ы (`DetectResponse`, `JobCreatedResponse`, `FrameExtractionResponse`, `JobStatusResponse`); без KotlinModule конструкторная десериализация для required-параметров без default-значений ломается. `.findAndAddModules()` подхватит `tools.jackson.module.kotlin` через ServiceLoader (тот же артефакт `jackson-kotlin3`, что и для `internalObjectMapper`). Текущий код работает потому что использует `JacksonJsonEncoder(JsonMapper.Builder)`-overload — Spring сам вызывает `findModules()` через `MapperBuilder`-кастомизаторы. Переход на pre-built `JsonMapper` (`.build()`) этот auto-discovery отключает, поэтому `.findAndAddModules()` нужен явно.
+
+**Заметка про `@Qualifier`:** `@Qualifier` ставится **только на injection points** (`jsonEncoder`/`jsonDecoder` параметры), а не на `@Bean`-определение. Имя метода `detectServerObjectMapper` = имя бина = qualifier value по умолчанию, поэтому второй `@Qualifier` на определении избыточен и вводит в заблуждение.
 
 `webClient(...)` бин — без изменений. WebClient к detect-серверу продолжает использовать SNAKE_CASE через свои локальные encoder/decoder, не затрагивая `@Primary internalObjectMapper`.
 
@@ -194,8 +198,8 @@ object TestObjectMappers {
     /** Matches production @Primary internalObjectMapper from JacksonConfiguration. Returns JsonMapper to match production type. */
     fun internalMapper(): JsonMapper = JsonMapper.builder()
         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-        .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-        .configure(SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
+        .configure(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+        .configure(DateTimeFeature.WRITE_DURATIONS_AS_TIMESTAMPS, false)
         .findAndAddModules()
         .build()
 
@@ -203,6 +207,7 @@ object TestObjectMappers {
     fun detectServerMapper(): JsonMapper = JsonMapper.builder()
         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
         .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+        .findAndAddModules()
         .build()
 }
 ```
