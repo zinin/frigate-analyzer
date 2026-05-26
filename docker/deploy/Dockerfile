@@ -24,12 +24,6 @@ COPY --from=builder /builder/extracted/spring-boot-loader/ ./
 COPY --from=builder /builder/extracted/snapshot-dependencies/ ./
 COPY --from=builder /builder/extracted/application/ ./
 
-# Build AOT cache for faster startup (Java 25)
-RUN java --enable-native-access=ALL-UNNAMED \
-         -XX:AOTCacheOutput=application.aot \
-         -Dspring.context.exit=onRefresh \
-         -jar application.jar || true
-
 COPY docker/deploy/docker-entrypoint.sh /application/docker-entrypoint.sh
 RUN chmod +x /application/docker-entrypoint.sh && \
     chown -R appuser:appgroup /application

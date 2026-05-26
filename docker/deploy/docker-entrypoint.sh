@@ -1,5 +1,5 @@
 #!/bin/sh
-set -- --enable-native-access=ALL-UNNAMED -XX:MaxRAMPercentage=75.0 -XX:AOTCache=application.aot
+set -- --enable-native-access=ALL-UNNAMED -XX:MaxRAMPercentage=75.0
 
 if [ -f /application/config/log4j2.yaml ]; then
   echo "Using external log4j2 config: /application/config/log4j2.yaml"
