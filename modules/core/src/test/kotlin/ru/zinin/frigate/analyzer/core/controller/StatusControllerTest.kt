@@ -34,8 +34,9 @@ import ru.zinin.frigate.analyzer.core.IntegrationTestBase
 //  - `JacksonConfigurationTest` — `ApplicationContextRunner` с auto-config: `@Primary`
 //    disambiguation в bean topology.
 //
-// См. design § 3.2 «Builder vs pre-built — осознанный trade-off» и «Про взаимодействие
-// с Spring Boot 4 auto-config — honest narrative» для полного объяснения.
+// См. KDoc на [JacksonConfiguration] (раздел про «Builder vs pre-built — осознанный trade-off»)
+// и [WebFluxJacksonCodecConfigurer] (раздел «Honest narrative про duplication») для полного
+// объяснения.
 @AutoConfigureWebTestClient
 @Import(StatusControllerTestConfig::class)
 class StatusControllerTest : IntegrationTestBase() {
