@@ -80,6 +80,7 @@ class DetectServiceCancelJobTest {
             )
         val clock = Clock.fixed(Instant.EPOCH, ZoneOffset.UTC)
 
+        val detectServerMapper = TestObjectMappers.detectServerMapper()
         val webClient =
             WebClient
                 .builder()
@@ -87,8 +88,8 @@ class DetectServiceCancelJobTest {
                     ExchangeStrategies
                         .builder()
                         .codecs {
-                            it.defaultCodecs().jacksonJsonDecoder(JacksonJsonDecoder(TestObjectMappers.detectServerMapper()))
-                            it.defaultCodecs().jacksonJsonEncoder(JacksonJsonEncoder(TestObjectMappers.detectServerMapper()))
+                            it.defaultCodecs().jacksonJsonDecoder(JacksonJsonDecoder(detectServerMapper))
+                            it.defaultCodecs().jacksonJsonEncoder(JacksonJsonEncoder(detectServerMapper))
                         }.build(),
                 ).build()
 

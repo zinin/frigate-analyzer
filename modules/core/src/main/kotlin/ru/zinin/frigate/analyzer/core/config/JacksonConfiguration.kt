@@ -19,7 +19,7 @@ import tools.jackson.databind.json.JsonMapper
  *  - tolerant deserialization (unknown properties ignored)
  *  - `findAndAddModules()` picks up `tools.jackson.module.kotlin` from classpath via ServiceLoader
  *
- * **Return type is `JsonMapper`, not `ObjectMapper`.** Spring 7's `JacksonJsonEncoder`/
+ * **Return type is `JsonMapper`, not `ObjectMapper`.** Spring Framework 7's `JacksonJsonEncoder`/
  * `JacksonJsonDecoder` constructors accept `JsonMapper` (или `JsonMapper.Builder` — 5 overload'ов).
  * `JsonMapper extends ObjectMapper`, so DI into consumers declaring `ObjectMapper` (DetectService,
  * ClaudeResponseParser) still works.
@@ -30,9 +30,9 @@ import tools.jackson.databind.json.JsonMapper
  * `@JacksonMixin` бины, `spring.jackson.*` properties, `MapperBuilder.findModules()`.
  * Мы намеренно используем `JsonMapper.builder()...build()` (pre-built) для **явного контроля**
  * над wire-format: external customizers могли бы незаметно изменить поведение mapper'а,
- * противоречит цели issue #29 («config truly governs wire-format»). Проект не использует
- * `ProblemDetail` (`grep ProblemDetail` = 0 hits в репо), поэтому потеря этого mixin'а
- * не влияет на текущее поведение.
+ * противоречит цели issue #29 («config truly governs wire-format»). Проект на момент написания
+ * не использует `ProblemDetail` (`grep ProblemDetail` = 0 hits в репо), поэтому потеря этого
+ * mixin'а не влияет на текущее поведение.
  *
  * **Dual-stack rationale (self-contained):**
  * `tools.jackson` governs all internal and REST wire-format JSON. Legacy `com.fasterxml.jackson`
@@ -42,8 +42,9 @@ import tools.jackson.databind.json.JsonMapper
  *    via its own `SpringDocJacksonKotlinModuleConfiguration` for OpenAPI spec generation).
  *  - other transitive consumers (YAML loaders, etc.).
  *
- * Note: Spring Boot 4 does NOT ship a `spring-boot-jackson2` compat starter; only the
- * `spring-boot-jackson` module (using tools.jackson) is present in `runtimeClasspath`.
+ * Note: no `spring-boot-starter-jackson2` exists; the deprecated `spring-boot-jackson2`
+ * module is not on this app's `runtimeClasspath`. Only `spring-boot-jackson` (using
+ * tools.jackson) is present.
  * The `@Primary` annotation scopes only within `tools.jackson.databind.*` classes; springdoc
  * injects `com.fasterxml.jackson.databind.ObjectMapper` (a different class), so there is no
  * type collision. Spring will never substitute incompatible types.

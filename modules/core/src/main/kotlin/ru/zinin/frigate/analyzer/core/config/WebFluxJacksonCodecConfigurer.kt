@@ -32,7 +32,7 @@ import tools.jackson.databind.json.JsonMapper
  * **`@Component` вместо `@Configuration`:** класс не объявляет `@Bean`-методов, поэтому
  * `@Configuration` (CGLIB-proxy + full config scanning) — overhead без выигрыша.
  *
- * **Constructor parameter `JsonMapper`** (не `ObjectMapper`): Spring 7 codec API принимает
+ * **Constructor parameter `JsonMapper`** (не `ObjectMapper`): Spring Framework 7 codec API принимает
  * `JsonMapper` или `JsonMapper.Builder`; мы передаём pre-built `JsonMapper` для явного
  * контроля над wire-format (теряя Boot's `JsonMapperBuilderCustomizer`-ы — осознанный
  * trade-off, см. [JacksonConfiguration] KDoc).

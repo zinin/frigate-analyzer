@@ -80,6 +80,11 @@ class JacksonConfigurationTest {
                 assertThat(bean).isSameAs(ctx.getBean("internalObjectMapper", JsonMapper::class.java))
                 val bd = ctx.beanFactory.getBeanDefinition("internalObjectMapper")
                 assertThat(bd.isPrimary).isTrue()
+                // Boot's `@ConditionalOnMissingBean` in JacksonAutoConfiguration must suppress its own
+                // `jacksonJsonMapper` bean — otherwise our `@Primary` would only win disambiguation
+                // (silent dual-bean topology). Asserting exactly one bean catches a Boot-side
+                // regression where the condition no longer fires.
+                assertThat(ctx.getBeansOfType(JsonMapper::class.java)).hasSize(1)
             }
     }
 }

@@ -34,4 +34,25 @@ class TestObjectMappersTest {
                 .readValue("""{"some_field":"value"}""", Foo::class.java)
         assertThat(parsed.someField).isEqualTo("value")
     }
+
+    @Test
+    fun `detectServerMapper round-trips Kotlin data class with multiple required val params`() {
+        // Realistic detect-server response shape (cf. JobCreatedResponse, JobStatusResponse).
+        // Constructor-based decode of required val params depends on KotlinModule being
+        // auto-discovered by findAndAddModules() — if the module is missing, this test fails
+        // with "Cannot construct instance" instead of silently succeeding.
+        data class JobResponse(
+            val jobId: String,
+            val statusCode: Int,
+            val createdAt: String,
+        )
+        val parsed =
+            TestObjectMappers
+                .detectServerMapper()
+                .readValue(
+                    """{"job_id":"j-1","status_code":201,"created_at":"2026-05-26T10:00:00Z"}""",
+                    JobResponse::class.java,
+                )
+        assertThat(parsed).isEqualTo(JobResponse("j-1", 201, "2026-05-26T10:00:00Z"))
+    }
 }

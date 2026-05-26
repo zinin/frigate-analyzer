@@ -11,11 +11,12 @@ import ru.zinin.frigate.analyzer.core.IntegrationTestBase
 // `companion object init {}`. This test inherits that dependency for parity with all
 // other endpoint tests in the project.
 //
-// `StatusControllerTestConfig` injects a mocked `SignalLossMonitorTask` with one
-// fixed OFFLINE camera so the response actually contains `Instant`/`Duration` values —
-// without it, the test context has `signal-loss.enabled` unset (matchIfMissing=false),
-// so the real monitor bean is absent and `cameras.items` is empty, making ISO-8601
-// wire-format assertions impossible.
+// `StatusControllerTestConfig` injects a mocked `StatusService` returning a fixed snapshot
+// (one OFFLINE camera with `lastSeenAt` Instant + `offlineFor` Duration) so the response
+// actually contains `Instant`/`Duration` values — making the ISO-8601 wire-format assertions
+// below meaningful. `StatusService` is mocked (not `SignalLossMonitorTask`) because
+// `ScheduledAnnotationBeanPostProcessor` chokes on mockk-generated `@Scheduled` methods on
+// the task bean (see KDoc on `StatusControllerTestConfig`).
 //
 // The wire-format test below is an end-to-end sanity check для `/status`:
 // ISO-8601 timestamps + ожидаемая структура JSON-ответа. После Jackson 3 migration
