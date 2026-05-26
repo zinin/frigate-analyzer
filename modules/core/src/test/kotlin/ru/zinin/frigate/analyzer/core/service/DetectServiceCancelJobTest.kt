@@ -34,9 +34,7 @@ import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerRegistry
 import ru.zinin.frigate.analyzer.core.loadbalancer.ServerHealthMonitor
 import ru.zinin.frigate.analyzer.core.loadbalancer.ServerSelectionStrategy
 import ru.zinin.frigate.analyzer.core.testsupport.DetectServiceDispatcher
-import tools.jackson.databind.DeserializationFeature
-import tools.jackson.databind.PropertyNamingStrategies
-import tools.jackson.databind.json.JsonMapper
+import ru.zinin.frigate.analyzer.core.testsupport.TestObjectMappers
 import java.nio.file.Path
 import java.time.Clock
 import java.time.Duration
@@ -46,7 +44,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
-import com.fasterxml.jackson.databind.ObjectMapper as FasterxmlObjectMapper
 
 class DetectServiceCancelJobTest {
     @TempDir
@@ -90,8 +87,8 @@ class DetectServiceCancelJobTest {
                     ExchangeStrategies
                         .builder()
                         .codecs {
-                            it.defaultCodecs().jacksonJsonDecoder(JacksonJsonDecoder(buildJsonMapper()))
-                            it.defaultCodecs().jacksonJsonEncoder(JacksonJsonEncoder(buildJsonMapper()))
+                            it.defaultCodecs().jacksonJsonDecoder(JacksonJsonDecoder(TestObjectMappers.detectServerMapper()))
+                            it.defaultCodecs().jacksonJsonEncoder(JacksonJsonEncoder(TestObjectMappers.detectServerMapper()))
                         }.build(),
                 ).build()
 
@@ -105,7 +102,7 @@ class DetectServiceCancelJobTest {
 
         val tempFileHelper = TempFileHelper(appProps, clock)
         tempFileHelper.init()
-        service = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper, buildObjectMapper())
+        service = DetectService(webClient, loadBalancer, detectProperties, tempFileHelper, TestObjectMappers.internalMapper())
         acquired = AcquiredServer(id = "test", properties = serverProps)
     }
 
@@ -227,21 +224,5 @@ class DetectServiceCancelJobTest {
             responseTimeout = dummyDuration,
             detectServers = mapOf("test" to serverProps),
         )
-    }
-
-    private fun buildJsonMapper(): JsonMapper =
-        JsonMapper
-            .builder()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-            .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-            .build()
-
-    private fun buildObjectMapper(): FasterxmlObjectMapper {
-        val builder =
-            com.fasterxml.jackson.databind.json.JsonMapper
-                .builder()
-        builder.configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-        builder.propertyNamingStrategy(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE)
-        return builder.build()
     }
 }

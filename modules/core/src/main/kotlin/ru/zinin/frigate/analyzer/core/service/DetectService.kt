@@ -1,6 +1,5 @@
 package ru.zinin.frigate.analyzer.core.service
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -34,6 +33,7 @@ import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.FrameExtractionResponse
 import ru.zinin.frigate.analyzer.model.response.JobCreatedResponse
 import ru.zinin.frigate.analyzer.model.response.JobStatusResponse
+import tools.jackson.databind.ObjectMapper
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
@@ -45,6 +45,10 @@ class DetectService(
     private val detectServerLoadBalancer: DetectServerLoadBalancer,
     private val detectProperties: DetectProperties,
     private val tempFileHelper: TempFileHelper,
+    // Used only for raw JsonNode parsing of detect-server error-detail bodies via
+    // objectMapper.readTree(body).path("detail"). Property access is case-sensitive on the JSON
+    // text "detail" — PropertyNamingStrategy is irrelevant here. Spring injects the @Primary
+    // JsonMapper bean (which extends ObjectMapper).
     private val objectMapper: ObjectMapper,
 ) {
     /**
