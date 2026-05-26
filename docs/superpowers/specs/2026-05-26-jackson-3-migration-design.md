@@ -56,6 +56,19 @@ class JacksonConfiguration {
      * Spring 7 codec API (`JacksonJsonEncoder(JsonMapper)`, `JacksonJsonDecoder(JsonMapper)`)
      * требует именно `JsonMapper` — поэтому `WebFluxJacksonCodecConfigurer` получает корректный тип.
      *
+     * **Builder vs pre-built — осознанный trade-off:**
+     * Spring 7 codec API (`JacksonJsonEncoder`/`JacksonJsonDecoder`) принимают **и** `JsonMapper`,
+     * **и** `JsonMapper.Builder` (5 overload'ов, verified via javap). Если построить бин
+     * через `(builder: JsonMapper.Builder) -> builder.configure(...).build()` — Spring Boot
+     * автоматически применит `JsonMapperBuilderCustomizer`-ы: `ProblemDetailJacksonMixin`,
+     * `@JacksonMixin` бины, `spring.jackson.*` properties, `MapperBuilder.findModules()`.
+     * Мы намеренно используем `JsonMapper.builder()...build()` (pre-built) для **явного контроля**
+     * над wire-format: external customizers могли бы незаметно изменить поведение mapper'а,
+     * противоречит цели issue #29 («config truly governs wire-format»). Проект не использует
+     * `ProblemDetail` (`grep ProblemDetail` = 0 hits в репо), поэтому потеря этого mixin'а
+     * не влияет на текущее поведение. Если в будущем понадобится Boot's customizer chain —
+     * переход на builder-injection — локальное изменение в этом файле.
+     *
      * **Dual-stack rationale (self-contained — не зависит от внешних docs):**
      * `tools.jackson` (Jackson 3) управляет всем нашим внутренним и REST wire-форматом JSON.
      * Legacy `com.fasterxml.jackson` остаётся **только** как транзитивная зависимость:
@@ -85,7 +98,7 @@ class JacksonConfiguration {
 ### 3.2. `WebFluxJacksonCodecConfigurer` (новый файл/бин)
 
 ```kotlin
-@Configuration
+@Component
 @Order(Ordered.LOWEST_PRECEDENCE)
 class WebFluxJacksonCodecConfigurer(
     private val internalObjectMapper: JsonMapper,
@@ -97,13 +110,29 @@ class WebFluxJacksonCodecConfigurer(
 }
 ```
 
-Имя класса `JacksonJsonEncoder`/`JacksonJsonDecoder` — `org.springframework.http.codec.json.JacksonJsonEncoder` (Spring 7, под капотом использует `tools.jackson`). Конструктор `JacksonJsonEncoder` принимает только `JsonMapper` (verified via `javap` для spring-web-7.0.5) — параметр должен быть типа `JsonMapper`, не `ObjectMapper`.
+Имя класса `JacksonJsonEncoder`/`JacksonJsonDecoder` — `org.springframework.http.codec.json.JacksonJsonEncoder` (Spring 7, под капотом использует `tools.jackson`). Конструктор `JacksonJsonEncoder` принимает **и** `JsonMapper`, **и** `JsonMapper.Builder` (verified via `javap` для spring-web-7.0.5: 5 overload'ов — `()`, `(JsonMapper)`, `(JsonMapper.Builder)`, `(JsonMapper, MimeType...)`, `(JsonMapper.Builder, MimeType...)`). Мы передаём pre-built `JsonMapper` (см. § 3.1 — осознанный trade-off: теряем Boot's `JsonMapperBuilderCustomizer`-ы вроде `ProblemDetailJacksonMixin`, но получаем явный контроль над wire-format).
+
+**`@Component` вместо `@Configuration`:** класс не объявляет `@Bean`-методов, поэтому `@Configuration` (с его CGLIB-proxy и full configuration scanning) — overhead без выигрыша. `@Component` достаточен — Spring зарегистрирует bean, autowire'ит зависимости, применит `@Order`.
 
 **`@Order(Ordered.LOWEST_PRECEDENCE)`** гарантирует, что наш configurer выполняется последним в цепочке `WebFluxConfigurer`'ов: даже если другой configurer (наш собственный в будущем или auto-config Spring Boot) зарегистрирует свой `jacksonJsonEncoder`, наша явная регистрация перезапишет его. Без `@Order` порядок определяется именами beans / порядком обнаружения — слишком хрупко.
 
-Это **явная** регистрация: если бин удалят, дефолтная регистрация Spring Boot auto-config возьмёт верх, но wire-format регрессирует на дефолты — regression-тест поймает (см. § 4.3 про `StatusControllerTest` extension с `FAIL_ON_UNKNOWN_PROPERTIES`).
+Это **явная** регистрация: если бин удалят, дефолтная регистрация Spring Boot auto-config возьмёт верх — wire-format поведенчески не изменится (см. ниже про эквивалентность), но потеряется explicit ownership statement.
 
-**Про взаимодействие с Spring Boot 4 auto-config:** мы намеренно НЕ углубляемся в анализ `JacksonAutoConfiguration` / `JacksonCodecCustomizer` source code для Spring Boot 4.0.6, потому что эта реализация меняется между minor releases. Вместо этого используем **behavioural verification**: расширенный `StatusControllerTest` (§ 4.3) проверяет `FAIL_ON_UNKNOWN_PROPERTIES=false` end-to-end. Если auto-config делает то же что и наш configurer — тест проходит обоими путями (наш бин безвреден). Если auto-config делает что-то другое — тест требует именно наш configurer. В обоих случаях `@Order(LOWEST_PRECEDENCE)` гарантирует что наша явная регистрация — последняя и побеждает.
+**Про взаимодействие с Spring Boot 4 auto-config — honest narrative:**
+
+Spring Boot 4 содержит `CodecsAutoConfiguration.jacksonCodecCustomizer(JsonMapper)`, который автоматически берёт любой `JsonMapper` bean (включая наш `@Primary internalObjectMapper`) и wire'ит его в WebFlux JSON codec через идиоматичный `CodecCustomizer`-интерфейс. **Функционально наш `WebFluxJacksonCodecConfigurer` дублирует эту логику** — поведение совпадает.
+
+Поэтому **поведенческие тесты не могут доказать необходимость** нашего configurer'а: удаление файла не сломает wire-format (Boot's auto-config возьмёт верх). Все наши настройки (`FAIL_ON_UNKNOWN_PROPERTIES=false`, ISO-8601 dates/durations, KotlinModule discovery) совпадают с Spring Boot 4 defaults, поэтому behavioral assertion на `/status` или новый POST endpoint не дифференцирует наш бин от auto-config дефолтов.
+
+**Ценность нашего configurer'а — архитектурная, не поведенческая:**
+1. **Explicit ownership statement** — closes #29 буквально требует «config truly governs wire-format». Implicit wiring через Boot's auto-config противоречит этому intent.
+2. **Belt-and-suspenders** — `@Order(LOWEST_PRECEDENCE)` страхует от поведенческих изменений Boot's auto-config в minor-release.
+3. **Документирует ownership** wire-format в одном явном файле; новый разработчик видит configurer и понимает где настраивается REST JSON.
+
+**Regression guard стратегия** (вместо невозможного behavioural test):
+- `WebFluxJacksonCodecConfigurerTest` (unit, MockK + reflection identity) — доказывает что configurer регистрирует codec'и **построенные на нашем mapper'е**, а не на дефолтных (см. § 4.3, NEW-17 fix).
+- `JacksonConfigurationTest.ApplicationContextRunner` (см. § 4.3) — доказывает `@Primary` disambiguation в bean topology с auto-config.
+- `StatusControllerTest` — проверяет ISO-8601 wire-format end-to-end; пройдёт обоими путями (Boot auto-config и наш configurer дают то же поведение) — это honest sanity check, не regression guard на конкретно наш configurer.
 
 Может быть в отдельном файле `WebFluxJacksonCodecConfigurer.kt` или внутри `JacksonConfiguration.kt`. Решение оставлено имплементации (предпочтительнее отдельный файл — single-responsibility).
 

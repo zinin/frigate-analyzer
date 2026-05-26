@@ -372,9 +372,19 @@ import tools.jackson.databind.json.JsonMapper
  *  - `findAndAddModules()` picks up `tools.jackson.module.kotlin` from classpath via ServiceLoader
  *
  * **Return type is `JsonMapper`, not `ObjectMapper`.** Spring 7's `JacksonJsonEncoder`/
- * `JacksonJsonDecoder` constructors require `JsonMapper` (verified via javap of spring-web-7.0.5).
+ * `JacksonJsonDecoder` constructors accept `JsonMapper` (или `JsonMapper.Builder` — 5 overload'ов).
  * `JsonMapper extends ObjectMapper`, so DI into consumers declaring `ObjectMapper` (DetectService,
  * ClaudeResponseParser) still works.
+ *
+ * **Builder vs pre-built — осознанный trade-off:**
+ * Если построить бин через `(builder: JsonMapper.Builder) -> builder.configure(...).build()`,
+ * Spring Boot автоматически применит `JsonMapperBuilderCustomizer`-ы: `ProblemDetailJacksonMixin`,
+ * `@JacksonMixin` бины, `spring.jackson.*` properties, `MapperBuilder.findModules()`.
+ * Мы намеренно используем `JsonMapper.builder()...build()` (pre-built) для **явного контроля**
+ * над wire-format: external customizers могли бы незаметно изменить поведение mapper'а,
+ * противоречит цели issue #29 («config truly governs wire-format»). Проект не использует
+ * `ProblemDetail` (`grep ProblemDetail` = 0 hits в репо), поэтому потеря этого mixin'а
+ * не влияет на текущее поведение.
  *
  * **Dual-stack rationale (self-contained):**
  * `tools.jackson` governs all internal and REST wire-format JSON. Legacy `com.fasterxml.jackson`
@@ -1052,36 +1062,44 @@ Create `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/WebFl
 ```kotlin
 package ru.zinin.frigate.analyzer.core.config
 
-import org.springframework.context.annotation.Configuration
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
 import org.springframework.http.codec.ServerCodecConfigurer
 import org.springframework.http.codec.json.JacksonJsonDecoder
 import org.springframework.http.codec.json.JacksonJsonEncoder
+import org.springframework.stereotype.Component
 import org.springframework.web.reactive.config.WebFluxConfigurer
 import tools.jackson.databind.json.JsonMapper
 
 /**
  * Wires the project's `@Primary internalObjectMapper` (configured in [JacksonConfiguration])
- * into WebFlux's REST JSON codec, so the inbound/outbound wire-format for REST endpoints
- * (e.g. `/status`) is governed by **our** mapper and not Spring Boot 4 auto-configuration
- * defaults.
+ * into WebFlux's REST JSON codec.
  *
- * Without this configurer the wire-format works by coincidence — Spring Boot 4 auto-config
- * defaults happen to match our requirements (ISO-8601, camelCase). With this configurer the
- * relationship is **explicit**: regression guards in `WebFluxJacksonCodecConfigurerTest` and
- * the extended `StatusControllerTest` (unknown-property tolerance) fail if this wiring is
- * removed.
+ * **Honest narrative про duplication:** Spring Boot 4's `CodecsAutoConfiguration.jacksonCodecCustomizer`
+ * автоматически wire'ит любой `JsonMapper` бин (включая наш `@Primary`) в WebFlux codec через
+ * `CodecCustomizer`. Наш configurer **функционально дублирует** эту логику. Поведение совпадает,
+ * поэтому behavioral test (запрос → отвечает с ISO-8601 / толерантно к unknown props) пройдёт
+ * обоими путями — это НЕ regression guard на конкретно наш configurer.
  *
- * `@Order(Ordered.LOWEST_PRECEDENCE)` ensures this configurer runs last in the
- * `WebFluxConfigurer` chain — even if another configurer (now or in the future) also calls
- * `jacksonJsonEncoder`, our explicit registration takes effect.
+ * **Ценность configurer'а — архитектурная, не поведенческая:**
+ *  - Explicit ownership statement (closes #29 требует «config truly governs wire-format»).
+ *  - Belt-and-suspenders: `@Order(Ordered.LOWEST_PRECEDENCE)` страхует если Boot's auto-config
+ *    изменит wiring в minor-release.
+ *  - Документирует ownership wire-format в одном явном файле.
  *
- * Constructor parameter is `JsonMapper` (not `ObjectMapper`) because Spring 7's
- * `JacksonJsonEncoder`/`JacksonJsonDecoder` constructors accept only `JsonMapper`. `JsonMapper`
- * extends `ObjectMapper` so DI from `@Primary JsonMapper` satisfies both shapes.
+ * **Regression guard** — `WebFluxJacksonCodecConfigurerTest` (unit, reflection identity check —
+ * codec'ы построены на нашем mapper'е) + `JacksonConfigurationTest.ApplicationContextRunner`
+ * (bean topology с auto-config).
+ *
+ * **`@Component` вместо `@Configuration`:** класс не объявляет `@Bean`-методов, поэтому
+ * `@Configuration` (CGLIB-proxy + full config scanning) — overhead без выигрыша.
+ *
+ * **Constructor parameter `JsonMapper`** (не `ObjectMapper`): Spring 7 codec API принимает
+ * `JsonMapper` или `JsonMapper.Builder`; мы передаём pre-built `JsonMapper` для явного
+ * контроля над wire-format (теряя Boot's `JsonMapperBuilderCustomizer`-ы — осознанный
+ * trade-off, см. [JacksonConfiguration] KDoc).
  */
-@Configuration
+@Component
 @Order(Ordered.LOWEST_PRECEDENCE)
 class WebFluxJacksonCodecConfigurer(
     private val internalObjectMapper: JsonMapper,
@@ -1099,7 +1117,7 @@ Run: `./gradlew :frigate-analyzer-core:test --tests 'ru.zinin.frigate.analyzer.c
 
 Expected: 1 test passes.
 
-- [ ] **Step 5: Update `StatusControllerTest` KDoc and add FAIL_ON_UNKNOWN_PROPERTIES regression test**
+- [ ] **Step 5: Update `StatusControllerTest` KDoc (без нового behavioral test)**
 
 Edit `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt`:
 
@@ -1107,31 +1125,33 @@ Edit `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/Sta
 
 ```kotlin
 /**
- * End-to-end wire-format check for /status: verifies ISO-8601 timestamps + tolerance to
- * unknown JSON properties. After the Jackson 3 migration (issue #29) these go through codecs
- * registered by [WebFluxJacksonCodecConfigurer] from our `@Primary internalObjectMapper` —
- * removing the configurer (or the @Primary marker) breaks the unknown-property tolerance test.
+ * End-to-end sanity check для wire-format `/status`: ISO-8601 timestamps + ожидаемая структура
+ * JSON-ответа. После Jackson 3 migration (issue #29) этот тест идёт через codecs,
+ * зарегистрированные [WebFluxJacksonCodecConfigurer] от нашего `@Primary internalObjectMapper`.
+ *
+ * **Важно:** этот тест НЕ доказывает что наш `WebFluxJacksonCodecConfigurer` фактически
+ * управляет codec'ом. Spring Boot 4 `CodecsAutoConfiguration.jacksonCodecCustomizer` автоматически
+ * wire'ит `@Primary JsonMapper` бин в WebFlux codec — все наши настройки совпадают с Boot 4
+ * defaults, поэтому удаление нашего configurer'а не сломает ни этот тест, ни поведение
+ * `/status`. Это honest sanity check, не regression guard.
+ *
+ * **Реальный regression guard configurer'а:**
+ *  - [ru.zinin.frigate.analyzer.core.config.WebFluxJacksonCodecConfigurerTest] — unit test с
+ *    reflection identity check: codec'ы построены ИМЕННО на нашем mapper'е.
+ *  - [ru.zinin.frigate.analyzer.core.config.JacksonConfigurationTest] —
+ *    `ApplicationContextRunner` с auto-config: `@Primary` disambiguation в bean topology.
+ *
+ * См. design § 3.2 «Builder vs pre-built — осознанный trade-off» и «Про взаимодействие с
+ * Spring Boot 4 auto-config — honest narrative» для полного объяснения.
  */
 ```
 
-(b) Add a new test method that POSTs (or otherwise sends body, depending on existing endpoint shape — if `/status` is GET-only, add a small `@WebFluxTest` with a stub controller accepting a body) JSON containing an unknown property and asserts 200 OK:
+(b) **НЕ добавлять** FAIL_ON_UNKNOWN_PROPERTIES regression test. Reason (consensus всех 5 ревьюеров iter-2):
+- `/status` GET-only — `JacksonJsonDecoder` не вызывается на GET без body, behavioral assertion невозможна
+- Даже с `@TestConfiguration` POST echo controller'ом — Spring Boot 4 default тоже `FAIL_ON_UNKNOWN_PROPERTIES=false` (verified), поэтому тест проходит обоими путями и не дифференцирует наш configurer
+- Все наши настройки совпадают с Boot defaults → behavioral regression guard на configurer принципиально невозможен (см. design § 3.2 honest narrative)
 
-```kotlin
-@Test
-fun `inbound JSON with unknown properties is tolerated — regression guard for FAIL_ON_UNKNOWN_PROPERTIES`() {
-    // Default Spring Boot 4 tools.jackson mapper would also tolerate unknowns — but if our
-    // WebFluxJacksonCodecConfigurer is removed and SOMEONE in the future flips the default,
-    // this test will fail. The combination of (a) extra field accepted (b) ISO-8601 dates is
-    // specifically what JacksonConfiguration governs.
-    webTestClient.get()  // or .post(...).bodyValue(...)
-        .uri("/status")
-        .exchange()
-        .expectStatus().isOk
-    // Sanity: assert response shape unchanged (ISO-8601 in `startedAt` field etc.)
-}
-```
-
-If `/status` is read-only and cannot accept a JSON body, alternative: add a tiny `@TestConfiguration`-scoped controller in `StatusControllerTest` that echoes a POST body, then exercise it through the same `WebTestClient`.
+Real regression coverage достигнута через NEW-17 fix (codec identity reflection в `WebFluxJacksonCodecConfigurerTest`) + NEW-14 fix (ApplicationContextRunner strengthening в `JacksonConfigurationTest`).
 
 - [ ] **Step 6: Run full core test suite (verify StatusControllerTest still passes — proves the configurer governs end-to-end wire-format)**
 
