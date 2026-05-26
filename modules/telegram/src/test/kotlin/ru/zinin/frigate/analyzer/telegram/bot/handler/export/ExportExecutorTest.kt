@@ -12,11 +12,12 @@ import dev.inmo.tgbotapi.types.message.content.MessageContent
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
@@ -50,7 +51,15 @@ class ExportExecutorTest {
     // prevents coroutine leaks across tests.
     private val createdScopes = ConcurrentLinkedQueue<ExportCoroutineScope>()
 
-    private fun newScope(): ExportCoroutineScope = ExportCoroutineScope().also { createdScopes.add(it) }
+    // Test-backed ExportCoroutineScope wired to the active runTest's scheduler. Without this the
+    // export coroutines would run on Dispatchers.IO while the test body runs on virtual time —
+    // the two-clock race made these tests flaky on CI (see GH run 26456936612). The internal
+    // delegate-taking ctor accepts any CoroutineScope; UnconfinedTestDispatcher runs eagerly inline,
+    // so the registry is populated synchronously by the time `scope.launch { ... }` returns.
+    private fun TestScope.newTestScope(): ExportCoroutineScope =
+        ExportCoroutineScope(CoroutineScope(UnconfinedTestDispatcher(testScheduler))).also {
+            createdScopes.add(it)
+        }
 
     @AfterEach
     fun tearDown() {
@@ -67,7 +76,7 @@ class ExportExecutorTest {
                 mockk<TelegramProperties>(relaxed = true).also {
                     every { it.sendVideoTimeout } returns Duration.ofSeconds(30)
                 }
-            val scope = newScope()
+            val scope = newTestScope()
             val registry = ActiveExportRegistry(scope)
             val executor = ExportExecutor(bot, videoExportService, properties, msg, registry, scope)
 
@@ -111,31 +120,19 @@ class ExportExecutorTest {
 
             val executeJob = scope.launch { executor.execute(chatId, ZoneOffset.UTC, outcome, "en") }
 
-            // Wait for registry to have the entry. Use a bounded-timeout loop rather than a fixed
-            // `repeat(50)` with `delay(10)` — the loop exits as soon as the entry appears, so fast
-            // CI runs aren't blocked, and the 5s ceiling handles slow CI without flakiness.
-            val exportId =
-                withTimeout(5_000) {
-                    var id: UUID? = null
-                    while (id == null) {
-                        id = firstActiveExport(registry)
-                        if (id == null) delay(10)
-                    }
-                    id
-                }
+            // UnconfinedTestDispatcher runs eagerly inline, so by this point executor.execute()
+            // has already populated the registry and the lazy job has reached awaitCancellation().
+            val exportId = firstActiveExport(registry)!!
 
             // Simulate cancel click. Capture the export-job reference BEFORE cancelling — once
             // release() runs (via finally + invokeOnCompletion), registry.get(exportId) returns null.
             val exportJob = registry.get(exportId)!!.job
             registry.markCancelling(exportId)
             exportJob.cancel()
-            // Wait for the export-job's finally block (including registry.release()) to run. We
-            // CANNOT rely on executeJob.join() — execute() is fire-and-forget after iter-3
-            // CRITICAL-11, so executeJob completes almost instantly after job.start(), long before
-            // the export-job's body (which awaitCancellation's on the mock) gets to its finally
-            // block. exportJob.join() blocks until body + finally + all invokeOnCompletion
-            // handlers have run (iter-4 codex DESIGN-1). executeJob is then joined to cleanly end
-            // the launcher coroutine.
+            // exportJob.join() blocks until body + finally + all invokeOnCompletion handlers have
+            // run. With UnconfinedTestDispatcher the cancellation cleanup (including the final
+            // editMessageText and registry.release) runs inline, so this returns immediately.
+            // executeJob.join() then cleanly ends the launcher coroutine.
             exportJob.join()
             executeJob.join()
 
@@ -169,7 +166,7 @@ class ExportExecutorTest {
                 mockk<TelegramProperties>(relaxed = true).also {
                     every { it.sendVideoTimeout } returns Duration.ofSeconds(30)
                 }
-            val scope = newScope()
+            val scope = newTestScope()
             val registry = ActiveExportRegistry(scope)
             val executor = ExportExecutor(bot, videoExportService, properties, msg, registry, scope)
 
@@ -206,11 +203,10 @@ class ExportExecutorTest {
                     ExportMode.ANNOTATED,
                 )
 
+            // UnconfinedTestDispatcher runs scope.launch eagerly inline — by the time firstJob is
+            // assigned, the first export has already populated the registry and suspended at
+            // awaitCancellation. No polling needed.
             val firstJob = scope.launch { executor.execute(chatId, ZoneOffset.UTC, outcome, "en") }
-            // Wait for first export to register.
-            withTimeout(2_000) {
-                while (registry.snapshotForTest().isEmpty()) delay(10)
-            }
 
             // Second execute must see DuplicateChat and send "concurrent" message instead.
             executor.execute(chatId, ZoneOffset.UTC, outcome, "en")
