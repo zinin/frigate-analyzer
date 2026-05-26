@@ -5,6 +5,8 @@ import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import java.util.Locale
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 
 class MessageResolverTest {
     private val messageSource =
@@ -44,5 +46,24 @@ class MessageResolverTest {
     fun `get falls back to English for unknown locale`() {
         val result = resolver.get("common.cancel", "de")
         assertEquals("Cancel", result)
+    }
+
+    @Test
+    fun `new i18n keys resolve in both locales`() {
+        val newKeys =
+            listOf(
+                "startup.notification.message",
+                "language.button.ru",
+                "language.button.en",
+                "language.name.ru",
+                "language.name.en",
+            )
+        listOf("ru", "en").forEach { lang ->
+            newKeys.forEach { key ->
+                val value = resolver.get(key, lang)
+                assertNotEquals(key, value, "Key '$key' is missing for locale '$lang' (returned raw key)")
+                assertTrue(value.isNotBlank(), "Key '$key' is blank for locale '$lang'")
+            }
+        }
     }
 }

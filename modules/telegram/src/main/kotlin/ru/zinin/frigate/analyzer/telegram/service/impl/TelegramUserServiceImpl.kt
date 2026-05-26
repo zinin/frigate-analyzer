@@ -175,7 +175,10 @@ class TelegramUserServiceImpl(
     }
 
     @Transactional(readOnly = true)
-    override suspend fun getOwnerLanguage(): String? = findByUsernameIgnoreCase(telegramProperties.owner)?.languageCode
+    override suspend fun getOwnerLanguage(): String? =
+        findByUsernameIgnoreCase(telegramProperties.owner)
+            ?.takeIf { it.status == UserStatus.ACTIVE }
+            ?.languageCode
 
     @Transactional
     override suspend fun updateLanguage(

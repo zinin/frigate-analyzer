@@ -28,7 +28,10 @@ class TelegramUserServiceImplTest {
         }
     private val service = TelegramUserServiceImpl(repository, uuidGeneratorHelper, clock, telegramProperties)
 
-    private fun ownerEntity(languageCode: String?): TelegramUserEntity =
+    private fun ownerEntity(
+        languageCode: String?,
+        status: UserStatus = UserStatus.ACTIVE,
+    ): TelegramUserEntity =
         TelegramUserEntity(
             id = UUID.randomUUID(),
             username = "owner_username",
@@ -36,9 +39,9 @@ class TelegramUserServiceImplTest {
             userId = 100L,
             firstName = "Owner",
             lastName = null,
-            status = UserStatus.ACTIVE.name,
+            status = status.name,
             creationTimestamp = Instant.now(),
-            activationTimestamp = Instant.now(),
+            activationTimestamp = if (status == UserStatus.ACTIVE) Instant.now() else null,
             languageCode = languageCode,
         )
 
@@ -103,6 +106,15 @@ class TelegramUserServiceImplTest {
     fun `getOwnerLanguage returns null when owner not in database`() =
         runTest {
             coEvery { repository.findByUsernameIgnoreCase("owner_username") } returns null
+
+            assertNull(service.getOwnerLanguage())
+        }
+
+    @Test
+    fun `getOwnerLanguage returns null when owner is not yet activated`() =
+        runTest {
+            coEvery { repository.findByUsernameIgnoreCase("owner_username") } returns
+                ownerEntity(languageCode = "ru", status = UserStatus.INVITED)
 
             assertNull(service.getOwnerLanguage())
         }
