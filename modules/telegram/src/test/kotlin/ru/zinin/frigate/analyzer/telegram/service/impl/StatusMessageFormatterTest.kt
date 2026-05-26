@@ -453,4 +453,30 @@ class StatusMessageFormatterI18nTest {
             "RU: raw i18n key leaked through MessageResolver fallback: $out",
         )
     }
+
+    @Test
+    fun `RU locale renders non-zero percentages with dot separator (Locale ROOT guard)`() {
+        val snapshot =
+            sampleSnapshot().copy(
+                recordings =
+                    RecordingsStatistics(
+                        total = 100,
+                        processed = 90,
+                        unprocessed = 10,
+                        success = 85,
+                        errors = 5,
+                        byCameras = emptyList(),
+                        processingRatePerMinute = 1.5,
+                    ),
+            )
+
+        val out = formatter.format(snapshot, language = "ru", zone = zone, now = now)
+
+        assertTrue(out.contains("85.0"), "expected `85.0` (dot decimal) in RU output: $out")
+        assertTrue(out.contains("5.0"), "expected `5.0` (dot decimal) in RU output: $out")
+        assertFalse(
+            Regex("""\b\d+,\d+%""").containsMatchIn(out),
+            "RU locale leaked into pct format (found `N,N%` instead of `N.N%`): $out",
+        )
+    }
 }

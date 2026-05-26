@@ -9,6 +9,11 @@ data class RecordingsStatistics(
     val processed: Long,
     val unprocessed: Long,
     val success: Long,
+    /**
+     * Кол-во recordings с непустым `error_message` (включая возможные retry-pending
+     * без `process_timestamp`). Поэтому `success + errors == processed` НЕ инвариант
+     * в общем случае.
+     */
     val errors: Long,
     val byCameras: List<CameraStatistics>,
     val processingRatePerMinute: Double,
