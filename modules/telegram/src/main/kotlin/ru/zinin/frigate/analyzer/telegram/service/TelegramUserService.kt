@@ -42,8 +42,6 @@ interface TelegramUserService {
 
     suspend fun getUserLanguage(chatId: Long): String?
 
-    suspend fun getOwnerLanguage(): String?
-
     suspend fun updateLanguage(
         chatId: Long,
         languageCode: String,

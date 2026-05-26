@@ -238,9 +238,11 @@ class TelegramNotificationServiceImpl(
         logger.info { "Enqueued signal-recovery alert for camera $camId to ${recipients.size} recipients" }
     }
 
-    override suspend fun sendOwnerMessage(text: String) {
+    override suspend fun sendOwnerMessage(textBuilder: (language: String) -> String) {
         // Case-insensitive lookup so an owner whose DB-stored username differs in case from
-        // TELEGRAM_OWNER (or vice versa) still receives owner-targeted notifications.
+        // TELEGRAM_OWNER (or vice versa) still receives owner-targeted notifications. Done once
+        // here so the caller doesn't need a parallel TelegramUserService lookup for the owner's
+        // language.
         val owner =
             userService
                 .findByUsernameIgnoreCase(telegramProperties.owner)
@@ -258,6 +260,7 @@ class TelegramNotificationServiceImpl(
             }
             return
         }
+        val text = textBuilder(owner.languageCode ?: DEFAULT_OWNER_LANGUAGE)
         notificationQueue.enqueue(
             SimpleTextNotificationTask(
                 id = uuidGeneratorHelper.generateV1(),
@@ -282,4 +285,8 @@ class TelegramNotificationServiceImpl(
             }
             true
         }
+
+    private companion object {
+        const val DEFAULT_OWNER_LANGUAGE: String = "en"
+    }
 }

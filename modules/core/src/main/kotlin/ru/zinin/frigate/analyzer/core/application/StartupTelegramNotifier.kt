@@ -20,7 +20,6 @@ import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
-import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -32,7 +31,6 @@ private val logger = KotlinLogging.logger {}
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class StartupTelegramNotifier(
     private val telegramNotificationService: TelegramNotificationService,
-    private val telegramUserService: TelegramUserService,
     private val messageResolver: MessageResolver,
     private val gitProperties: GitProperties,
     private val buildProperties: BuildProperties,
@@ -49,18 +47,20 @@ class StartupTelegramNotifier(
         scope.launch {
             try {
                 withTimeout(STARTUP_NOTIFICATION_TIMEOUT.toMillis()) {
-                    val ownerLang = telegramUserService.getOwnerLanguage() ?: DEFAULT_LANGUAGE
-                    // BuildProperties / GitProperties getters may return null (per Spring Javadoc);
-                    // null-safe formatting prevents "Version: null" if the build/git plugin didn't run.
-                    val text =
+                    // sendOwnerMessage performs the single owner DB lookup and feeds the
+                    // resolved language into the builder, so this whole block stays one DB
+                    // round-trip plus the actual send.
+                    telegramNotificationService.sendOwnerMessage { language ->
+                        // BuildProperties / GitProperties getters may return null (per Spring Javadoc);
+                        // null-safe formatting prevents "Version: null" if the build/git plugin didn't run.
                         buildString {
-                            appendLine(messageResolver.get("startup.notification.message", ownerLang))
+                            appendLine(messageResolver.get("startup.notification.message", language))
                             appendLine("Version: ${buildProperties.version ?: UNKNOWN}")
                             appendLine("Commit: ${gitProperties.commitId?.take(8) ?: UNKNOWN}")
                             appendLine("Build time: ${buildProperties.time ?: UNKNOWN}")
                             append("Started: ${Instant.now(clock)}")
                         }
-                    telegramNotificationService.sendOwnerMessage(text)
+                    }
                 }
             } catch (e: TimeoutCancellationException) {
                 logger.warn { "Startup notification timed out after $STARTUP_NOTIFICATION_TIMEOUT: ${e.message}" }
@@ -80,6 +80,5 @@ class StartupTelegramNotifier(
     private companion object {
         val STARTUP_NOTIFICATION_TIMEOUT: Duration = Duration.ofSeconds(5)
         const val UNKNOWN: String = "<unknown>"
-        const val DEFAULT_LANGUAGE: String = "en"
     }
 }
