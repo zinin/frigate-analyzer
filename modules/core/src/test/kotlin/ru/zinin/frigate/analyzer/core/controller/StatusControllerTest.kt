@@ -47,6 +47,10 @@ class StatusControllerTest : IntegrationTestBase() {
             .isNumber
             .jsonPath("$.recordings.unprocessed")
             .isNumber
+            .jsonPath("$.recordings.success")
+            .isNumber
+            .jsonPath("$.recordings.errors")
+            .isNumber
             .jsonPath("$.recordings.byCameras")
             .isArray
             .jsonPath("$.recordings.processingRatePerMinute")

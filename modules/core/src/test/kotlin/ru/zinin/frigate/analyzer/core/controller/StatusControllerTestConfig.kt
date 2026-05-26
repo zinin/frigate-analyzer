@@ -37,6 +37,8 @@ class StatusControllerTestConfig {
                         total = 0L,
                         processed = 0L,
                         unprocessed = 0L,
+                        success = 0L,
+                        errors = 0L,
                         byCameras = emptyList(),
                         processingRatePerMinute = 0.0,
                     ),
