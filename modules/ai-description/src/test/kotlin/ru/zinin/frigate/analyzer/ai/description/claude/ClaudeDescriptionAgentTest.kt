@@ -1,7 +1,5 @@
 package ru.zinin.frigate.analyzer.ai.description.claude
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -24,6 +22,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
@@ -56,7 +55,7 @@ class ClaudeDescriptionAgentTest {
         )
 
     private val promptBuilder = mockk<ClaudePromptBuilder>()
-    private val responseParser = ClaudeResponseParser(ObjectMapper().registerKotlinModule())
+    private val responseParser = ClaudeResponseParser(TestObjectMappers.internalMapper())
     private val imageStager = mockk<ClaudeImageStager>()
     private val exceptionMapper = ClaudeExceptionMapper()
 

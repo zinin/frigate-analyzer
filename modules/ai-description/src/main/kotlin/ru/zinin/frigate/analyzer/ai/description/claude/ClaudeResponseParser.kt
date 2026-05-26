@@ -1,12 +1,12 @@
 package ru.zinin.frigate.analyzer.ai.description.claude
 
-import com.fasterxml.jackson.databind.JsonNode
-import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import tools.jackson.databind.JsonNode
+import tools.jackson.databind.ObjectMapper
 
 private val logger = KotlinLogging.logger {}
 

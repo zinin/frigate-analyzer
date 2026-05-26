@@ -7,6 +7,7 @@ import org.springaicommunity.claude.agent.sdk.exceptions.TransportException
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
+import tools.jackson.core.JacksonException
 
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -23,6 +24,13 @@ class ClaudeExceptionMapper {
      * cancellation-path остаётся корректным, а возвращённые DescriptionException
      * ловятся штатными catch-ами.
      *
+     * Jackson branch: ловим И Jackson 2 [JsonProcessingException] (Claude SDK всё ещё может
+     * эмитить их при парсинге stream-json), И tools.jackson [JacksonException]. Ветка
+     * `is JacksonException` — defensive: [ClaudeResponseParser.parse] оборачивает
+     * `readTree(...)` в `try/catch (e: Exception)`, поэтому tools.jackson исключение сегодня
+     * до маппера не доходит. Ветка существует для будущих call-sites, которые могут вызывать
+     * `internalObjectMapper` напрямую без локального try-catch.
+     *
      * @throws CancellationException пробрасывается AS-IS, если [throwable] — её экземпляр.
      */
     fun map(throwable: Throwable): DescriptionException {
@@ -32,7 +40,7 @@ class ClaudeExceptionMapper {
                 throwable
             }
 
-            is JsonProcessingException -> {
+            is JsonProcessingException, is JacksonException -> {
                 DescriptionException.InvalidResponse(throwable)
             }
 

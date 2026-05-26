@@ -2,9 +2,11 @@ package ru.zinin.frigate.analyzer.ai.description.claude
 
 import com.fasterxml.jackson.core.JsonParseException
 import kotlinx.coroutines.CancellationException
+import org.assertj.core.api.Assertions.assertThat
 import org.springaicommunity.claude.agent.sdk.exceptions.ClaudeSDKException
 import org.springaicommunity.claude.agent.sdk.exceptions.TransportException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
+import tools.jackson.core.exc.StreamReadException
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
@@ -61,6 +63,14 @@ class ClaudeExceptionMapperTest {
     fun `JsonParseException maps to InvalidResponse`() {
         val e = mapper.map(JsonParseException(null, "bad json"))
         assertIs<DescriptionException.InvalidResponse>(e)
+    }
+
+    @Test
+    fun `map wraps tools_jackson JacksonException as InvalidResponse`() {
+        val cause = StreamReadException(null, "boom")
+        val result = mapper.map(cause)
+        assertThat(result).isInstanceOf(DescriptionException.InvalidResponse::class.java)
+        assertThat(result.cause).isSameAs(cause)
     }
 
     @Test

@@ -1,7 +1,5 @@
 package ru.zinin.frigate.analyzer.ai.description.claude
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
@@ -10,6 +8,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermission
@@ -99,7 +98,7 @@ JSON
         val factory = ClaudeAsyncClientFactory(claudeProps)
         val invoker = DefaultClaudeInvoker(factory, descriptionProps)
 
-        val mapper = ObjectMapper().registerKotlinModule()
+        val mapper = TestObjectMappers.internalMapper()
         val tempFileWriter =
             object : TempFileWriter {
                 override suspend fun createTempFile(
