@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.core.testsupport
 
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.time.Instant
 
 class TestObjectMappersTest {
@@ -9,6 +10,12 @@ class TestObjectMappersTest {
     fun `internalMapper serialises Instant as ISO-8601 string`() {
         val json = TestObjectMappers.internalMapper().writeValueAsString(Instant.parse("2026-05-26T10:00:00Z"))
         assertThat(json).isEqualTo("\"2026-05-26T10:00:00Z\"")
+    }
+
+    @Test
+    fun `internalMapper serialises Duration as ISO-8601 string`() {
+        val json = TestObjectMappers.internalMapper().writeValueAsString(Duration.ofMinutes(7))
+        assertThat(json).isEqualTo("\"PT7M\"")
     }
 
     @Test

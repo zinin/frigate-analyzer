@@ -65,8 +65,8 @@ class StatusControllerTest : IntegrationTestBase() {
 
     @Test
     fun `GET status serialises Instant as ISO-8601 string and Duration as ISO-8601 duration string`() {
-        // The mocked SignalLossMonitorTask (StatusControllerTestConfig) returns one
-        // OFFLINE camera with lastSeenAt = 2026-04-25T10:00:00Z. The exact `offlineFor`
+        // The mocked `StatusService` (StatusControllerTestConfig) returns one OFFLINE
+        // camera with lastSeenAt = 2026-04-25T10:00:00Z. The exact `offlineFor`
         // value is non-deterministic (depends on Clock at request time), so we assert
         // only the ISO-8601 prefix (`PT...`) for Duration. For Instant we pin the exact
         // value because `lastSeenAt` is passed through unmodified.

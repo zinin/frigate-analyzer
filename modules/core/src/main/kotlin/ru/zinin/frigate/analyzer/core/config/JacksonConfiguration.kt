@@ -54,9 +54,10 @@ import tools.jackson.databind.json.JsonMapper
  * tools.jackson) is present.
  * Since `com.fasterxml.jackson.databind.ObjectMapper` (Jackson 2) and
  * `tools.jackson.databind.ObjectMapper` (Jackson 3) are different Java types, `@Primary` only
- * participates when Spring resolves the Jackson 3 type; springdoc's Jackson 2 injection
- * resolves through Boot's separate Jackson 2 bean machinery and is unaffected. Spring will
- * never substitute incompatible types.
+ * participates when Spring resolves the Jackson 3 type. Springdoc creates and uses its own
+ * Jackson 2 `ObjectMapper` instance internally (since Boot's Jackson 2 module is not present
+ * here — see note above), so its OpenAPI rendering is unaffected by our Jackson 3 wiring.
+ * Spring will never substitute incompatible types.
  */
 @Configuration
 class JacksonConfiguration {

@@ -61,9 +61,10 @@ class WebClientConfiguration(
     }
 
     /**
-     * SNAKE_CASE mapper used **only** for outbound JSON to the detect-server (whose API uses
-     * snake_case). Separate from the project's `@Primary` `internalObjectMapper` (camelCase),
-     * which governs our own REST wire-format.
+     * SNAKE_CASE mapper used for **both directions** of JSON exchange with the detect-server
+     * (whose API uses snake_case): `detectServerJsonEncoder` for outbound requests and
+     * `detectServerJsonDecoder` for inbound responses. Separate from the project's `@Primary`
+     * `internalObjectMapper` (camelCase), which governs our own REST wire-format.
      *
      * `.findAndAddModules()` — обязателен: detect-server decoder парсит Kotlin data class'ы
      * (`DetectResponse`, `JobCreatedResponse`, `FrameExtractionResponse`, `JobStatusResponse`).
