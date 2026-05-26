@@ -6,18 +6,43 @@ Automated video recording analysis for [Frigate NVR](https://frigate.video/) sec
 
 ```mermaid
 graph TD
-    A["Frigate NVR Recordings (.mp4)"] --> B["File Watcher<br/>Detects new videos"]
+    A["Frigate NVR<br/>Recordings (.mp4)"] --> B["File Watcher"]
+    B --> DB
 
-    B --> C
+    V["<b>Vision API Server</b><br/>(external)<br/>multi-instance, priority LB"]
 
-    subgraph C ["Processing Pipeline"]
+    DB -. "poll unprocessed" .-> P
+
+    subgraph PIPE ["Detection Pipeline"]
         direction LR
-        P["<b>Producers (6x)</b><br/>Extract key<br/>frames from<br/>video files"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect objects<br/>Filter by class<br/>Re-check accuracy"]
+        P["<b>Producers (6x)</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect • Filter • Re-check"]
     end
 
-    C --> D["Save to PostgreSQL"]
-    D --> E["Visualize top frames"]
-    E --> F["Send via Telegram bot"]
+    P -. "extract" .-> V
+    Q -. "detect" .-> V
+
+    Q --> FAC["Visualize (local) + Save to DB"]
+    FAC --> DB[("PostgreSQL")]
+    FAC --> OT["Object Tracker<br/>(cross-recording IoU)"]
+    OT --> BOT
+
+    DB --> SL["Signal-loss Monitor<br/>(polls recordings)"]
+    SL --> BOT
+
+    BOT -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI)"]
+    AI -. "edit message" .-> BOT
+
+    subgraph TG ["Telegram"]
+        direction TB
+        BOT["<b>Bot</b><br/>notifications + commands"]
+        EX["Export / Annotate jobs<br/>/export • Quick Export"]
+        U["User"]
+        BOT <--> U
+        BOT --> EX
+    end
+
+    EX -. "ffmpeg merge" .-> BOT
+    EX -. "video annotate" .-> V
 ```
 
 Frame extraction, object detection, and video annotation are performed by an external [vision-api-server](https://github.com/zinin/vision-api-server) — a Python service wrapping Ultralytics YOLO models.
