@@ -1,5 +1,7 @@
 # Двойной Jackson stack: legacy `com.fasterxml.jackson` + новый `tools.jackson`
 
+> **STATUS: RESOLVED** (2026-05-26) — closed by PR for #29. Internal Jackson usage migrated to `tools.jackson` (Jackson 3). `JacksonConfiguration` now explicitly governs WebFlux REST wire-format via `WebFluxJacksonCodecConfigurer`. Jackson 2 remains as transitive dependency of springdoc-openapi (and `spring-boot-jackson2` compat starter if present) only — documented in `JacksonConfiguration.kt` KDoc.
+
 **Дата создания:** 2026-05-25
 **Источник:** external code review (codex, feat/status-command branch)
 **Severity:** Important (архитектурный долг; production работает, но конфиг лжёт)
