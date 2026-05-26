@@ -12,6 +12,7 @@ import ru.zinin.frigate.analyzer.core.task.CameraSignalState
 import ru.zinin.frigate.analyzer.core.task.SignalLossMonitorTask
 import ru.zinin.frigate.analyzer.model.dto.CameraState
 import ru.zinin.frigate.analyzer.model.dto.CameraStatisticsDto
+import ru.zinin.frigate.analyzer.model.dto.RecordingCountsDto
 import ru.zinin.frigate.analyzer.model.response.DetectServerStatistics
 import ru.zinin.frigate.analyzer.model.response.ServerLoad
 import ru.zinin.frigate.analyzer.model.response.ServerStatus
@@ -27,9 +28,14 @@ class StatusServiceTest {
 
     private val recordings =
         mockk<RecordingEntityRepository>().apply {
-            coEvery { countAll() } returns 100L
-            coEvery { countProcessed() } returns 90L
-            coEvery { countUnprocessed() } returns 10L
+            coEvery { getRecordingCounts() } returns
+                RecordingCountsDto(
+                    total = 100L,
+                    processed = 90L,
+                    unprocessed = 10L,
+                    success = 85L,
+                    errors = 5L,
+                )
             coEvery { getStatisticsByCameras() } returns
                 listOf(
                     CameraStatisticsDto("cam1", 50L, 50L, 5L),
@@ -133,8 +139,31 @@ class StatusServiceTest {
             assertThat(resp.recordings.total).isEqualTo(100L)
             assertThat(resp.recordings.processed).isEqualTo(90L)
             assertThat(resp.recordings.unprocessed).isEqualTo(10L)
+            assertThat(resp.recordings.success).isEqualTo(85L)
+            assertThat(resp.recordings.errors).isEqualTo(5L)
             assertThat(resp.recordings.processingRatePerMinute).isEqualTo(2.5)
             assertThat(resp.recordings.byCameras.map { it.camId }).containsExactly("cam1", "cam2")
+            Unit
+        }
+
+    @Test
+    fun `collect populates recordings counters with zero errors`() =
+        runBlocking {
+            val emptyRecordings =
+                mockk<RecordingEntityRepository>().apply {
+                    coEvery { getRecordingCounts() } returns
+                        RecordingCountsDto(total = 0L, processed = 0L, unprocessed = 0L, success = 0L, errors = 0L)
+                    coEvery { getStatisticsByCameras() } returns emptyList()
+                    coEvery { getProcessingRatePerMinuteLast5Minutes() } returns 0.0
+                }
+            val service = StatusService(emptyRecordings, lb, monitorProvider(null), clock)
+            val resp = service.collect()
+            assertThat(resp.recordings.total).isEqualTo(0L)
+            assertThat(resp.recordings.processed).isEqualTo(0L)
+            assertThat(resp.recordings.unprocessed).isEqualTo(0L)
+            assertThat(resp.recordings.success).isEqualTo(0L)
+            assertThat(resp.recordings.errors).isEqualTo(0L)
+            assertThat(resp.recordings.byCameras).isEmpty()
             Unit
         }
 }

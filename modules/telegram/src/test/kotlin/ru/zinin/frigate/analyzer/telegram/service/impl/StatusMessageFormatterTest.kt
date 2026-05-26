@@ -63,6 +63,8 @@ class StatusMessageFormatterTest {
                     total = 100L,
                     processed = 90L,
                     unprocessed = 10L,
+                    success = 85L,
+                    errors = 5L,
                     byCameras =
                         listOf(
                             CameraStatistics("cam1", 50, 50, 5),
@@ -202,6 +204,8 @@ class StatusMessageFormatterTest {
                         total = 1,
                         processed = 1,
                         unprocessed = 0,
+                        success = 1,
+                        errors = 0,
                         byCameras =
                             listOf(
                                 CameraStatistics(camId = "cam<&>", recordingsCount = 1, recordingsProcessed = 1, detectionsCount = 0),
@@ -220,7 +224,16 @@ class StatusMessageFormatterTest {
     fun `format escapes HTML special chars in server id`() {
         val snap =
             StatusResponse(
-                recordings = RecordingsStatistics(0, 0, 0, emptyList(), 0.0),
+                recordings =
+                    RecordingsStatistics(
+                        total = 0,
+                        processed = 0,
+                        unprocessed = 0,
+                        success = 0,
+                        errors = 0,
+                        byCameras = emptyList(),
+                        processingRatePerMinute = 0.0,
+                    ),
                 cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
                 detectServers =
                     listOf(
@@ -237,6 +250,109 @@ class StatusMessageFormatterTest {
         val out = formatter.format(snap, language = "en", zone = zone, now = now)
         assertTrue(out.contains("srv&lt;a&gt;"), "expected escaped server id: $out")
         assertFalse(out.contains("srv<a>"), "raw < > leaked in server id: $out")
+    }
+
+    @Test
+    fun `format renders layout C with success and errors rows including percentages`() {
+        val out = formatter.format(snapshot(), language = "en", zone = zone, now = now)
+        // Success row: label key present, value template rendered with success count and pct of total.
+        // snapshot() has total=100, success=85, errors=5 → success%=85.0, errors%=5.0
+        assertTrue(out.contains("status.recordings.label.success"), "missing success label in: $out")
+        assertTrue(
+            out.contains("status.recordings.value.withPct[85,85.0]"),
+            "missing success value with pct in: $out",
+        )
+        assertTrue(out.contains("status.recordings.label.errors"), "missing errors label in: $out")
+        assertTrue(
+            out.contains("status.recordings.value.withPct[5,5.0]"),
+            "missing errors value with pct in: $out",
+        )
+        // Old Processed row must be gone.
+        assertFalse(
+            out.contains("status.recordings.label.processed"),
+            "obsolete processed label still rendered: $out",
+        )
+    }
+
+    @Test
+    fun `format renders errors row with zero count and zero percent`() {
+        val zeroErrors =
+            StatusResponse(
+                recordings =
+                    RecordingsStatistics(
+                        total = 50L,
+                        processed = 50L,
+                        unprocessed = 0L,
+                        success = 50L,
+                        errors = 0L,
+                        byCameras = emptyList(),
+                        processingRatePerMinute = 1.0,
+                    ),
+                cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
+                detectServers = emptyList(),
+            )
+        val out = formatter.format(zeroErrors, language = "en", zone = zone, now = now)
+        assertTrue(
+            out.contains("status.recordings.value.withPct[0,0.0]"),
+            "expected errors row '0 (0.0%)' even when errors=0: $out",
+        )
+    }
+
+    @Test
+    fun `format keeps layout C when success plus errors does not equal processed`() {
+        // Documents that the design intentionally does NOT enforce
+        // `success + errors == processed`; layout C must still render cleanly
+        // when a future retry-pending state breaks the invariant.
+        val divergent =
+            StatusResponse(
+                recordings =
+                    RecordingsStatistics(
+                        total = 100L,
+                        processed = 100L,
+                        unprocessed = 0L,
+                        success = 80L,
+                        errors = 10L,
+                        byCameras = emptyList(),
+                        processingRatePerMinute = 0.0,
+                    ),
+                cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
+                detectServers = emptyList(),
+            )
+        val out = formatter.format(divergent, language = "en", zone = zone, now = now)
+        assertTrue(
+            out.contains("status.recordings.value.withPct[80,80.0]"),
+            "missing success row 80 (80.0%) in: $out",
+        )
+        assertTrue(
+            out.contains("status.recordings.value.withPct[10,10.0]"),
+            "missing errors row 10 (10.0%) in: $out",
+        )
+    }
+
+    @Test
+    fun `format renders zero percent when total is zero`() {
+        val empty =
+            StatusResponse(
+                recordings =
+                    RecordingsStatistics(
+                        total = 0L,
+                        processed = 0L,
+                        unprocessed = 0L,
+                        success = 0L,
+                        errors = 0L,
+                        byCameras = emptyList(),
+                        processingRatePerMinute = 0.0,
+                    ),
+                cameras = CamerasSection(monitoringEnabled = false, items = emptyList()),
+                detectServers = emptyList(),
+            )
+        val out = formatter.format(empty, language = "en", zone = zone, now = now)
+        // Both success and errors rows should render with '0.0' percent (div-by-zero guard).
+        assertEquals(
+            2,
+            out.split("status.recordings.value.withPct[0,0.0]").size - 1,
+            "expected two '0 (0.0%)' rows (success + errors) when total=0: $out",
+        )
     }
 }
 
@@ -262,6 +378,8 @@ class StatusMessageFormatterI18nTest {
                     total = 0,
                     processed = 0,
                     unprocessed = 0,
+                    success = 0,
+                    errors = 0,
                     byCameras = emptyList(),
                     processingRatePerMinute = 0.0,
                 ),
@@ -308,5 +426,57 @@ class StatusMessageFormatterI18nTest {
         assertTrue(out.contains("frame 1/4"), "expected `frame 1/4` in: $out")
         assertFalse(out.contains("frame srv-a"), "server id leaked into ALIVE placeholders: $out")
         assertTrue(out.contains("Статус Frigate Analyzer"), "expected RU title in: $out")
+    }
+
+    @Test
+    fun `format renders EN recordings rows with localized labels and no raw keys`() {
+        val out = formatter.format(sampleSnapshot(), language = "en", zone = zone, now = now)
+        assertTrue(out.contains("Success"), "EN: missing localized 'Success' label: $out")
+        assertTrue(out.contains("Errors"), "EN: missing localized 'Errors' label: $out")
+        assertFalse(
+            out.contains("status.recordings.label.success") ||
+                out.contains("status.recordings.label.errors") ||
+                out.contains("status.recordings.value.withPct"),
+            "EN: raw i18n key leaked through MessageResolver fallback: $out",
+        )
+    }
+
+    @Test
+    fun `format renders RU recordings rows with localized labels and no raw keys`() {
+        val out = formatter.format(sampleSnapshot(), language = "ru", zone = zone, now = now)
+        assertTrue(out.contains("Успешно"), "RU: missing localized 'Успешно' label: $out")
+        assertTrue(out.contains("Ошибки"), "RU: missing localized 'Ошибки' label: $out")
+        assertFalse(
+            out.contains("status.recordings.label.success") ||
+                out.contains("status.recordings.label.errors") ||
+                out.contains("status.recordings.value.withPct"),
+            "RU: raw i18n key leaked through MessageResolver fallback: $out",
+        )
+    }
+
+    @Test
+    fun `RU locale renders non-zero percentages with dot separator (Locale ROOT guard)`() {
+        val snapshot =
+            sampleSnapshot().copy(
+                recordings =
+                    RecordingsStatistics(
+                        total = 100,
+                        processed = 90,
+                        unprocessed = 10,
+                        success = 85,
+                        errors = 5,
+                        byCameras = emptyList(),
+                        processingRatePerMinute = 1.5,
+                    ),
+            )
+
+        val out = formatter.format(snapshot, language = "ru", zone = zone, now = now)
+
+        assertTrue(out.contains("85.0"), "expected `85.0` (dot decimal) in RU output: $out")
+        assertTrue(out.contains("5.0"), "expected `5.0` (dot decimal) in RU output: $out")
+        assertFalse(
+            Regex("""\b\d+,\d+%""").containsMatchIn(out),
+            "RU locale leaked into pct format (found `N,N%` instead of `N.N%`): $out",
+        )
     }
 }

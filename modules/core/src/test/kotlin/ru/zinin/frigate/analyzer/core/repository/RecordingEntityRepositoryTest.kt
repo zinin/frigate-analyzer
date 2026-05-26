@@ -43,6 +43,7 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
         analyzeTime: Int? = 0,
         analyzedFramesCount: Int? = 0,
         processAttempts: Int? = 0,
+        errorMessage: String? = null,
     ): RecordingEntity {
         val now = Instant.now()
         return RecordingEntity(
@@ -60,7 +61,7 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
             detectionsCount = detectionsCount,
             analyzeTime = analyzeTime,
             analyzedFramesCount = analyzedFramesCount,
-            errorMessage = null,
+            errorMessage = errorMessage,
         )
     }
 
@@ -435,65 +436,64 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
     // region Counters
 
     @Test
-    fun `should count all recordings`() {
+    fun `should return recording counts via FILTER aggregate`() {
         runBlocking {
-            // given
-            repeat(3) { i ->
-                repository.save(createRecordingEntity(filePath = "/recordings/file$i.mp4"))
-            }
+            // unprocessed: no process_timestamp
+            repository.save(createRecordingEntity(filePath = "/recordings/pending.mp4"))
+            // success: processed, no error
+            repository.save(
+                createRecordingEntity(
+                    filePath = "/recordings/ok.mp4",
+                    processTimestamp = Instant.now(),
+                ),
+            )
+            // errors finished: both process_timestamp and error_message
+            repository.save(
+                createRecordingEntity(
+                    filePath = "/recordings/failed.mp4",
+                    processTimestamp = Instant.now(),
+                    errorMessage = "boom",
+                ),
+            )
+            // another unprocessed baseline (so unprocessed=2, total=4)
+            repository.save(createRecordingEntity(filePath = "/recordings/pending2.mp4"))
 
             // when
-            val count = repository.countAll()
+            val counts = repository.getRecordingCounts()
 
             // then
-            assertEquals(3L, count)
+            assertEquals(4L, counts.total)
+            assertEquals(2L, counts.processed)
+            assertEquals(2L, counts.unprocessed)
+            assertEquals(1L, counts.success)
+            assertEquals(1L, counts.errors)
         }
     }
 
     @Test
-    fun `should count processed recordings`() {
+    fun `should count error-only recording in errors and unprocessed buckets`() {
         runBlocking {
-            // given
-            repository.save(createRecordingEntity(filePath = "/recordings/unprocessed.mp4"))
+            // Defensive-design check: a recording with `error_message` set but
+            // `process_timestamp` NULL (would be created by a hypothetical future
+            // "error during acquire" pathway). With current code this row cannot
+            // appear via the pipeline, but the FILTER aggregate must handle it
+            // — it falls into BOTH `unprocessed` (process_timestamp IS NULL)
+            // AND `errors` (error_message IS NOT NULL), exposing that
+            // `success + errors == processed` is intentionally not enforced.
             repository.save(
                 createRecordingEntity(
-                    filePath = "/recordings/processed1.mp4",
-                    processTimestamp = Instant.now(),
-                ),
-            )
-            repository.save(
-                createRecordingEntity(
-                    filePath = "/recordings/processed2.mp4",
-                    processTimestamp = Instant.now(),
-                ),
-            )
-
-            // when
-            val count = repository.countProcessed()
-
-            // then
-            assertEquals(2L, count)
-        }
-    }
-
-    @Test
-    fun `should count unprocessed recordings`() {
-        runBlocking {
-            // given
-            repository.save(createRecordingEntity(filePath = "/recordings/unprocessed1.mp4"))
-            repository.save(createRecordingEntity(filePath = "/recordings/unprocessed2.mp4"))
-            repository.save(
-                createRecordingEntity(
-                    filePath = "/recordings/processed.mp4",
-                    processTimestamp = Instant.now(),
+                    filePath = "/recordings/acquire-failed.mp4",
+                    errorMessage = "acquire failed",
                 ),
             )
 
-            // when
-            val count = repository.countUnprocessed()
+            val counts = repository.getRecordingCounts()
 
-            // then
-            assertEquals(2L, count)
+            assertEquals(1L, counts.total)
+            assertEquals(0L, counts.processed)
+            assertEquals(1L, counts.unprocessed)
+            assertEquals(0L, counts.success)
+            assertEquals(1L, counts.errors)
         }
     }
 

@@ -40,9 +40,7 @@ class StatusService(
     }
 
     private suspend fun buildRecordings(): RecordingsStatistics {
-        val total = recordingRepository.countAll()
-        val processed = recordingRepository.countProcessed()
-        val unprocessed = recordingRepository.countUnprocessed()
+        val counts = recordingRepository.getRecordingCounts()
         // Two near-identical types with the same positional fields: `CameraStatisticsDto`
         // (`model.dto`, SQL projection from RecordingEntityRepository) → `CameraStatistics`
         // (`model.response`, JSON contract). Mapping is mandatory to avoid leaking the
@@ -59,9 +57,11 @@ class StatusService(
             }
         val rate = recordingRepository.getProcessingRatePerMinuteLast5Minutes()
         return RecordingsStatistics(
-            total = total,
-            processed = processed,
-            unprocessed = unprocessed,
+            total = counts.total,
+            processed = counts.processed,
+            unprocessed = counts.unprocessed,
+            success = counts.success,
+            errors = counts.errors,
             byCameras = byCameras,
             processingRatePerMinute = rate,
         )
