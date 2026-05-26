@@ -54,6 +54,7 @@ dependencies {
     implementation(libs.kotlin.reflect)
     implementation(libs.bundles.coroutines)
     implementation(libs.bundles.jackson)
+    implementation(libs.jackson.kotlin3)
     implementation(libs.kotlin.logging)
     implementation(libs.postgresql)
     implementation(libs.ktgbotapi)
