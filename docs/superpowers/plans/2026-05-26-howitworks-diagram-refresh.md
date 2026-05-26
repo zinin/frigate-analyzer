@@ -53,28 +53,30 @@ graph TD
 ```mermaid
 graph TD
     A["Frigate NVR<br/>Recordings (.mp4)"] --> B["File Watcher"]
-    B --> P
+    B --> DB
+
+    V["<b>Vision API Server</b><br/>(external)<br/>multi-instance, priority LB"]
+
+    DB -. "poll unprocessed" .-> P
 
     subgraph PIPE ["Detection Pipeline"]
         direction LR
         P["<b>Producers (6x)</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect • Filter • Re-check"]
     end
 
-    P <-. "extract frames" .-> V
-    Q <-. "detect" .-> V
-    V["<b>Vision API Server</b><br/>(external)<br/>multi-instance, priority LB"]
+    P -. "extract" .-> V
+    Q -. "detect" .-> V
 
-    Q --> OT["Object Tracker<br/>(cross-recording IoU)"]
-    OT --> DB[("PostgreSQL")]
-    OT --> VIS["Visualize top frames"]
-    VIS <-. "annotate" .-> V
-    VIS --> BOT
+    Q --> FAC["Visualize (local) + Save to DB"]
+    FAC --> DB[("PostgreSQL")]
+    FAC --> OT["Object Tracker<br/>(cross-recording IoU)"]
+    OT --> BOT
 
-    OT -. "async" .-> AI["AI Description<br/>(Claude Code CLI)"]
-    AI -. "edit message" .-> BOT
-
-    DB --> SL["Signal-loss Monitor<br/>(polls DB)"]
+    DB --> SL["Signal-loss Monitor<br/>(polls recordings)"]
     SL --> BOT
+
+    BOT -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI)"]
+    AI -. "edit message" .-> BOT
 
     subgraph TG ["Telegram"]
         direction TB
@@ -82,10 +84,11 @@ graph TD
         EX["Export / Annotate jobs<br/>/export • Quick Export"]
         U["User"]
         BOT <--> U
-        BOT <--> EX
+        BOT --> EX
     end
 
-    EX <-. "video annotate" .-> V
+    EX -. "ffmpeg merge" .-> BOT
+    EX -. "video annotate" .-> V
 ```
 ````
 
@@ -109,11 +112,13 @@ git push -u origin docs/refresh-howitworks-diagram
 
 **Optional sanity-check (faster iteration if syntax breaks):** paste the new mermaid block into https://mermaid.live or VS Code Markdown preview with Mermaid extension.
 
-Verify the rendered diagram against the spec (node set, subgraph borders, branch shape — final values populated when DIAGRAM-REWRITE disputed issue is resolved). Specific checks:
-- All nodes from the new diagram render with their labels intact (no parse errors / empty blocks).
-- Subgraph borders + titles render.
-- Bidirectional dotted edges (if used) render with arrowheads on both ends — GitHub Mermaid sometimes drops one head.
-- Two-way `<-->` edges inside subgraph (BOT ↔ U) render correctly.
+Verify the rendered diagram on GitHub:
+- 13 nodes visible with labels intact: `A` (Frigate), `B` (Watcher), `DB` (PostgreSQL), `V` (Vision API Server), `P` (Producers), `Q` (Consumers), `FAC` (Visualize + Save), `OT` (Object Tracker), `SL` (Signal-loss Monitor), `AI` (AI Description), `BOT`, `U` (User), `EX` (Export jobs).
+- Two subgraphs render with borders + titles: `PIPE "Detection Pipeline"` and `TG "Telegram"`.
+- Vision API Server (`V`) sits **outside** both subgraphs.
+- Dotted edges (`-. label .->`) render with their labels and a single arrowhead each — there are 7: `DB -. poll unprocessed .-> P`, `P -. extract .-> V`, `Q -. detect .-> V`, `BOT -. async describe .-> AI`, `AI -. edit message .-> BOT`, `EX -. ffmpeg merge .-> BOT`, `EX -. video annotate .-> V`.
+- Solid edges from outside `TG` enter `BOT` (`OT --> BOT`, `SL --> BOT`) — verify they cross the subgraph border cleanly.
+- Inside `TG`: `BOT <--> U` renders with arrowheads on both ends; `BOT --> EX` is one-way.
 - No arrows overlap labels or cross other nodes in an unreadable way.
 
 If GitHub preview fails to render the block (shows raw mermaid code or an error), fix the diagram syntax before continuing.
@@ -125,16 +130,29 @@ git add README.md
 git commit -m "$(cat <<'EOF'
 docs(readme): refresh How It Works diagram
 
-Reflect subsystems shipped since the original diagram (2026-03-03):
+Reflect subsystems shipped since the original diagram (2026-03-03)
+and reconstruct the flow to match RecordingProcessingFacade:
+
 - Vision API Server as a single external block (multi-instance, LB)
-  linked to Producers (extract), Consumers (detect), Visualize
-  (annotate) and Export jobs (video annotate).
-- Object Tracker between Consumers and DB (cross-recording IoU).
-- Signal-loss Monitor branch (polls DB -> Bot).
-- AI Description branch (Claude CLI -> edit message, async).
-- Two-way Telegram with Export / Annotate jobs (/export, Quick Export).
+  linked to three stages: Producers (extract), Consumers (detect),
+  and Export jobs (video annotate). Frame visualization for
+  notifications happens locally (Java2D), not via Vision API.
+- Watcher writes recording rows to DB; Producers poll DB for
+  unprocessed recordings (no direct channel between them).
+- Visualize + Save collapsed into one facade node sitting between
+  Consumers and Object Tracker, matching the order in code.
+- Object Tracker shown as the gatekeeper between save and Bot
+  (cross-recording IoU suppresses duplicate notifications).
+- Signal-loss Monitor branch (polls recordings -> Bot).
+- AI Description branch triggered from Bot (Claude CLI -> edit
+  message, async via DescriptionEditJobRunner).
+- Two-way Telegram with Export / Annotate jobs (/export, Quick
+  Export). Export goes through ffmpeg merge (original) or Vision
+  API video-annotate (annotated).
 
 Layout uses subgraph grouping for Detection Pipeline and Telegram.
+Bidirectional dotted edges replaced with pairs of one-way arrows
+for safer GitHub Mermaid rendering.
 EOF
 )"
 ```

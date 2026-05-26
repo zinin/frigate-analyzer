@@ -32,63 +32,66 @@
 
 | Узел диаграммы | Где живёт |
 |---|---|
-| File Watcher | `core/task/WatchRecordsTask`, `WatchRecordsLoop` |
-| Producers (6x) | `core/pipeline/frame/FrameExtractorProducer` |
-| Consumers (auto) | `core/pipeline/frame/FrameAnalyzerConsumer` |
+| File Watcher | `core/task/WatchRecordsTask`, `WatchRecordsLoop` (пишет recording-rows в БД) |
+| Producers (6x) | `core/pipeline/frame/FrameExtractorProducer` (poll БД, запрос extract в Vision API) |
+| Consumers (auto) | `core/pipeline/frame/FrameAnalyzerConsumer` (запрос detect в Vision API) |
 | Vision API Server (external) | `vision-api-server` репо + балансировка в `loadbalancer/` |
-| Object Tracker (IoU) | `service/ObjectTrackerService` → `NotificationDecisionService` |
+| Visualize (local) + Save to DB | `core/facade/RecordingProcessingFacade.processAndNotify` — последовательность `frameVisualizationService.visualizeFrames` (локально, Java2D) + `recordingEntityService.saveProcessingResult` |
+| Object Tracker (IoU) | `service/ObjectTrackerService` → `service/impl/NotificationDecisionServiceImpl` (gatekeeper, решает — слать уведомление или подавить) |
 | PostgreSQL | recordings, detections, object_tracks |
-| Visualize top frames | визуализация фреймов через Vision API внутри `RecordingProcessingFacade` |
-| AI Description | `ai-description/` + `telegram/queue/DescriptionEditJobRunner` |
-| Signal-loss Monitor | `core/task/SignalLossMonitorTask`, `SignalLossDecider` |
+| AI Description | `ai-description/` + `telegram/queue/DescriptionEditJobRunner` (триггерится из `telegramNotificationService.sendRecordingNotification` после фильтра подписчиков и `DescriptionRateLimiter.tryAcquire`) |
+| Signal-loss Monitor | `core/task/SignalLossMonitorTask`, `SignalLossDecider` (polls только `recordings`-таблицу) |
 | Telegram Bot | `telegram/` (bot core, очередь сообщений, авторизация) |
-| Export / Annotate jobs | `telegram/handler/export/`, `telegram/handler/quickexport/` |
+| Export / Annotate jobs | `telegram/handler/export/`, `telegram/handler/quickexport/` — исполнитель `core/service/VideoExportServiceImpl` |
 
 ## Ключевые потоки на диаграмме
 
-1. **Основной pipeline** (вертикальный поток):
-   `Recordings → Watcher → Producers → Consumers → Object Tracker → DB / Visualize → Telegram → User`
+1. **Основной pipeline** (как в `RecordingProcessingFacade.processAndNotify` — порядок важен):
+   `Watcher → DB (recording-row) → Producers (poll) → Consumers (detect) → Facade.visualize (local) + Facade.save → Object Tracker (decide) → Bot`
 
-2. **Vision API связан с четырьмя стадиями** (пунктирные двунаправленные стрелки):
+2. **Vision API связан с тремя стадиями** (пунктирные стрелки):
    - Producers — extract frames
    - Consumers — detect (включая two-stage recheck)
-   - Visualize top frames — annotate для уведомлений
    - Export jobs — video annotate для Quick Export «Annotated»
 
-3. **Параллельная ветка signal-loss:** `DB → SignalLossMonitor → Bot` — это отдельное сообщение в Telegram, не edit существующего.
+   (Уведомления визуализируются локально через `LocalVisualizationService` (Java2D) внутри Facade — Vision API там не задействован.)
 
-4. **Параллельная ветка AI description:** `Object Tracker → AI Description (Claude CLI) → Bot (edit message)` — async, редактирует уже отправленное уведомление.
+3. **Параллельная ветка signal-loss:** `DB → SignalLossMonitor → Bot` — отдельное сообщение в Telegram, не edit существующего.
 
-5. **Обратная связь от пользователя** (двунаправленные стрелки):
-   `User → Bot → Export Jobs` → ffmpeg merge или Vision API (video-annotate) → `Bot → User`.
+4. **Параллельная ветка AI description:** `Bot → AI Description (Claude CLI) → Bot (edit message)` — async из `TelegramNotificationSender` после rate-limit-проверки, редактирует уже отправленное уведомление.
+
+5. **Обратная связь от пользователя** (через subgraph Telegram):
+   `User ↔ Bot → Export Jobs` → `ffmpeg merge` (для Original) или Vision API video-annotate (для Annotated) → `Bot → User`.
 
 ## Mermaid-код
 
 ```mermaid
 graph TD
     A["Frigate NVR<br/>Recordings (.mp4)"] --> B["File Watcher"]
-    B --> P
+    B --> DB
+
+    V["<b>Vision API Server</b><br/>(external)<br/>multi-instance, priority LB"]
+
+    DB -. "poll unprocessed" .-> P
 
     subgraph PIPE ["Detection Pipeline"]
         direction LR
         P["<b>Producers (6x)</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect • Filter • Re-check"]
     end
 
-    P <-. "extract frames" .-> V
-    Q <-. "detect" .-> V
-    V["<b>Vision API Server</b><br/>(external)<br/>multi-instance, priority LB"]
+    P -. "extract" .-> V
+    Q -. "detect" .-> V
 
-    Q --> OT["Object Tracker<br/>(cross-recording IoU)"]
-    OT --> DB[("PostgreSQL")]
-    OT --> VIS["Visualize top frames"]
-    VIS <-. "annotate" .-> V
-    VIS --> BOT
+    Q --> FAC["Visualize (local) + Save to DB"]
+    FAC --> DB[("PostgreSQL")]
+    FAC --> OT["Object Tracker<br/>(cross-recording IoU)"]
+    OT --> BOT
 
-    OT -. "async" .-> AI["AI Description<br/>(Claude Code CLI)"]
-    AI -. "edit message" .-> BOT
-
-    DB --> SL["Signal-loss Monitor<br/>(polls DB)"]
+    DB --> SL["Signal-loss Monitor<br/>(polls recordings)"]
     SL --> BOT
+
+    BOT -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI)"]
+    AI -. "edit message" .-> BOT
 
     subgraph TG ["Telegram"]
         direction TB
@@ -96,11 +99,20 @@ graph TD
         EX["Export / Annotate jobs<br/>/export • Quick Export"]
         U["User"]
         BOT <--> U
-        BOT <--> EX
+        BOT --> EX
     end
 
-    EX <-. "video annotate" .-> V
+    EX -. "ffmpeg merge" .-> BOT
+    EX -. "video annotate" .-> V
 ```
+
+Принятые правки относительно первой версии (по итогам external review iter-1):
+- Watcher теперь пишет в DB, Producers её опрашивают — отражено явной парой `B → DB` и `DB -. poll .-> P` (Watcher и Producer не связаны прямым каналом — общаются через БД).
+- Введён узел `FAC ("Visualize (local) + Save to DB")` между Consumers и Object Tracker — отражает реальный порядок шагов в `RecordingProcessingFacade.processAndNotify`.
+- Object Tracker стал gatekeeper-ом между save и Bot (как в `NotificationDecisionService`), а не «перед DB».
+- Стрелка визуализации к Vision API убрана — визуализация фреймов выполняется локально.
+- AI-ветка перенесена с Object Tracker на Bot — `DescriptionEditJobRunner` запускается из telegram-слоя, а не из facade.
+- Двунаправленные пунктирные стрелки `<-. label .->` заменены на однонаправленные `-. label .->` — синтаксис недокументирован и риск рендера на GitHub.
 
 ## Out of Scope
 
