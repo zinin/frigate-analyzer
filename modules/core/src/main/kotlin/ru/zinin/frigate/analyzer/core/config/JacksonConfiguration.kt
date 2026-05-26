@@ -36,11 +36,14 @@ import tools.jackson.databind.json.JsonMapper
  *
  * **Dual-stack rationale (self-contained):**
  * `tools.jackson` governs all internal and REST wire-format JSON. Legacy `com.fasterxml.jackson`
- * is retained ONLY as a transitive dependency of:
+ * (Jackson 2.x, BOM pinned via `gradle/libs.versions.toml`) is retained ONLY as a transitive
+ * dependency of:
  *  - `springdoc-openapi-starter` 3.0.3 (requires `com.fasterxml.jackson.module.kotlin.KotlinModule`
  *    via its own `SpringDocJacksonKotlinModuleConfiguration` for OpenAPI spec generation).
- *  - `spring-boot-jackson2` compat starter (Spring Boot 4 ships this exactly for the springdoc case).
+ *  - other transitive consumers (YAML loaders, etc.).
  *
+ * Note: Spring Boot 4 does NOT ship a `spring-boot-jackson2` compat starter; only the
+ * `spring-boot-jackson` module (using tools.jackson) is present in `runtimeClasspath`.
  * The `@Primary` annotation scopes only within `tools.jackson.databind.*` classes; springdoc
  * injects `com.fasterxml.jackson.databind.ObjectMapper` (a different class), so there is no
  * type collision. Spring will never substitute incompatible types.
