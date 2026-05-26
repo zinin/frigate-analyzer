@@ -174,6 +174,9 @@ class TelegramUserServiceImpl(
         return user?.languageCode
     }
 
+    @Transactional(readOnly = true)
+    override suspend fun getOwnerLanguage(): String? = findByUsernameIgnoreCase(telegramProperties.owner)?.languageCode
+
     @Transactional
     override suspend fun updateLanguage(
         chatId: Long,

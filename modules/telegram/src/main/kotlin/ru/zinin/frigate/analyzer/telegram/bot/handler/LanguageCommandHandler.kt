@@ -47,8 +47,8 @@ class LanguageCommandHandler(
                         keyboard =
                             matrix {
                                 row {
-                                    +CallbackDataInlineKeyboardButton("🇷🇺 Русский", "lang:ru")
-                                    +CallbackDataInlineKeyboardButton("🇬🇧 English", "lang:en")
+                                    +CallbackDataInlineKeyboardButton(msg.get("language.button.ru", lang), "lang:ru")
+                                    +CallbackDataInlineKeyboardButton(msg.get("language.button.en", lang), "lang:en")
                                 }
                             },
                     )
@@ -75,7 +75,7 @@ class LanguageCommandHandler(
                     return@withTimeoutOrNull
                 }
 
-                val langName = if (newLang == "ru") "Русский" else "English"
+                val langName = msg.get("language.name.$newLang", newLang)
                 sendTextMessage(chatId, msg.get("command.language.set", newLang, langName))
             }
 

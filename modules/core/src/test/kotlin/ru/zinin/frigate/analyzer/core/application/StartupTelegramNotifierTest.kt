@@ -15,7 +15,9 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.boot.info.BuildProperties
 import org.springframework.boot.info.GitProperties
+import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -23,6 +25,8 @@ import kotlin.coroutines.cancellation.CancellationException
 
 class StartupTelegramNotifierTest {
     private val telegramNotificationService = mockk<TelegramNotificationService>()
+    private val telegramUserService = mockk<TelegramUserService>()
+    private val messageResolver = mockk<MessageResolver>()
     private val gitProperties = mockk<GitProperties>()
     private val buildProperties = mockk<BuildProperties>()
     private val clock = Clock.fixed(Instant.parse("2026-05-23T15:14:00Z"), ZoneOffset.UTC)
@@ -30,6 +34,8 @@ class StartupTelegramNotifierTest {
     private val notifier =
         StartupTelegramNotifier(
             telegramNotificationService = telegramNotificationService,
+            telegramUserService = telegramUserService,
+            messageResolver = messageResolver,
             gitProperties = gitProperties,
             buildProperties = buildProperties,
             clock = clock,
@@ -37,7 +43,13 @@ class StartupTelegramNotifierTest {
 
     @BeforeEach
     fun setUp() {
-        clearMocks(telegramNotificationService, gitProperties, buildProperties)
+        clearMocks(
+            telegramNotificationService,
+            telegramUserService,
+            messageResolver,
+            gitProperties,
+            buildProperties,
+        )
     }
 
     @AfterEach
@@ -54,6 +66,8 @@ class StartupTelegramNotifierTest {
 
     @Test
     fun `onReady sends owner message with version commit buildTime and started`() {
+        coEvery { telegramUserService.getOwnerLanguage() } returns "ru"
+        every { messageResolver.get("startup.notification.message", "ru") } returns "🟢 Frigate Analyzer запущен"
         every { gitProperties.commitId } returns "abc1234567890def"
         every { buildProperties.version } returns "1.2.3"
         every { buildProperties.time } returns Instant.parse("2026-05-20T10:00:00Z")
@@ -76,7 +90,28 @@ class StartupTelegramNotifierTest {
     }
 
     @Test
+    fun `onReady falls back to en when owner language is unknown`() {
+        coEvery { telegramUserService.getOwnerLanguage() } returns null
+        every { messageResolver.get("startup.notification.message", "en") } returns "🟢 Frigate Analyzer started"
+        every { gitProperties.commitId } returns "abc1234567890def"
+        every { buildProperties.version } returns "1.2.3"
+        every { buildProperties.time } returns Instant.parse("2026-05-20T10:00:00Z")
+        coEvery { telegramNotificationService.sendOwnerMessage(any()) } just Runs
+
+        notifier.onReady()
+        awaitStartupNotification()
+
+        coVerify(exactly = 1) {
+            telegramNotificationService.sendOwnerMessage(
+                match { text -> text.contains("Frigate Analyzer started") },
+            )
+        }
+    }
+
+    @Test
     fun `onReady swallows exception from sendOwnerMessage`() {
+        coEvery { telegramUserService.getOwnerLanguage() } returns "ru"
+        every { messageResolver.get("startup.notification.message", "ru") } returns "🟢 Frigate Analyzer запущен"
         every { gitProperties.commitId } returns "abc1234"
         every { buildProperties.version } returns "1.0.0"
         every { buildProperties.time } returns Instant.parse("2026-05-20T10:00:00Z")
@@ -91,6 +126,8 @@ class StartupTelegramNotifierTest {
 
     @Test
     fun `onReady uses unknown placeholder when build and git properties are null`() {
+        coEvery { telegramUserService.getOwnerLanguage() } returns "ru"
+        every { messageResolver.get("startup.notification.message", "ru") } returns "🟢 Frigate Analyzer запущен"
         every { gitProperties.commitId } returns null
         every { buildProperties.version } returns null
         every { buildProperties.time } returns null
@@ -112,6 +149,8 @@ class StartupTelegramNotifierTest {
 
     @Test
     fun `onReady swallows CancellationException from timeout`() {
+        coEvery { telegramUserService.getOwnerLanguage() } returns "ru"
+        every { messageResolver.get("startup.notification.message", "ru") } returns "🟢 Frigate Analyzer запущен"
         every { gitProperties.commitId } returns "abc1234"
         every { buildProperties.version } returns "1.0.0"
         every { buildProperties.time } returns Instant.parse("2026-05-20T10:00:00Z")
