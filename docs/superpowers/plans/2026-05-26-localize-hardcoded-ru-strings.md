@@ -49,12 +49,14 @@
 
 ## Задача 5: Финальная верификация и code review
 
-✅ Шаги 1-5 done:
-- Контрольный grep чист (нет русских хардкодов вне комментариев).
-- `./gradlew ktlintCheck` — passed.
-- Code review (subagent) — без Critical/Important issues; вердикт "Ready to merge".
-- `./gradlew build` — BUILD SUCCESSFUL (все 6 модулей, 210+ тестов).
-- Финальные коммиты сделаны (см. `git log master..HEAD`: `1e54d78`, `5bd3a30`).
+✅ Done — see commits: `5bd3a30` (initial review + build), `91866ea` (plan trim), `e5852d0` (multi-agent external review decisions applied).
+
+External review (6 ревьюеров: claude + codex + ccs-glm + ollama-kimi/deepseek/minimax; codex CLI install сломан, остальные 5 отдали полный отчёт):
+- 2 decisions применены: parity-тест на 5 новых i18n-ключей в `MessageResolverTest`; `getOwnerLanguage()` теперь фильтрует по `UserStatus.ACTIVE` для consistency с sibling-кодом + тест на INVITED-owner.
+- 1 disputed оставлен как есть (withTimeout shared budget — явная plan-level trade-off).
+- 11 issues отклонены после верификации против кода.
+
+Build clean: 440 тестов прошли, `ktlintCheck` зелёный.
 
 - [ ] **Шаг 6: Перед PR — удалить план из docs/superpowers/**
 
