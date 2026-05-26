@@ -1117,34 +1117,51 @@ Run: `./gradlew :frigate-analyzer-core:test --tests 'ru.zinin.frigate.analyzer.c
 
 Expected: 1 test passes.
 
-- [ ] **Step 5: Update `StatusControllerTest` KDoc (без нового behavioral test)**
+- [ ] **Step 5: Update `StatusControllerTest` file-level comment (без нового behavioral test)**
 
 Edit `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt`:
 
-(a) Replace the obsolete KDoc at lines 20-24 (which claims wire-format goes through "tools.jackson, NOT our com.fasterxml.jackson-based JacksonConfiguration"). New KDoc:
+(a) Цель — file-level **line-comments** (`//`) в позиции lines 10-24 (перед `@AutoConfigureWebTestClient`). **Не KDoc** (`/** */`) — оригинал в этом файле использует line-comment стиль, сохраняем для consistency.
+
+**Перед заменой** прогнать `grep -n "tools.jackson, NOT our" modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/StatusControllerTest.kt` чтобы подтвердить актуальную позицию устаревшего фрагмента (после master merge от PR #31 lines в этой части файла не сдвинулись, но pattern-based проверка надёжнее).
+
+Целевой фрагмент для замены (текущий текст файла lines ~20-24):
 
 ```kotlin
-/**
- * End-to-end sanity check для wire-format `/status`: ISO-8601 timestamps + ожидаемая структура
- * JSON-ответа. После Jackson 3 migration (issue #29) этот тест идёт через codecs,
- * зарегистрированные [WebFluxJacksonCodecConfigurer] от нашего `@Primary internalObjectMapper`.
- *
- * **Важно:** этот тест НЕ доказывает что наш `WebFluxJacksonCodecConfigurer` фактически
- * управляет codec'ом. Spring Boot 4 `CodecsAutoConfiguration.jacksonCodecCustomizer` автоматически
- * wire'ит `@Primary JsonMapper` бин в WebFlux codec — все наши настройки совпадают с Boot 4
- * defaults, поэтому удаление нашего configurer'а не сломает ни этот тест, ни поведение
- * `/status`. Это honest sanity check, не regression guard.
- *
- * **Реальный regression guard configurer'а:**
- *  - [ru.zinin.frigate.analyzer.core.config.WebFluxJacksonCodecConfigurerTest] — unit test с
- *    reflection identity check: codec'ы построены ИМЕННО на нашем mapper'е.
- *  - [ru.zinin.frigate.analyzer.core.config.JacksonConfigurationTest] —
- *    `ApplicationContextRunner` с auto-config: `@Primary` disambiguation в bean topology.
- *
- * См. design § 3.2 «Builder vs pre-built — осознанный trade-off» и «Про взаимодействие с
- * Spring Boot 4 auto-config — honest narrative» для полного объяснения.
- */
+// The wire-format test below is the only assertion that actually verifies the
+// `/status` JSON contract end-to-end through Spring Boot 4's WebFlux Jackson codec
+// stack (`tools.jackson`, NOT our `com.fasterxml.jackson`-based `JacksonConfiguration`
+// — see KDoc on that class for the architectural caveat). `JacksonConfigurationTest`
+// only proves the standalone mapper bean works; it does NOT prove WebFlux uses it.
 ```
+
+Заменить на:
+
+```kotlin
+// The wire-format test below is an end-to-end sanity check для `/status`:
+// ISO-8601 timestamps + ожидаемая структура JSON-ответа. После Jackson 3 migration
+// (issue #29) запрос идёт через codecs, зарегистрированные `WebFluxJacksonCodecConfigurer`
+// от нашего `@Primary internalObjectMapper`.
+//
+// Важно: этот тест НЕ доказывает что наш `WebFluxJacksonCodecConfigurer` фактически
+// управляет codec'ом. Spring Boot 4 `CodecsAutoConfiguration.jacksonCodecCustomizer`
+// автоматически wire'ит `@Primary JsonMapper` бин в WebFlux codec — все наши настройки
+// совпадают с Boot 4 defaults, поэтому удаление нашего configurer'а не сломает ни этот
+// тест, ни поведение `/status`. Это honest sanity check, не regression guard.
+//
+// Реальный regression guard configurer'а:
+//  - `WebFluxJacksonCodecConfigurerTest` — unit test с reflection identity check:
+//    codec'ы построены ИМЕННО на нашем mapper'е.
+//  - `JacksonConfigurationTest` — `ApplicationContextRunner` с auto-config: `@Primary`
+//    disambiguation в bean topology.
+//
+// См. design § 3.2 «Builder vs pre-built — осознанный trade-off» и «Про взаимодействие
+// с Spring Boot 4 auto-config — honest narrative» для полного объяснения.
+```
+
+Lines 10-18 (`Note: IntegrationTestBase spins up Docker Compose ...`) и `StatusControllerTestConfig injects a mocked SignalLossMonitorTask ...` — **оставить без изменений**: они объясняют test setup, ортогональны Jackson scope.
+
+**Контекст про master merge (PR #31, 2026-05-26):** test body (`jsonPath` assertions, lines ~50-53) теперь содержит две дополнительные проверки `$.recordings.success.isNumber` и `$.recordings.errors.isNumber` — это работа PR #31 и **не задевает** ни Jackson migration scope, ни целевой comment-блок выше. Замена comment'а сверху не пересекается с этими assertions.
 
 (b) **НЕ добавлять** FAIL_ON_UNKNOWN_PROPERTIES regression test. Reason (consensus всех 5 ревьюеров iter-2):
 - `/status` GET-only — `JacksonJsonDecoder` не вызывается на GET без body, behavioral assertion невозможна
@@ -1153,11 +1170,11 @@ Edit `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/controller/Sta
 
 Real regression coverage достигнута через NEW-17 fix (codec identity reflection в `WebFluxJacksonCodecConfigurerTest`) + NEW-14 fix (ApplicationContextRunner strengthening в `JacksonConfigurationTest`).
 
-- [ ] **Step 6: Run full core test suite (verify StatusControllerTest still passes — proves the configurer governs end-to-end wire-format)**
+- [ ] **Step 6: Run full core test suite (verify StatusControllerTest still passes — sanity check end-to-end wire-format)**
 
 Run: `./gradlew :frigate-analyzer-core:test`
 
-Expected: BUILD SUCCESSFUL. `StatusControllerTest` continues to assert ISO-8601 timestamps in JSON wire-format AND now asserts unknown-property tolerance — both governed by our configurer.
+Expected: BUILD SUCCESSFUL. `StatusControllerTest` continues to assert ISO-8601 timestamps + JSON структуру `/status` (включая поля `$.recordings.success`/`$.recordings.errors` добавленные PR #31 в master). Test проходит через WebFlux codec; см. (a) — это sanity check, не regression guard на наш configurer.
 
 - [ ] **Step 7: ktlint**
 
@@ -1283,7 +1300,7 @@ After: One `@Primary tools.jackson.ObjectMapper` bean is used by REST inbound/ou
 - [ ] `./gradlew build` green
 - [ ] `JacksonConfigurationTest` — bean settings + KotlinModule discovery
 - [ ] `WebFluxJacksonCodecConfigurerTest` — regression guard: configurer registers encoder/decoder
-- [ ] `StatusControllerTest` — end-to-end wire-format (ISO-8601 dates in JSON response) unchanged
+- [ ] `StatusControllerTest` — end-to-end wire-format (ISO-8601 dates + JSON структура `/status` включая `recordings.success`/`errors` поля от master PR #31) проходит через мигрированный codec; file-comment обновлён (honest narrative — sanity check, не regression guard)
 - [ ] All existing `DetectServiceTest`, `DetectServiceCancelJobTest`, `VideoVisualizationServiceTest`, `ClaudeResponseParserTest`, etc. pass
 EOF
 )"
