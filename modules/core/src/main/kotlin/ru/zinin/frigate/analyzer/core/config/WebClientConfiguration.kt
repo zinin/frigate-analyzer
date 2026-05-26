@@ -71,6 +71,15 @@ class WebClientConfiguration(
      * Без `KotlinModule` constructor-based десериализация для required-параметров ломается.
      * Текущий `Builder`-overload справлялся за счёт Spring auto-вызова `findModules()`; при
      * переходе на pre-built `.build()` мы должны явно вызвать `.findAndAddModules()`.
+     *
+     * **No `DateTimeFeature` config — intentional, не drift с `internalObjectMapper`:**
+     * detect-server DTOs используют `String` для timestamps (`JobStatusResponse.created_at: String`,
+     * `DetectResponse.created_at: String`), не Java `Instant`/`Duration`. Default Jackson behaviour
+     * (numeric timestamps для time types) никогда не triggered текущим contract'ом, поэтому
+     * `DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS` / `WRITE_DURATIONS_AS_TIMESTAMPS` здесь —
+     * dead config. Если будущий DTO добавит Java time field, consumer должен явно выбрать
+     * serialization treatment (numeric vs ISO-8601) для detect-server contract и при необходимости
+     * настроить `DateTimeFeature` локально — отдельное архитектурное решение от REST wire-format.
      */
     @Bean
     fun detectServerObjectMapper(): JsonMapper =
