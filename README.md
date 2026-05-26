@@ -28,7 +28,10 @@ Frame extraction, object detection, and video annotation are performed by an ext
 - **Multi-server load balancing** — distributes detection workload across multiple vision-api-server instances with priority-based scheduling and health monitoring
 - **Two-stage detection** — initial fast scan with a lightweight model, then re-checks detected objects with a higher-accuracy model for validation
 - **Configurable object filtering** — only keep detections for classes you care about (person, car, dog, etc.)
-- **Telegram bot** — real-time notifications with annotated images, video export (raw or with bounding boxes), user management, timezone support
+- **Object tracking** — cross-recording IoU matching suppresses duplicate notifications when the same object lingers across consecutive recordings
+- **Signal-loss detection** — polls the database for last recording per camera and alerts (Telegram) on signal loss / recovery
+- **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI, edited into the notification message
+- **Telegram bot** — real-time notifications with annotated images, inline quick-export buttons, video export (raw or annotated), per-user and global notification toggles, timezone support, user management
 - **Reactive stack** — built on Spring WebFlux, R2DBC, and Kotlin Coroutines for non-blocking I/O throughout
 
 ## Prerequisites
@@ -178,6 +181,7 @@ You can define multiple servers — the load balancer distributes requests based
 | `/help` | Show available commands | Authorized users |
 | `/export` | Export camera video (interactive dialog) | Authorized users |
 | `/timezone` | Set your timezone | Authorized users |
+| `/notifications` | Toggle recording / signal-loss notifications (per-user; OWNER also toggles global) | Authorized users |
 | `/version` | Show build and version info | Authorized users |
 | `/adduser` | Invite a user (by @username) | Owner only |
 | `/removeuser` | Remove a user | Owner only |
@@ -200,6 +204,13 @@ When objects are detected in a recording, the bot sends a notification with:
 - Camera name and timestamp
 - Number of detected objects per class
 - Top frames annotated with bounding boxes and confidence scores
+- Inline "Original" / "Annotated" buttons for instant quick-export (±1 min around the recording)
+
+If AI description is enabled, a short caption suffix and an expandable blockquote with a detailed description are edited into the message asynchronously after Claude responds.
+
+### Signal-loss alerts
+
+A background monitor polls the database for the latest recording per camera. When `now - lastRecording > SIGNAL_LOSS_THRESHOLD` the bot sends a "signal lost" alert; on recovery — a "signal restored" alert. Active cameras are scoped by `SIGNAL_LOSS_ACTIVE_WINDOW` (should match Frigate's retention). Per-user opt-out via `/notifications`.
 
 ## API
 
@@ -242,23 +253,26 @@ When objects are detected in a recording, the bot sends a notification with:
 
 ```
 modules/
-├── common/      # Utilities (UUID generation, clock)
-├── model/       # Entities, DTOs, request/response types
-├── service/     # Business logic, repositories, MapStruct mappers
-├── telegram/    # Telegram bot, notifications, user management
-└── core/        # Spring Boot app, controllers, pipeline, detection
+├── common/         # Utilities (UUID generation, clock)
+├── model/          # Entities, DTOs, request/response types
+├── service/        # Business logic, repositories, MapStruct mappers
+├── ai-description/ # AI-generated detection descriptions via Claude Code SDK
+├── telegram/       # Telegram bot, notifications, user management
+└── core/           # Spring Boot app, controllers, pipeline, detection, signal-loss
 ```
 
-Module dependencies: `core` → `telegram` → `service` → `model` → `common`
+Module dependencies: main chain `core` → `telegram` → `service` → `model` → `common`; `ai-description` is an independent module pulled in by both `core` and `telegram`.
 
 ## Tech Stack
 
-- **Kotlin 2.3.10** + **Coroutines** + **Channels**
-- **Spring Boot 4.0** + **WebFlux** (reactive)
+- **Kotlin 2.3.21** + **Coroutines** + **Channels**
+- **Spring Boot 4.0.6** + **WebFlux** (reactive)
 - **R2DBC** + **PostgreSQL** (non-blocking database access)
-- **Liquibase** (database migrations)
+- **Liquibase 5** (database migrations)
 - **MapStruct** (entity mapping)
-- **ktgbotapi** (Telegram bot)
+- **ktgbotapi 33** (Telegram bot)
+- **Jackson 3** (`tools.jackson.*`)
+- **Claude Code SDK** (optional AI description)
 - **Java 25** with AOT cache for fast startup
 
 ## License

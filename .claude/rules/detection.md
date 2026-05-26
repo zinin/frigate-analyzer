@@ -1,5 +1,5 @@
 ---
-paths: "modules/core/**/loadbalancer/**,modules/core/**/service/Detect*,modules/core/**/service/*Visualization*,modules/core/**/service/*Filter*,modules/core/**/service/Detection*"
+paths: "modules/core/**/loadbalancer/**,modules/core/**/service/Detect*,modules/core/**/service/*Visualization*,modules/core/**/service/*Filter*,modules/core/**/service/Detection*,modules/core/**/service/VideoExport*,modules/core/**/service/StatusService*"
 ---
 
 # Detection Server Management
@@ -51,14 +51,22 @@ Each server has configurable capacity per request type.
 
 | Service | Location | Purpose |
 |---------|----------|---------|
-| FrameVisualizationService | `core/service/` | Orchestrates visualization (remote or local) |
+| FrameVisualizationService | `core/service/` | Orchestrates frame visualization (remote or local) |
 | LocalVisualizationService | `core/service/` | Draws bounding boxes locally using Java2D |
+| VideoVisualizationService | `core/service/` | Submits video-annotation jobs to vision-api-server, polls status until completion/cancel |
 
 ### LocalVisualizationService
 
 - Pure Java2D rendering without external server
 - Configurable: line width, font scaling, quality, label padding
 - Auto-scales fonts based on image height relative to reference height
+
+## Video Export & Status
+
+| Service | Location | Purpose |
+|---------|----------|---------|
+| VideoExportServiceImpl | `core/service/` | Merges Frigate recordings into a single video for `/export` and QuickExport (modes: ORIGINAL / ANNOTATED) |
+| StatusService | `core/service/` | Aggregates recordings/cameras/detect-servers state for `/actuator` and admin endpoints; consumes optional `SignalLossMonitorTask` via `ObjectProvider` |
 
 ## Configuration
 

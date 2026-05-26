@@ -2,7 +2,7 @@
 
 Video recording analysis system for Frigate security cameras using YOLO-based object detection.
 
-**Stack:** Kotlin 2.3.10, Spring Boot 4.0.3, WebFlux, R2DBC/PostgreSQL, Coroutines, Java 25
+**Stack:** Kotlin 2.3.21, Spring Boot 4.0.6, WebFlux, R2DBC/PostgreSQL, Coroutines, Java 25, ktgbotapi 33.1.0, Jackson 3
 
 ## Critical Rules
 
@@ -37,15 +37,19 @@ Use `/build` command for automated build with error handling.
 | common | Utilities (UUID, clock) |
 | model | Entities, DTOs, requests/responses |
 | service | Business logic, repositories, MapStruct mappers |
-| telegram | Bot, notifications, authorization |
-| core | Spring Boot app, controllers, pipeline, tasks |
+| ai-description | AI-generated detection descriptions via Claude Code SDK |
+| telegram | Bot, notifications, authorization, AI description editing |
+| core | Spring Boot app, controllers, pipeline, tasks, signal-loss monitor |
 
-Dependencies: `core` -> `telegram` -> `service` -> `model` -> `common`
+Main chain: `core` → `telegram` → `service` → `model` → `common`. Cross-cutting: `core` and `telegram` both depend on `ai-description`.
 
 ### Key Patterns
 
 - **Pipeline:** Coroutine-based producer-consumer with Kotlin Channels
 - **Detection:** Priority-based load balancing across multiple servers
+- **Signal-loss monitor:** Polls latest recording per camera, alerts on gap > threshold
+- **Object tracking:** Cross-recording IoU matching to suppress duplicate notifications
+- **AI description:** Async Claude Code CLI invocation with rate-limit + queue, edits notification message
 - **Database:** R2DBC reactive, Liquibase migrations in `docker/liquibase/migration/`
 - **Mapping:** MapStruct with KAPT (`unmappedTargetPolicy=error`)
 - **Logging:** kotlin-logging with Log4j2
@@ -67,9 +71,13 @@ Detailed docs in `.claude/rules/` with conditional loading via `paths:` frontmat
 
 | File | Content | Loads when working with |
 |------|---------|-------------------------|
-| pipeline.md | Pipeline, facade, tasks | `**/pipeline/**`, `**/facade/**`, `**/task/**` |
-| detection.md | Load balancer, detect/filter/visualization services | `**/loadbalancer/**`, `**/Detect*`, `**/Visualization*`, `**/Filter*` |
-| telegram.md | Bot, notifications, queue, user management | `modules/telegram/**` |
+| pipeline.md | Pipeline, facade, tasks, signal-loss monitor, watchers | `**/pipeline/**`, `**/facade/**`, `**/task/**` |
+| detection.md | Load balancer, detect/filter/visualization/export services | `**/loadbalancer/**`, `**/Detect*`, `**/Visualization*`, `**/Filter*` |
+| telegram.md | Bot core: components, queue, auth, ktgbotapi waiter API | `modules/telegram/**` |
+| telegram-export.md | `/export` + Quick Export, cancellation, lock-ordering invariant | `**/handler/export/**`, `**/handler/quickexport/**`, `**/handler/cancel/**` |
+| telegram-notifications.md | `/notifications` dialog, `nfs:*` callbacks, per-user/global flag storage | `**/handler/notifications/**` |
+| ai-description.md | Claude Code SDK integration, rate limiter, description agent | `modules/ai-description/**` |
 | configuration.md | All environment variables | `**/application.yaml` |
 | database.md | Schema, migrations | `**/liquibase/**`, `**/repository/**`, `**/entity/**`, `**/persistent/**` |
+| telegram-timeout-bug.md | ktgbotapi long-polling timeout workaround status | `**/TelegramAutoConfiguration*` |
 

@@ -53,15 +53,15 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 - Sends Telegram notification with best detection frame
 - Orchestrates frame visualization for notifications
 
-## File Watching
+## File Watching & Startup
 
-| Task | Purpose |
-|------|---------|
-| WatchRecordsTask | Coroutine supervisor that drives WatchRecordsLoop; owns lifecycle, backoff, health state |
-| WatchRecordsLoop | Stateless logic of a single iteration: poll + handle ENTRY_CREATE + periodic cleanup |
-| WatchRecordsTaskHealthIndicator | HealthIndicator that exposes task state via `/actuator/health` |
-| StartupTelegramNotifier | Sends owner one Telegram message on ApplicationReadyEvent (indirect restart-frequency signal) |
-| FirstTimeScanTask | Initial scan on startup (disable: `DISABLE_FIRST_SCAN=true`) |
+| Task | Location | Purpose |
+|------|----------|---------|
+| WatchRecordsTask | `core/task/` | Coroutine supervisor that drives WatchRecordsLoop; owns lifecycle, backoff, health state |
+| WatchRecordsLoop | `core/task/` | Stateless logic of a single iteration: poll + handle ENTRY_CREATE + periodic cleanup |
+| WatchRecordsTaskHealthIndicator | `core/task/` | HealthIndicator that exposes task state via `/actuator/health` |
+| FirstTimeScanTask | `core/task/` | Initial scan on startup (disable: `DISABLE_FIRST_SCAN=true`) |
+| StartupTelegramNotifier | `core/application/` | Sends owner one Telegram message on ApplicationReadyEvent (indirect restart-frequency signal) |
 
 ### Selective watching
 
@@ -94,6 +94,26 @@ WatchRecordsTaskHealthIndicator exposes `watchRecordsTask` component in `/actuat
 
 StartupTelegramNotifier listens for `ApplicationReadyEvent` and sends the bot owner one plain-text message containing version, commit hash, build time, and current timestamp. Since there is no automatic restart on DOWN, this message arrives only on manual `docker restart`/deploy or JVM-level fatal exit (e.g. OOM). Treat it as a sanity signal that the container has actually come up — not as a restart-frequency metric. Gated by `@ConditionalOnProperty(application.telegram.enabled=true)` AND `@Profile("!test")` — no-op when Telegram is disabled or running under test profile. Failures during send are caught and logged at WARN; they do NOT prevent application startup.
 
+## Signal-Loss Monitor
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| SignalLossMonitorTask | `core/task/` | `@Scheduled(fixedDelay=SIGNAL_LOSS_POLL_INTERVAL)` poller; runs per-camera state machine, dispatches Loss/Recovery alerts |
+| SignalLossDecider | `core/task/` | Pure state-machine: input (lastRecording, now, threshold, activeWindow) → action (none/loss/recovery) |
+| CameraSignalState | `core/task/` | Sealed Healthy/SignalLost data class kept in `ConcurrentHashMap<camId, state>` |
+| SignalLossProperties | `core/config/properties/` | Bound to `application.signal-loss.*`; startup validation enforces `activeWindow > threshold + startupGrace` |
+| SignalLossTelegramGuard | `telegram/config/` | Startup-time guard that fails fast when `signal-loss.enabled=true` but `telegram.enabled=false` |
+
+Activation is gated by `@ConditionalOnProperty(application.signal-loss.enabled=true, matchIfMissing=false)` so test contexts that don't load `application.yaml` keep the feature off. The task `@DependsOn("signalLossTelegramGuard")` so the conflict guard runs first. Per-user/global opt-out is mediated via `telegram_users.notifications_signal_enabled` and `app_settings.notifications.signal.global_enabled`.
+
+## Object Tracker (notification dedup)
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| ObjectTracksCleanupTask | `core/task/` | `@Scheduled` cleanup of `object_tracks` rows with `last_seen_at < now() - NOTIFICATIONS_TRACK_CLEANUP_RETENTION` |
+
+Tracker logic (clustering same-class detections, IoU matching across recordings, TTL refresh) lives in the service module; `object_tracks` schema is documented in `database.md`. The facade calls into the tracker before deciding whether to enqueue a Telegram notification.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -104,3 +124,5 @@ StartupTelegramNotifier listens for `ApplicationReadyEvent` and sends the bot ow
 | `PIPELINE_IDLE_DELAY` | 1s | Producer idle delay |
 | `PIPELINE_ERROR_DELAY` | 5s | Producer error delay |
 | `PIPELINE_BATCH_SIZE` | 10 | Recording batch size |
+
+Signal-loss and object-tracker tunables live in `configuration.md` (`SIGNAL_LOSS_*`, `NOTIFICATIONS_TRACK_*`).
