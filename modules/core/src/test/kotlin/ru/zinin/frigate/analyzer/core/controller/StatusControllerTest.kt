@@ -17,11 +17,25 @@ import ru.zinin.frigate.analyzer.core.IntegrationTestBase
 // so the real monitor bean is absent and `cameras.items` is empty, making ISO-8601
 // wire-format assertions impossible.
 //
-// The wire-format test below is the only assertion that actually verifies the
-// `/status` JSON contract end-to-end through Spring Boot 4's WebFlux Jackson codec
-// stack (`tools.jackson`, NOT our `com.fasterxml.jackson`-based `JacksonConfiguration`
-// — see KDoc on that class for the architectural caveat). `JacksonConfigurationTest`
-// only proves the standalone mapper bean works; it does NOT prove WebFlux uses it.
+// The wire-format test below is an end-to-end sanity check для `/status`:
+// ISO-8601 timestamps + ожидаемая структура JSON-ответа. После Jackson 3 migration
+// (issue #29) запрос идёт через codecs, зарегистрированные `WebFluxJacksonCodecConfigurer`
+// от нашего `@Primary internalObjectMapper`.
+//
+// Важно: этот тест НЕ доказывает что наш `WebFluxJacksonCodecConfigurer` фактически
+// управляет codec'ом. Spring Boot 4 `CodecsAutoConfiguration.jacksonCodecCustomizer`
+// автоматически wire'ит `@Primary JsonMapper` бин в WebFlux codec — все наши настройки
+// совпадают с Boot 4 defaults, поэтому удаление нашего configurer'а не сломает ни этот
+// тест, ни поведение `/status`. Это honest sanity check, не regression guard.
+//
+// Реальный regression guard configurer'а:
+//  - `WebFluxJacksonCodecConfigurerTest` — unit test с identity check через публичный
+//    `JacksonCodecSupport.getMapper()`: codec'ы построены ИМЕННО на нашем mapper'е.
+//  - `JacksonConfigurationTest` — `ApplicationContextRunner` с auto-config: `@Primary`
+//    disambiguation в bean topology.
+//
+// См. design § 3.2 «Builder vs pre-built — осознанный trade-off» и «Про взаимодействие
+// с Spring Boot 4 auto-config — honest narrative» для полного объяснения.
 @AutoConfigureWebTestClient
 @Import(StatusControllerTestConfig::class)
 class StatusControllerTest : IntegrationTestBase() {
