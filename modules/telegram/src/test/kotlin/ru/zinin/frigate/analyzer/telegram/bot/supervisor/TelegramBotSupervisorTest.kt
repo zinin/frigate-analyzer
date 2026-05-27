@@ -132,8 +132,6 @@ class TelegramBotSupervisorTest {
     @Test
     fun `attempt that ran past STABLE_THRESHOLD resets backoff on next failure`() =
         runTest {
-            val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
-
             // Drive currentBackoff up to 40s with two quick failures, then a long
             // attempt that fails after STABLE_THRESHOLD (60s) and resets the state.
             var attempts = 0
@@ -220,6 +218,41 @@ class TelegramBotSupervisorTest {
             runCurrent()
             assertEquals(3L, supervisor.consecutiveFailures)
             assertEquals(40_000L, supervisor.currentBackoff.toMillis())
+
+            job.cancelAndJoin()
+        }
+
+    @Test
+    fun `runner clean exit before STABLE_THRESHOLD records SilentPollingFailure`() =
+        runTest {
+            // [D3] When runner returns null (clean exit) faster than STABLE_THRESHOLD,
+            //      the supervisor records a SilentPollingFailure marker and bumps
+            //      consecutiveFailures. Common cause: revoked bot token or library-swallowed
+            //      error that exits polling without raising.
+            val fakeMe = mockk<dev.inmo.tgbotapi.types.chat.ExtendedBot>(relaxed = true)
+            coEvery { bot.getMe() } returns fakeMe
+            val runner =
+                object : TelegramLongPollingRunner {
+                    override suspend fun run(onUpdate: suspend BehaviourContext.() -> Unit): Throwable? {
+                        delay(10_000) // 10s < STABLE_THRESHOLD (60s)
+                        return null
+                    }
+                }
+            val supervisor = newSupervisorWithTickingClock(testScheduler, runner = runner)
+
+            // t=0: getMe OK, runner.run starts; delay(10s) inside runner.
+            // t=10s: runner returns null. onAttemptEnded(success=true, duration=10s < STABLE) →
+            //        SilentPollingFailure branch: bump consecutiveFailures, write lastFailure.
+            //        Tail delay(5s) starts.
+            // Assert at t=10_001, 1ms into the tail delay (before next iteration begins).
+            val job = launch { supervisor.runSupervised() }
+            advanceTimeBy(10_001)
+            runCurrent()
+
+            assertEquals(1L, supervisor.consecutiveFailures)
+            assertNotNull(supervisor.lastFailure)
+            assertEquals("SilentPollingFailure", supervisor.lastFailure!!.javaClass.simpleName)
+            assertNotNull(supervisor.lastFailureAt)
 
             job.cancelAndJoin()
         }

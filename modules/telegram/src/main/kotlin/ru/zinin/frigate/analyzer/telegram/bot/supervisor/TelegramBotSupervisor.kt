@@ -88,9 +88,11 @@ class TelegramBotSupervisor(
     fun shutdown() {
         logger.info { "Shutting down Telegram bot supervisor..." }
         supervisorJob?.cancel()
-        // Bound the join — worst case loop is parked in delay(MAX_BACKOFF=60s) and won't
-        // observe cancel until that wakes; Spring's default 30s shutdown would interrupt
-        // us otherwise. After timeout, scope.cancel() forces termination.
+        // Bound the join — `delay()` is cooperatively cancellable, so the common path returns
+        // in milliseconds. The 30s budget covers the bad case where ktgbotapi / Ktor has
+        // non-cancellable IO in flight (HTTP read on the long-poll socket). Spring's default
+        // 30s shutdown-phase would interrupt us otherwise. After timeout, scope.cancel()
+        // forces termination.
         runBlocking {
             withTimeoutOrNull(SHUTDOWN_JOIN_TIMEOUT.toMillis()) {
                 // runCatching swallows a CancellationException that may propagate from
