@@ -87,7 +87,10 @@ class TelegramBotSupervisor(
     private val frigateAnalyzerBot: FrigateAnalyzerBot,
     private val clock: Clock,
 ) {
-    private val scope = CoroutineScope(
+    // [AUTO-15] `internal` (not `private`) so behavioural tests can call
+    // `supervisor.scope.launch { runSupervised() }` during the Task 7 window where
+    // start() is still a no-op stub (per [D4]). Matches WatchRecordsTask.scope visibility.
+    internal val scope = CoroutineScope(
         Dispatchers.IO.limitedParallelism(1) + SupervisorJob() +
             CoroutineName("telegram-bot-supervisor"),
     )
@@ -131,29 +134,64 @@ fun interface TelegramLongPollingRunner {
 class KtgBotApiLongPollingRunner(
     private val bot: TelegramBot,
 ) : TelegramLongPollingRunner {
+    // [AUTO-16] Use NAMED argument `scope = this`. Per Context7-verified ktgbotapi 33.1.0
+    //           signature, the first positional parameter is `timeoutSeconds: Int = 30`, so a
+    //           positional `this` (CoroutineScope) would land on `timeoutSeconds` and fail to
+    //           compile with a type mismatch.
+    // [AUTO-18] Use explicit try/catch instead of `runCatching` so CancellationException
+    //           propagates per Kotlin structured-concurrency convention (runCatching catches
+    //           all Throwable, including CancellationException, then we'd have to re-throw it
+    //           manually from a return value — fragile).
     override suspend fun run(onUpdate: suspend BehaviourContext.() -> Unit): Throwable? =
-        runCatching {
+        try {
             coroutineScope {
-                val pollingJob = bot.buildBehaviourWithLongPolling(this) { onUpdate() }
+                val pollingJob = bot.buildBehaviourWithLongPolling(scope = this) { onUpdate() }
                 pollingJob.join()
             }
-        }.exceptionOrNull()
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            e
+        }
 }
 ```
 
-Why `coroutineScope { … }`: ktgbotapi's `buildBehaviourWithLongPolling` takes a `CoroutineScope`
-parameter with a default provider; passing `this` (the coroutineScope) makes the returned
-polling job a child of our scope. Structured concurrency then propagates any internal failure
-through the enclosing scope on `join()` — `runCatching` captures it as the returned cause. If
-the library swallows an error internally and returns cleanly, `run()` returns `null`.
+Why `coroutineScope { … }`: ktgbotapi's `buildBehaviourWithLongPolling` takes a `scope:
+CoroutineScope` parameter with a default provider; passing `scope = this` (the coroutineScope)
+makes the returned polling job a child of our scope. Structured concurrency then propagates
+any internal failure through the enclosing scope on `join()` — our `try/catch` captures it as
+the returned cause. If the library swallows an error internally and returns cleanly, `run()`
+returns `null`.
 
-### 3.4 TelegramBotHealthIndicator — new component
+**ktgbotapi 33.1.0 signature (Context7-verified):**
+
+```kotlin
+fun TelegramBot.buildBehaviourWithLongPolling(
+    timeoutSeconds: Int = 30,
+    autoDisableWebhooks: Boolean = true,
+    mediaGroupsDebounceTimeMillis: Long = 1000L,
+    scope: CoroutineScope = ...,
+    ...,
+    block: suspend BehaviourContext.() -> Unit
+): Job
+```
+
+The named-argument call is therefore mandatory — `buildBehaviourWithLongPolling(this) { … }`
+would not compile (positional `this: CoroutineScope` → `timeoutSeconds: Int`).
+
+### 3.4 TelegramBotSupervisorHealthIndicator — new component
+
+[AUTO-21] Class name follows the project pattern (`<Entity>HealthIndicator`) so Spring's bean
+naming strips the suffix to `telegramBotSupervisor` — matching the smoke test, docs, and
+operator expectation. A class named `TelegramBotHealthIndicator` would expose under the misleading
+`telegramBot` key (collides conceptually with the ktgbotapi `TelegramBot` interface).
 
 ```kotlin
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 @Profile("!test")
-class TelegramBotHealthIndicator(
+class TelegramBotSupervisorHealthIndicator(
     private val supervisor: TelegramBotSupervisor,
     private val clock: Clock,
 ) : HealthIndicator {
@@ -183,6 +221,12 @@ internal suspend fun runSupervised() {
             lastPollingStartAt = Instant.now(clock)
             logger.info { "Telegram bot polling started" }
             val cause = runner.run { frigateAnalyzerBot.registerRoutes(this) }
+            // [AUTO-20] Clear lastPollingStartAt the instant runner.run exits. Otherwise during
+            //           the upcoming delay(currentBackoff), computeHealth() could read the stale
+            //           "live polling start" stamp and report UP for a poller that has already
+            //           stopped. Cleared HERE (not on next iteration entry [A5]) so the gap is
+            //           a single statement, not a whole backoff cycle.
+            lastPollingStartAt = null
             if (cause != null) {
                 // structured-concurrency propagated failure from the polling child
                 throw cause
@@ -192,9 +236,6 @@ internal suspend fun runSupervised() {
                 "long-polling runner returned cleanly after $attemptDuration; reconnecting"
             }
             onAttemptEnded(success = true, attemptStart, failure = null)
-            // [A1] On success/stable-fail onAttemptEnded resets currentBackoff to INITIAL_BACKOFF.
-            //      Do NOT call nextBackoff here — it would clobber the reset and a subsequent
-            //      fast-fail would wait 10s instead of the documented 5s.
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -202,10 +243,15 @@ internal suspend fun runSupervised() {
                 "Telegram bot bootstrap/polling failed; backoff=${currentBackoff.toMillis()}ms"
             }
             onAttemptEnded(success = false, attemptStart, failure = e)
-            // nextBackoff only on failure (after onAttemptEnded may have reset for stable-fail).
-            currentBackoff = nextBackoff(currentBackoff)
         }
+        // [AUTO-19] Delay FIRST, then bump backoff for the NEXT failure. This preserves the
+        //           documented "5s → 10s → 20s → 40s → 60s" progression: the very first
+        //           failure waits INITIAL_BACKOFF (5s), then bumps to 10s for the next attempt.
+        //           Bumping before delay (the previous shape) would make the first wait 10s.
+        //           After a stable-fail reset (onAttemptEnded sets currentBackoff=INITIAL), the
+        //           next delay is also INITIAL — exactly the intended semantics.
         delay(currentBackoff.toMillis())
+        currentBackoff = nextBackoff(currentBackoff)
     }
 }
 
@@ -247,19 +293,20 @@ private fun nextBackoff(c: Duration): Duration = minOf(c.multipliedBy(2), MAX_BA
 private class SilentPollingFailure(message: String) : RuntimeException(message)
 ```
 
-After applying [D3], the loop's success-success path on clean return now also calls
-`currentBackoff = nextBackoff(currentBackoff)` (because the `else if (success)` branch treats
-fast clean returns as failures, and the catch branch is no longer the only place we grow
-backoff). Concretely: replace the post-`onAttemptEnded(success=true)` early-skip of `nextBackoff`
-with the explicit "stable" check — if the attempt was stable, skip `nextBackoff`; otherwise run
-it. The simplest shape is to fold the decision into `onAttemptEnded` (record whether the attempt
-was "really stable") and let the loop ask. The plan code already accomplishes this by
-unconditionally calling `currentBackoff = nextBackoff(currentBackoff)` in the catch branch and
-NOT in the success branch — combined with `onAttemptEnded`'s new branching, a fast clean return
-now lands in `else if (success)` which mirrors a real failure but stays on the success code
-path of the loop (no rethrow). To keep growth correct, also call
-`currentBackoff = nextBackoff(currentBackoff)` after the success-path block when the attempt
-was NOT stable. See plan Task 3 Step 3.3 for the updated loop shape.
+After applying [D3] + [AUTO-19]: the loop now uses a uniform "delay → bump" tail outside the
+try/catch (instead of bumping inside the catch branch). This means BOTH the success path (clean
+return, both stable and fast-clean) AND the catch path use the same delay-then-bump sequence:
+
+- **Stable clean return** ([D3] success && duration >= STABLE): `onAttemptEnded` resets
+  `currentBackoff = INITIAL_BACKOFF`. The tail then delays INITIAL_BACKOFF, then bumps to 2×.
+- **Fast clean return** ([D3] success && duration < STABLE): `onAttemptEnded` increments
+  `consecutiveFailures` and writes `SilentPollingFailure`, but does NOT reset `currentBackoff`.
+  The tail delays the current (already-bumped) value, then bumps further → progression continues.
+- **Failure** (catch): `onAttemptEnded` increments `consecutiveFailures` (or resets on
+  stable-fail). The tail delays, then bumps.
+
+This is the simplest shape that satisfies all three requirements without per-path branching
+inside the loop. See plan Task 3 Step 3.3 for the matching code.
 
 ### 4.1 Why `bot.getMe()` is inside the retry block
 
@@ -439,16 +486,19 @@ already cover.
 
 ```
 modules/telegram/src/main/kotlin/.../bot/supervisor/
-  TelegramBotSupervisor.kt              [new]
-  TelegramBotHealthIndicator.kt         [new]
+  TelegramBotSupervisor.kt                       [new]
+  TelegramLongPollingRunner.kt                   [new — D2 adapter]
+  TelegramBotSupervisorHealthIndicator.kt        [new — AUTO-21 renamed from
+                                                  TelegramBotHealthIndicator]
 
 modules/telegram/src/main/kotlin/.../bot/
-  FrigateAnalyzerBot.kt                 [edit: remove start/stop/botScope, raise visibility,
-                                         add registerOwnerCommandsIfPossible, add eventScope]
+  FrigateAnalyzerBot.kt                          [edit: remove start/stop/botScope, raise
+                                                  visibility, add registerOwnerCommandsIfPossible,
+                                                  add eventScope]
 
 modules/telegram/src/test/kotlin/.../bot/supervisor/
-  TelegramBotSupervisorTest.kt          [new]
-  TelegramBotHealthIndicatorTest.kt     [new]
+  TelegramBotSupervisorTest.kt                   [new]
+  TelegramBotSupervisorHealthIndicatorTest.kt    [new — AUTO-21]
 
 .claude/rules/telegram.md                [edit: add supervisor + indicator rows, supervision note]
 ```
@@ -457,11 +507,14 @@ modules/telegram/src/test/kotlin/.../bot/supervisor/
 
 - **`buildBehaviourWithLongPolling().join()` exits cleanly without exception?** The library
   uses `runCatching` in the polling loop (see `.claude/rules/telegram-timeout-bug.md`); some
-  errors may be swallowed and produce a clean return. In that case the loop counts it as success
-  and immediately reconnects with `INITIAL_BACKOFF` — acceptable behaviour. If the swallowed
-  error is permanent (e.g., revoked token), we will reconnect endlessly with `INITIAL_BACKOFF`
-  and never flip to DOWN. Mitigation: log every clean return at WARN so this is observable in
-  logs. Out of scope to detect at runtime — would require parsing library internals.
+  errors may be swallowed and produce a clean return. [AUTO-6] After [D3] this case is handled:
+  `onAttemptEnded(success=true)` branches on `duration >= STABLE_THRESHOLD`. A fast clean return
+  (< STABLE_THRESHOLD) is treated as a failure — `lastFailure = SilentPollingFailure(...)`,
+  `consecutiveFailures++`, no `lastStableAt` reset. After enough such cycles, health crosses
+  `HEALTH_STALENESS` and flips to DOWN, so a permanent silent failure (revoked token, etc.) is
+  detectable without parsing library internals. A stable clean return is still acceptable —
+  reconnect with reset backoff. Both paths are logged at WARN with the attempt duration so an
+  operator can distinguish them from log alone.
 - **`@PostConstruct` on supervisor vs. `ApplicationReadyEvent`:** sticking with the current
   bot's `@PostConstruct` model for minimum churn. If a future module needs the bot to be live
   before `ApplicationReadyEvent` fires, this is already the case today. **[D6 acknowledged]**

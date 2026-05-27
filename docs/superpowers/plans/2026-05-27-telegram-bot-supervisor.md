@@ -276,16 +276,23 @@ import java.time.ZoneOffset
 class TelegramBotSupervisorTest {
     private val bot = mockk<TelegramBot>(relaxed = true)
     private val frigateAnalyzerBot = mockk<FrigateAnalyzerBot>(relaxed = true)
+    // [AUTO-2] `runner` is the D2 adapter dependency. Default is a relaxed mock; individual
+    //          tests override with a hand-rolled fake when they need to drive specific
+    //          polling-loop behaviour (Task 4's stable-attempt test).
+    private val defaultRunner = mockk<TelegramLongPollingRunner>(relaxed = true)
     private val now = Instant.parse("2026-05-27T12:00:00Z")
     private val clock = Clock.fixed(now, ZoneOffset.UTC)
 
-    private fun newSupervisor(dispatcher: CoroutineDispatcher = StandardTestDispatcher()) =
-        TelegramBotSupervisor(
-            bot = bot,
-            frigateAnalyzerBot = frigateAnalyzerBot,
-            clock = clock,
-            dispatcher = dispatcher,
-        )
+    private fun newSupervisor(
+        dispatcher: CoroutineDispatcher = StandardTestDispatcher(),
+        runner: TelegramLongPollingRunner = defaultRunner,
+    ) = TelegramBotSupervisor(
+        runner = runner,
+        bot = bot,
+        frigateAnalyzerBot = frigateAnalyzerBot,
+        clock = clock,
+        dispatcher = dispatcher,
+    )
 
     // ----- computeHealth branches -----
 
@@ -345,6 +352,8 @@ private val SHUTDOWN_JOIN_TIMEOUT: Duration = Duration.ofSeconds(30)
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class TelegramBotSupervisor(
+    // [AUTO-2] runner is the D2 adapter dependency, FIRST constructor parameter per design §3.2
+    private val runner: TelegramLongPollingRunner,
     private val bot: TelegramBot,
     private val frigateAnalyzerBot: FrigateAnalyzerBot,
     private val clock: Clock,
@@ -682,33 +691,31 @@ fun `attempt that ran past STABLE_THRESHOLD resets backoff on next failure`() =
                 return RuntimeException("connection dropped after stable run")
             }
         }
-        // Note: also pass `runner` to newSupervisor* helpers (signature updated for D2).
-        // The block below is the previous mockkStatic-based stub kept only as historical
-        // context; remove during implementation:
-        //   mockkStatic("...BehaviourBuildersKt")
-        //   coEvery { bot.buildBehaviourWithLongPolling(...) } coAnswers { ... }
-        coEvery {
-            bot.buildBehaviourWithLongPolling(any(), any(), any(), any(), any(), any())
-        } coAnswers {
-            // Simulate a polling Job that runs for 61s then dies — counted as stable.
-            val job = Job()
-            launch {
-                delay(61_000)
-                job.completeExceptionally(RuntimeException("connection dropped after stable run"))
-            }
-            job
-        }
+        // [AUTO-3] Pass the fake runner into the supervisor via the constructor (Task 2.3
+        //          updated to take `runner` as first parameter per AUTO-2). No mockkStatic —
+        //          the [D2] adapter pattern obsoletes that approach entirely.
+        val supervisorWithFakeRunner = newSupervisorWithTickingClock(testScheduler, runner = runner)
 
-        val job = launch { supervisor.runSupervised() }
-        // 5s wait + retry + 10s wait + retry + 61s polling (stable) + failure → reset
-        advanceTimeBy(5_000 + 10_000 + 61_000 + 1)
+        // [AUTO-13] Timing reckoning under [AUTO-19] (delay BEFORE bump):
+        //   t=0:   attempt 1 → getMe fails ("quick fail #1"). delay(currentBackoff=5s). bump→10.
+        //   t=5:   attempt 2 → getMe fails. delay(10s). bump→20.
+        //   t=15:  attempt 3 → getMe OK, runner.run starts; delay(61s).
+        //   t=76:  runner.run returns RTE. Catch: onAttemptEnded(success=false, duration=61s ≥
+        //          STABLE) → reset currentBackoff=5s, consecutiveFailures=1. Tail: delay(5s).
+        //          bump→10. Iteration 4 starts at t=81.
+        //   We assert at t≈76 (just past the runner-end) BEFORE the tail delay completes.
+        val job = launch { supervisorWithFakeRunner.runSupervised() }
+        advanceTimeBy(5_000 + 10_000 + 61_000 + 1)   // = 76_001 ms, just after runner exits
         runCurrent()
 
-        assertEquals(INITIAL_BACKOFF_MS, supervisor.currentBackoff.toMillis())
-        assertEquals(1L, supervisor.consecutiveFailures)
+        // [AUTO-19] After the reset, currentBackoff is briefly INITIAL_BACKOFF (5s) before the
+        //           tail bumps it. Because the tail delay starts immediately after
+        //           onAttemptEnded, the test scheduler at t=76_001 is INSIDE that delay and
+        //           the post-delay bump has not yet run — so we observe the reset value.
+        assertEquals(INITIAL_BACKOFF_MS, supervisorWithFakeRunner.currentBackoff.toMillis())
+        assertEquals(1L, supervisorWithFakeRunner.consecutiveFailures)
 
         job.cancelAndJoin()
-        unmockkStatic("dev.inmo.tgbotapi.extensions.behaviour_builder.BuildBehaviourWithLongPollingKt")
     }
 
 @Test
@@ -747,9 +754,21 @@ needed for these tests — `TelegramLongPollingRunner` is mocked via a per-test 
 
 Expected: the new tests FAIL (the stable-reset assertions are wrong because `onAttemptEnded` doesn't differentiate yet). The previously-passing tests still PASS.
 
-- [ ] **Step 4.3: Implement the real `onAttemptEnded`**
+- [ ] **Step 4.3: Implement the real `onAttemptEnded`** + declare `SilentPollingFailure`
 
-In `TelegramBotSupervisor.kt`, replace the stub body:
+In `TelegramBotSupervisor.kt`, first add the marker class **at the bottom of the file** (private,
+so it does not pollute the supervisor's public API):
+
+```kotlin
+// [AUTO-5 / D3] Marker exception written into `lastFailure` when the long-polling runner returns
+//               cleanly faster than STABLE_THRESHOLD. Distinguishable in health-details under
+//               `lastFailure: "SilentPollingFailure: clean return after PT30S"`, so an operator
+//               can tell a silent failure (revoked token, library swallowed error) from a real
+//               crash.
+private class SilentPollingFailure(message: String) : RuntimeException(message)
+```
+
+Then replace the stub body:
 
 ```kotlin
 private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Throwable?) {
@@ -943,64 +962,11 @@ private fun supervisorWithLiveJob(): TelegramBotSupervisor {
 Append:
 
 ```kotlin
-@Test
-fun `computeHealth branch 2 — startup failure threshold reached → DOWN`() {
-    val sup = supervisorWithLiveJob()
-    sup.startupAt = now.minusSeconds(30)            // inside grace
-    sup.consecutiveFailures = 5L                    // == STARTUP_FAILURE_THRESHOLD
-    val h = sup.computeHealth(now)
-    assertEquals(Status.DOWN, h.status)
-    assertTrue((h.details["reason"] as String).startsWith("startup failed"))
-    sup.supervisorJob?.cancel()
-}
+// Branch names below match the spec §5 ordering after [D1] reorder. Use descriptive names so
+// future reorderings don't desync test/spec numbering (per AUTO-1 + MiniMax CO3 / Kimi 16).
 
 @Test
-fun `computeHealth branch 2 — startup grace expired → DOWN`() {
-    val sup = supervisorWithLiveJob()
-    sup.startupAt = now.minus(Duration.ofMinutes(3))  // past STARTUP_GRACE (2m)
-    sup.consecutiveFailures = 1L
-    val h = sup.computeHealth(now)
-    assertEquals(Status.DOWN, h.status)
-    sup.supervisorJob?.cancel()
-}
-
-@Test
-fun `computeHealth branch 3 — still in grace, never stable → OUT_OF_SERVICE`() {
-    val sup = supervisorWithLiveJob()
-    sup.startupAt = now.minusSeconds(30)
-    sup.consecutiveFailures = 2L                     // < STARTUP_FAILURE_THRESHOLD
-    val h = sup.computeHealth(now)
-    assertEquals(Status.OUT_OF_SERVICE, h.status)
-    assertTrue((h.details["reason"] as String).startsWith("connecting"))
-    sup.supervisorJob?.cancel()
-}
-
-@Test
-fun `computeHealth branch 4 — failing past HEALTH_STALENESS → DOWN`() {
-    val sup = supervisorWithLiveJob()
-    sup.startupAt = now.minus(Duration.ofHours(1))
-    sup.lastStableAt = now.minus(Duration.ofMinutes(10))   // > HEALTH_STALENESS (5m)
-    sup.consecutiveFailures = 3L
-    val h = sup.computeHealth(now)
-    assertEquals(Status.DOWN, h.status)
-    assertTrue((h.details["reason"] as String).startsWith("stale"))
-    sup.supervisorJob?.cancel()
-}
-
-@Test
-fun `computeHealth branch 5 — failing but recent stable → OUT_OF_SERVICE`() {
-    val sup = supervisorWithLiveJob()
-    sup.startupAt = now.minus(Duration.ofHours(1))
-    sup.lastStableAt = now.minusSeconds(30)            // < HEALTH_STALENESS
-    sup.consecutiveFailures = 2L
-    val h = sup.computeHealth(now)
-    assertEquals(Status.OUT_OF_SERVICE, h.status)
-    assertTrue((h.details["reason"] as String).startsWith("in backoff"))
-    sup.supervisorJob?.cancel()
-}
-
-@Test
-fun `computeHealth branch 6 — polling stable past STABLE_THRESHOLD → UP`() {
+fun `computeHealth — live stable polling yields UP`() {
     val sup = supervisorWithLiveJob()
     sup.startupAt = now.minus(Duration.ofHours(1))
     sup.lastStableAt = now.minusSeconds(120)
@@ -1012,8 +978,95 @@ fun `computeHealth branch 6 — polling stable past STABLE_THRESHOLD → UP`() {
     sup.supervisorJob?.cancel()
 }
 
+// [AUTO-11] Core motivation of [D1]: after recovery with sticky consecutiveFailures, a fresh
+//           stable polling must still report UP without waiting for onAttemptEnded to fire.
 @Test
-fun `computeHealth branch 7 — just (re)connected, polling under STABLE_THRESHOLD → OUT_OF_SERVICE`() {
+fun `computeHealth — live stable polling with sticky consecutiveFailures still yields UP`() {
+    val sup = supervisorWithLiveJob()
+    sup.startupAt = now.minus(Duration.ofHours(1))
+    sup.lastStableAt = now.minus(Duration.ofMinutes(2))   // older stable; still within freshness
+    sup.lastPollingStartAt = now.minusSeconds(70)         // > STABLE_THRESHOLD
+    sup.lastFailureAt = now.minus(Duration.ofMinutes(3))  // older than pollStart → invariant ok
+    sup.consecutiveFailures = 4L                          // sticky from before recovery
+    val h = sup.computeHealth(now)
+    assertEquals(Status.UP, h.status)
+    sup.supervisorJob?.cancel()
+}
+
+// [AUTO-10] Invariant `lastPollingStartAt > lastFailureAt` must reject UP if a newer failure
+//           was recorded after the polling stamp (i.e. attempt already crashed but iteration
+//           hasn't entered the new loop body yet — stale-stamp window).
+@Test
+fun `computeHealth — stale lastPollingStartAt after newer failure does not yield UP`() {
+    val sup = supervisorWithLiveJob()
+    sup.startupAt = now.minus(Duration.ofHours(1))
+    sup.lastStableAt = now.minusSeconds(120)
+    sup.lastPollingStartAt = now.minusSeconds(90)        // > STABLE_THRESHOLD, but...
+    sup.lastFailureAt = now.minusSeconds(30)             // ...newer failure invalidates UP
+    sup.consecutiveFailures = 1L
+    val h = sup.computeHealth(now)
+    assertTrue(h.status != Status.UP, "expected fall-through to backoff branches, was UP")
+    sup.supervisorJob?.cancel()
+}
+
+@Test
+fun `computeHealth — startup failure threshold reached → DOWN`() {
+    val sup = supervisorWithLiveJob()
+    sup.startupAt = now.minusSeconds(30)            // inside grace
+    sup.consecutiveFailures = 5L                    // == STARTUP_FAILURE_THRESHOLD
+    val h = sup.computeHealth(now)
+    assertEquals(Status.DOWN, h.status)
+    assertTrue((h.details["reason"] as String).startsWith("startup failed"))
+    sup.supervisorJob?.cancel()
+}
+
+@Test
+fun `computeHealth — startup grace expired → DOWN`() {
+    val sup = supervisorWithLiveJob()
+    sup.startupAt = now.minus(Duration.ofMinutes(3))  // past STARTUP_GRACE (2m)
+    sup.consecutiveFailures = 1L
+    val h = sup.computeHealth(now)
+    assertEquals(Status.DOWN, h.status)
+    sup.supervisorJob?.cancel()
+}
+
+@Test
+fun `computeHealth — still in grace, never stable → OUT_OF_SERVICE`() {
+    val sup = supervisorWithLiveJob()
+    sup.startupAt = now.minusSeconds(30)
+    sup.consecutiveFailures = 2L                     // < STARTUP_FAILURE_THRESHOLD
+    val h = sup.computeHealth(now)
+    assertEquals(Status.OUT_OF_SERVICE, h.status)
+    assertTrue((h.details["reason"] as String).startsWith("connecting"))
+    sup.supervisorJob?.cancel()
+}
+
+@Test
+fun `computeHealth — failing past HEALTH_STALENESS → DOWN`() {
+    val sup = supervisorWithLiveJob()
+    sup.startupAt = now.minus(Duration.ofHours(1))
+    sup.lastStableAt = now.minus(Duration.ofMinutes(10))   // > HEALTH_STALENESS (5m)
+    sup.consecutiveFailures = 3L
+    val h = sup.computeHealth(now)
+    assertEquals(Status.DOWN, h.status)
+    assertTrue((h.details["reason"] as String).startsWith("stale"))
+    sup.supervisorJob?.cancel()
+}
+
+@Test
+fun `computeHealth — failing but recent stable → OUT_OF_SERVICE`() {
+    val sup = supervisorWithLiveJob()
+    sup.startupAt = now.minus(Duration.ofHours(1))
+    sup.lastStableAt = now.minusSeconds(30)            // < HEALTH_STALENESS
+    sup.consecutiveFailures = 2L
+    val h = sup.computeHealth(now)
+    assertEquals(Status.OUT_OF_SERVICE, h.status)
+    assertTrue((h.details["reason"] as String).startsWith("in backoff"))
+    sup.supervisorJob?.cancel()
+}
+
+@Test
+fun `computeHealth — just (re)connected, polling under STABLE_THRESHOLD → OUT_OF_SERVICE`() {
     val sup = supervisorWithLiveJob()
     sup.startupAt = now.minus(Duration.ofHours(1))
     sup.lastStableAt = now.minusSeconds(30)
@@ -1040,17 +1093,31 @@ Replace the stub `computeHealth` body with the full implementation:
 fun computeHealth(now: Instant): Health {
     val builder = baseBuilder()
 
-    // BRANCH 1: supervisor not active
+    // BRANCH 1: supervisor not active → DOWN
     val job = supervisorJob
     if (job == null || !job.isActive) {
         return builder.down().withDetail("reason", "supervisor not active").build()
+    }
+
+    // [AUTO-1 / D1] BRANCH 2: live stable polling → UP (checked FIRST after liveness so cold
+    //               start AND recovery-with-sticky-consecutiveFailures correctly report UP).
+    //               Invariant `lastPollingStartAt > lastFailureAt` guards against a stale stamp
+    //               from a previously-crashed attempt (companion to [A5] which nulls the field
+    //               at iteration start AND [AUTO-20] which nulls it after runner.run exits).
+    val pollStart = lastPollingStartAt
+    val failedAt = lastFailureAt
+    if (pollStart != null &&
+        (failedAt == null || pollStart.isAfter(failedAt)) &&
+        Duration.between(pollStart, now) >= STABLE_THRESHOLD
+    ) {
+        return builder.up().withDetail("reason", "healthy").build()
     }
 
     val stable = lastStableAt
     val started = startupAt
     val sinceStartup = if (started != null) Duration.between(started, now) else Duration.ZERO
 
-    // BRANCH 2: never stable, threshold OR grace expired → DOWN
+    // BRANCH 3: never stable, threshold OR grace expired → DOWN
     if (stable == null &&
         (consecutiveFailures >= STARTUP_FAILURE_THRESHOLD || sinceStartup > STARTUP_GRACE)
     ) {
@@ -1062,7 +1129,7 @@ fun computeHealth(now: Instant): Health {
             ).build()
     }
 
-    // BRANCH 3: never stable, still in grace → OUT_OF_SERVICE
+    // BRANCH 4: never stable, still in grace → OUT_OF_SERVICE
     if (stable == null) {
         return builder
             .outOfService()
@@ -1070,7 +1137,7 @@ fun computeHealth(now: Instant): Health {
             .build()
     }
 
-    // BRANCH 4: in backoff with stale stable point → DOWN
+    // BRANCH 5: in backoff with stale stable point → DOWN
     if (consecutiveFailures > 0 && Duration.between(stable, now) > HEALTH_STALENESS) {
         return builder
             .down()
@@ -1080,7 +1147,7 @@ fun computeHealth(now: Instant): Health {
             ).build()
     }
 
-    // BRANCH 5: transient backoff (recent stable) → OUT_OF_SERVICE
+    // BRANCH 6: transient backoff (recent stable) → OUT_OF_SERVICE
     if (consecutiveFailures > 0) {
         return builder
             .outOfService()
@@ -1090,13 +1157,7 @@ fun computeHealth(now: Instant): Health {
             ).build()
     }
 
-    // BRANCH 6: polling stable past STABLE_THRESHOLD → UP
-    val pollStart = lastPollingStartAt
-    if (pollStart != null && Duration.between(pollStart, now) >= STABLE_THRESHOLD) {
-        return builder.up().withDetail("reason", "healthy").build()
-    }
-
-    // BRANCH 7: just (re)connected
+    // BRANCH 7: just (re)connected, polling < STABLE_THRESHOLD → OUT_OF_SERVICE
     return builder
         .outOfService()
         .withDetail("reason", "connecting... (just (re)started, <STABLE_THRESHOLD)")
@@ -1374,6 +1435,7 @@ commit — do NOT commit them separately.
 
 **Files:**
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt`
+- Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisor.kt` [AUTO-4 — was missing; Step 9.0a edits this file]
 
 - [ ] **Step 9.0a: Populate `TelegramBotSupervisor.start()` body** [D4]
 
@@ -1471,7 +1533,12 @@ Expected: BUILD SUCCESSFUL, all tests pass.
 - [ ] **Step 9.7: Commit**
 
 ```bash
-git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt
+# [AUTO-4] BOTH files must be staged in the same commit per [D4] atomic cutover. Step 9.0a
+#          populates TelegramBotSupervisor.start() while Steps 9.1-9.3 remove
+#          FrigateAnalyzerBot.start(); committing them separately would leave a no-poller
+#          (only stub) or two-poller (409 Conflict) window.
+git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt \
+        modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisor.kt
 git commit -m "refactor(telegram): hand polling lifecycle to TelegramBotSupervisor
 
 FrigateAnalyzerBot no longer owns the polling @PostConstruct/@PreDestroy
