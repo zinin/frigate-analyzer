@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -17,6 +18,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import org.springframework.boot.health.contributor.Status
 import ru.zinin.frigate.analyzer.telegram.bot.FrigateAnalyzerBot
@@ -206,6 +208,22 @@ class TelegramBotSupervisorTest {
             assertEquals(40_000L, supervisor.currentBackoff.toMillis())
 
             job.cancelAndJoin()
+        }
+
+    @Test
+    fun `cancellation propagates cleanly and leaves no failure bookkeeping`() =
+        runTest {
+            val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
+            coEvery { bot.getMe() } coAnswers { awaitCancellation() }
+
+            val job = launch { supervisor.runSupervised() }
+            runCurrent()
+            job.cancel()
+            job.join()
+
+            assertEquals(0L, supervisor.consecutiveFailures)
+            assertNull(supervisor.lastFailure)
+            assertNull(supervisor.lastFailureAt)
         }
 
     private companion object {
