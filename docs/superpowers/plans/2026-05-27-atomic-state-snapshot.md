@@ -537,18 +537,37 @@ import java.util.concurrent.atomic.AtomicReference
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // CRITICAL-2: capture pre-onAttemptEnded backoff for the log message — this
+                // preserves the pre-refactor log content (the message says what the backoff
+                // WAS at the moment of the failure, not what the tail will bump it to).
+                val preFailureBackoff = state.get().currentBackoff
                 logger.error(e) {
                     "Telegram bot bootstrap/polling failed; " +
-                        "next backoff=${state.get().currentBackoff.toMillis()}ms"
+                        "next backoff=${preFailureBackoff.toMillis()}ms"
                 }
                 onAttemptEnded(success = false, attemptStart = attemptStart, failure = e)
             }
-            val backoff = state.get().currentBackoff
-            delay(backoff.toMillis())
-            state.updateAndGet { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+            // CRITICAL-2: single atomic RMW for the tail bump. getAndUpdate returns the
+            // PRE-bump snapshot whose currentBackoff drives the upcoming delay; the bumped
+            // value is what the NEXT iteration will see. Replaces the prior 3-op pattern
+            // (state.get() for delay + state.updateAndGet for bump + logger's own state.get()).
+            val effectiveBackoff = state
+                .getAndUpdate { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                .currentBackoff
+            delay(effectiveBackoff.toMillis())
         }
     }
 ```
+
+**CRITICAL-2 rationale (per review iter-1 decision option A) — TelegramBotSupervisor.** Same
+fix as in WatchRecordsTask: collapse the tail `state.get() + delay + updateAndGet` triple
+into one `getAndUpdate` whose return supplies the pre-bump value for `delay`. The catch
+block keeps a single `state.get()` to read the pre-`onAttemptEnded` backoff for the log
+message — that preserves the pre-refactor log content (note: `onAttemptEnded` may reset
+`currentBackoff` to INITIAL on the "failure && duration >= STABLE_THRESHOLD" branch, so the
+log message and the actual delay may legitimately differ; that's a pre-existing observable
+property out of scope for this refactor). Total: 2 atomic state operations per failure-tail
+(down from 3); 1 atomic op per success-tail.
 
 ### Step 3.5: Переписать `onAttemptEnded(...)` — 3 ветки через `updateAndGet`
 
@@ -955,9 +974,13 @@ import java.util.concurrent.atomic.AtomicReference
                 lastCleanup = result.lastCleanupAt
                 onPollCompleted(result.eventsProcessed, result.eventFailures)
                 if (result.eventFailures > 0 && result.eventsProcessed == 0) {
-                    val backoff = state.get().currentBackoff
-                    delay(backoff.toMillis())
-                    state.updateAndGet { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                    // CRITICAL-2: single atomic RMW. getAndUpdate returns the PRE-bump
+                    // snapshot, from which we read the effective backoff for the delay.
+                    // No split read+update — eliminates the cross-snapshot race.
+                    val effectiveBackoff = state
+                        .getAndUpdate { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                        .currentBackoff
+                    delay(effectiveBackoff.toMillis())
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -966,19 +989,33 @@ import java.util.concurrent.atomic.AtomicReference
                 closeWatchServiceQuietly()
                 registeredDirs.clear()
                 onLoopFailure(e)
-                val backoff = state.get().currentBackoff
-                delay(backoff.toMillis())
-                state.updateAndGet { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                val effectiveBackoff = state
+                    .getAndUpdate { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                    .currentBackoff
+                delay(effectiveBackoff.toMillis())
             } catch (e: Exception) {
-                logger.error(e) { "WatchRecordsTask iteration failed; backing off for ${state.get().currentBackoff.toMillis()}ms" }
                 onLoopFailure(e)
-                val backoff = state.get().currentBackoff
-                delay(backoff.toMillis())
-                state.updateAndGet { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                val effectiveBackoff = state
+                    .getAndUpdate { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                    .currentBackoff
+                logger.error(e) {
+                    "WatchRecordsTask iteration failed; backing off for ${effectiveBackoff.toMillis()}ms"
+                }
+                delay(effectiveBackoff.toMillis())
             }
         }
     }
 ```
+
+**CRITICAL-2 rationale (per review iter-1 decision option A).** The previous shape had two
+separate state operations per backoff cycle — `val backoff = state.get().currentBackoff;
+delay(...); state.updateAndGet { nextBackoff(...) }` — which is a split snapshot violating
+the single-snapshot discipline (and the log line additionally added a third `state.get()`).
+The new shape uses `getAndUpdate` to atomically bump the backoff and recover the pre-bump
+value in one call; the local `effectiveBackoff` is then used for both the `delay` and the
+log line. Observable semantics preserved (delay for the OLD backoff, bump for next iteration);
+race window between read and update closed. SUGGESTION-7 (proposed comment about single-writer
+atomicity in runSupervised) is moot in this shape and not applied.
 
 ### Step 4.5: Переписать transition-методы — single `updateAndGet` каждый
 
