@@ -54,11 +54,15 @@ FrigateAnalyzerBot              TelegramBotSupervisor             TelegramBotHea
     `with(...) { with(...) { … } }` nesting required to invoke a member-extension from another
     class.
   - `suspend fun registerDefaultCommands()` — visibility raised from `private` to public; body
-    unchanged (existing per-language `setMyCommands` loop + WARN-log on failure).
+    updated to rethrow `CancellationException` before catching `Exception` (otherwise a
+    `setMyCommands` suspend point catches the supervisor's cancel during shutdown — see [A3]).
   - `suspend fun registerOwnerCommandsIfPossible()` — *new* public method. Merges the existing
     owner-lookup block from `start()` lines 96–106 with the call to the still-private
-    `registerOwnerCommands(chatId)`. Catches its own exceptions (WARN-log, no propagation) so a
-    DB blip during owner lookup does not trigger supervisor backoff.
+    `registerOwnerCommands(chatId)`. Catches its own `Exception` (WARN-log, no propagation) so a
+    DB blip during owner lookup does not trigger supervisor backoff. **Rethrows
+    `CancellationException` first** so shutdown is responsive.
+  - `registerOwnerCommands(chatId)` (existing private helper) — same change: rethrow
+    `CancellationException` before catching `Exception`.
 - **`onOwnerActivated` EventListener:** stays in `FrigateAnalyzerBot`. It is an event-driven owner
   registration, not part of polling lifecycle, and entangling it with `botScope` would couple two
   concerns. It gets its own small scope:
@@ -80,7 +84,8 @@ class TelegramBotSupervisor(
     private val clock: Clock,
 ) {
     private val scope = CoroutineScope(
-        Dispatchers.Default + SupervisorJob() + CoroutineName("telegram-bot-supervisor"),
+        Dispatchers.IO.limitedParallelism(1) + SupervisorJob() +
+            CoroutineName("telegram-bot-supervisor"),
     )
 
     @Volatile internal var supervisorJob: Job? = null
@@ -126,17 +131,25 @@ without this guard `/actuator/health` would aggregate to `DOWN` and break
 internal suspend fun runSupervised() {
     currentBackoff = INITIAL_BACKOFF
     while (currentCoroutineContext().isActive) {
-        val attemptStart = clock.instant()
+        val attemptStart = Instant.now(clock)
         lastAttemptAt = attemptStart
         try {
             bot.getMe()                                          // transient → retried
             frigateAnalyzerBot.registerDefaultCommands()         // best-effort (own try inside)
             frigateAnalyzerBot.registerOwnerCommandsIfPossible() // best-effort (own try inside)
-            lastPollingStartAt = clock.instant()
+            lastPollingStartAt = Instant.now(clock)
+            logger.info { "Telegram bot polling started" }
             bot.buildBehaviourWithLongPolling {
                 frigateAnalyzerBot.registerRoutes(this)
             }.join()
+            val attemptDuration = Duration.between(attemptStart, Instant.now(clock))
+            logger.warn {
+                "buildBehaviourWithLongPolling returned cleanly after $attemptDuration; reconnecting"
+            }
             onAttemptEnded(success = true, attemptStart, failure = null)
+            // [A1] On success/stable-fail onAttemptEnded resets currentBackoff to INITIAL_BACKOFF.
+            //      Do NOT call nextBackoff here — it would clobber the reset and a subsequent
+            //      fast-fail would wait 10s instead of the documented 5s.
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -144,22 +157,23 @@ internal suspend fun runSupervised() {
                 "Telegram bot bootstrap/polling failed; backoff=${currentBackoff.toMillis()}ms"
             }
             onAttemptEnded(success = false, attemptStart, failure = e)
+            // nextBackoff only on failure (after onAttemptEnded may have reset for stable-fail).
+            currentBackoff = nextBackoff(currentBackoff)
         }
         delay(currentBackoff.toMillis())
-        currentBackoff = nextBackoff(currentBackoff)
     }
 }
 
 private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Throwable?) {
-    val duration = Duration.between(attemptStart, clock.instant())
+    val duration = Duration.between(attemptStart, Instant.now(clock))
     if (success) {
         // Clean polling exit (rare; library normally throws on disconnect).
         consecutiveFailures = 0
         currentBackoff = INITIAL_BACKOFF
-        lastStableAt = clock.instant()
+        lastStableAt = Instant.now(clock)
     } else {
         lastFailure = failure
-        lastFailureAt = clock.instant()
+        lastFailureAt = Instant.now(clock)
         if (duration >= STABLE_THRESHOLD) {
             // Worked long enough to count as a stable run — first fresh failure, reset backoff.
             // lastStableAt = now (the moment of crash), not attemptStart: an attempt that ran
@@ -167,7 +181,7 @@ private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Thr
             // measured from "just now", not from "1 hour ago".
             consecutiveFailures = 1
             currentBackoff = INITIAL_BACKOFF
-            lastStableAt = clock.instant()
+            lastStableAt = Instant.now(clock)
         } else {
             consecutiveFailures++
         }
@@ -266,13 +280,17 @@ Pattern copied from `WatchRecordsTask.shutdown()`:
 fun shutdown() {
     logger.info { "Shutting down Telegram bot supervisor..." }
     supervisorJob?.cancel()
-    val joined = runBlocking {
+    runBlocking {
         withTimeoutOrNull(SHUTDOWN_JOIN_TIMEOUT.toMillis()) {
-            supervisorJob?.join()
+            // runCatching swallows a CancellationException that propagates from join() —
+            // otherwise withTimeoutOrNull would see the cancel and return null, causing a
+            // false "did not exit within Ns" log. [A7]
+            runCatching { supervisorJob?.join() }
             true
         }
     }
-    if (joined == null) {
+    val cleanShutdown = supervisorJob?.isCompleted == true
+    if (!cleanShutdown) {
         logger.warn {
             "Supervisor did not exit within ${SHUTDOWN_JOIN_TIMEOUT.toSeconds()}s; forcing"
         }

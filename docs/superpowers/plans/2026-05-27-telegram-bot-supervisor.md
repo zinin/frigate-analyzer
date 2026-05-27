@@ -63,6 +63,9 @@ Replace with a regular method that takes `BehaviourContext` as a parameter and d
 @Suppress("LongMethod", "CyclomaticComplexMethod")
 suspend fun registerRoutes(context: BehaviourContext) =
     with(context) {
+        // Note: `bot` inside this block resolves to BehaviourContext.bot (same TelegramBot
+        // instance as this@FrigateAnalyzerBot.bot via constructor injection). The implicit
+        // receiver here is BehaviourContext. [A12]
         sortedHandlers.forEach { handler ->
             ...
         }
@@ -128,11 +131,17 @@ suspend fun registerOwnerCommandsIfPossible() {
         if (owner?.chatId != null) {
             registerOwnerCommands(owner.chatId)
         }
+    } catch (e: CancellationException) {
+        // [A3] Rethrow cancellation so the supervisor's shutdown is responsive — `Exception`
+        //      catches CancellationException in Kotlin coroutines.
+        throw e
     } catch (e: Exception) {
         logger.warn(e) { "Failed to look up owner for command registration" }
     }
 }
 ```
+
+**Step 1.4a: Also rethrow `CancellationException` in the existing `registerDefaultCommands` and `registerOwnerCommands` methods** so the supervisor's cancel can propagate through `setMyCommands` suspend points (FrigateAnalyzerBot.kt:311 and :332). Same shape: `catch (e: CancellationException) { throw e }` before the existing `catch (e: Exception)`.
 
 - [ ] **Step 1.5: Replace the inline owner-lookup block in `start()` with a call to the new method**
 
@@ -335,10 +344,15 @@ class TelegramBotSupervisor(
     private val bot: TelegramBot,
     private val frigateAnalyzerBot: FrigateAnalyzerBot,
     private val clock: Clock,
-    private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val dispatcher: CoroutineDispatcher =
+        @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+        Dispatchers.IO.limitedParallelism(1),
 ) {
     private val scope =
         CoroutineScope(SupervisorJob() + dispatcher + CoroutineName("telegram-bot-supervisor"))
+    // [A6] Production default is Dispatchers.IO.limitedParallelism(1) for parity with
+    //      WatchRecordsTask. Long-polling is I/O-bound and the supervisor is single-threaded
+    //      by design. Constructor takes `dispatcher` for testability (StandardTestDispatcher).
 
     @Volatile internal var supervisorJob: Job? = null
 
@@ -443,7 +457,9 @@ Append to `TelegramBotSupervisorTest.kt` (inside the class):
 @Test
 fun `runSupervised retries with exponential backoff after getMe failures`() =
     runTest {
-        val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
+        // [A8] Use ticking clock from Task 4 so future tests adding longer attempts
+        //      won't silently get duration=0 on a fixed clock.
+        val supervisor = newSupervisorWithTickingClock(testScheduler)
         var attempts = 0
         coEvery { bot.getMe() } coAnswers {
             attempts++
@@ -494,23 +510,28 @@ Add to `TelegramBotSupervisor.kt` (alongside `computeHealth`):
 internal suspend fun runSupervised() {
     currentBackoff = INITIAL_BACKOFF
     while (currentCoroutineContext().isActive) {
-        val attemptStart = clock.instant()
+        val attemptStart = Instant.now(clock)         // [A9] consistent with WatchRecordsTask
         lastAttemptAt = attemptStart
         try {
             bot.getMe()
             frigateAnalyzerBot.registerDefaultCommands()
             frigateAnalyzerBot.registerOwnerCommandsIfPossible()
-            lastPollingStartAt = clock.instant()
+            lastPollingStartAt = Instant.now(clock)
+            logger.info { "Telegram bot polling started" }  // [A11] observable reconnect log
             bot
                 .buildBehaviourWithLongPolling {
                     frigateAnalyzerBot.registerRoutes(this)
                 }.join()
             // Clean return from join() is unusual — library normally throws on disconnect.
-            // Log at WARN so this is observable; we'll still treat it as success (counter
-            // reset). If it turns out to be a permanent silent failure we'd see this WARN
-            // looping in production logs. (Spec §10 risk mitigation.)
-            logger.warn { "buildBehaviourWithLongPolling returned without exception; reconnecting" }
+            // Log at WARN with duration so a fast bogus return is distinguishable from a
+            // long-running clean disconnect. (Spec §10 risk mitigation.) [A10]
+            val attemptDuration = Duration.between(attemptStart, Instant.now(clock))
+            logger.warn {
+                "buildBehaviourWithLongPolling returned cleanly after $attemptDuration; reconnecting"
+            }
             onAttemptEnded(success = true, attemptStart = attemptStart, failure = null)
+            // [A1] On clean return onAttemptEnded already reset currentBackoff to INITIAL_BACKOFF.
+            //      Do NOT call nextBackoff here — it would clobber the reset.
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -519,9 +540,12 @@ internal suspend fun runSupervised() {
                     "next backoff=${currentBackoff.toMillis()}ms"
             }
             onAttemptEnded(success = false, attemptStart = attemptStart, failure = e)
+            // nextBackoff only on failure — and after onAttemptEnded which may have reset
+            // currentBackoff to INITIAL_BACKOFF for a stable-fail; in that case nextBackoff
+            // takes 5s → 10s for the *second* failure (correct progression). [A1]
+            currentBackoff = nextBackoff(currentBackoff)
         }
         delay(currentBackoff.toMillis())
-        currentBackoff = nextBackoff(currentBackoff)
     }
 }
 
@@ -601,6 +625,13 @@ fun `attempt that ran past STABLE_THRESHOLD resets backoff on next failure`() =
                 else -> throw CancellationException("done")
             }
         }
+        // [A2/A4] mockkStatic class name and matcher count MUST be verified against the
+        //         actual ktgbotapi 33.1.0 JAR before this test compiles — see deferred
+        //         AUTO-fix A4 and DISPUTED D2. Reviewers flagged that the class is likely
+        //         `BehaviourBuildersKt` (not `BuildBehaviourWithLongPollingKt`) and the
+        //         function takes 3 params (not 6). For test isolation, also pair this with
+        //         @AfterEach { unmockkStatic(...) } at class level so a failed assertion
+        //         doesn't leak the static mock into other tests. [A2]
         mockkStatic("dev.inmo.tgbotapi.extensions.behaviour_builder.BuildBehaviourWithLongPollingKt")
         coEvery {
             bot.buildBehaviourWithLongPolling(any(), any(), any(), any(), any(), any())
@@ -653,6 +684,18 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import org.junit.jupiter.api.AfterEach
+```
+
+Also add an `@AfterEach` cleanup hook at the class level so the static mock is unmocked even
+if a test assertion fails before the inline `unmockkStatic(...)` (otherwise the static mock
+leaks into subsequent tests in the JVM). [A2]
+
+```kotlin
+@AfterEach
+fun tearDownMockkStatic() {
+    unmockkStatic("dev.inmo.tgbotapi.extensions.behaviour_builder.BuildBehaviourWithLongPollingKt")
+}
 ```
 
 - [ ] **Step 4.2: Run tests to verify they fail**
@@ -1085,14 +1128,17 @@ fun shutdown() {
     // Bound the join — worst case loop is parked in delay(MAX_BACKOFF=60s) and won't
     // observe cancel until that wakes; Spring's default 30s shutdown would interrupt
     // us otherwise. After timeout, scope.cancel() forces termination.
-    val joined =
-        runBlocking {
-            withTimeoutOrNull(SHUTDOWN_JOIN_TIMEOUT.toMillis()) {
-                supervisorJob?.join()
-                true
-            }
+    runBlocking {
+        withTimeoutOrNull(SHUTDOWN_JOIN_TIMEOUT.toMillis()) {
+            // runCatching swallows a CancellationException that may propagate from
+            // join() — otherwise withTimeoutOrNull would see the cancel and treat it
+            // as a timeout, causing a false "did not exit within Ns" log. [A7]
+            runCatching { supervisorJob?.join() }
+            true
         }
-    if (joined == null) {
+    }
+    val cleanShutdown = supervisorJob?.isCompleted == true
+    if (!cleanShutdown) {
         logger.warn {
             "Supervisor did not exit within ${SHUTDOWN_JOIN_TIMEOUT.toSeconds()}s; forcing"
         }
