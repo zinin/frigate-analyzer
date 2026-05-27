@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.boot.health.contributor.Status
@@ -384,6 +385,46 @@ class TelegramBotSupervisorTest {
         assertEquals(Status.OUT_OF_SERVICE, h.status)
         assertTrue((h.details["reason"] as String).startsWith("connecting"))
         sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `computeHealth sanitizes bot token in lastFailure detail`() {
+        // Ktor request exceptions embed the full URL `https://api.telegram.org/bot<TOKEN>/method`
+        // in their message. baseBuilder() must redact the token before surfacing it in
+        // /actuator/health.
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minus(Duration.ofMinutes(1))
+        sup.lastStableAt = now.minusSeconds(30)
+        sup.consecutiveFailures = 1L
+        sup.lastFailure =
+            RuntimeException(
+                "Client request(GET https://api.telegram.org/bot12345:ABCdef-xyz_token/getMe) invalid: 401",
+            )
+        sup.lastFailureAt = now.minusSeconds(15)
+        val h = sup.computeHealth(now)
+        val detail = h.details["lastFailure"] as String
+        assertTrue(detail.contains("bot[REDACTED]"), "token must be redacted; got: $detail")
+        assertTrue(!detail.contains("ABCdef-xyz_token"), "raw token must not appear: $detail")
+        assertTrue(!detail.contains("12345:"), "bot id+colon prefix of token must not appear: $detail")
+        // Diagnostic context preserved.
+        assertTrue(detail.contains("getMe"), "method name should remain visible: $detail")
+        assertTrue(detail.contains("401"), "HTTP status should remain visible: $detail")
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `start() is idempotent — second call is ignored`() {
+        // Documents the Spring @PostConstruct contract: a second start() call returns early
+        // without launching a duplicate coroutine. Production code relies on Spring invoking
+        // @PostConstruct exactly once; this test pins the guard against future refactors.
+        coEvery { bot.getMe() } coAnswers { awaitCancellation() }
+        val supervisor = newSupervisor()
+        supervisor.start()
+        val firstJob = supervisor.supervisorJob
+        assertNotNull(firstJob, "first start() should set supervisorJob")
+        supervisor.start() // second call — must be ignored
+        assertSame(firstJob, supervisor.supervisorJob, "second start() must not replace supervisorJob")
+        firstJob?.cancel()
     }
 
     @Test

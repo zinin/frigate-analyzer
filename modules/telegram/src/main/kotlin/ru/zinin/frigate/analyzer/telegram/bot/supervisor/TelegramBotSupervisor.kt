@@ -37,6 +37,15 @@ private val STARTUP_GRACE: Duration = Duration.ofMinutes(2)
 private const val STARTUP_FAILURE_THRESHOLD: Long = 5L
 private val SHUTDOWN_JOIN_TIMEOUT: Duration = Duration.ofSeconds(30)
 
+// Telegram bot token format is "<numeric-id>:<base64-like>"; the URL form is "bot<id>:<token>".
+// Ktor exception messages typically embed the full URL — sanitize before surfacing in
+// /actuator/health (defense-in-depth even when management.endpoint.health.show-details=never).
+private val BOT_TOKEN_PATTERN = Regex("""bot\d+:[\w-]+""")
+
+private fun sanitizeFailureMessage(message: String?): String =
+    (message?.take(500) ?: "<no-message>")
+        .replace(BOT_TOKEN_PATTERN, "bot[REDACTED]")
+
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class TelegramBotSupervisor(
@@ -73,6 +82,15 @@ class TelegramBotSupervisor(
 
     @Volatile internal var currentBackoff: Duration = INITIAL_BACKOFF
 
+    /**
+     * Launches the supervised polling loop.
+     *
+     * Idempotent: a second call (`supervisorJob != null`) is logged and ignored. Restart
+     * after [shutdown] is NOT supported: the underlying [scope] is `cancel()`-ed in shutdown
+     * and re-launching on a cancelled scope would silently noop. Spring's `@PostConstruct`
+     * lifecycle guarantees single-threaded invocation from a fresh bean — TOCTOU on the
+     * `supervisorJob != null` check is moot for the Spring use case. Mirrors `WatchRecordsTask`.
+     */
     @PostConstruct
     fun start() {
         if (supervisorJob != null) {
@@ -296,7 +314,7 @@ class TelegramBotSupervisor(
                 lastFailure?.let {
                     b.withDetail(
                         "lastFailure",
-                        "${it.javaClass.simpleName}: ${it.message?.take(500) ?: "<no-message>"}",
+                        "${it.javaClass.simpleName}: ${sanitizeFailureMessage(it.message)}",
                     )
                 }
             }
