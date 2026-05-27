@@ -2,7 +2,7 @@
 
 Reviewers:
 - codex-executor (gpt-5.5, xhigh) — ✓
-- ccs-executor (glm-5.1) — ✗ (исследовал документы 12 минут, не успел сформировать ревью; пропущен)
+- ccs-executor (glm-5.1) — ✓ (доставлен позже остальных)
 - ollama-executor (ollama-kimi, Kimi K2.6) — ✓
 - ollama-executor (ollama-minimax, MiniMax M2.7) — ✓
 - ollama-executor (ollama-deepseek, DeepSeek-V4 Pro) — ✓
@@ -181,3 +181,56 @@ Step 1.4a — отдельный bullet без маркера `[ ]`. Если п
 **Q2:** `KtgBotApiLongPollingRunner.run()` использует `coroutineScope { ... }` + `runCatching`. Если ktgbotapi внутренне перезапускает polling, получим бесконечное ожидание на `pollingJob.join()`. Есть ли в ktgbotapi 33.1.0 такая логика?
 
 **Q3:** Task 9 Step 9.5 — supervisor тесты с virtual time. Стоит явно проверить, что `./gradlew :frigate-analyzer-telegram:test` не зависает на минуты из-за забытого реального `delay`.
+
+---
+
+## ccs-executor (glm-5.1)
+
+### Critical Issues
+
+**C1.** План Task 6 Step 6.4 — `computeHealth` НЕ следует решению [D1]. UP-ветка на позиции 6, после startup-grace/backoff. Cold start с `lastStableAt == null` + polling 60+ секунд вернёт `OUT_OF_SERVICE`, а не `UP`. Recovery с `consecutiveFailures > 0` — `OUT_OF_SERVICE` через branch 5.
+
+**C2.** План Task 4 Step 4.1 — тест содержит **ОБА** подхода (adapter fake + mockkStatic с 6 `any()` + `Job.completeExceptionally` + `unmockkStatic`). Не скомпилируется. Метод `completeExceptionally` существует только на `CompletableJob`, не на `Job`.
+
+**C3.** Конструктор `TelegramBotSupervisor` (Task 2 Step 2.3) не содержит `runner: TelegramLongPollingRunner`. Design §3.2 показывает первым параметром. Task 2.5 не содержит шага по обновлению. После Task 2.5 все тесты сломаются компиляцией.
+
+**C4.** **Design §3.3 — `bot.buildBehaviourWithLongPolling(this)` — несоответствие позиционного параметра.** По данным Context7, сигнатура в ktgbotapi 33.1.0:
+```kotlin
+fun TelegramBot.buildBehaviourWithLongPolling(
+    timeoutSeconds: Int = 30,
+    autoDisableWebhooks: Boolean = true,
+    mediaGroupsDebounceTimeMillis: Long = 1000L,
+    scope: CoroutineScope = ...,
+    ...
+    block: suspend BehaviourContext.() -> Unit
+): Job
+```
+Позиционный `this` (тип `CoroutineScope`) попадёт на `timeoutSeconds: Int` — type mismatch. **Исправление:**
+```kotlin
+val pollingJob = bot.buildBehaviourWithLongPolling(scope = this) { onUpdate() }
+```
+
+**C5.** Design §3.3 — `runCatching` в адаптере проглатывает `CancellationException`. Хотя `if (cause != null) throw cause` потом re-throws, нарушает structured concurrency. Заменить на explicit `try/catch` с rethrow CancellationException.
+
+### Concerns
+
+**W1.** Task 3 Step 3.1 forward-references `newSupervisorWithTickingClock` (определяется в Task 4).
+**W2.** Task 3 Step 3.3 background note всё ещё описывает mockkStatic-подход.
+**W3.** Import `buildBehaviourWithLongPolling` в supervisor — dead code после [D2].
+**W4.** `clock.instant()` vs `Instant.now(clock)` непоследовательно в failure/success branches `onAttemptEnded`.
+**W5.** Отсутствует тест "stale `lastPollingStartAt` от предыдущей failure не даёт UP".
+**W6.** Нет теста "live stable polling с `consecutiveFailures > 0` даёт UP" — core motivation [D1].
+
+### Suggestions
+
+**S1.** Переставить `computeHealth` ветки в реализации (live polling → UP на позицию 2), добавить тесты W5 и W6.
+**S2.** Полностью переписать Task 4 Step 4.1 без mockkStatic.
+**S3.** Добавить явный шаг в Task 2.5 для обновления конструктора и хелперов.
+**S4.** Использовать именованный параметр `scope = this` в adapter.
+**S5.** Заменить `runCatching` на explicit `try/catch` в adapter.
+
+### Questions
+
+**Q1.** Верифицирована ли сигнатура `buildBehaviourWithLongPolling` в ktgbotapi 33.1.0? Context7 подтверждает 4-й параметр `scope: CoroutineScope` — рекомендуется scratch-compile до начала реализации.
+
+**Q2.** Должен ли `runSupervised` сбрасывать `lastFailure` / `lastFailureAt` в начале каждой итерации? Сейчас [A5] сбрасывает только `lastPollingStartAt`. Если предыдущая попытка упала, поля сохраняются — может «прилипнуть».

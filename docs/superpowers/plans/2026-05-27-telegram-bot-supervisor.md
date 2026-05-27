@@ -4,7 +4,7 @@
 
 **Goal:** Make the Telegram bot survive transient network failures by reconnecting automatically with bounded exponential backoff, and expose the reconnect state via Spring Actuator.
 
-**Architecture:** Extract polling lifecycle from `FrigateAnalyzerBot` into a new `TelegramBotSupervisor` that owns the polling scope, runs a supervised retry-loop with 5s→60s exponential backoff, and tracks state for a `TelegramBotHealthIndicator` that exports UP/OUT_OF_SERVICE/DOWN. `FrigateAnalyzerBot` becomes a "registrar of routes" — its public methods are called by the supervisor on each (re)connect.
+**Architecture:** Extract polling lifecycle from `FrigateAnalyzerBot` into a new `TelegramBotSupervisor` that owns the polling scope, runs a supervised retry-loop with 5s→60s exponential backoff, and tracks state for a `TelegramBotSupervisorHealthIndicator` that exports UP/OUT_OF_SERVICE/DOWN. `FrigateAnalyzerBot` becomes a "registrar of routes" — its public methods are called by the supervisor on each (re)connect.
 
 **Tech Stack:** Kotlin 2.3.21, Spring Boot 4.0.6 (Actuator), kotlinx.coroutines, ktgbotapi 33.1.0, JUnit 5, mockk, kotlinx-coroutines-test.
 
@@ -21,9 +21,9 @@
 | File | Responsibility |
 |---|---|
 | `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisor.kt` | Polling lifecycle, retry-loop, backoff state, health-state fields, `computeHealth(now)`. |
-| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotHealthIndicator.kt` | Thin Spring Actuator adapter — delegates to `supervisor.computeHealth(Instant.now(clock))`. |
+| `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorHealthIndicator.kt` | Thin Spring Actuator adapter — delegates to `supervisor.computeHealth(Instant.now(clock))`. |
 | `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorTest.kt` | Unit tests for retry-loop behaviour and `computeHealth` branches. |
-| `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotHealthIndicatorTest.kt` | Unit test that indicator delegates to supervisor. |
+| `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorHealthIndicatorTest.kt` | Unit test that indicator delegates to supervisor. |
 
 **Modified files:**
 
@@ -141,7 +141,9 @@ suspend fun registerOwnerCommandsIfPossible() {
 }
 ```
 
-**Step 1.4a: Also rethrow `CancellationException` in the existing `registerDefaultCommands` and `registerOwnerCommands` methods** so the supervisor's cancel can propagate through `setMyCommands` suspend points (FrigateAnalyzerBot.kt:311 and :332). Same shape: `catch (e: CancellationException) { throw e }` before the existing `catch (e: Exception)`.
+- [ ] **Step 1.4a: Also rethrow `CancellationException` in the existing `registerDefaultCommands` and `registerOwnerCommands` methods** [AUTO-12]
+
+Add `catch (e: CancellationException) { throw e }` before the existing `catch (e: Exception)` in both methods so the supervisor's cancel can propagate through `setMyCommands` suspend points (FrigateAnalyzerBot.kt:311 and :332).
 
 - [ ] **Step 1.5: Replace the inline owner-lookup block in `start()` with a call to the new method**
 
@@ -468,6 +470,18 @@ exercised end-to-end via the supervisor's behavioural tests.
 hand-rolled fake runner (`object : TelegramLongPollingRunner { override suspend fun run(...) =
 ... }`), NOT with `mockkStatic`. This obsoletes the [A4] deferred fix entirely.
 
+**Step 2.5a: Update `TelegramBotSupervisor` constructor + test helpers to take `runner`** [AUTO-2]
+
+After creating the adapter file:
+
+1. Update `TelegramBotSupervisor.kt` constructor — add `private val runner: TelegramLongPollingRunner` as the FIRST constructor parameter (Spring autowires it via `@Component` on `KtgBotApiLongPollingRunner`).
+2. Update `TelegramBotSupervisorTest.kt`:
+   - Add `private val defaultRunner = mockk<TelegramLongPollingRunner>(relaxed = true)` near the other test fields.
+   - Update `newSupervisor(...)` to take `runner: TelegramLongPollingRunner = defaultRunner` and pass it through.
+   - Update `newSupervisorWithTickingClock(...)` similarly.
+
+(These updates were already shown inline in the Task 2.1 helper code; this step is the explicit reminder to apply them right after Task 2.5 so all subsequent tests compile.)
+
 **Commit:**
 ```
 feat(telegram): TelegramLongPollingRunner adapter
@@ -490,7 +504,37 @@ through join(). Adapter returns Throwable? — null on clean exit.
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisor.kt`
 - Modify: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorTest.kt`
 
-**Background note for the implementer:** `bot.buildBehaviourWithLongPolling { … }` is an extension function on `TelegramBot` returning a `Job`. To make it testable without a real Telegram connection, we mock it via `mockkStatic`. The actual extension entry point is `dev.inmo.tgbotapi.extensions.behaviour_builder.BuildBehaviourWithLongPollingKt`. We stub `bot.buildBehaviourWithLongPolling(...) ` to return a `Job` we control.
+**Background note for the implementer:** `bot.buildBehaviourWithLongPolling { … }` is an extension function on `TelegramBot` returning a `Job`. [AUTO-8] Per [D2], the supervisor does NOT call it directly — it talks to the `TelegramLongPollingRunner` interface. Production impl `KtgBotApiLongPollingRunner` (Task 2.5) wraps the call. In supervisor tests we inject a **hand-rolled fake `TelegramLongPollingRunner`** via the constructor — NO `mockkStatic` is needed (and would be fragile per the iter-1 reviewers).
+
+- [ ] **Step 3.0: Define `tickingClock` + `newSupervisorWithTickingClock` helpers** [AUTO-7]
+
+Task 3 + Task 4 both need a `Clock` that follows `testScheduler.currentTime` (since `Duration.between(attemptStart, Instant.now(clock))` must produce non-zero values under virtual time). Define the helpers in this Step so Task 3 doesn't forward-reference Task 4.
+
+Add near `newSupervisor` in `TelegramBotSupervisorTest.kt`:
+
+```kotlin
+private fun tickingClock(scheduler: kotlinx.coroutines.test.TestCoroutineScheduler): Clock {
+    val origin = Instant.parse("2026-05-27T12:00:00Z")
+    return object : Clock() {
+        override fun getZone() = ZoneOffset.UTC
+        override fun withZone(zone: java.time.ZoneId) = this
+        override fun instant(): Instant = origin.plusMillis(scheduler.currentTime)
+    }
+}
+
+private fun newSupervisorWithTickingClock(
+    scheduler: kotlinx.coroutines.test.TestCoroutineScheduler,
+    runner: TelegramLongPollingRunner = defaultRunner,
+) = TelegramBotSupervisor(
+    runner = runner,
+    bot = bot,
+    frigateAnalyzerBot = frigateAnalyzerBot,
+    clock = tickingClock(scheduler),
+    dispatcher = StandardTestDispatcher(scheduler),
+)
+```
+
+(Task 4 Step 4.4 no longer needs to introduce these — they exist from Step 3.0.)
 
 - [ ] **Step 3.1: Add the failing test for retry progression**
 
@@ -502,8 +546,8 @@ Append to `TelegramBotSupervisorTest.kt` (inside the class):
 @Test
 fun `runSupervised retries with exponential backoff after getMe failures`() =
     runTest {
-        // [A8] Use ticking clock from Task 4 so future tests adding longer attempts
-        //      won't silently get duration=0 on a fixed clock.
+        // [A8] Use ticking clock so future tests adding longer attempts won't silently get
+        //      duration=0 on a fixed clock.
         val supervisor = newSupervisorWithTickingClock(testScheduler)
         var attempts = 0
         coEvery { bot.getMe() } coAnswers {
@@ -566,26 +610,21 @@ internal suspend fun runSupervised() {
             lastPollingStartAt = Instant.now(clock)
             logger.info { "Telegram bot polling started" }  // [A11] observable reconnect log
             // [D2] Adapter returns Throwable? — null on clean exit, otherwise the cause from
-            //      structured-concurrency propagation. We rethrow non-null to fall into catch.
+            //      structured-concurrency propagation.
             val cause = runner.run { frigateAnalyzerBot.registerRoutes(this) }
+            // [AUTO-20] Clear lastPollingStartAt the instant runner.run exits. Otherwise the
+            //           tail delay(currentBackoff) window would let computeHealth read the
+            //           stale "live polling start" stamp and report UP for a poller that has
+            //           already stopped.
+            lastPollingStartAt = null
             if (cause != null) {
                 throw cause
             }
-            // Clean return from runner is unusual — library normally throws on disconnect.
-            // Log at WARN with duration so a fast bogus return is distinguishable from a
-            // long-running clean disconnect. (Spec §10 risk mitigation.) [A10]
             val attemptDuration = Duration.between(attemptStart, Instant.now(clock))
             logger.warn {
                 "long-polling runner returned cleanly after $attemptDuration; reconnecting"
             }
             onAttemptEnded(success = true, attemptStart = attemptStart, failure = null)
-            // [A1+D3] If the clean return was past STABLE_THRESHOLD, onAttemptEnded reset
-            //         currentBackoff to INITIAL_BACKOFF — keep that. If it was a fast bogus
-            //         return, onAttemptEnded already bumped consecutiveFailures, so grow
-            //         currentBackoff exactly like in the catch branch.
-            if (attemptDuration < STABLE_THRESHOLD) {
-                currentBackoff = nextBackoff(currentBackoff)
-            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -594,12 +633,15 @@ internal suspend fun runSupervised() {
                     "next backoff=${currentBackoff.toMillis()}ms"
             }
             onAttemptEnded(success = false, attemptStart = attemptStart, failure = e)
-            // nextBackoff only on failure — and after onAttemptEnded which may have reset
-            // currentBackoff to INITIAL_BACKOFF for a stable-fail; in that case nextBackoff
-            // takes 5s → 10s for the *second* failure (correct progression). [A1]
-            currentBackoff = nextBackoff(currentBackoff)
         }
+        // [AUTO-19] Delay FIRST, then bump for next iteration. Preserves the documented
+        //           5s→10s→20s→40s→60s progression: very first failure waits INITIAL_BACKOFF
+        //           (5s); after a stable-fail reset (onAttemptEnded sets currentBackoff=INITIAL)
+        //           the next delay is also INITIAL — exactly the intended semantics.
+        //           The previous shape (bump inside catch, before delay) made the first wait
+        //           10s and the post-stable-reset wait 10s.
         delay(currentBackoff.toMillis())
+        currentBackoff = nextBackoff(currentBackoff)
     }
 }
 
@@ -787,7 +829,7 @@ private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Thr
         consecutiveFailures++
     } else {
         lastFailure = failure
-        lastFailureAt = clock.instant()
+        lastFailureAt = Instant.now(clock)              // [AUTO-9 / A9] consistent with WatchRecordsTask
         if (duration >= STABLE_THRESHOLD) {
             // Worked long enough to count as a stable run.
             // lastStableAt = now (the moment of crash), not attemptStart: an attempt that
@@ -795,7 +837,7 @@ private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Thr
             // is measured from "just now", not from "1 hour ago".
             consecutiveFailures = 1
             currentBackoff = INITIAL_BACKOFF
-            lastStableAt = clock.instant()
+            lastStableAt = Instant.now(clock)            // [AUTO-9 / A9]
         } else {
             consecutiveFailures++
         }
@@ -803,44 +845,9 @@ private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Thr
 }
 ```
 
-- [ ] **Step 4.4: Adapt the clock for stable-attempt test**
+- [ ] **Step 4.4: (moved to Step 3.0 per [AUTO-7])**
 
-Problem: in the test, `clock` is fixed at `now = 2026-05-27T12:00:00Z` and never advances, so `Duration.between(attemptStart, clock.instant())` is always 0 — the supervisor cannot tell that 61 seconds passed.
-
-Replace the fixed clock with a "tick"-clock that follows the test scheduler. Add this near `newSupervisor`:
-
-```kotlin
-private fun tickingClock(testScheduler: kotlinx.coroutines.test.TestCoroutineScheduler): Clock {
-    val origin = Instant.parse("2026-05-27T12:00:00Z")
-    return object : Clock() {
-        override fun getZone() = ZoneOffset.UTC
-        override fun withZone(zone: java.time.ZoneId) = this
-        override fun instant(): Instant =
-            origin.plusMillis(testScheduler.currentTime)
-    }
-}
-
-private fun newSupervisorWithTickingClock(
-    testScheduler: kotlinx.coroutines.test.TestCoroutineScheduler,
-) = TelegramBotSupervisor(
-    bot = bot,
-    frigateAnalyzerBot = frigateAnalyzerBot,
-    clock = tickingClock(testScheduler),
-    dispatcher = StandardTestDispatcher(testScheduler),
-)
-```
-
-In the test `attempt that ran past STABLE_THRESHOLD resets backoff on next failure`, replace:
-
-```kotlin
-val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
-```
-
-with:
-
-```kotlin
-val supervisor = newSupervisorWithTickingClock(testScheduler)
-```
+The `tickingClock` + `newSupervisorWithTickingClock` helpers are now introduced in Task 3 Step 3.0 (before they are first referenced), so this step is empty. Skip and proceed to Step 4.5.
 
 - [ ] **Step 4.5: Run tests to verify they pass**
 
@@ -1283,6 +1290,10 @@ fun shutdown() {
 }
 
 internal suspend fun stopAndJoin() {
+    // [AUTO-17] Test helper mirroring shutdown() shape. Does NOT null `supervisorJob` because
+    //           shutdown() doesn't either — both leave the cancelled Job reference in place
+    //           for diagnostic inspection. Tests that need to re-start the supervisor in the
+    //           same scope must reset supervisorJob manually before calling start().
     supervisorJob?.cancel()
     supervisorJob?.join()
     scope.cancel()
@@ -1318,13 +1329,13 @@ shape for tests (runBlocking inside StandardTestDispatcher deadlocks)."
 
 ---
 
-## Task 8: TelegramBotHealthIndicator
+## Task 8: TelegramBotSupervisorHealthIndicator
 
 **Goal:** Thin Spring Actuator adapter that delegates to `supervisor.computeHealth(Instant.now(clock))`.
 
 **Files:**
-- Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotHealthIndicator.kt`
-- Create: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotHealthIndicatorTest.kt`
+- Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorHealthIndicator.kt`
+- Create: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorHealthIndicatorTest.kt`
 
 - [ ] **Step 8.1: Write the failing test**
 
@@ -1343,11 +1354,11 @@ import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
 
-class TelegramBotHealthIndicatorTest {
+class TelegramBotSupervisorHealthIndicatorTest {
     private val supervisor = mockk<TelegramBotSupervisor>()
     private val now = Instant.parse("2026-05-27T12:00:00Z")
     private val clock = Clock.fixed(now, ZoneOffset.UTC)
-    private val indicator = TelegramBotHealthIndicator(supervisor, clock)
+    private val indicator = TelegramBotSupervisorHealthIndicator(supervisor, clock)
 
     @Test
     fun `health delegates to supervisor computeHealth with current instant`() {
@@ -1369,13 +1380,13 @@ class TelegramBotHealthIndicatorTest {
 
 - [ ] **Step 8.2: Run the test to verify it fails**
 
-`./gradlew :frigate-analyzer-telegram:test --tests "ru.zinin.frigate.analyzer.telegram.bot.supervisor.TelegramBotHealthIndicatorTest"`
+`./gradlew :frigate-analyzer-telegram:test --tests "ru.zinin.frigate.analyzer.telegram.bot.supervisor.TelegramBotSupervisorHealthIndicatorTest"`
 
-Expected: FAIL — `TelegramBotHealthIndicator` does not exist.
+Expected: FAIL — `TelegramBotSupervisorHealthIndicator` does not exist.
 
 - [ ] **Step 8.3: Create the indicator**
 
-Create `TelegramBotHealthIndicator.kt`:
+Create `TelegramBotSupervisorHealthIndicator.kt`:
 
 ```kotlin
 package ru.zinin.frigate.analyzer.telegram.bot.supervisor
@@ -1395,7 +1406,7 @@ import java.time.Instant
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 @Profile("!test")
-class TelegramBotHealthIndicator(
+class TelegramBotSupervisorHealthIndicator(
     private val supervisor: TelegramBotSupervisor,
     private val clock: Clock,
 ) : HealthIndicator {
@@ -1405,16 +1416,16 @@ class TelegramBotHealthIndicator(
 
 - [ ] **Step 8.4: Run the test to verify it passes**
 
-`./gradlew :frigate-analyzer-telegram:test --tests "ru.zinin.frigate.analyzer.telegram.bot.supervisor.TelegramBotHealthIndicatorTest"`
+`./gradlew :frigate-analyzer-telegram:test --tests "ru.zinin.frigate.analyzer.telegram.bot.supervisor.TelegramBotSupervisorHealthIndicatorTest"`
 
 Expected: PASS.
 
 - [ ] **Step 8.5: Commit**
 
 ```bash
-git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotHealthIndicator.kt \
-        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotHealthIndicatorTest.kt
-git commit -m "feat(telegram): TelegramBotHealthIndicator exposes supervisor state
+git add modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorHealthIndicator.kt \
+        modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorHealthIndicatorTest.kt
+git commit -m "feat(telegram): TelegramBotSupervisorHealthIndicator exposes supervisor state
 
 Thin adapter; @Profile('!test') mirrors WatchRecordsTaskHealthIndicator
 so test profile (telegram disabled) doesn't aggregate to DOWN."
@@ -1564,7 +1575,8 @@ Find the existing table in `.claude/rules/telegram.md` (under `## Components`). 
 
 ```markdown
 | TelegramBotSupervisor | `telegram/bot/supervisor/` | Polling lifecycle — supervised retry-loop with 5s→60s exponential backoff; owns botScope, drives FrigateAnalyzerBot bootstrap on each (re)connect. |
-| TelegramBotHealthIndicator | `telegram/bot/supervisor/` | Spring Actuator `HealthIndicator`; delegates to `supervisor.computeHealth(now)`. `@Profile("!test")` to avoid breaking aggregated /actuator/health in tests. |
+| TelegramLongPollingRunner | `telegram/bot/supervisor/` | Adapter interface isolating ktgbotapi's `buildBehaviourWithLongPolling`. Production impl `KtgBotApiLongPollingRunner` returns `Throwable?` (null on clean exit). Lets supervisor stay testable without `mockkStatic` on a library top-level function. |
+| TelegramBotSupervisorHealthIndicator | `telegram/bot/supervisor/` | Spring Actuator `HealthIndicator`; delegates to `supervisor.computeHealth(now)`. `@Profile("!test")` to avoid breaking aggregated /actuator/health in tests. Spring exposes under key `telegramBotSupervisor`. |
 ```
 
 - [ ] **Step 10.2: Update the `FrigateAnalyzerBot` row to reflect its new scope**
@@ -1594,7 +1606,7 @@ Append this section after the existing `## Bot Architecture` block:
 do not inherit stale backoff). Cancellation propagates cleanly without bumping
 failure counters.
 
-`TelegramBotHealthIndicator` exposes `telegramBotSupervisor` in `/actuator/health`
+`TelegramBotSupervisorHealthIndicator` exposes `telegramBotSupervisor` in `/actuator/health`
 with one of:
 
 - **UP** — polling has run uninterrupted for ≥ `STABLE_THRESHOLD`.
