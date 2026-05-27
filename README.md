@@ -7,17 +7,27 @@ Automated video recording analysis for [Frigate NVR](https://frigate.video/) sec
 ```mermaid
 graph TD
     A["Frigate NVR Recordings (.mp4)"] --> B["File Watcher<br/>Detects new videos"]
-
     B --> C
 
-    subgraph C ["Processing Pipeline"]
+    subgraph C ["Detection Pipeline (via Vision API Server — multi-instance, priority load balancing)"]
         direction LR
-        P["<b>Producers (6x)</b><br/>Extract key<br/>frames from<br/>video files"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect objects<br/>Filter by class<br/>Re-check accuracy"]
+        P["<b>Producers</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto-scaled)</b><br/>Detect • Filter • Re-check"]
     end
 
-    C --> D["Save to PostgreSQL"]
-    D --> E["Visualize top frames"]
-    E --> F["Send via Telegram bot"]
+    C --> VIS["Annotate top frames<br/>(local, Java2D)"]
+    VIS --> D["Save to PostgreSQL"]
+    D --> E["Object Tracker<br/>(cross-recording IoU)"]
+    E --> F["Telegram bot"]
+
+    D -. "polled" .-> SL["Signal-loss Monitor"]
+    SL -.-> F
+
+    F -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI)"]
+    AI -. "edit message" .-> F
+
+    F --> EX["Export / Annotate jobs<br/>(ffmpeg merge or Vision API annotate)"]
+    EX -.-> F
+    F --> U["User"]
 ```
 
 Frame extraction, object detection, and video annotation are performed by an external [vision-api-server](https://github.com/zinin/vision-api-server) — a Python service wrapping Ultralytics YOLO models.
