@@ -84,7 +84,8 @@ class TelegramBotStartupIntegrationTest : IntegrationTestBase() {
 
     @Test
     fun `Telegram bot startup invokes ktor HTTP client without binary incompat`() {
-        // FrigateAnalyzerBot.@PostConstruct launches a coroutine that calls bot.getMe().
+        // TelegramBotSupervisor.@PostConstruct launches runSupervised which calls bot.getMe()
+        // via the KtgBotApiLongPollingRunner adapter.
         // If ktor / kotlinx-coroutines / kotlinx-serialization are binary-incompat at
         // runtime, the ktor pipeline throws NoSuchMethodError and the request never
         // reaches the mock. The bot swallows exceptions into logs, so we assert on the
