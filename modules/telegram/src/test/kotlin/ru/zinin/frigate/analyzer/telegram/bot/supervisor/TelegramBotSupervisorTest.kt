@@ -444,6 +444,47 @@ class TelegramBotSupervisorTest {
             assertEquals(false, supervisor.supervisorJob!!.isActive)
         }
 
+    @Test
+    fun `computeHealth returns DOWN after stopAndJoin completes`() =
+        runTest {
+            val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
+            coEvery { bot.getMe() } coAnswers { awaitCancellation() }
+
+            supervisor.supervisorJob = supervisor.scope.launch { supervisor.runSupervised() }
+            runCurrent()
+            assertTrue(supervisor.supervisorJob!!.isActive)
+
+            supervisor.stopAndJoin()
+
+            val health = supervisor.computeHealth(now)
+            assertEquals(Status.DOWN, health.status)
+            assertEquals("supervisor not active", health.details["reason"])
+        }
+
+    @Test
+    fun `cancellation during backoff delay leaves no failure bookkeeping`() =
+        runTest {
+            // Counterpart to `cancellation propagates cleanly...`: that test cancels inside
+            // bot.getMe(); this one cancels while the supervisor is parked in delay(currentBackoff)
+            // between failed attempts. The tail delay path must also propagate cancellation
+            // without bumping consecutiveFailures or writing lastFailure.
+            val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
+            coEvery { bot.getMe() } throws RuntimeException("attempt fails")
+
+            val job = launch { supervisor.runSupervised() }
+            runCurrent()
+            // After the first attempt fails, supervisor is in delay(5s). consecutiveFailures=1.
+            assertEquals(1L, supervisor.consecutiveFailures)
+            val failureBeforeCancel = supervisor.lastFailure
+
+            // Cancel while supervisor is parked in the backoff delay.
+            job.cancelAndJoin()
+
+            // The cancellation must not bump the counter or replace lastFailure.
+            assertEquals(1L, supervisor.consecutiveFailures)
+            assertSame(failureBeforeCancel, supervisor.lastFailure)
+        }
+
     private companion object {
         const val INITIAL_BACKOFF_MS = 5_000L
     }

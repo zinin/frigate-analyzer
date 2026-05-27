@@ -43,8 +43,9 @@ private val SHUTDOWN_JOIN_TIMEOUT: Duration = Duration.ofSeconds(30)
 private val BOT_TOKEN_PATTERN = Regex("""bot\d+:[\w-]+""")
 
 private fun sanitizeFailureMessage(message: String?): String =
-    (message?.take(500) ?: "<no-message>")
+    (message ?: "<no-message>")
         .replace(BOT_TOKEN_PATTERN, "bot[REDACTED]")
+        .take(500)
 
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")

@@ -77,6 +77,11 @@ class FrigateAnalyzerBot(
     private val sortedHandlers: List<CommandHandler>
         get() = handlers.sortedWith(compareBy<CommandHandler> { it.order }.thenBy { it.command })
 
+    /**
+     * Wires command, callback, and event handlers onto [context]; suspends only for the duration
+     * of registration and returns once all routes are bound. The caller owns the polling Job —
+     * see [ru.zinin.frigate.analyzer.telegram.bot.supervisor.TelegramBotSupervisor].
+     */
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     suspend fun registerRoutes(context: BehaviourContext) =
         with(context) {
