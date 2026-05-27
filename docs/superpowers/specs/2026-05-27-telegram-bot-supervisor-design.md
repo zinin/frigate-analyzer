@@ -63,9 +63,12 @@ FrigateAnalyzerBot              TelegramBotSupervisor             TelegramBotHea
     `CancellationException` first** so shutdown is responsive.
   - `registerOwnerCommands(chatId)` (existing private helper) — same change: rethrow
     `CancellationException` before catching `Exception`.
-- **`onOwnerActivated` EventListener:** stays in `FrigateAnalyzerBot`. It is an event-driven owner
-  registration, not part of polling lifecycle, and entangling it with `botScope` would couple two
-  concerns. It gets its own small scope:
+- **`onOwnerActivated` EventListener:** stays in `FrigateAnalyzerBot` and **keeps its direct
+  `registerOwnerCommands(event.chatId)` call** (no DB re-lookup — `OwnerActivatedEvent` is
+  published after the activating transaction, so `event.chatId` is authoritative). It is an
+  event-driven owner registration, not part of polling lifecycle, and entangling it with
+  `botScope` would couple two concerns. `registerOwnerCommandsIfPossible()` is reserved for the
+  supervisor's reconnect loop, which has no `chatId` available. It gets its own small scope:
   - `private val eventScope = CoroutineScope(Dispatchers.Default + SupervisorJob())`
   - `@PreDestroy fun stopEventScope() = eventScope.cancel()`.
 
@@ -79,7 +82,8 @@ Location: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/b
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class TelegramBotSupervisor(
-    private val bot: TelegramBot,
+    private val runner: TelegramLongPollingRunner,   // [D2] adapter, not bot directly
+    private val bot: TelegramBot,                    // still needed for getMe()
     private val frigateAnalyzerBot: FrigateAnalyzerBot,
     private val clock: Clock,
 ) {
@@ -106,7 +110,44 @@ class TelegramBotSupervisor(
 }
 ```
 
-### 3.3 TelegramBotHealthIndicator — new component
+### 3.3 TelegramLongPollingRunner — new adapter [D2]
+
+Thin interface isolating ktgbotapi's `buildBehaviourWithLongPolling`. The supervisor talks to the
+interface, so the supervisor's test doesn't need `mockkStatic` on a library top-level function
+(reviewers flagged the class name + parameter count as fragile and version-coupled). The
+production impl is a one-liner wrapper that captures the polling-job completion cause via
+`coroutineScope { … }` (structured concurrency propagates child failures through `join()`).
+
+Location: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramLongPollingRunner.kt`.
+
+```kotlin
+fun interface TelegramLongPollingRunner {
+    /** Runs polling until it ends. Returns the cause on failure, or null on a clean exit. */
+    suspend fun run(onUpdate: suspend BehaviourContext.() -> Unit): Throwable?
+}
+
+@Component
+@ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
+class KtgBotApiLongPollingRunner(
+    private val bot: TelegramBot,
+) : TelegramLongPollingRunner {
+    override suspend fun run(onUpdate: suspend BehaviourContext.() -> Unit): Throwable? =
+        runCatching {
+            coroutineScope {
+                val pollingJob = bot.buildBehaviourWithLongPolling(this) { onUpdate() }
+                pollingJob.join()
+            }
+        }.exceptionOrNull()
+}
+```
+
+Why `coroutineScope { … }`: ktgbotapi's `buildBehaviourWithLongPolling` takes a `CoroutineScope`
+parameter with a default provider; passing `this` (the coroutineScope) makes the returned
+polling job a child of our scope. Structured concurrency then propagates any internal failure
+through the enclosing scope on `join()` — `runCatching` captures it as the returned cause. If
+the library swallows an error internally and returns cleanly, `run()` returns `null`.
+
+### 3.4 TelegramBotHealthIndicator — new component
 
 ```kotlin
 @Component
@@ -133,18 +174,22 @@ internal suspend fun runSupervised() {
     while (currentCoroutineContext().isActive) {
         val attemptStart = Instant.now(clock)
         lastAttemptAt = attemptStart
+        lastPollingStartAt = null   // [A5] clear stale stamp from previous (failed) attempt
+                                    //      so branch 2 cannot match on it.
         try {
             bot.getMe()                                          // transient → retried
             frigateAnalyzerBot.registerDefaultCommands()         // best-effort (own try inside)
             frigateAnalyzerBot.registerOwnerCommandsIfPossible() // best-effort (own try inside)
             lastPollingStartAt = Instant.now(clock)
             logger.info { "Telegram bot polling started" }
-            bot.buildBehaviourWithLongPolling {
-                frigateAnalyzerBot.registerRoutes(this)
-            }.join()
+            val cause = runner.run { frigateAnalyzerBot.registerRoutes(this) }
+            if (cause != null) {
+                // structured-concurrency propagated failure from the polling child
+                throw cause
+            }
             val attemptDuration = Duration.between(attemptStart, Instant.now(clock))
             logger.warn {
-                "buildBehaviourWithLongPolling returned cleanly after $attemptDuration; reconnecting"
+                "long-polling runner returned cleanly after $attemptDuration; reconnecting"
             }
             onAttemptEnded(success = true, attemptStart, failure = null)
             // [A1] On success/stable-fail onAttemptEnded resets currentBackoff to INITIAL_BACKOFF.
@@ -166,11 +211,19 @@ internal suspend fun runSupervised() {
 
 private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Throwable?) {
     val duration = Duration.between(attemptStart, Instant.now(clock))
-    if (success) {
-        // Clean polling exit (rare; library normally throws on disconnect).
+    if (success && duration >= STABLE_THRESHOLD) {
+        // [D3] Clean polling exit AFTER a stable run — counts as success.
         consecutiveFailures = 0
         currentBackoff = INITIAL_BACKOFF
         lastStableAt = Instant.now(clock)
+    } else if (success) {
+        // [D3] Clean return faster than STABLE_THRESHOLD — library likely swallowed an error
+        //      (revoked token, etc.). Treat as fast-fail so consecutiveFailures grows and
+        //      health eventually crosses HEALTH_STALENESS into DOWN. Closes the "silent
+        //      failure → infinite reconnect, never DOWN" hole (spec §10 risk).
+        lastFailure = SilentPollingFailure("clean return after $duration")
+        lastFailureAt = Instant.now(clock)
+        consecutiveFailures++
     } else {
         lastFailure = failure
         lastFailureAt = Instant.now(clock)
@@ -189,7 +242,24 @@ private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Thr
 }
 
 private fun nextBackoff(c: Duration): Duration = minOf(c.multipliedBy(2), MAX_BACKOFF)
+
+/** Marker exception used when the long-polling runner returns null before STABLE_THRESHOLD. */
+private class SilentPollingFailure(message: String) : RuntimeException(message)
 ```
+
+After applying [D3], the loop's success-success path on clean return now also calls
+`currentBackoff = nextBackoff(currentBackoff)` (because the `else if (success)` branch treats
+fast clean returns as failures, and the catch branch is no longer the only place we grow
+backoff). Concretely: replace the post-`onAttemptEnded(success=true)` early-skip of `nextBackoff`
+with the explicit "stable" check — if the attempt was stable, skip `nextBackoff`; otherwise run
+it. The simplest shape is to fold the decision into `onAttemptEnded` (record whether the attempt
+was "really stable") and let the loop ask. The plan code already accomplishes this by
+unconditionally calling `currentBackoff = nextBackoff(currentBackoff)` in the catch branch and
+NOT in the success branch — combined with `onAttemptEnded`'s new branching, a fast clean return
+now lands in `else if (success)` which mirrors a real failure but stays on the success code
+path of the loop (no rethrow). To keep growth correct, also call
+`currentBackoff = nextBackoff(currentBackoff)` after the success-path block when the attempt
+was NOT stable. See plan Task 3 Step 3.3 for the updated loop shape.
 
 ### 4.1 Why `bot.getMe()` is inside the retry block
 
@@ -220,12 +290,31 @@ running stably *right now*" check (see §5, branch 6).
 | # | Condition | Status | `reason` detail |
 |---|---|---|---|
 | 1 | `supervisorJob == null \|\| !supervisorJob.isActive` | DOWN | `supervisor not active` |
-| 2 | `lastStableAt == null && (consecutiveFailures >= STARTUP_FAILURE_THRESHOLD \|\| sinceStartup > STARTUP_GRACE)` | DOWN | `startup failed: N attempts / X` |
-| 3 | `lastStableAt == null` (still in startup grace) | OUT_OF_SERVICE | `connecting... attempts=N` |
-| 4 | `consecutiveFailures > 0 && (now - lastStableAt) > HEALTH_STALENESS` | DOWN | `stale: failing for X since lastStable=...` |
-| 5 | `consecutiveFailures > 0` | OUT_OF_SERVICE | `in backoff (failures=N, backoff=Xms)` |
-| 6 | `lastPollingStartAt != null && (now - lastPollingStartAt) >= STABLE_THRESHOLD` | UP | `healthy` |
+| 2 | **`lastPollingStartAt != null && (lastFailureAt == null \|\| lastPollingStartAt > lastFailureAt) && (now - lastPollingStartAt) >= STABLE_THRESHOLD`** | **UP** | `healthy` |
+| 3 | `lastStableAt == null && (consecutiveFailures >= STARTUP_FAILURE_THRESHOLD \|\| sinceStartup > STARTUP_GRACE)` | DOWN | `startup failed: N attempts / X` |
+| 4 | `lastStableAt == null` (still in startup grace) | OUT_OF_SERVICE | `connecting... attempts=N` |
+| 5 | `consecutiveFailures > 0 && (now - lastStableAt) > HEALTH_STALENESS` | DOWN | `stale: failing for X since lastStable=...` |
+| 6 | `consecutiveFailures > 0` | OUT_OF_SERVICE | `in backoff (failures=N, backoff=Xms)` |
 | 7 | otherwise | OUT_OF_SERVICE | `connecting... (just (re)started, <STABLE_THRESHOLD)` |
+
+**[D1] Branch 2 (live stable polling → UP) is checked FIRST after the supervisor-liveness check.**
+This fixes the bug where `lastStableAt == null` (cold start) or sticky `consecutiveFailures > 0`
+(after-recovery) would mask a genuinely healthy live polling. The invariant
+`lastPollingStartAt > lastFailureAt` ensures we don't read a stale `lastPollingStartAt` from a
+previous (already-failed) attempt — [A5] guarantees `lastPollingStartAt = null` at the start of
+each iteration. If a fresh attempt has been polling past STABLE_THRESHOLD without recording a
+new failure, branch 2 fires regardless of how many prior failures sit in `consecutiveFailures`.
+
+When branch 2 doesn't fire (no live stable polling), control falls through to the regular
+startup-grace / backoff / fresh-reconnect logic as before.
+
+**[D8] Snapshot consistency note.** `computeHealth` reads the supervisor's `@Volatile` fields
+independently — between two reads, the supervisor's loop may mutate state. The branch ordering
+above (live-polling first, then startup/backoff) keeps brief inconsistencies non-catastrophic
+(at worst a status flips to/from `OUT_OF_SERVICE` for one health-check cycle), and matches the
+same best-effort approach used in `WatchRecordsTask.computeHealth()`. If stronger consistency is
+ever required, the fields can be replaced with `AtomicReference<SupervisorState>` over an
+immutable record — out of scope here.
 
 Builder always exports the following details (in addition to `reason`):
 
@@ -233,13 +322,15 @@ Builder always exports the following details (in addition to `reason`):
 - `lastFailure` (`"<Class>: <message-truncated-to-500>"`)
 - `consecutiveFailures`, `currentBackoffMs`, `startupAt`
 
-### 5.1 Why branch 6 uses `lastPollingStartAt`, not `lastStableAt`
+### 5.1 Why branch 2 uses `lastPollingStartAt`, not `lastStableAt`
 
 `lastStableAt` is updated only at attempt end (§4.3). During a live, stable attempt we want UP, not
 "connecting…". `lastPollingStartAt` is set immediately after the bootstrap succeeds and remains
 fixed while the attempt runs, so `now − lastPollingStartAt >= STABLE_THRESHOLD` correctly answers
-"is this attempt already past the stable-uptime threshold". When the attempt fails, branch 4 or 5
-takes over (consecutiveFailures > 0).
+"is this attempt already past the stable-uptime threshold". The companion invariant
+`lastPollingStartAt > lastFailureAt` discriminates a fresh live attempt from a stale timestamp
+left over from a previously-crashed attempt — [A5] ensures `lastPollingStartAt = null` is set
+at the start of each iteration so the comparison is safe when no fresh poll has begun yet.
 
 ### 5.2 Why HEALTH_STALENESS is 5 min for the bot (vs. 2 min in WatchRecordsTask)
 
@@ -319,8 +410,11 @@ mocked `FrigateAnalyzerBot`.
   increments, `currentBackoff` grows monotonically until `MAX_BACKOFF`.
 - `cancellation propagates cleanly` — `supervisorJob.cancel()`; no extra failure-bookkeeping, no
   backoff delay logged.
-- `registration failures do not trigger backoff` — `registerDefaultCommands` throws inside its own
-  try/catch; supervisor continues to `buildBehaviourWithLongPolling`; `consecutiveFailures == 0`.
+- ~~`registration failures do not trigger backoff`~~ — **[D7] Removed.** `registerDefaultCommands`
+  and `registerOwnerCommandsIfPossible` catch all `Exception` internally (rethrowing only
+  `CancellationException`), so a test of "supervisor does not bump `consecutiveFailures` when
+  these methods 'throw'" is technically un-writeable without changing the method signatures.
+  The behaviour is guaranteed by the methods' own try/catch — verified at compile time.
 - `computeHealth — each of the 7 branches`:
   - supervisor stopped → DOWN
   - never stable, threshold hit → DOWN
@@ -370,7 +464,11 @@ modules/telegram/src/test/kotlin/.../bot/supervisor/
   logs. Out of scope to detect at runtime — would require parsing library internals.
 - **`@PostConstruct` on supervisor vs. `ApplicationReadyEvent`:** sticking with the current
   bot's `@PostConstruct` model for minimum churn. If a future module needs the bot to be live
-  before `ApplicationReadyEvent` fires, this is already the case today.
+  before `ApplicationReadyEvent` fires, this is already the case today. **[D6 acknowledged]**
+  Reviewers correctly note `WatchRecordsTask` uses `@EventListener(ApplicationReadyEvent::class)`
+  + `isTestProfile()` guard. We deliberately diverge: the supervisor is gated by
+  `@ConditionalOnProperty(application.telegram.enabled=true)` which is `false` in the test
+  profile, so the bean is not created at all — `isTestProfile()` would be redundant.
 - **`registerOwnerCommands` after reconnect:** every reconnect re-registers commands. This is
   idempotent on Telegram's side, but adds N×languages × 2 (default + owner) API calls per
   reconnect cycle. At MAX_BACKOFF=60s that is at most ~10 extra calls/minute, well below any

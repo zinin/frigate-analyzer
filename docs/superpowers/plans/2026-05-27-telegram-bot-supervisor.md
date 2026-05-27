@@ -184,18 +184,22 @@ private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 private val eventScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 ```
 
-Change `onOwnerActivated` (currently around line 305) from `botScope.launch` to `eventScope.launch`:
+Change `onOwnerActivated` (currently around line 305) from `botScope.launch` to `eventScope.launch`,
+**keeping the existing `registerOwnerCommands(event.chatId)` call** (per [D5] decision —
+reviewers argued correctly that `event.chatId` is the authoritative source from the event publisher,
+making a re-lookup via DB redundant):
 
 ```kotlin
 @EventListener
 fun onOwnerActivated(event: OwnerActivatedEvent) {
     eventScope.launch {
-        registerOwnerCommandsIfPossible()  // (was: registerOwnerCommands(event.chatId))
+        registerOwnerCommands(event.chatId)  // [D5] keep direct chatId — no DB round-trip
     }
 }
 ```
 
-Note: we replace the direct `registerOwnerCommands(event.chatId)` call with `registerOwnerCommandsIfPossible()` so we re-resolve the owner from the DB on activation. `OwnerActivatedEvent.chatId` is no longer needed by this handler; it remains in the event class because other listeners (if any) may still use it. Do not remove the field.
+`registerOwnerCommandsIfPossible()` (added in Step 1.4) is only called from the supervisor's
+reconnect loop, where no `chatId` is available and a DB lookup is the only option.
 
 Update `stop()` (currently around line 353) to also cancel the event scope:
 
@@ -437,6 +441,38 @@ Not yet wired — FrigateAnalyzerBot still owns polling."
 
 ---
 
+## Task 2.5: TelegramLongPollingRunner adapter [D2]
+
+**Goal:** Introduce the `TelegramLongPollingRunner` adapter (interface + `KtgBotApiLongPollingRunner`
+impl) so the supervisor doesn't talk to `bot.buildBehaviourWithLongPolling` directly. This closes
+the test-mocking fragility (no more `mockkStatic` on a library top-level function) and gives the
+supervisor a `Throwable?` return for clean-vs-failed discrimination.
+
+**Files:**
+- Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramLongPollingRunner.kt`
+
+**Content:** See spec §3.3. The interface + production impl together fit ~25 lines. No unit test
+for the runner — it is a tiny wrapper whose only branches (clean return vs caught exception) are
+exercised end-to-end via the supervisor's behavioural tests.
+
+**Test-side implication:** subsequent supervisor tests construct the supervisor with a
+hand-rolled fake runner (`object : TelegramLongPollingRunner { override suspend fun run(...) =
+... }`), NOT with `mockkStatic`. This obsoletes the [A4] deferred fix entirely.
+
+**Commit:**
+```
+feat(telegram): TelegramLongPollingRunner adapter
+
+Isolates ktgbotapi's buildBehaviourWithLongPolling so the supervisor
+can be tested without mockkStatic on a library top-level function
+(reviewers flagged the class name + 3-vs-6 parameter count as fragile).
+Production impl uses coroutineScope { ... } so the polling job is a
+child of our scope; structured concurrency propagates child failures
+through join(). Adapter returns Throwable? — null on clean exit.
+```
+
+---
+
 ## Task 3: runSupervised — retry-on-failure with exponential backoff
 
 **Goal:** Implement the supervised retry-loop body. After a failure the loop waits `currentBackoff`, doubles it (capped at `MAX_BACKOFF`), and retries. Cancellation propagates cleanly. Successful attempts (in this task: any non-throwing iteration) reset `currentBackoff` only via Task 4 logic; for now we just count failures.
@@ -512,26 +548,35 @@ internal suspend fun runSupervised() {
     while (currentCoroutineContext().isActive) {
         val attemptStart = Instant.now(clock)         // [A9] consistent with WatchRecordsTask
         lastAttemptAt = attemptStart
+        lastPollingStartAt = null  // [A5] clear stale stamp so health branch 2 won't match
+                                   //      on a previous (failed) attempt's polling start.
         try {
             bot.getMe()
             frigateAnalyzerBot.registerDefaultCommands()
             frigateAnalyzerBot.registerOwnerCommandsIfPossible()
             lastPollingStartAt = Instant.now(clock)
             logger.info { "Telegram bot polling started" }  // [A11] observable reconnect log
-            bot
-                .buildBehaviourWithLongPolling {
-                    frigateAnalyzerBot.registerRoutes(this)
-                }.join()
-            // Clean return from join() is unusual — library normally throws on disconnect.
+            // [D2] Adapter returns Throwable? — null on clean exit, otherwise the cause from
+            //      structured-concurrency propagation. We rethrow non-null to fall into catch.
+            val cause = runner.run { frigateAnalyzerBot.registerRoutes(this) }
+            if (cause != null) {
+                throw cause
+            }
+            // Clean return from runner is unusual — library normally throws on disconnect.
             // Log at WARN with duration so a fast bogus return is distinguishable from a
             // long-running clean disconnect. (Spec §10 risk mitigation.) [A10]
             val attemptDuration = Duration.between(attemptStart, Instant.now(clock))
             logger.warn {
-                "buildBehaviourWithLongPolling returned cleanly after $attemptDuration; reconnecting"
+                "long-polling runner returned cleanly after $attemptDuration; reconnecting"
             }
             onAttemptEnded(success = true, attemptStart = attemptStart, failure = null)
-            // [A1] On clean return onAttemptEnded already reset currentBackoff to INITIAL_BACKOFF.
-            //      Do NOT call nextBackoff here — it would clobber the reset.
+            // [A1+D3] If the clean return was past STABLE_THRESHOLD, onAttemptEnded reset
+            //         currentBackoff to INITIAL_BACKOFF — keep that. If it was a fast bogus
+            //         return, onAttemptEnded already bumped consecutiveFailures, so grow
+            //         currentBackoff exactly like in the catch branch.
+            if (attemptDuration < STABLE_THRESHOLD) {
+                currentBackoff = nextBackoff(currentBackoff)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -625,14 +670,23 @@ fun `attempt that ran past STABLE_THRESHOLD resets backoff on next failure`() =
                 else -> throw CancellationException("done")
             }
         }
-        // [A2/A4] mockkStatic class name and matcher count MUST be verified against the
-        //         actual ktgbotapi 33.1.0 JAR before this test compiles — see deferred
-        //         AUTO-fix A4 and DISPUTED D2. Reviewers flagged that the class is likely
-        //         `BehaviourBuildersKt` (not `BuildBehaviourWithLongPollingKt`) and the
-        //         function takes 3 params (not 6). For test isolation, also pair this with
-        //         @AfterEach { unmockkStatic(...) } at class level so a failed assertion
-        //         doesn't leak the static mock into other tests. [A2]
-        mockkStatic("dev.inmo.tgbotapi.extensions.behaviour_builder.BuildBehaviourWithLongPollingKt")
+        // [D2] No mockkStatic — supervisor now takes TelegramLongPollingRunner. Inject a
+        //      hand-rolled fake that captures its onUpdate block, runs for 61s, then returns
+        //      a Throwable to simulate the polling crash. The fake is constructed per-test
+        //      so there's no inter-test leakage. (Obsoletes A4 + A2 teardown.)
+        val runner = object : TelegramLongPollingRunner {
+            override suspend fun run(
+                onUpdate: suspend BehaviourContext.() -> Unit,
+            ): Throwable? {
+                delay(61_000)
+                return RuntimeException("connection dropped after stable run")
+            }
+        }
+        // Note: also pass `runner` to newSupervisor* helpers (signature updated for D2).
+        // The block below is the previous mockkStatic-based stub kept only as historical
+        // context; remove during implementation:
+        //   mockkStatic("...BehaviourBuildersKt")
+        //   coEvery { bot.buildBehaviourWithLongPolling(...) } coAnswers { ... }
         coEvery {
             bot.buildBehaviourWithLongPolling(any(), any(), any(), any(), any(), any())
         } coAnswers {
@@ -680,23 +734,12 @@ private companion object {
 Add the new imports at the top:
 
 ```kotlin
-import io.mockk.mockkStatic
-import io.mockk.unmockkStatic
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import org.junit.jupiter.api.AfterEach
 ```
 
-Also add an `@AfterEach` cleanup hook at the class level so the static mock is unmocked even
-if a test assertion fails before the inline `unmockkStatic(...)` (otherwise the static mock
-leaks into subsequent tests in the JVM). [A2]
-
-```kotlin
-@AfterEach
-fun tearDownMockkStatic() {
-    unmockkStatic("dev.inmo.tgbotapi.extensions.behaviour_builder.BuildBehaviourWithLongPollingKt")
-}
-```
+(With the [D2] adapter approach, `mockkStatic`/`unmockkStatic`/`@AfterEach` are no longer
+needed for these tests — `TelegramLongPollingRunner` is mocked via a per-test fake object.)
 
 - [ ] **Step 4.2: Run tests to verify they fail**
 
@@ -710,12 +753,19 @@ In `TelegramBotSupervisor.kt`, replace the stub body:
 
 ```kotlin
 private fun onAttemptEnded(success: Boolean, attemptStart: Instant, failure: Throwable?) {
-    val duration = Duration.between(attemptStart, clock.instant())
-    if (success) {
-        // Clean polling exit (rare — the library normally throws on disconnect).
+    val duration = Duration.between(attemptStart, Instant.now(clock))
+    if (success && duration >= STABLE_THRESHOLD) {
+        // [D3] Clean polling exit AFTER a stable run — counts as success.
         consecutiveFailures = 0
         currentBackoff = INITIAL_BACKOFF
-        lastStableAt = clock.instant()
+        lastStableAt = Instant.now(clock)
+    } else if (success) {
+        // [D3] Clean return faster than STABLE_THRESHOLD — library likely swallowed an error
+        //      (revoked token, etc.). Treat as fast-fail so consecutiveFailures grows and
+        //      health eventually crosses HEALTH_STALENESS into DOWN.
+        lastFailure = SilentPollingFailure("clean return after $duration")
+        lastFailureAt = Instant.now(clock)
+        consecutiveFailures++
     } else {
         lastFailure = failure
         lastFailureAt = clock.instant()
@@ -852,6 +902,18 @@ Cancellation must not increment consecutiveFailures or record a lastFailure
 ## Task 6: computeHealth — remaining 6 branches
 
 **Goal:** Implement branches 2–7 from `§5` of the spec, with one test per branch. Branch 1 is already covered.
+
+> **[D1] Branch order changed.** Per spec §5 (updated), branch 2 is "live stable polling → UP"
+> — checked **before** the startup-grace and backoff branches. The test names and code blocks
+> below were written against the previous ordering and must be aligned with the new spec table.
+> Concretely, the test currently called *"branch 6 — polling stable past STABLE_THRESHOLD → UP"*
+> should be renamed *"branch 2 — live stable polling → UP"* and run first, and the UP condition
+> requires both `lastPollingStartAt >= STABLE_THRESHOLD` AND `lastPollingStartAt > lastFailureAt`
+> (or `lastFailureAt == null`). The remaining tests keep their semantics but their branch
+> numbers shift: old 2→new 3, old 3→new 4, old 4→new 5, old 5→new 6, old 7→new 7. Add one new
+> test: *"branch 2 stale lastPollingStartAt from a previous failure does not yield UP"* — sets
+> `lastFailureAt > lastPollingStartAt` and asserts the result falls through to backoff branches.
+
 
 **Files:**
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisor.kt`
@@ -1066,32 +1128,47 @@ uptime. Priority-ordered, first-match wins per spec §5."
 
 **Goal:** Implement `start()` to launch `runSupervised` on `scope`, and `shutdown()` with a `runBlocking { withTimeoutOrNull(SHUTDOWN_JOIN_TIMEOUT) { supervisorJob?.join() } }` pattern so Spring's default 30 s shutdown doesn't interrupt mid-cleanup.
 
+> **[D4] Cutover-safety constraint.** Until Task 9 removes `FrigateAnalyzerBot.start()`,
+> activating the supervisor's `@PostConstruct` would cause two concurrent long-polling
+> connections to the same Telegram bot (409 Conflict). To avoid this between-tasks window,
+> **the supervisor's `@PostConstruct fun start()` must remain a no-op stub through Task 7**
+> (everything else — `runSupervised`, `stopAndJoin`, the runBlocking shutdown — is implemented
+> normally and exercised via the tests in this task). The real `scope.launch { runSupervised() }`
+> line is added in Task 9 as part of the atomic cutover, immediately *after* removing
+> `FrigateAnalyzerBot.start()`. Tests for `start()` in this task should call `runSupervised()`
+> directly (not via `start()`) — see Step 7.1 adjustment.
+
 **Files:**
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisor.kt`
 - Modify: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/supervisor/TelegramBotSupervisorTest.kt`
 
-- [ ] **Step 7.1: Add a test for the test-friendly `stopAndJoin`**
+- [ ] **Step 7.1: Add a test for `runSupervised` + the test-friendly `stopAndJoin`** [D4]
 
-`runBlocking` inside `shutdown()` deadlocks `StandardTestDispatcher`, so we provide a `suspend internal fun stopAndJoin()` that mirrors `shutdown()` shape from a suspending context (same approach as `WatchRecordsTask.stopAndJoin`).
+`runBlocking` inside `shutdown()` deadlocks `StandardTestDispatcher`, so we provide a `suspend internal fun stopAndJoin()` that mirrors `shutdown()` shape from a suspending context (same approach as `WatchRecordsTask.stopAndJoin`). Since `start()` is a stub until Task 9, the test launches `runSupervised()` directly on the supervisor's `scope` to mirror what `start()` will do later.
 
 Append to the test file:
 
 ```kotlin
 @Test
-fun `start launches supervisor coroutine, stopAndJoin cancels it cleanly`() =
+fun `runSupervised on scope, stopAndJoin cancels it cleanly`() =
     runTest {
         val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
         coEvery { bot.getMe() } coAnswers { awaitCancellation() }
 
-        supervisor.start()
+        // start() is a stub through Task 7 [D4] — launch runSupervised directly to mirror
+        // what the populated start() does in Task 9.
+        supervisor.supervisorJob = supervisor.scope.launch { supervisor.runSupervised() }
         runCurrent()
-        assertNotNull(supervisor.supervisorJob, "start() should launch a supervisorJob")
+        assertNotNull(supervisor.supervisorJob, "supervisorJob should be set")
         assertTrue(supervisor.supervisorJob!!.isActive, "supervisorJob should be active")
 
         supervisor.stopAndJoin()
         assertEquals(false, supervisor.supervisorJob!!.isActive)
     }
 ```
+
+(This test needs `supervisor.scope` exposed as `internal`. Update the field visibility in
+`TelegramBotSupervisor.kt` from `private val scope = ...` to `internal val scope = ...`.)
 
 Add the import (if not already present):
 
@@ -1105,20 +1182,17 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 
 Expected: FAIL — `stopAndJoin` does not exist, `start()` is a stub.
 
-- [ ] **Step 7.3: Implement `start`, `shutdown`, `stopAndJoin`**
+- [ ] **Step 7.3: Implement `shutdown`, `stopAndJoin`. Leave `start()` as a no-op stub** [D4]
 
-Replace the stubs in `TelegramBotSupervisor.kt`:
+The real `start()` body lands in Task 9 (Step 9.0a) as part of the atomic cutover. Until then
+the test exercises `runSupervised()` directly (Step 7.1 already wires this).
 
 ```kotlin
 @PostConstruct
 fun start() {
-    if (supervisorJob != null) {
-        logger.warn { "TelegramBotSupervisor.start() invoked twice; ignoring duplicate." }
-        return
-    }
-    logger.info { "Starting Telegram bot supervisor..." }
-    startupAt = clock.instant()
-    supervisorJob = scope.launch { runSupervised() }
+    // [D4] Stub through Task 7. The real launch is added in Task 9 atomically with the
+    //      removal of FrigateAnalyzerBot.start() to avoid two concurrent pollers.
+    logger.info { "TelegramBotSupervisor.start() stub — populated in Task 9 cutover." }
 }
 
 @PreDestroy
@@ -1287,12 +1361,36 @@ so test profile (telegram disabled) doesn't aggregate to DOWN."
 
 ---
 
-## Task 9: Cut over — remove polling from FrigateAnalyzerBot
+## Task 9: Atomic cutover — remove polling from FrigateAnalyzerBot AND activate supervisor's start()
 
-**Goal:** Now that the supervisor + indicator exist and tested, remove the polling-owning code from `FrigateAnalyzerBot`. The bot stays as the routing component; supervisor drives lifecycle.
+**Goal:** Now that the supervisor + indicator exist and are tested with `runSupervised()` invoked
+directly, perform the atomic cutover: remove the polling-owning code from `FrigateAnalyzerBot`
+**and** populate the supervisor's `@PostConstruct fun start()` body in a single change. The bot
+stays as the routing component; supervisor drives lifecycle. **[D4] These two edits MUST land in
+one commit to avoid the two-pollers window flagged in review.**
+
+**New Step 9.0 (atomic ordering):** apply both edits below to the working tree, then build, then
+commit — do NOT commit them separately.
 
 **Files:**
 - Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/FrigateAnalyzerBot.kt`
+
+- [ ] **Step 9.0a: Populate `TelegramBotSupervisor.start()` body** [D4]
+
+Edit `TelegramBotSupervisor.kt`. Replace the no-op stub from Task 7 with the real launch:
+
+```kotlin
+@PostConstruct
+fun start() {
+    if (supervisorJob != null) {
+        logger.warn { "TelegramBotSupervisor.start() invoked twice; ignoring duplicate." }
+        return
+    }
+    logger.info { "Starting Telegram bot supervisor..." }
+    startupAt = Instant.now(clock)
+    supervisorJob = scope.launch { runSupervised() }
+}
+```
 
 - [ ] **Step 9.1: Remove the polling `@PostConstruct fun start()`**
 
