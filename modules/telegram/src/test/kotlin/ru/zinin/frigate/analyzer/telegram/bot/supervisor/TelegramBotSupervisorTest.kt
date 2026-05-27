@@ -184,8 +184,8 @@ class TelegramBotSupervisorTest {
             // The atomic tail getAndUpdate then immediately bumps it to 10s (the persisted post-bump
             // value), while the delay() runs against the returned pre-bump 5s value. The test reads
             // the persisted value here, so observes 10s. The reset is still verifiable: without it,
-            // the persisted value after this point would be 60s (the prior 40s bumped + capped at
-            // MAX_BACKOFF), not 10s.
+            // the persisted value after this point would be 40s (the prior 20s bumped by the tail,
+            // not yet capped at MAX_BACKOFF=60s — that cap hits one cycle later), not 10s.
             val s = supervisorWithFakeRunner.stateForTesting
             assertEquals(2 * INITIAL_BACKOFF_MS, s.currentBackoff.toMillis())
             assertEquals(1L, s.consecutiveFailures)
@@ -675,6 +675,8 @@ class TelegramBotSupervisorTest {
         }
 
     private companion object {
+        // Mirrors INITIAL_BACKOFF in TelegramBotSupervisor.kt (file-private there) —
+        // keep in sync if changed; otherwise the assertions below silently drift.
         const val INITIAL_BACKOFF_MS = 5_000L
         val INITIAL_BACKOFF_DURATION: Duration = Duration.ofMillis(INITIAL_BACKOFF_MS)
     }
