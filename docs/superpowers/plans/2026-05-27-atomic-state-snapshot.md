@@ -84,10 +84,13 @@ Writer-сайты `.alive`:
 
 ### Step 1.2: Изменить `ServerState.kt` — добавить `HealthSnapshot` и `AtomicReference`
 
-Заменить полностью `data class ServerState` (lines 8-35) на:
+Заменить полностью `data class ServerState` (lines 8-35) на (CONCERN-3 fix: regular `class`
++ explicit `equals/hashCode` by `id` — устраняет AtomicInteger reference-identity footgun
+в data-class-generated equals; верифицировано grep'ом что `.copy()` / componentN никогда
+не использовались):
 
 ```kotlin
-data class ServerState(
+class ServerState(
     val id: String,
     val properties: DetectServerProperties,
     val processingFrameRequestsCount: AtomicInteger = AtomicInteger(0),
@@ -145,6 +148,11 @@ data class ServerState(
             RequestType.VISUALIZE -> properties.visualizeRequests.simultaneousCount
             RequestType.VIDEO_VISUALIZE -> properties.videoVisualizeRequests.simultaneousCount
         }
+
+    override fun equals(other: Any?): Boolean = other is ServerState && other.id == this.id
+    override fun hashCode(): Int = id.hashCode()
+    override fun toString(): String =
+        "ServerState(id=$id, alive=$alive, lastCheckTimestamp=$lastCheckTimestamp)"
 }
 ```
 

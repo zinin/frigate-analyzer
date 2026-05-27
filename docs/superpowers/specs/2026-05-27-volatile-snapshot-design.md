@@ -331,8 +331,19 @@ Lock-ordering invariant (§lock-ordering в `.claude/rules/telegram-export.md`) 
 
 ### 4.4 `ServerState`
 
+> **CONCERN-3 (per review iter 1).** ServerState переключается с `data class` на обычный
+> `class` с явным `equals/hashCode` по `id`. Причины: (1) после refactor'а `alive`/
+> `lastCheckTimestamp` уезжают в private `healthRef` — НЕ в primary constructor — и
+> data class generated `equals/hashCode` их игнорирует, что само по себе несогласованно;
+> (2) `AtomicInteger`-counters в primary constructor сравнивались по reference identity
+> (pre-existing footgun, две `ServerState(id="x", ..., AtomicInteger(0))` — `!=`);
+> (3) семантически ServerState identified by `id` alone — load balancer работает через
+> map by id; `.copy()` / `componentN` / destructuring никогда не использовались. Проверено
+> через grep: единственная конструкция — `ServerState(id = id, properties = properties)`
+> в `DetectServerRegistry`.
+
 ```kotlin
-data class ServerState(
+class ServerState(
     val id: String,
     val properties: DetectServerProperties,
     val processingFrameRequestsCount: AtomicInteger = AtomicInteger(0),
@@ -354,6 +365,11 @@ data class ServerState(
         healthRef.updateAndGet(transform)
     fun getAndUpdateHealth(transform: (HealthSnapshot) -> HealthSnapshot): HealthSnapshot =
         healthRef.getAndUpdate(transform)  // returns PREVIOUS snapshot for transition detection
+
+    override fun equals(other: Any?): Boolean = other is ServerState && other.id == this.id
+    override fun hashCode(): Int = id.hashCode()
+    override fun toString(): String =
+        "ServerState(id=$id, alive=$alive, lastCheckTimestamp=$lastCheckTimestamp)"
 
     fun canAcceptRequest(requestType: RequestType): Boolean = alive && getCurrentCount(requestType) < getMaxCount(requestType)
     // ... остальные методы без изменений
