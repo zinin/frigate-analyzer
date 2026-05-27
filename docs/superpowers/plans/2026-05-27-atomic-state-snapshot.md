@@ -55,6 +55,33 @@ Coверение spec'ом:
 - [ ] Прочитать `ServerHealthMonitor.kt`. Зафиксировать 3 точки writes: lines 39-40, 48-49, 60-61.
 - [ ] Прочитать тесты, отметить call-сайты `server.alive = true` (12 в DetectServiceTest, 1 в DetectServiceCancelJobTest, 1 в VideoVisualizationServiceTest) — все они **writes**, надо менять.
 
+**Grep-инвентаризация (запустить и зафиксировать вывод в коммит-сообщении или ноутбук агента):**
+
+```bash
+# Все reader/writer-сайты для server.alive (включая через registry)
+git grep -nP '\.alive\b' -- 'modules/**/*.kt'
+
+# Все reader-сайты для lastCheckTimestamp
+git grep -nP '\.lastCheckTimestamp\b' -- 'modules/**/*.kt'
+
+# Все call-сайты canAcceptRequest (узнаем, кто читает alive opaquely)
+git grep -nP '\.canAcceptRequest\b' -- 'modules/**/*.kt'
+
+# Writers конкретно (assignment vs comparison)
+git grep -nP '\.alive\s*=' -- 'modules/**/*.kt'
+```
+
+Ожидаемые reader-сайты `.alive`:
+- `modules/core/src/main/kotlin/.../core/loadbalancer/DetectServerLoadBalancer.kt:86,121` — status enum + log line.
+- `modules/core/src/main/kotlin/.../core/loadbalancer/ServerSelectionStrategy.kt:15` — `.filter { it.alive }`.
+- Внутри `ServerState.canAcceptRequest` — реализационный read (после refactor пойдёт через convenience getter).
+
+Writer-сайты `.alive`:
+- `ServerHealthMonitor.kt` — 3 точки (см. выше).
+- Тесты — 14 точек (12+1+1).
+
+Все reader-сайты остаются неизменными (convenience getter `val alive: Boolean` сохраняется). Все writer-сайты переписываются на `updateHealth { it.copy(alive = ..., lastCheckTimestamp = ...) }`.
+
 ### Step 1.2: Изменить `ServerState.kt` — добавить `HealthSnapshot` и `AtomicReference`
 
 Заменить полностью `data class ServerState` (lines 8-35) на:
@@ -195,8 +222,8 @@ Writers (ServerHealthMonitor and test fixtures) go through updateHealth { it.cop
 Convenience getters server.alive / server.lastCheckTimestamp remain for production
 read-sites (canAcceptRequest, ranker, log lines). Counters (AtomicInteger) untouched.
 
-Closes the smallest of four non-atomic snapshot sites flagged in
-docs/superpowers/specs/2026-05-27-volatile-snapshot-design.md §4.4."
+Closes the smallest of four non-atomic snapshot sites identified in the atomic
+snapshot refactor design (see branch history for design + plan docs)."
 ```
 
 ---
@@ -211,9 +238,42 @@ docs/superpowers/specs/2026-05-27-volatile-snapshot-design.md §4.4."
 - [ ] Прочитать `ActiveExportRegistry.kt` полностью (он маленький, ~205 строк).
 - [ ] Отметить: `Entry` — `class` (не data class!); поля `cancellable` (`@Volatile var`, line 43), `state` (`@Volatile var`, line 44). Reader-сайты в файле: `attachCancellable` (lines 113, 130), `markCancelling` (lines 161-163). Внешние reader-сайты — `entry.state == CANCELLING` в `CancelExportHandlerTest.kt:186, 407`; `registry.get(...)!!.cancellable` (искать через grep если ещё не сделано).
 
+**Grep-инвентаризация:**
+
+```bash
+# Reader-сайты entry.state
+git grep -nP '\bentry\.state\b|\.state\b\s*==\s*State\.|\.state\b\s*!=\s*State\.' -- 'modules/**/*.kt'
+
+# Reader-сайты entry.cancellable
+git grep -nP '\bentry\.cancellable\b|\.cancellable\?\.|\.cancellable\b\s*==' -- 'modules/**/*.kt'
+
+# Writers — нужно отличить assignments от reads
+git grep -nP '\.cancellable\s*=' -- 'modules/**/*.kt'
+git grep -nP '\.state\s*=\s*State\.' -- 'modules/**/*.kt'
+```
+
+Ожидаемые reader-сайты для `entry.state`:
+- `ActiveExportRegistry.kt` сам (внутренние reads в `attachCancellable`, `markCancelling`).
+- `modules/telegram/src/main/kotlin/.../telegram/bot/handler/export/ExportExecutor.kt` — lines 115, 268.
+- `modules/telegram/src/main/kotlin/.../telegram/bot/handler/quickexport/QuickExportHandler.kt` — lines 186, 300.
+- `modules/telegram/src/test/.../CancelExportHandlerTest.kt:186, 407` — `entry.state == CANCELLING` для assertions.
+- `modules/telegram/src/test/.../ActiveExportRegistryTest.kt` — несколько assertions на `entry.state`.
+
+Все эти reader-сайты — single-field reads, остаются неизменными (convenience getter сохраняется).
+
+Writer-сайты для `cancellable` / `state`:
+- `attachCancellable` (production-writer для `cancellable`) — переписывается на `updateState`.
+- `markCancelling` (production-writer для `state`) — переписывается на `getAndUpdateState`.
+- Тесты не пишут internal state напрямую (если grep найдёт — переписать через `updateState`).
+
 ### Step 2.2: Изменить `Entry`-класс — добавить `EntryState` и `AtomicReference`
 
-В `ActiveExportRegistry.kt`, заменить блок `Entry`-объявления (lines 33-45) на:
+В `ActiveExportRegistry.kt`, заменить блок `Entry`-объявления (lines 33-45) на следующий блок.
+**Важно:** первые 4 строки блока ниже — это обновление существующего комментария (lines 33-36
+в текущем файле, который сейчас говорит «Entry holds vars whose values mutate concurrently
+…»). Мы **не** добавляем новый комментарий — мы **переписываем** существующий с актуальной
+мотивацией («AtomicReference вместо vars; plain class сохраняется потому что data class
+equals/hashCode над AtomicReference — footgun»):
 
 ```kotlin
     // Plain `class` (not `data class`): Entry holds an AtomicReference whose state mutates
@@ -305,8 +365,10 @@ import java.util.concurrent.atomic.AtomicReference
      * retained for lock-ordering invariant with `release` (see telegram-export.md §lock-ordering),
      * NOT for state mutation — the state mutation itself is atomic via [getAndUpdateState].
      *
-     * @return the entry snapshot after the transition on success, `null` if the entry does not
-     *   exist (released) or is already in `CANCELLING`.
+     * @return the [Entry] that just transitioned to `CANCELLING`, or `null` if the entry does
+     *   not exist (released) or was already in `CANCELLING`. The returned reference is the
+     *   live registry object — callers reading `entry.state` / `entry.cancellable` on it observe
+     *   the post-transition snapshot via the convenience getters.
      */
     fun markCancelling(exportId: UUID): Entry? {
         var snapshot: Entry? = null
@@ -344,7 +406,7 @@ lock-ordering invariant with release (telegram-export.md §lock-ordering).
 Convenience getters entry.cancellable / entry.state preserved for production
 call-sites and existing tests.
 
-Spec §4.3."
+Per the atomic snapshot refactor design (see branch history)."
 ```
 
 ---
@@ -363,6 +425,31 @@ Spec §4.3."
 - [ ] Зафиксировать reads: `computeHealth` (lines 227-299, 7 branches), `baseBuilder` (lines 301-318, 6 details).
 - [ ] Прочитать `TelegramBotSupervisorTest.kt`. ~30 direct field writes (`sup.startupAt = ...`, `sup.consecutiveFailures = ...`, и т.д.); 6+ direct field reads (`supervisor.currentBackoff`, `supervisor.consecutiveFailures`, и т.д.).
 - [ ] Прочитать `TelegramBotSupervisorHealthIndicatorTest.kt` если он содержит direct field writes — обработать симметрично.
+
+**Grep-инвентаризация (запустить чтобы убедиться что не упустили reader/writer-сайт):**
+
+```bash
+# Все field-accesses на 8 кандидатов (writes + reads)
+for field in startupAt lastAttemptAt lastPollingStartAt lastStableAt lastFailure lastFailureAt consecutiveFailures currentBackoff; do
+  echo "=== $field ==="
+  git grep -nP "\.${field}\b" -- 'modules/**/*.kt'
+done
+
+# Конкретно writes (assignments)
+for field in startupAt lastAttemptAt lastPollingStartAt lastStableAt lastFailure lastFailureAt consecutiveFailures currentBackoff; do
+  echo "=== $field assignments ==="
+  git grep -nP "\.${field}\s*=" -- 'modules/**/*.kt'
+done
+```
+
+Ожидаемые reader-сайты вне `TelegramBotSupervisor.kt` — только тесты:
+- `TelegramBotSupervisorTest.kt` — assertions `assertEquals(..., supervisor.currentBackoff)` и аналогично для других полей.
+- `TelegramBotSupervisorHealthIndicatorTest.kt` (если есть) — аналогично.
+
+Ожидаемые writer-сайты вне `TelegramBotSupervisor.kt` — только тесты:
+- `TelegramBotSupervisorTest.kt` — ~30 строк direct field writes.
+
+Если grep найдёт write в production-коде вне `TelegramBotSupervisor.kt` — это баг spec'а (вторая writer-path помимо `start`/`runSupervised`/`onAttemptEnded`). СТОП — обсудить с пользователем.
 
 ### Step 3.2: Изменить `TelegramBotSupervisor.kt` — добавить `SupervisorState`, удалить 8 полей
 
@@ -671,6 +758,47 @@ import ru.zinin.frigate.analyzer.telegram.bot.supervisor.TelegramBotSupervisor.S
 
 (или class-qualified `TelegramBotSupervisor.SupervisorState(...)` без отдельного импорта — на вкус).
 
+**Дополнительно — deterministic transition tests (per SUGGESTION-2).** В дополнение к
+обновлению существующих тестов, добавить новые testcases в `TelegramBotSupervisorTest`,
+которые проверяют, что transition-методы атомарно ставят **полный** SupervisorState
+(snapshot-equality assertion):
+
+```kotlin
+@Test
+fun `onAttemptEnded success stable resets counters and bumps lastStableAt`() {
+    val now = Instant.parse("2026-05-27T12:00:00Z")
+    sup.stateForTesting = SupervisorState(
+        consecutiveFailures = 3,
+        currentBackoff = Duration.ofSeconds(40),
+        startupAt = now.minus(Duration.ofMinutes(5)),
+    )
+    val attemptStart = now.minus(STABLE_THRESHOLD).minusSeconds(5)
+    fakeClock.setInstant(now)
+
+    sup.onAttemptEnded(success = true, attemptStart = attemptStart, failure = null)
+
+    assertEquals(
+        SupervisorState(
+            consecutiveFailures = 0,
+            currentBackoff = INITIAL_BACKOFF,
+            lastStableAt = now,
+            startupAt = now.minus(Duration.ofMinutes(5)),
+        ),
+        sup.stateForTesting,
+    )
+}
+```
+
+Cases для покрытия (3 ветки `onAttemptEnded`):
+1. `success = true`, `duration >= STABLE_THRESHOLD` — counters reset, `lastStableAt = now`, `currentBackoff = INITIAL`.
+2. `success = true`, `duration < STABLE_THRESHOLD` — `SilentPollingFailure` записан, `consecutiveFailures++`.
+3. `success = false`, `duration >= STABLE_THRESHOLD` — `lastFailure = failure`, counters reset to 1, `currentBackoff = INITIAL`, `lastStableAt = now`.
+4. `success = false`, `duration < STABLE_THRESHOLD` — `lastFailure = failure`, `consecutiveFailures++`, `currentBackoff` НЕ trogается (изменится в `runSupervised` tail).
+
+Ровно тот же подход применяется для `start()` (single field — `startupAt`) и для `runSupervised` tail bump (`currentBackoff = nextBackoff(...)`), если хочется покрыть. Эти тесты гарантируют, что
+transition не оставляет случайных «лишних» полей в SupervisorState — каждый branch явно
+конструирует ожидаемый snapshot.
+
 ### Step 3.9: Обновить `TelegramBotSupervisorHealthIndicatorTest.kt` если применимо
 
 - [ ] Прочитать файл.
@@ -703,7 +831,7 @@ Tests use stateForTesting setter/getter for fixture setup and snapshot reads
 for assertions. ~30 direct field writes collapse to ~10 SupervisorState
 constructions.
 
-Spec §4.1."
+Per the atomic snapshot refactor design (see branch history)."
 ```
 
 ---
@@ -721,6 +849,35 @@ Spec §4.1."
 - [ ] Зафиксировать writes: `start` (line 103), `runSupervised` (lines 146-181 — `currentBackoff`), `ensureWatchService` (call onRegistration*), `onPollCompleted` (lines 216-237), `onRegistrationSuccess` (lines 239-243), `onRegistrationFailure` (lines 245-251), `onLoopFailure` (lines 253-259), `maybeResetBackoff` (lines 261-270).
 - [ ] Зафиксировать reads: `computeHealth` (lines 275-389, 8 branches + base details).
 - [ ] Прочитать `WatchRecordsTaskTest.kt`. Helper `buildTask(...)` (lines ~200-230) принимает 9 полей и присваивает по одному.
+
+**Grep-инвентаризация (11 полей):**
+
+```bash
+# Полная инвентаризация по 11 полям
+for field in startupAt lastSuccessfulPollAt lastEventProcessedAt lastSuccessfulRegistrationAt consecutiveEventFailures consecutiveRegistrationFailures consecutiveFailures successesSinceLastFailure currentBackoff lastFailure lastFailureAt; do
+  echo "=== $field ==="
+  git grep -nP "\.${field}\b" -- 'modules/**/*.kt'
+done
+
+# Assignments (отделить writers)
+for field in startupAt lastSuccessfulPollAt lastEventProcessedAt lastSuccessfulRegistrationAt consecutiveEventFailures consecutiveRegistrationFailures consecutiveFailures successesSinceLastFailure currentBackoff lastFailure lastFailureAt; do
+  echo "=== $field assignments ==="
+  git grep -nP "\.${field}\s*=" -- 'modules/**/*.kt'
+done
+
+# Дополнительно: registeredDirs reads/writes — ConcurrentHashMap, в snapshot не попадает,
+# но grep полезен для confidence
+git grep -nP '\bregisteredDirs\b' -- 'modules/**/*.kt'
+```
+
+Ожидаемые reader-сайты вне `WatchRecordsTask.kt`:
+- `WatchRecordsTaskTest.kt` — assertions на counter-поля, `task.lastFailure`, и т.д.
+- `WatchRecordsTaskHealthIndicatorTest.kt` (если есть) — аналогично.
+
+Ожидаемые writer-сайты вне `WatchRecordsTask.kt`:
+- `WatchRecordsTaskTest.kt` через helper `buildTask(...)` (свернуть в `state: WatchTaskState`-параметр, см. Step 4.8).
+
+Если grep найдёт production-writer вне `WatchRecordsTask.kt` — это баг spec'а. СТОП — обсудить.
 
 ### Step 4.2: Изменить `WatchRecordsTask.kt` — добавить `WatchTaskState`, удалить 11 полей
 
@@ -836,12 +993,14 @@ import java.util.concurrent.atomic.AtomicReference
         state.updateAndGet { s ->
             var n = s.copy(lastSuccessfulPollAt = now)
             if (eventsProcessed > 0) {
-                n = n.copy(
-                    lastEventProcessedAt = now,
-                    consecutiveEventFailures = 0,
-                    consecutiveFailures = 0,
-                )
-                n = maybeResetBackoffTransform(n)
+                n = applyEventsProcessedTransform(n, now)
+                // NOTE: applyEventsProcessedTransform delegates to maybeResetBackoffTransform,
+                // which increments successesSinceLastFailure. When the same poll also brought
+                // event-failures (eventFailures > 0, handled below), that increment is
+                // immediately zeroed by the failure branch — a "wasted" increment. This is
+                // preserved from the pre-refactor behavior (same sequence applied via
+                // direct field writes); deliberately not reordered to keep observable
+                // counter trajectory identical.
             }
             if (eventFailures > 0) {
                 n = n.copy(
@@ -854,6 +1013,25 @@ import java.util.concurrent.atomic.AtomicReference
             }
             n
         }
+    }
+
+    /**
+     * Pure transform applied when `eventsProcessed > 0`. Updates `lastEventProcessedAt`,
+     * zeros `consecutiveEventFailures` and `consecutiveFailures`, then delegates to
+     * [maybeResetBackoffTransform] for backoff-reset bookkeeping. Extracted from
+     * `onPollCompleted` to mirror the `maybeResetBackoffTransform` pattern — both branches
+     * of the transform are now named pure helpers.
+     */
+    private fun applyEventsProcessedTransform(
+        s: WatchTaskState,
+        now: Instant,
+    ): WatchTaskState {
+        val withSuccess = s.copy(
+            lastEventProcessedAt = now,
+            consecutiveEventFailures = 0,
+            consecutiveFailures = 0,
+        )
+        return maybeResetBackoffTransform(withSuccess)
     }
 
     private fun onRegistrationSuccess() {
@@ -1105,6 +1283,58 @@ assertTrue(s.lastFailure is RuntimeException)
 import ru.zinin.frigate.analyzer.core.task.WatchRecordsTask.WatchTaskState
 ```
 
+**Дополнительно — deterministic transition tests (per SUGGESTION-2).** Добавить новые
+testcases в `WatchRecordsTaskTest`, проверяющие full snapshot equality после каждого
+transition:
+
+```kotlin
+@Test
+fun `onPollCompleted with events and no failures resets event-failures and bumps lastEventProcessedAt`() {
+    val now = Instant.parse("2026-05-27T12:00:00Z")
+    val task = buildTask(
+        state = WatchTaskState(
+            startupAt = now.minus(Duration.ofHours(1)),
+            lastSuccessfulRegistrationAt = now.minus(Duration.ofMinutes(10)),
+            consecutiveEventFailures = 3,
+            consecutiveFailures = 3,
+            successesSinceLastFailure = 1,
+            currentBackoff = Duration.ofSeconds(10),
+        ),
+    )
+    fakeClock.setInstant(now)
+
+    task.onPollCompleted(eventsProcessed = 5, eventFailures = 0)
+
+    assertEquals(
+        WatchTaskState(
+            startupAt = now.minus(Duration.ofHours(1)),
+            lastSuccessfulRegistrationAt = now.minus(Duration.ofMinutes(10)),
+            lastSuccessfulPollAt = now,
+            lastEventProcessedAt = now,
+            consecutiveEventFailures = 0,
+            consecutiveFailures = 0,
+            successesSinceLastFailure = 2,           // incremented by maybeResetBackoffTransform
+            currentBackoff = Duration.ofSeconds(10), // threshold not reached → unchanged
+        ),
+        task.stateForTesting,
+    )
+}
+```
+
+Cases для покрытия:
+1. `onPollCompleted(events=5, failures=0)` — success path с continuing backoff (см. пример выше).
+2. `onPollCompleted(events=5, failures=0)` — success path при `successesSinceLastFailure + 1 >= SUCCESSES_TO_RESET_BACKOFF` (backoff reset).
+3. `onPollCompleted(events=0, failures=0)` — empty poll (только `lastSuccessfulPollAt`, `consecutiveFailures = 0`).
+4. `onPollCompleted(events=5, failures=2)` — mixed (counters: `consecutiveEventFailures += 2`, `consecutiveFailures + 1`, `successesSinceLastFailure = 0` после wasted-increment).
+5. `onPollCompleted(events=0, failures=2)` — pure failure path (`consecutiveEventFailures += 2`, `consecutiveFailures + 1`).
+6. `onRegistrationSuccess()` — `lastSuccessfulRegistrationAt = now`, `consecutiveRegistrationFailures = 0`.
+7. `onRegistrationFailure(throwable)` — `consecutiveRegistrationFailures + 1`, `consecutiveFailures + 1`, `successesSinceLastFailure = 0`, `lastFailure = throwable`, `lastFailureAt = now`.
+8. `onLoopFailure(throwable)` — `consecutiveFailures + 1`, `successesSinceLastFailure = 0`, `lastFailure = throwable`, `lastFailureAt = now`.
+
+Каждый case — single `assertEquals(expected, task.stateForTesting)`, гарантирующий что
+transition атомарно ставит **точно** заданный набор полей (никаких случайных side-effect'ов
+в snapshot).
+
 ### Step 4.9: Обновить `WatchRecordsTaskHealthIndicatorTest.kt` если применимо
 
 - [ ] Прочитать файл.
@@ -1139,7 +1369,7 @@ on the local snapshot. registeredDirs (CHM) stays outside State.
 Tests use stateForTesting; the buildTask helper collapses from 9 keyword
 parameters into one WatchTaskState argument.
 
-Spec §4.2."
+Per the atomic snapshot refactor design (see branch history)."
 ```
 
 ---

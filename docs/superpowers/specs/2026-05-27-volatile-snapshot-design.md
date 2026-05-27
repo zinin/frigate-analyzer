@@ -89,6 +89,14 @@ Writers:
 - Конкатенированные transitions: один `updateAndGet` с composition внутри transform.
 - `state.set(...)` — **только** в setter `stateForTesting` (test fixture).
 
+> **Почему даже single-field writes идут через `updateAndGet`, а не `state.set(...)`?**
+> (1) Унифицированная дисциплина — все writers в коде выглядят одинаково,
+> review-визуально нет «привилегированных» путей. (2) Защита от появления второго
+> writer'а в будущем: если когда-то кто-то добавит второй concurrent writer для того
+> же поля, `updateAndGet` сохранит CAS-семантику, а `state.set` потеряет конкурентную
+> запись. (3) Transform легко расширить (например, добавить cross-field invariant в
+> tail-bump) без изменения call-site.
+
 Readers (атомарность гарантируется тем, что в одном методе делается ровно один `state.get()`):
 ```kotlin
 fun compute(...): X {
@@ -176,6 +184,8 @@ private val state = AtomicReference(WatchTaskState())
 
 @Volatile internal var supervisorJob: Job? = null
 ```
+
+> **Visibility note.** `successesSinceLastFailure` was previously declared as `private @Volatile var` on the task. Moving it into `internal data class WatchTaskState` effectively widens its visibility from `private` to `internal` (it becomes readable across the module via `stateForTesting`). The field is observational — no production code outside the task reads it — but the widening is intentional and should be noted in review.
 
 Изменения writers:
 - `start()`: `state.updateAndGet { it.copy(startupAt = Instant.now(clock)) }`.
@@ -410,6 +420,17 @@ transition-методы атомарно ставят все связанные 
 видны как одна snapshot). Concurrency smoke-тесты не добавляем — без реального многопоточного
 executor'а они ничего не доказывают.
 
+> **Формальное обоснование atomic read/write гарантии.** Корректность атомарного snapshot'а
+> опирается не на эмпирический stress-тест, а на JMM-спецификацию: `AtomicReference.get()` /
+> `updateAndGet` / `getAndUpdate` устанавливают happens-before между writer'ом и reader'ом
+> по JLS §17.4 (volatile semantics для underlying field + CAS guarantee для RMW). Reader,
+> делающий ровно один `state.get()` и далее работающий с локальной immutable `data class`-копией,
+> видит self-consistent набор полей — это свойство `data class`-immutability, а не свойство
+> AtomicReference: после публикации reference reader не может «доехать» до полуобновлённой
+> копии, потому что её попросту не существует (transform создал новую instance и атомарно
+> заменил reference). Concurrency stress-тест добавил бы только эмпирическую корреляцию;
+> формальная гарантия уже даётся JMM.
+
 ## 6. Порядок миграции
 
 Все 4 класса — независимые рефакторинги. Реализация — **один PR**, коммитами по классам; каждый
@@ -470,16 +491,87 @@ review-замечаний прошлого PR, новых flag'ов на эту 
 
 ## 10. Known limitations
 
-- Concurrency invariant поддерживается **review-уровневой дисциплиной**: «все writes — через
-  `updateAndGet`/`getAndUpdate`», «`state.set(...)` — только в `stateForTesting`-setter». Нет
-  runtime-проверки; добавление прямого writer-а в будущем — баг review-уровня. KDoc на поле
-  `state` фиксирует invariant.
-- В WatchRecordsTask `currentBackoff` пишется ровно в двух местах: (a) `runSupervised` —
-  tail bump после `delay`; (b) `onPollCompleted` → `maybeResetBackoffTransform` — reset
-  на success path при достижении `SUCCESSES_TO_RESET_BACKOFF`. `onLoopFailure` **не**
-  трогает `currentBackoff` (этим занимается caller в `runSupervised`). Все touch'и
-  централизуются через `updateAndGet { it.copy(currentBackoff = ...) }`, включая tail bump.
-  Поведение state machine не меняется.
-- Если `ktlint` или Kotlin compiler требуют определённой формы lambda — corrective formatting
-  применяется по результату `ktlintCheck` в каждом коммите (не open question, просто стандартная
-  итерация).
+### 10.1 Invariant enforcement
+
+Concurrency invariant поддерживается **review-уровневой дисциплиной**: «все writes — через
+`updateAndGet`/`getAndUpdate`», «`state.set(...)` — только в `stateForTesting`-setter». Нет
+runtime-проверки; добавление прямого writer-а в будущем — баг review-уровня. KDoc на поле
+`state` фиксирует invariant.
+
+### 10.2 Residual non-atomic reads (вне `state` snapshot)
+
+Atomic snapshot покрывает **только** поля внутри `XState`-`data class`. Существуют reader'ы,
+которые читают `state.get()` **и** соседнюю переменную/коллекцию **отдельно**. Эти reads
+формально могут увидеть несогласованную пару, но pair-inconsistency либо самокорректируется
+за следующий tick, либо не влияет на observable behavior:
+
+- **`TelegramBotSupervisor.computeHealth`** + **`WatchRecordsTask.computeHealth`** читают
+  `state.get()` **и** `supervisorJob?.isActive`. Job — lifecycle handle с собственными atomic
+  semantics; writes — однократные (`start()` в `@PostConstruct`/`@EventListener`), readers —
+  per-health-poll. Транзитная inconsistency «job stopped, но state ещё со старыми metric'ами»
+  возможна на ms-окне, но computeHealth branch 1 (`!job.isActive → DOWN`) корректен в любом
+  случае.
+- **`WatchRecordsTask.computeHealth`** дополнительно читает `registeredDirs.size` /
+  `registeredDirs.isEmpty()` отдельно от `state` snapshot. `ConcurrentHashMap` имеет atomic
+  semantics, но пара (`s.lastSuccessfulRegistrationAt != null` + `registeredDirs.isEmpty()`)
+  читается из двух источников. Branch 3.5 («registry collapsed after successful start»)
+  обрабатывает корректно эту пару — но формально это 2-source read.
+- **`ServerState.canAcceptRequest`** читает `alive` (через `healthRef.get().alive`) **и**
+  отдельный `AtomicInteger`-counter (`getCurrentCount(requestType)`). Counter уже atomic,
+  но пара (alive, counter-value) — 2 read'а. Для load-balancing decision pair-consistency
+  не критична: false positive («думаем сервер alive, а он только что markServerDead» или
+  наоборот) самокорректируется на следующем request'е через retry/route-to-другой-server.
+
+Эти residual non-atomic reads признаны acceptable и **не** мигрируются в `XState` — они
+либо относятся к lifecycle handles (Job, WatchService), либо уже thread-safe-collections,
+либо counter-pairs где pair-consistency не нужна. Расширение `XState` на эти поля
+противоречило бы scope (§3.2).
+
+### 10.3 WatchRecordsTask: где пишется `currentBackoff`
+
+В WatchRecordsTask `currentBackoff` пишется ровно в двух местах: (a) `runSupervised` —
+tail bump после `delay`; (b) `onPollCompleted` → `maybeResetBackoffTransform` — reset
+на success path при достижении `SUCCESSES_TO_RESET_BACKOFF`. `onLoopFailure` **не**
+трогает `currentBackoff` (этим занимается caller в `runSupervised`). Все touch'и
+централизуются через `updateAndGet { it.copy(currentBackoff = ...) }`, включая tail bump.
+Поведение state machine не меняется.
+
+### 10.4 Alternatives considered and rejected
+
+**`AtomicReferenceFieldUpdater` (ARFU)** — теоретически saves ~100 bytes per update,
+устраняет outer-class allocation для AtomicReference wrapper. Отвергнут, потому что:
+(1) allocation overhead при наших rates (≤10 events/sec в WatchRecordsTask, ≤1 per
+5-60s в supervisor) пренебрежимо мал даже для embedded JVM; (2) ARFU требует
+reflection-based setup в `companion object` с raw `Class<*>`-литералами, ломая
+type-safety, которую даёт `AtomicReference<XState>`; (3) теряется data class
+`copy(...)` ergonomics — transform превращается из `state.updateAndGet { it.copy(...) }`
+в `updater.updateAndGet(this) { ... }` с explicit-typed lambda; (4) код становится менее
+читабельным, что противоречит цели рефакторинга (унификация дисциплины через простой
+patterns).
+
+**`ReadWriteLock` / `StampedLock`** — теоретически подходит для «many readers, one
+writer»-сценария ServerState. Отвергнут, потому что: (1) AtomicReference fundamentally
+lock-free — нет parker'ов, нет thread contention в hot path; (2) CAS contention на
+наших rates близок к нулю (один writer на 5-30s); (3) explicit locks вводят дополнительный
+interleaving risk (deadlock при отсутствии lock-ordering, hold-while-yield в long reader);
+(4) для `StampedLock` optimistic read complicated — нужно validate-and-retry pattern,
+который воспроизводит то же поведение, что и `AtomicReference.get()` бесплатно;
+(5) reader API хочет single-statement `state.get()`, а не `lock.read { state.snapshot() }`.
+
+### 10.5 Future work
+
+**Domain-specific update methods.** Текущий API предлагает generic
+`entry.updateState(transform)` / `task.state.updateAndGet { ... }`. В будущем имеет смысл
+ограничить writers domain-specific методами (`entry.markCancelling()`,
+`task.onPollCompleted(...)`), чтобы каждый writer был явно типизирован и review мог
+проверять transition rules от call-site. Не делаем сейчас, потому что: (1) рефакторинг
+уже инвазивный (8/11 полей + 4 класса) — каждый дополнительный layer увеличивает risk
+regression'а; (2) generic API даёт максимальную гибкость при первом проходе; (3) если
+future writers покажут паттерны злоупотреблений (например, side-effect в transform), —
+тогда добавляем domain-specific wrappers поверх.
+
+### 10.6 ktlint / corrective formatting
+
+Если `ktlint` или Kotlin compiler требуют определённой формы lambda — corrective formatting
+применяется по результату `ktlintCheck` в каждом коммите (не open question, просто стандартная
+итерация).
