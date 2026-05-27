@@ -1553,7 +1553,7 @@ Per the atomic snapshot refactor design (see branch history)."
 ### Step 5.3: Проверить чтение `/actuator/health` (опционально, manual)
 
 - [ ] Если есть Telegram-токен и работающий Frigate — поднять локально: `./gradlew bootRun`.
-- [ ] `curl http://localhost:8080/frigate-analyzer/actuator/health | jq .`. Проверить `components.watchRecordsTask.details` и `components.telegramBotSupervisor.details` (если enabled): значения должны быть согласованы по логической ветке (например, `consecutiveFailures > 0` + `lastFailureAt != null` или обратное `consecutiveFailures == 0` + `lastFailureAt == null` после успеха).
+- [ ] `curl http://localhost:8080/frigate-analyzer/actuator/health | jq .`. Проверить `components.watchRecordsTask.details` и `components.telegramBotSupervisor.details` (если enabled). **Не** ожидать что `consecutiveFailures == 0 → lastFailureAt == null` — semantics для `lastFailure`/`lastFailureAt` — **sticky** (см. spec §7 «sticky failure semantics»): они отражают LAST observed failure, не current state. После stable-success: `consecutiveFailures` сбрасывается, но `lastFailure*` остаются. Проверять следует пары `consecutiveFailures > 0` + `lastFailureAt != null` (если когда-либо был failure) — иначе `lastFailureAt` может быть `null` (ни разу не падали).
 - [ ] Если нет Telegram-токена — пропустить, unit тесты + integration coverage уже это покрывают.
 
 ### Step 5.4: Внешний code review через `/code-review` или `superpowers:requesting-code-review`

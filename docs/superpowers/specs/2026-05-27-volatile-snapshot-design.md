@@ -492,6 +492,16 @@ executor'а они ничего не доказывают.
   10 events/sec в WatchRecordsTask — пренебрежимо для GC. В supervisor — ещё реже (≤1 update / 5-60s).
 - **`state.set(...)` использование**. Допустим только в setter `stateForTesting`. KDoc и code
   review закрепляют.
+- **Sticky failure semantics (per review iter 1, CRITICAL-4).** `lastFailure` и
+  `lastFailureAt` (в `SupervisorState` и `WatchTaskState`) — **sticky**: ОНИ НИКОГДА НЕ
+  ОЧИЩАЮТСЯ при success-транзишене. Это означает: после stable-success
+  `consecutiveFailures` сбрасывается в 0, но `lastFailure*` сохраняют значение последнего
+  observed failure. Поэтому в `/actuator/health` JSON `lastFailureAt != null && lastFailure
+  != null` могут одновременно сосуществовать с `consecutiveFailures == 0` — это означает
+  «мы сейчас здоровы, но история помнит last failure». Семантика наследована из
+  pre-refactor поведения (тесты её закрепляют). Если в будущем потребуется «current
+  failure»-семантика — добавить отдельные `currentFailure*` поля (см. §10.5 future work),
+  не менять `lastFailure*` semantics в этом refactor'е.
 
 ## 8. Build & verification
 
