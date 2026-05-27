@@ -11,12 +11,13 @@ graph TD
 
     subgraph C ["Detection Pipeline (via Vision API Server — multi-instance, priority load balancing)"]
         direction LR
-        P["<b>Producers (6x)</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto-scaled)</b><br/>Detect • Filter • Re-check"]
+        P["<b>Producers</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto-scaled)</b><br/>Detect • Filter • Re-check"]
     end
 
-    C --> D["Save to PostgreSQL"]
+    C --> VIS["Annotate top frames<br/>(local, Java2D)"]
+    VIS --> D["Save to PostgreSQL"]
     D --> E["Object Tracker<br/>(cross-recording IoU)"]
-    E -- "annotated top frames" --> F["Telegram bot"]
+    E --> F["Telegram bot"]
 
     D -. "polled" .-> SL["Signal-loss Monitor"]
     SL -.-> F
