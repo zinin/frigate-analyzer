@@ -1,9 +1,11 @@
 package ru.zinin.frigate.analyzer.telegram.bot.supervisor
 
 import dev.inmo.tgbotapi.bot.TelegramBot
+import dev.inmo.tgbotapi.extensions.api.bot.getMe
 import io.github.oshai.kotlinlogging.KotlinLogging
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -11,6 +13,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.health.contributor.Health
 import org.springframework.stereotype.Component
@@ -75,6 +80,71 @@ class TelegramBotSupervisor(
         // Filled in Task 7.
         scope.cancel()
     }
+
+    internal suspend fun runSupervised() {
+        currentBackoff = INITIAL_BACKOFF
+        while (currentCoroutineContext().isActive) {
+            val attemptStart = Instant.now(clock) // [A9] consistent with WatchRecordsTask
+            lastAttemptAt = attemptStart
+            lastPollingStartAt = null // [A5] clear stale stamp so health branch 2 won't match
+            //      on a previous (failed) attempt's polling start.
+            try {
+                bot.getMe()
+                frigateAnalyzerBot.registerDefaultCommands()
+                frigateAnalyzerBot.registerOwnerCommandsIfPossible()
+                lastPollingStartAt = Instant.now(clock)
+                logger.info { "Telegram bot polling started" } // [A11] observable reconnect log
+                // [D2] Adapter returns Throwable? — null on clean exit, otherwise the cause from
+                //      structured-concurrency propagation.
+                val cause = runner.run { frigateAnalyzerBot.registerRoutes(this) }
+                // [AUTO-20] Clear lastPollingStartAt the instant runner.run exits. Otherwise the
+                //           tail delay(currentBackoff) window would let computeHealth read the
+                //           stale "live polling start" stamp and report UP for a poller that has
+                //           already stopped.
+                lastPollingStartAt = null
+                if (cause != null) {
+                    throw cause
+                }
+                val attemptDuration = Duration.between(attemptStart, Instant.now(clock))
+                logger.warn {
+                    "long-polling runner returned cleanly after $attemptDuration; reconnecting"
+                }
+                onAttemptEnded(success = true, attemptStart = attemptStart, failure = null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error(e) {
+                    "Telegram bot bootstrap/polling failed; " +
+                        "next backoff=${currentBackoff.toMillis()}ms"
+                }
+                onAttemptEnded(success = false, attemptStart = attemptStart, failure = e)
+            }
+            // [AUTO-19] Delay FIRST, then bump for next iteration. Preserves the documented
+            //           5s→10s→20s→40s→60s progression: very first failure waits INITIAL_BACKOFF
+            //           (5s); after a stable-fail reset (onAttemptEnded sets currentBackoff=INITIAL)
+            //           the next delay is also INITIAL — exactly the intended semantics.
+            //           The previous shape (bump inside catch, before delay) made the first wait
+            //           10s and the post-stable-reset wait 10s.
+            delay(currentBackoff.toMillis())
+            currentBackoff = nextBackoff(currentBackoff)
+        }
+    }
+
+    private fun onAttemptEnded(
+        success: Boolean,
+        attemptStart: Instant,
+        failure: Throwable?,
+    ) {
+        // Full body lands in Task 4. For now: just count failures and record the throwable
+        // so the retry-progression test in Task 3 can assert on consecutiveFailures.
+        if (!success) {
+            consecutiveFailures++
+            lastFailure = failure
+            lastFailureAt = clock.instant()
+        }
+    }
+
+    private fun nextBackoff(current: Duration): Duration = minOf(current.multipliedBy(2), MAX_BACKOFF)
 
     fun computeHealth(now: Instant): Health {
         val builder = baseBuilder()
