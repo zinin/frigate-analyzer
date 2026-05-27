@@ -135,12 +135,33 @@ class TelegramBotSupervisor(
         attemptStart: Instant,
         failure: Throwable?,
     ) {
-        // Full body lands in Task 4. For now: just count failures and record the throwable
-        // so the retry-progression test in Task 3 can assert on consecutiveFailures.
-        if (!success) {
+        val duration = Duration.between(attemptStart, Instant.now(clock))
+        if (success && duration >= STABLE_THRESHOLD) {
+            // [D3] Clean polling exit AFTER a stable run — counts as success.
+            consecutiveFailures = 0
+            currentBackoff = INITIAL_BACKOFF
+            lastStableAt = Instant.now(clock)
+        } else if (success) {
+            // [D3] Clean return faster than STABLE_THRESHOLD — library likely swallowed an error
+            //      (revoked token, etc.). Treat as fast-fail so consecutiveFailures grows and
+            //      health eventually crosses HEALTH_STALENESS into DOWN.
+            lastFailure = SilentPollingFailure("clean return after $duration")
+            lastFailureAt = Instant.now(clock)
             consecutiveFailures++
+        } else {
             lastFailure = failure
-            lastFailureAt = clock.instant()
+            lastFailureAt = Instant.now(clock) // [AUTO-9 / A9] consistent with WatchRecordsTask
+            if (duration >= STABLE_THRESHOLD) {
+                // Worked long enough to count as a stable run.
+                // lastStableAt = now (the moment of crash), not attemptStart: an attempt that
+                // ran for an hour should leave a fresh stable timestamp so HEALTH_STALENESS
+                // is measured from "just now", not from "1 hour ago".
+                consecutiveFailures = 1
+                currentBackoff = INITIAL_BACKOFF
+                lastStableAt = Instant.now(clock) // [AUTO-9 / A9]
+            } else {
+                consecutiveFailures++
+            }
         }
     }
 
@@ -175,3 +196,12 @@ class TelegramBotSupervisor(
                 }
             }
 }
+
+// [AUTO-5 / D3] Marker exception written into `lastFailure` when the long-polling runner returns
+//               cleanly faster than STABLE_THRESHOLD. Distinguishable in health-details under
+//               `lastFailure: "SilentPollingFailure: clean return after PT30S"`, so an operator
+//               can tell a silent failure (revoked token, library swallowed error) from a real
+//               crash.
+private class SilentPollingFailure(
+    message: String,
+) : RuntimeException(message)
