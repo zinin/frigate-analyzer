@@ -510,6 +510,13 @@ import java.util.concurrent.atomic.AtomicReference
      */
     private val state = AtomicReference(SupervisorState())
 
+    /**
+     * Test-fixture access for the supervisor's runtime state. **DO NOT USE FROM
+     * PRODUCTION CODE.** Direct `state.set(...)` bypasses the CAS discipline maintained
+     * by [updateAndGet] / [getAndUpdate] — production writers MUST go through one of
+     * those two APIs. Visibility is `internal` to confine misuse to the test source
+     * set within this module; review discipline enforces the rule (no runtime check).
+     */
     internal var stateForTesting: SupervisorState
         get() = state.get()
         set(value) { state.set(value) }
@@ -958,6 +965,13 @@ import java.util.concurrent.atomic.AtomicReference
      */
     private val state = AtomicReference(WatchTaskState())
 
+    /**
+     * Test-fixture access for the task's runtime state. **DO NOT USE FROM PRODUCTION
+     * CODE.** Direct `state.set(...)` bypasses the CAS discipline maintained by
+     * [updateAndGet] — production writers MUST go through [updateAndGet]. Visibility
+     * is `internal` to confine misuse to the test source set within this module;
+     * review discipline enforces the rule (no runtime check).
+     */
     internal var stateForTesting: WatchTaskState
         get() = state.get()
         set(value) { state.set(value) }

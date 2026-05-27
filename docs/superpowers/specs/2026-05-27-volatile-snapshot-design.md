@@ -117,6 +117,17 @@ fun compute(...): X {
 }
 ```
 
+**Test-fixture access (`stateForTesting`).** Для тестов вводится `internal var
+stateForTesting`-property: getter возвращает `state.get()`, setter делает `state.set(value)`
+(единственная допустимая точка прямой записи в reference). KDoc на setter'е **обязан**
+содержать жёсткое предупреждение «DO NOT USE FROM PRODUCTION CODE — direct `state.set`
+bypasses the CAS discipline; production writers MUST go through updateAndGet/getAndUpdate».
+Защита от misuse: (1) `internal`-видимость ограничивает модулем; (2) naming convention
+(`stateForTesting`) делает intent явным; (3) KDoc документирует invariant; (4) review
+discipline закрепляет. Runtime-проверки нет — это сознательное решение (annotation-based
+infrastructure отсутствует, добавлять зависимость только ради одного var — disproportionate;
+см. §10.4 alternatives).
+
 ### 3.2 Что НЕ попадает в State
 
 - **`supervisorJob: Job?`** в TelegramBotSupervisor и WatchRecordsTask — lifecycle handle с
