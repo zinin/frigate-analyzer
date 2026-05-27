@@ -72,7 +72,7 @@ class DetectServiceCancelJobTest {
         val appProps = applicationProperties(serverProps)
         val registry = DetectServerRegistry()
         registry.register("test", serverProps)
-        registry.getServer("test")!!.alive = true
+        registry.getServer("test")!!.updateHealth { it.copy(alive = true) }
 
         val detectProperties =
             DetectProperties(

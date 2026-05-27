@@ -4,17 +4,46 @@ import ru.zinin.frigate.analyzer.core.config.properties.DetectServerProperties
 import ru.zinin.frigate.analyzer.core.config.properties.RequestConfig
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
-data class ServerState(
+class ServerState(
     val id: String,
     val properties: DetectServerProperties,
-    @Volatile var alive: Boolean = false,
-    @Volatile var lastCheckTimestamp: Instant = Instant.EPOCH,
     val processingFrameRequestsCount: AtomicInteger = AtomicInteger(0),
     val processingFrameExtractionRequestsCount: AtomicInteger = AtomicInteger(0),
     val processingVisualizeRequestsCount: AtomicInteger = AtomicInteger(0),
     val processingVideoVisualizeRequestsCount: AtomicInteger = AtomicInteger(0),
 ) {
+    /**
+     * Health snapshot read/written atomically. All writes MUST go through
+     * [updateHealth] or [getAndUpdateHealth]. Reads happen via [snapshot] or convenience accessors
+     * [alive] / [lastCheckTimestamp] — each single-field read is safe; for
+     * combined read of multiple fields use [snapshot] and work with the
+     * returned [HealthSnapshot] locally.
+     */
+    private val healthRef = AtomicReference(HealthSnapshot())
+
+    data class HealthSnapshot(
+        val alive: Boolean = false,
+        val lastCheckTimestamp: Instant = Instant.EPOCH,
+    )
+
+    val alive: Boolean get() = healthRef.get().alive
+    val lastCheckTimestamp: Instant get() = healthRef.get().lastCheckTimestamp
+
+    fun snapshot(): HealthSnapshot = healthRef.get()
+
+    fun updateHealth(transform: (HealthSnapshot) -> HealthSnapshot): HealthSnapshot = healthRef.updateAndGet(transform)
+
+    /**
+     * Atomic RMW returning the **previous** snapshot. Use this (not [updateHealth]) when the
+     * caller needs to detect a transition — e.g., "was alive, now dead" — without a check-then-act
+     * race against concurrent writers. ServerState has up to three concurrent writers (health-check
+     * success callback, error callback, `markServerDead`), so any transition-detection logic MUST
+     * use the pre-update snapshot returned here rather than a separate `server.alive` read.
+     */
+    fun getAndUpdateHealth(transform: (HealthSnapshot) -> HealthSnapshot): HealthSnapshot = healthRef.getAndUpdate(transform)
+
     fun canAcceptRequest(requestType: RequestType): Boolean = alive && getCurrentCount(requestType) < getMaxCount(requestType)
 
     private fun getCurrentCount(type: RequestType): Int =
@@ -32,6 +61,12 @@ data class ServerState(
             RequestType.VISUALIZE -> properties.visualizeRequests.simultaneousCount
             RequestType.VIDEO_VISUALIZE -> properties.videoVisualizeRequests.simultaneousCount
         }
+
+    override fun equals(other: Any?): Boolean = other is ServerState && other.id == this.id
+
+    override fun hashCode(): Int = id.hashCode()
+
+    override fun toString(): String = "ServerState(id=$id, alive=$alive, lastCheckTimestamp=$lastCheckTimestamp)"
 }
 
 fun ServerState.getCounter(type: RequestType): AtomicInteger =

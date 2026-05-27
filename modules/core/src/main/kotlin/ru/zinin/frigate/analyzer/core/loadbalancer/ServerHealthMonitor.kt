@@ -35,20 +35,20 @@ class ServerHealthMonitor(
             .timeout(detectProperties.healthCheckTimeout)
             .subscribe(
                 {
-                    val wasAlive = server.alive
-                    server.alive = true
-                    server.lastCheckTimestamp = clock.instant()
-
-                    if (!wasAlive) {
+                    val prev =
+                        server.getAndUpdateHealth {
+                            it.copy(alive = true, lastCheckTimestamp = clock.instant())
+                        }
+                    if (!prev.alive) {
                         logger.info { "Server ${server.id} is now ALIVE" }
                     }
                 },
                 { error ->
-                    val wasAlive = server.alive
-                    server.alive = false
-                    server.lastCheckTimestamp = clock.instant()
-
-                    if (wasAlive) {
+                    val prev =
+                        server.getAndUpdateHealth {
+                            it.copy(alive = false, lastCheckTimestamp = clock.instant())
+                        }
+                    if (prev.alive) {
                         logger.warn(error) { "Server ${server.id} is now DEAD" }
                     }
                 },
@@ -57,9 +57,15 @@ class ServerHealthMonitor(
 
     fun markServerDead(id: String) {
         registry.getServer(id)?.let { server ->
-            server.alive = false
-            server.lastCheckTimestamp = clock.instant()
-            logger.warn { "Server $id marked as dead" }
+            // Transition-detection: log "marked as dead" only on the actual alive→dead edge.
+            // If multiple callers race to mark the same server dead, only the first one logs.
+            val prev =
+                server.getAndUpdateHealth {
+                    it.copy(alive = false, lastCheckTimestamp = clock.instant())
+                }
+            if (prev.alive) {
+                logger.warn { "Server $id marked as dead" }
+            }
         }
     }
 }
