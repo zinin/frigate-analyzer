@@ -6,43 +6,27 @@ Automated video recording analysis for [Frigate NVR](https://frigate.video/) sec
 
 ```mermaid
 graph TD
-    A["Frigate NVR<br/>Recordings (.mp4)"] --> B["File Watcher"]
-    B --> DB
+    A["Frigate NVR Recordings (.mp4)"] --> B["File Watcher<br/>Detects new videos"]
+    B --> C
 
-    V["<b>Vision API Server</b><br/>(external)<br/>multi-instance, priority LB"]
-
-    DB -. "poll unprocessed" .-> P
-
-    subgraph PIPE ["Detection Pipeline"]
+    subgraph C ["Detection Pipeline (via Vision API Server — multi-instance, priority LB)"]
         direction LR
         P["<b>Producers (6x)</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect • Filter • Re-check"]
     end
 
-    P -. "extract" .-> V
-    Q -. "detect" .-> V
+    C --> D["Visualize (local) + Save to PostgreSQL"]
+    D --> E["Object Tracker<br/>(cross-recording IoU)"]
+    E --> F["Telegram bot"]
 
-    Q --> FAC["Visualize (local) + Save to DB"]
-    FAC --> DB[("PostgreSQL")]
-    FAC --> OT["Object Tracker<br/>(cross-recording IoU)"]
-    OT --> BOT
+    D -. "polled" .-> SL["Signal-loss Monitor"]
+    SL -.-> F
 
-    DB --> SL["Signal-loss Monitor<br/>(polls recordings)"]
-    SL --> BOT
+    F -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI)"]
+    AI -. "edit message" .-> F
 
-    BOT -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI)"]
-    AI -. "edit message" .-> BOT
-
-    subgraph TG ["Telegram"]
-        direction TB
-        BOT["<b>Bot</b><br/>notifications + commands"]
-        EX["Export / Annotate jobs<br/>/export • Quick Export"]
-        U["User"]
-        BOT <--> U
-        BOT --> EX
-    end
-
-    EX -. "ffmpeg merge" .-> BOT
-    EX -. "video annotate" .-> V
+    F --> EX["Export / Annotate jobs<br/>(ffmpeg merge or Vision API annotate)"]
+    EX -.-> F
+    F --> U["User"]
 ```
 
 Frame extraction, object detection, and video annotation are performed by an external [vision-api-server](https://github.com/zinin/vision-api-server) — a Python service wrapping Ultralytics YOLO models.
