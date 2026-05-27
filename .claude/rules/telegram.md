@@ -28,7 +28,10 @@ Sub-domain rules (loaded conditionally — see `paths:` in each file):
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| FrigateAnalyzerBot | `telegram/bot/` | Thin orchestrator: lifecycle, routing, auth, command menus |
+| FrigateAnalyzerBot | `telegram/bot/` | Routes registrar + auth/command menus. Polling lifecycle is owned by TelegramBotSupervisor; this class exposes `registerRoutes(ctx)`, `registerDefaultCommands()`, `registerOwnerCommandsIfPossible()` for the supervisor to call. |
+| TelegramBotSupervisor | `telegram/bot/supervisor/` | Polling lifecycle — supervised retry-loop with 5s→60s exponential backoff; owns botScope, drives FrigateAnalyzerBot bootstrap on each (re)connect. |
+| TelegramLongPollingRunner | `telegram/bot/supervisor/` | Adapter interface isolating ktgbotapi's `buildBehaviourWithLongPolling`. Production impl `KtgBotApiLongPollingRunner` returns `Throwable?` (null on clean exit). Lets supervisor stay testable without `mockkStatic` on a library top-level function. |
+| TelegramBotSupervisorHealthIndicator | `telegram/bot/supervisor/` | Spring Actuator `HealthIndicator`; delegates to `supervisor.computeHealth(now)`. `@Profile("!test")` to avoid breaking aggregated /actuator/health in tests. Spring exposes under key `telegramBotSupervisor`. |
 | CommandHandler + handlers | `telegram/bot/handler/` | Command-per-class architecture for bot commands |
 | TelegramUserService | `telegram/service/` | Manages users (invite, activate, remove) |
 | TelegramNotificationService | `telegram/service/` | Notification interface |
@@ -83,6 +86,30 @@ Export/QuickExport/cancellation components are documented in `telegram-export.md
 - Command ordering is controlled by handler metadata (`order`, then command name as tie-breaker).
 - Authorization is centralized in bot router via `AuthorizationFilter.authorize()` and `requiredRole`.
 - Owner menu registration uses `OwnerActivatedEvent` + `@EventListener` bridge with coroutine launch.
+
+## Bot Supervision
+
+`TelegramBotSupervisor` runs the polling loop with bounded exponential backoff
+(`INITIAL_BACKOFF=5s` → `MAX_BACKOFF=60s`, capped). An attempt that ran at least
+`STABLE_THRESHOLD=60s` resets backoff on the next failure (long-running pollings
+do not inherit stale backoff). Cancellation propagates cleanly without bumping
+failure counters.
+
+`TelegramBotSupervisorHealthIndicator` exposes `telegramBotSupervisor` in `/actuator/health`
+with one of:
+
+- **UP** — polling has run uninterrupted for ≥ `STABLE_THRESHOLD`.
+- **OUT_OF_SERVICE** — startup grace (≤ `STARTUP_GRACE=2m`), transient backoff
+  (recent stable run within `HEALTH_STALENESS=5m`), or just (re)connected
+  (< `STABLE_THRESHOLD`).
+- **DOWN** — supervisor not running, startup failed
+  (`STARTUP_FAILURE_THRESHOLD=5` or grace expired), or no stable polling for
+  > `HEALTH_STALENESS=5m`.
+
+All thresholds are hardcoded constants in `TelegramBotSupervisor.kt` — by intent,
+matching the policy of `WatchRecordsTask` (single-deployment project, no operator
+tuning). Does NOT trigger automatic restart — operator must monitor health and
+act manually. See `.claude/rules/pipeline.md` §"Health" for the rationale.
 
 ## Authorization
 
