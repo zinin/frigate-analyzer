@@ -985,22 +985,49 @@ import java.util.concurrent.atomic.AtomicReference
 Заменить функции `onPollCompleted`, `onRegistrationSuccess`, `onRegistrationFailure`, `onLoopFailure`, `maybeResetBackoff` (lines 216-270) на:
 
 ```kotlin
+    /**
+     * Result of [maybeResetBackoffTransform]. Bundles the new state with a side-effect-free
+     * indication of whether a reset actually happened, so that the caller can log **outside**
+     * `updateAndGet` (the transform itself must remain pure — `AtomicReference.updateAndGet`
+     * may retry the lambda under CAS contention, and a side-effect-in-transform pattern
+     * would produce duplicate log entries on retry).
+     */
+    internal data class BackoffResetResult(
+        val state: WatchTaskState,
+        val didReset: Boolean = false,
+        /** Successes count at the moment of reset — used by the caller for the log message. */
+        val nextSuccessesAtReset: Int = 0,
+    )
+
     private fun onPollCompleted(
         eventsProcessed: Int,
         eventFailures: Int,
     ) {
         val now = Instant.now(clock)
+        // Capture-on-every-retry: these vars are unconditionally assigned at the top of
+        // each transform invocation, so their final value reflects the SUCCESSFUL CAS run.
+        // Spec §7: transform must be pure; the only side-effect (logger.info) happens once
+        // after updateAndGet returns.
+        var didResetBackoff = false
+        var resetAfterSuccesses = 0
         state.updateAndGet { s ->
+            didResetBackoff = false
+            resetAfterSuccesses = 0
             var n = s.copy(lastSuccessfulPollAt = now)
             if (eventsProcessed > 0) {
-                n = applyEventsProcessedTransform(n, now)
-                // NOTE: applyEventsProcessedTransform delegates to maybeResetBackoffTransform,
-                // which increments successesSinceLastFailure. When the same poll also brought
-                // event-failures (eventFailures > 0, handled below), that increment is
-                // immediately zeroed by the failure branch — a "wasted" increment. This is
-                // preserved from the pre-refactor behavior (same sequence applied via
-                // direct field writes); deliberately not reordered to keep observable
-                // counter trajectory identical.
+                val applied = applyEventsProcessedTransform(n, now)
+                n = applied.state
+                didResetBackoff = applied.didReset
+                resetAfterSuccesses = applied.nextSuccessesAtReset
+                // NOTE: maybeResetBackoffTransform increments successesSinceLastFailure.
+                // When the same poll also brought event-failures (eventFailures > 0, handled
+                // below), that increment is immediately zeroed by the failure branch — a
+                // "wasted" increment. The didResetBackoff flag, however, is NOT cleared by
+                // the failure branch: an actual backoff reset (currentBackoff -> INITIAL)
+                // remains observable in the final state, so logging it is correct. This
+                // is the same observable behavior the pre-refactor code produced (where the
+                // logger.info was inside the reset path of maybeResetBackoff regardless of
+                // any subsequent failure handling).
             }
             if (eventFailures > 0) {
                 n = n.copy(
@@ -1013,19 +1040,24 @@ import java.util.concurrent.atomic.AtomicReference
             }
             n
         }
+        // Side-effect log: fires exactly once per onPollCompleted invocation, AFTER the
+        // CAS-loop has settled. Idempotent under retry: didResetBackoff is only true if
+        // the committed transform did the reset.
+        if (didResetBackoff) {
+            logger.info { "Backoff reset after $resetAfterSuccesses consecutive successes" }
+        }
     }
 
     /**
      * Pure transform applied when `eventsProcessed > 0`. Updates `lastEventProcessedAt`,
      * zeros `consecutiveEventFailures` and `consecutiveFailures`, then delegates to
-     * [maybeResetBackoffTransform] for backoff-reset bookkeeping. Extracted from
-     * `onPollCompleted` to mirror the `maybeResetBackoffTransform` pattern — both branches
-     * of the transform are now named pure helpers.
+     * [maybeResetBackoffTransform] for backoff-reset bookkeeping. Propagates the result
+     * up so the caller can observe whether the backoff was reset.
      */
     private fun applyEventsProcessedTransform(
         s: WatchTaskState,
         now: Instant,
-    ): WatchTaskState {
+    ): BackoffResetResult {
         val withSuccess = s.copy(
             lastEventProcessedAt = now,
             consecutiveEventFailures = 0,
@@ -1072,19 +1104,92 @@ import java.util.concurrent.atomic.AtomicReference
     /**
      * Pure transform: returns a new state with `successesSinceLastFailure` incremented and
      * `currentBackoff` reset to INITIAL_BACKOFF if the consecutive-success threshold is reached.
-     * If `currentBackoff` is already INITIAL_BACKOFF, returns input unchanged.
+     * If `currentBackoff` is already INITIAL_BACKOFF, returns input unchanged with `didReset=false`.
+     *
+     * **No side-effects.** The caller (typically [onPollCompleted]) is responsible for
+     * emitting the "Backoff reset" log line after the enclosing `updateAndGet` has settled.
      */
-    private fun maybeResetBackoffTransform(s: WatchTaskState): WatchTaskState {
-        if (s.currentBackoff <= INITIAL_BACKOFF) return s
+    internal fun maybeResetBackoffTransform(s: WatchTaskState): BackoffResetResult {
+        if (s.currentBackoff <= INITIAL_BACKOFF) return BackoffResetResult(state = s)
         val nextSuccesses = s.successesSinceLastFailure + 1
         return if (nextSuccesses >= SUCCESSES_TO_RESET_BACKOFF) {
-            logger.info { "Backoff reset after $nextSuccesses consecutive successes" }
-            s.copy(currentBackoff = INITIAL_BACKOFF, successesSinceLastFailure = 0)
+            BackoffResetResult(
+                state = s.copy(currentBackoff = INITIAL_BACKOFF, successesSinceLastFailure = 0),
+                didReset = true,
+                nextSuccessesAtReset = nextSuccesses,
+            )
         } else {
-            s.copy(successesSinceLastFailure = nextSuccesses)
+            BackoffResetResult(state = s.copy(successesSinceLastFailure = nextSuccesses))
         }
     }
 ```
+
+**CRITICAL-1 rationale (per review iter-1 decision option A).** The previous shape of
+`maybeResetBackoffTransform` placed `logger.info` inside the transform passed to
+`state.updateAndGet`. That violated Spec §7 (pure transforms): `updateAndGet` may retry the
+lambda under CAS contention, producing duplicate log entries on retry. The new shape:
+(1) makes `maybeResetBackoffTransform` and `applyEventsProcessedTransform` fully pure
+(`BackoffResetResult` carries the would-have-logged signal without side-effects);
+(2) lifts the `logger.info` out into the caller, where it fires exactly once per
+`onPollCompleted` invocation (after the CAS-loop has settled); (3) `internal` visibility
+on `maybeResetBackoffTransform` enables direct parametrized unit testing (see Step 4.5b
+added per SUGGESTION-5).
+
+### Step 4.5b: Unit test `maybeResetBackoffTransform` (per SUGGESTION-5)
+
+Теперь, когда helper полностью pure (returns `BackoffResetResult`, no logging), он trivially
+parametrized-testable. Добавить тестовый класс или новый `@Test`-метод в `WatchRecordsTaskTest`:
+
+```kotlin
+@Test
+fun `maybeResetBackoffTransform — no-op when currentBackoff already at INITIAL`() {
+    val task = buildTask()  // any state; we call helper directly
+    val input = WatchTaskState(currentBackoff = INITIAL_BACKOFF, successesSinceLastFailure = 99)
+    val result = task.maybeResetBackoffTransform(input)
+    assertEquals(BackoffResetResult(state = input), result)
+}
+
+@Test
+fun `maybeResetBackoffTransform — increments successes below threshold`() {
+    val task = buildTask()
+    val input = WatchTaskState(
+        currentBackoff = Duration.ofSeconds(10),
+        successesSinceLastFailure = SUCCESSES_TO_RESET_BACKOFF - 2,
+    )
+    val result = task.maybeResetBackoffTransform(input)
+    assertEquals(
+        BackoffResetResult(state = input.copy(successesSinceLastFailure = SUCCESSES_TO_RESET_BACKOFF - 1)),
+        result,
+    )
+}
+
+@Test
+fun `maybeResetBackoffTransform — resets backoff at threshold`() {
+    val task = buildTask()
+    val input = WatchTaskState(
+        currentBackoff = Duration.ofSeconds(10),
+        successesSinceLastFailure = SUCCESSES_TO_RESET_BACKOFF - 1,
+    )
+    val result = task.maybeResetBackoffTransform(input)
+    assertEquals(
+        BackoffResetResult(
+            state = input.copy(currentBackoff = INITIAL_BACKOFF, successesSinceLastFailure = 0),
+            didReset = true,
+            nextSuccessesAtReset = SUCCESSES_TO_RESET_BACKOFF,
+        ),
+        result,
+    )
+}
+```
+
+Импорт в test-файл:
+```kotlin
+import ru.zinin.frigate.analyzer.core.task.WatchRecordsTask.BackoffResetResult
+```
+
+Цель: эта тройка тестов фиксирует чёткий decision-table helper'а, что не покрывается
+интеграционными `onPollCompleted` тестами (они проверяют composition, но не пограничные
+cases helper'а напрямую).
 
 ### Step 4.6: Переписать `computeHealth(now)` — single snapshot read
 

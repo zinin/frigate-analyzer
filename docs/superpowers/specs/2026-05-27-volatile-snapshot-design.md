@@ -215,9 +215,16 @@ private val state = AtomicReference(WatchTaskState())
         n
     }
     ```
-    `maybeResetBackoffTransform(s: WatchTaskState): WatchTaskState` — pure-функция, инкапсулирует
-    текущую логику `maybeResetBackoff` (инкремент `successesSinceLastFailure` и reset
-    `currentBackoff` при достижении порога).
+    `maybeResetBackoffTransform(s: WatchTaskState): BackoffResetResult` — **pure** helper,
+    инкапсулирует логику `maybeResetBackoff` (инкремент `successesSinceLastFailure` и reset
+    `currentBackoff` при достижении порога). Возвращает `BackoffResetResult(state, didReset,
+    nextSuccessesAtReset)`. `logger.info` про reset **вынесен** из helper'а в caller —
+    caller capture'ит `didResetBackoff`-флаг через captured-on-every-retry var и логирует
+    **после** того как `updateAndGet` закоммитил (см. §7). Это закрывает CRITICAL-1 (4/4
+    reviewers): `AtomicReference.updateAndGet` ретраит lambda под CAS contention, и
+    side-effect-in-transform давал бы дублирующие log entries в multi-writer-сценарии.
+    `applyEventsProcessedTransform` промежуточный helper тоже возвращает `BackoffResetResult`
+    для propagation.
 - `onRegistrationSuccess()`, `onRegistrationFailure(t)`, `onLoopFailure(t)`:
   - Каждый — один `state.updateAndGet { it.copy(...) }`.
 
