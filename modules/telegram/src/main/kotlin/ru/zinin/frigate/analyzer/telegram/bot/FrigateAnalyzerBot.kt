@@ -76,6 +76,7 @@ class FrigateAnalyzerBot(
     private val msg: MessageResolver,
 ) {
     private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val eventScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val sortedHandlers: List<CommandHandler>
         get() = handlers.sortedWith(compareBy<CommandHandler> { it.order }.thenBy { it.command })
@@ -91,23 +92,11 @@ class FrigateAnalyzerBot(
 
                 registerDefaultCommands()
 
-                try {
-                    // Case-insensitive lookup so owner-command registration survives a casing
-                    // difference between `TELEGRAM_OWNER` env and the DB-stored username.
-                    val owner =
-                        userService
-                            .findByUsernameIgnoreCase(properties.owner)
-                            ?.takeIf { it.status == UserStatus.ACTIVE }
-                    if (owner?.chatId != null) {
-                        registerOwnerCommands(owner.chatId)
-                    }
-                } catch (e: Exception) {
-                    logger.warn(e) { "Failed to look up owner for command registration" }
-                }
+                registerOwnerCommandsIfPossible()
 
                 bot
                     .buildBehaviourWithLongPolling {
-                        registerRoutes()
+                        registerRoutes(this)
                     }.join()
             } catch (e: CancellationException) {
                 logger.info { "Telegram bot long polling cancelled" }
@@ -118,197 +107,201 @@ class FrigateAnalyzerBot(
     }
 
     @Suppress("LongMethod", "CyclomaticComplexMethod")
-    private suspend fun BehaviourContext.registerRoutes() {
-        sortedHandlers.forEach { handler ->
-            onCommand(handler.command, requireOnlyCommandInMessage = false) { message ->
-                val resolvedUser: TelegramUserDto? =
-                    if (handler.requiredRole != null) {
-                        when (val result = authorizationFilter.authorize(message)) {
-                            AuthResult.Unauthorized -> {
-                                val lang = StartCommandHandler.detectLanguage(message.telegramLanguageCode())
-                                reply(message, msg.get("common.error.unauthorized", lang))
-                                return@onCommand
-                            }
-
-                            AuthResult.NeedsActivation -> {
-                                val lang = StartCommandHandler.detectLanguage(message.telegramLanguageCode())
-                                reply(message, msg.get("common.error.activation.required", lang))
-                                return@onCommand
-                            }
-
-                            is AuthResult.Active -> {
-                                if (handler.requiredRole == UserRole.OWNER && result.role != UserRole.OWNER) {
-                                    val lang =
-                                        result.user.languageCode
-                                            ?: StartCommandHandler.detectLanguage(message.telegramLanguageCode())
-                                    reply(message, msg.get("common.error.owner.only", lang))
+    suspend fun registerRoutes(context: BehaviourContext) =
+        with(context) {
+            // Note: `bot` inside this block resolves to BehaviourContext.bot (same TelegramBot
+            // instance as this@FrigateAnalyzerBot.bot via constructor injection). The implicit
+            // receiver here is BehaviourContext. [A12]
+            sortedHandlers.forEach { handler ->
+                onCommand(handler.command, requireOnlyCommandInMessage = false) { message ->
+                    val resolvedUser: TelegramUserDto? =
+                        if (handler.requiredRole != null) {
+                            when (val result = authorizationFilter.authorize(message)) {
+                                AuthResult.Unauthorized -> {
+                                    val lang = StartCommandHandler.detectLanguage(message.telegramLanguageCode())
+                                    reply(message, msg.get("common.error.unauthorized", lang))
                                     return@onCommand
                                 }
-                                result.user
-                            }
-                        }
-                    } else {
-                        null
-                    }
 
+                                AuthResult.NeedsActivation -> {
+                                    val lang = StartCommandHandler.detectLanguage(message.telegramLanguageCode())
+                                    reply(message, msg.get("common.error.activation.required", lang))
+                                    return@onCommand
+                                }
+
+                                is AuthResult.Active -> {
+                                    if (handler.requiredRole == UserRole.OWNER && result.role != UserRole.OWNER) {
+                                        val lang =
+                                            result.user.languageCode
+                                                ?: StartCommandHandler.detectLanguage(message.telegramLanguageCode())
+                                        reply(message, msg.get("common.error.owner.only", lang))
+                                        return@onCommand
+                                    }
+                                    result.user
+                                }
+                            }
+                        } else {
+                            null
+                        }
+
+                    try {
+                        with(handler) { handle(message, resolvedUser) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        logger.error(e) { "Error handling command /${handler.command}" }
+                        val lang =
+                            resolvedUser?.languageCode
+                                ?: StartCommandHandler.detectLanguage(
+                                    message.telegramLanguageCode(),
+                                )
+                        reply(message, msg.get("common.error.generic", lang))
+                    }
+                }
+            }
+
+            onDataCallbackQuery(
+                initialFilter = {
+                    it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX_ANNOTATED) ||
+                        it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX)
+                },
+            ) { callback ->
                 try {
-                    with(handler) { handle(message, resolvedUser) }
+                    quickExportHandler.handle(callback)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    logger.error(e) { "Error handling command /${handler.command}" }
-                    val lang =
-                        resolvedUser?.languageCode
-                            ?: StartCommandHandler.detectLanguage(
-                                message.telegramLanguageCode(),
-                            )
-                    reply(message, msg.get("common.error.generic", lang))
+                    logger.error(e) { "Error handling quick export callback: ${callback.data}" }
                 }
             }
-        }
 
-        onDataCallbackQuery(
-            initialFilter = {
-                it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX_ANNOTATED) ||
-                    it.data.startsWith(QuickExportHandler.CALLBACK_PREFIX)
-            },
-        ) { callback ->
-            try {
-                quickExportHandler.handle(callback)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.error(e) { "Error handling quick export callback: ${callback.data}" }
-            }
-        }
-
-        onDataCallbackQuery(
-            initialFilter = {
-                it.data.startsWith(CancelExportHandler.CANCEL_PREFIX) ||
-                    it.data.startsWith(CancelExportHandler.NOOP_PREFIX)
-            },
-        ) { callback ->
-            try {
-                cancelExportHandler.handle(callback)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.error(e) { "Error handling cancel/noop callback: ${callback.data}" }
-            }
-        }
-
-        onDataCallbackQuery(
-            initialFilter = { it.data.startsWith("nfs:") },
-        ) { callback ->
-            // Acknowledge callback FIRST so Telegram clears the button spinner.
-            try {
-                bot.answer(callback)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.warn(e) { "Failed to answer nfs callback id=${callback.id}" }
+            onDataCallbackQuery(
+                initialFilter = {
+                    it.data.startsWith(CancelExportHandler.CANCEL_PREFIX) ||
+                        it.data.startsWith(CancelExportHandler.NOOP_PREFIX)
+                },
+            ) { callback ->
+                try {
+                    cancelExportHandler.handle(callback)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.error(e) { "Error handling cancel/noop callback: ${callback.data}" }
+                }
             }
 
-            try {
-                val callbackMsg = (callback as? MessageDataCallbackQuery)?.message ?: return@onDataCallbackQuery
-                val senderUsername = callback.user.username?.withoutAt ?: return@onDataCallbackQuery
-                // nfs:-callback намеренно использует findActiveByUsername напрямую, а не authorize(...):
-                // рассылка уведомлений идёт только на ACTIVE chatId-ы (getAllActiveChatIds), поэтому
-                // callback физически не может прийти от INVITED/Unauthorized пользователя.
-                val current = userService.findActiveByUsername(senderUsername) ?: return@onDataCallbackQuery
-                val cid = current.chatId ?: return@onDataCallbackQuery
-                val owner = userService.isOwner(current.username)
-                val outcome = notificationsSettingsCallbackHandler.dispatch(callback.data, cid, owner, current)
-                when (outcome) {
-                    NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER -> {
-                        val updated = userService.findByChatIdAsDto(cid) ?: current
-                        val state =
-                            NotificationsViewState(
-                                isOwner = owner,
-                                recordingUserEnabled = updated.notificationsRecordingEnabled,
-                                signalUserEnabled = updated.notificationsSignalEnabled,
-                                recordingGlobalEnabled =
-                                    if (owner) {
-                                        appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
-                                    } else {
-                                        null
-                                    },
-                                signalGlobalEnabled =
-                                    if (owner) {
-                                        appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
-                                    } else {
-                                        null
-                                    },
-                                language = updated.languageCode ?: "en",
-                            )
-                        val rendered = notificationsMessageRenderer.render(state)
-                        try {
-                            @Suppress("UNCHECKED_CAST")
-                            bot.editMessageText(
-                                callbackMsg as ContentMessage<TextContent>,
-                                rendered.text,
-                                replyMarkup = rendered.keyboard,
-                            )
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            val isNotModified =
-                                e.message?.contains(
-                                    "message is not modified",
-                                    ignoreCase = true,
-                                ) == true
-                            if (isNotModified) {
-                                logger.debug { "nfs edit no-op (message not modified): ${callback.data}" }
-                            } else {
-                                logger.warn(e) { "Failed to edit /notifications message for callback=${callback.data}" }
+            onDataCallbackQuery(
+                initialFilter = { it.data.startsWith("nfs:") },
+            ) { callback ->
+                // Acknowledge callback FIRST so Telegram clears the button spinner.
+                try {
+                    bot.answer(callback)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to answer nfs callback id=${callback.id}" }
+                }
+
+                try {
+                    val callbackMsg = (callback as? MessageDataCallbackQuery)?.message ?: return@onDataCallbackQuery
+                    val senderUsername = callback.user.username?.withoutAt ?: return@onDataCallbackQuery
+                    // nfs:-callback намеренно использует findActiveByUsername напрямую, а не authorize(...):
+                    // рассылка уведомлений идёт только на ACTIVE chatId-ы (getAllActiveChatIds), поэтому
+                    // callback физически не может прийти от INVITED/Unauthorized пользователя.
+                    val current = userService.findActiveByUsername(senderUsername) ?: return@onDataCallbackQuery
+                    val cid = current.chatId ?: return@onDataCallbackQuery
+                    val owner = userService.isOwner(current.username)
+                    val outcome = notificationsSettingsCallbackHandler.dispatch(callback.data, cid, owner, current)
+                    when (outcome) {
+                        NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER -> {
+                            val updated = userService.findByChatIdAsDto(cid) ?: current
+                            val state =
+                                NotificationsViewState(
+                                    isOwner = owner,
+                                    recordingUserEnabled = updated.notificationsRecordingEnabled,
+                                    signalUserEnabled = updated.notificationsSignalEnabled,
+                                    recordingGlobalEnabled =
+                                        if (owner) {
+                                            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
+                                        } else {
+                                            null
+                                        },
+                                    signalGlobalEnabled =
+                                        if (owner) {
+                                            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
+                                        } else {
+                                            null
+                                        },
+                                    language = updated.languageCode ?: "en",
+                                )
+                            val rendered = notificationsMessageRenderer.render(state)
+                            try {
+                                @Suppress("UNCHECKED_CAST")
+                                bot.editMessageText(
+                                    callbackMsg as ContentMessage<TextContent>,
+                                    rendered.text,
+                                    replyMarkup = rendered.keyboard,
+                                )
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                val isNotModified =
+                                    e.message?.contains(
+                                        "message is not modified",
+                                        ignoreCase = true,
+                                    ) == true
+                                if (isNotModified) {
+                                    logger.debug { "nfs edit no-op (message not modified): ${callback.data}" }
+                                } else {
+                                    logger.warn(e) { "Failed to edit /notifications message for callback=${callback.data}" }
+                                }
                             }
                         }
-                    }
 
-                    NotificationsSettingsCallbackHandler.DispatchOutcome.CLOSE -> {
-                        try {
-                            bot.editMessageReplyMarkup(callbackMsg, replyMarkup = null)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            logger.warn(e) { "Failed to close /notifications keyboard" }
+                        NotificationsSettingsCallbackHandler.DispatchOutcome.CLOSE -> {
+                            try {
+                                bot.editMessageReplyMarkup(callbackMsg, replyMarkup = null)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                logger.warn(e) { "Failed to close /notifications keyboard" }
+                            }
+                        }
+
+                        else -> {
+                            Unit
                         }
                     }
-
-                    else -> {
-                        Unit
-                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.warn(e) { "Failed to handle nfs callback data=${callback.data}" }
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.warn(e) { "Failed to handle nfs callback data=${callback.data}" }
-            }
-        }
-
-        onContentMessage { message ->
-            val textContent = message.content as? TextContent
-            if (textContent?.text?.startsWith("/") == true) {
-                return@onContentMessage
             }
 
-            val lang = StartCommandHandler.detectLanguage(message.telegramLanguageCode())
-            when (authorizationFilter.authorize(message)) {
-                AuthResult.Unauthorized -> reply(message, msg.get("common.error.unauthorized", lang))
-                AuthResult.NeedsActivation -> reply(message, msg.get("common.error.activation.required", lang))
-                is AuthResult.Active -> Unit
+            onContentMessage { message ->
+                val textContent = message.content as? TextContent
+                if (textContent?.text?.startsWith("/") == true) {
+                    return@onContentMessage
+                }
+
+                val lang = StartCommandHandler.detectLanguage(message.telegramLanguageCode())
+                when (authorizationFilter.authorize(message)) {
+                    AuthResult.Unauthorized -> reply(message, msg.get("common.error.unauthorized", lang))
+                    AuthResult.NeedsActivation -> reply(message, msg.get("common.error.activation.required", lang))
+                    is AuthResult.Active -> Unit
+                }
             }
         }
-    }
 
     @EventListener
     fun onOwnerActivated(event: OwnerActivatedEvent) {
-        botScope.launch {
-            registerOwnerCommands(event.chatId)
+        eventScope.launch {
+            registerOwnerCommands(event.chatId) // [D5] keep direct chatId — no DB round-trip
         }
     }
 
-    private suspend fun registerDefaultCommands() {
+    suspend fun registerDefaultCommands() {
         try {
             for (langCode in TelegramUserServiceImpl.SUPPORTED_LANGUAGES) {
                 val commands =
@@ -324,8 +317,30 @@ class FrigateAnalyzerBot(
                     .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
             bot.setMyCommands(defaultCommands, scope = BotCommandScopeDefault)
             logger.info { "Default bot commands registered for all languages" }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.warn(e) { "Failed to register default bot commands" }
+        }
+    }
+
+    suspend fun registerOwnerCommandsIfPossible() {
+        try {
+            // Case-insensitive lookup so owner-command registration survives a casing
+            // difference between `TELEGRAM_OWNER` env and the DB-stored username.
+            val owner =
+                userService
+                    .findByUsernameIgnoreCase(properties.owner)
+                    ?.takeIf { it.status == UserStatus.ACTIVE }
+            if (owner?.chatId != null) {
+                registerOwnerCommands(owner.chatId)
+            }
+        } catch (e: CancellationException) {
+            // [A3] Rethrow cancellation so the supervisor's shutdown is responsive — `Exception`
+            //      catches CancellationException in Kotlin coroutines.
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to look up owner for command registration" }
         }
     }
 
@@ -344,6 +359,8 @@ class FrigateAnalyzerBot(
                     .map { BotCommand(it.command, msg.get("command.${it.command}.description", "en")) }
             bot.setMyCommands(defaultCommands, scope = scope)
             logger.info { "Owner bot commands registered for chat $chatId" }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.warn(e) { "Failed to register owner bot commands for chat $chatId" }
         }
@@ -353,6 +370,7 @@ class FrigateAnalyzerBot(
     fun stop() {
         logger.info { "Stopping Telegram bot..." }
         botScope.cancel()
+        eventScope.cancel()
         logger.info { "Telegram bot stopped" }
     }
 }
