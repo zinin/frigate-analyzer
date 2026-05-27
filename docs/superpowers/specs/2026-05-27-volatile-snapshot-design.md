@@ -12,12 +12,32 @@ Background: `docs/health-volatile-snapshot-issue.md`.
 inconsistent комбинации полей, потому что writer обновляет их раздельными store-операциями.
 Конкретные сценарии и места задокументированы в `docs/health-volatile-snapshot-issue.md`.
 
-Production impact ≈ 0 (любая транзитная inconsistency самокорректируется за ms). Однако:
-- 4 из 6 внешних ревьюеров последнего PR (`fix/telegram-bot-supervisor`) независимо указали на это.
-- WatchRecordsTask имеет 3 разных счётчика, обновляемых в разных моментах итерации — reader
-  может видеть арифметически непоследовательный набор.
-- ActiveExportRegistry уже содержит явный JMM-комментарий, объясняющий, почему single-writer
-  ordering работает «на текущей платформе» — это технический долг.
+Production impact ≈ 0 (любая транзитная inconsistency самокорректируется за ms). Решение
+рефакторить, а не задокументировать как acceptable, мотивируется четырьмя соображениями
+вместе (не только «ревьюеры флагают»):
+
+1. **Реальная (хоть и редкая) гонка в WatchRecordsTask.** Три счётчика
+   (`consecutiveEventFailures`, `consecutiveRegistrationFailures`, `consecutiveFailures`)
+   обновляются в разных transition-методах. Reader может увидеть арифметически
+   непоследовательный набор; за этим следуют ложные branches в state machine
+   `computeHealth`. Production impact мал, но это не «никогда не происходит» — это
+   «происходит на ms-окне и моментально самокорректируется».
+2. **Удаление JMM-комментария в ActiveExportRegistry.** Текущий код содержит длинный
+   объяснительный блок (`attachCancellable` lines 114-128) о том, почему cross-field
+   ordering работает «на нашем CPU». Это явный технический долг, который AtomicReference
+   полностью устраняет.
+3. **Унифицированная дисциплина в коде.** Без явного pattern'а каждый новый writer/reader
+   решает заново, безопасны ли его reads. С AtomicReference + `state.get()`-in-каждом-методе
+   правило одно и проверяется review-визуально.
+4. **Дешёвая страховка от будущих регрессий.** AtomicReference добавляет CAS-семантику
+   бесплатно (на JVM allocation ~100 bytes/update пренебрежим при наших rates). Если в
+   будущем появится второй writer (например, периодическая задача, обновляющая metric'у), —
+   гарантии не сломаются.
+
+Признаём, что аргумент **не** «production падает» — production не падает. Аргумент —
+«codebase health и устранение defense-in-depth-долга». Для одного из четырёх классов
+(`ServerState`, 2 поля, single-writer scheduler thread) overhead заметен, и решение
+включить его в scope обсуждалось — оставлено для униформности паттерна, см. §6.
 
 Цель этого рефакторинга — закрепить **atomic snapshot read/write pattern** в 4 классах единым
 подходом, устранить inconsistent read как класс проблем, удалить JMM-объяснения, упростить
@@ -186,7 +206,7 @@ private val state = AtomicReference(WatchTaskState())
     }
     ```
     `maybeResetBackoffTransform(s: WatchTaskState): WatchTaskState` — pure-функция, инкапсулирует
-    текущую логику `maybeResetBackoff` (декремент `successesSinceLastFailure` и reset
+    текущую логику `maybeResetBackoff` (инкремент `successesSinceLastFailure` и reset
     `currentBackoff` при достижении порога).
 - `onRegistrationSuccess()`, `onRegistrationFailure(t)`, `onLoopFailure(t)`:
   - Каждый — один `state.updateAndGet { it.copy(...) }`.
@@ -225,6 +245,14 @@ class Entry(
 
     internal fun getAndUpdateState(transform: (EntryState) -> EntryState): EntryState =
         stateRef.getAndUpdate(transform)
+
+    /**
+     * Atomic snapshot for multi-field reads. Use this (NOT the individual convenience
+     * getters [cancellable]/[state]) whenever the read needs pair-consistency between
+     * `cancellable` and `state` (e.g., "cancel only if state == CANCELLING && cancellable != null").
+     * Single-field reads should keep using the convenience getters.
+     */
+    internal fun snapshot(): EntryState = stateRef.get()
 }
 ```
 
@@ -334,6 +362,36 @@ counters). `healthRef` — `private val`, не входит в `equals/hashCode`
 для Entry/ServerState — сохраняем (existing public API с production call-сайтами; для
 multi-field consistency — `entry.updateState`/`server.snapshot()`).
 
+**Единое правило для convenience getter'ов (across all 4 sites):**
+
+> **Convenience getter допустим ТОЛЬКО для single-field reads.**
+> Любой код (production или тестовый), читающий ≥2 поля из одного state-объекта в одной
+> логической операции (например, для invariant-check или conditional branching), ОБЯЗАН
+> использовать snapshot accessor — `server.snapshot()`, `entry.snapshot()`,
+> `task.stateForTesting`, `sup.stateForTesting`, — и далее работать с локальной immutable
+> копией.
+
+Это правило enforced review-уровневой дисциплиной (нет runtime-проверки). Production
+call-сайты на момент рефактора, читающие ≥2 поля одного state-объекта:
+
+- `ActiveExportRegistry.attachCancellable` (cancellable + state) — `updateState` + read returned snapshot.
+- `WatchRecordsTask.computeHealth`, `TelegramBotSupervisor.computeHealth` — `val s = state.get()` в начале.
+
+Production call-сайты, читающие одно поле через convenience getter (acceptable):
+
+- `DetectServerLoadBalancer` (line 86, 121): `server.alive` для status enum и log line.
+- `ServerSelectionStrategy` (line 15): `it.alive` в filter.
+- `ServerState.canAcceptRequest` (внутри класса): `alive` + counter — формально 2 reads,
+  но counter уже atomic и pair-consistency не критична для load-balancing decision.
+  Документировано в §10 Known limitations.
+- `CancelExportHandlerTest`, `ActiveExportRegistryTest`: `entry.state == CANCELLING` для assertions.
+- `ExportExecutor` (line 115, 268), `QuickExportHandler` (line 186, 300): `entry.state` reads
+  в логике cancellation propagation — single-field, OK через convenience getter.
+
+Если в будущем потребуется multi-field read из Entry или ServerState — добавляется новый
+call-сайт через `entry.snapshot()`/`server.snapshot()`. Convenience getter'ы остаются для
+single-field reads.
+
 ### 5.2 Изменения в тестах
 
 | Файл | Изменения |
@@ -379,9 +437,15 @@ executor'а они ничего не доказывают.
 - **`updateAndGet { transform }` exceptions**. Transform-функции — pure (читают closure, конструируют
   `it.copy(...)`). Если когда-нибудь добавится side-effect — это баг review-уровня (KDoc на
   `state` явно требует pure transform).
-- **Throwable safe-publication**. `Throwable.message`, `cause`, `stackTrace` — final fields,
-  safe-published вместе с `*State` через AtomicReference. Copy-by-reference в `.copy()` безопасно
-  (Throwable immutable post-construction).
+- **Throwable safe-publication**. `Throwable` формально НЕ строго-immutable (`initCause`,
+  `setStackTrace`, `addSuppressed` могут мутировать instance post-construction). Однако в
+  этом codebase: (1) мы никогда не вызываем `initCause`/`setStackTrace`/`addSuppressed` на
+  пойманных exception'ах перед записью в `state`; (2) `lastFailure` всегда сохраняется ровно
+  один раз в момент catch, после чего instance treated as effectively-immutable. AtomicReference
+  safe-publishes сам Throwable-reference (writer's writes happen-before reader's read через
+  CAS). Copy-by-reference в `.copy()` безопасно при этих условиях. Если когда-нибудь появится
+  код, мутирующий пойманный Throwable, рассмотреть переход на `FailureSnapshot(className,
+  sanitizedMessage, at)` data class.
 - **Allocation overhead**. Каждый `updateAndGet` — одна new instance data class (~100 bytes). На
   10 events/sec в WatchRecordsTask — пренебрежимо для GC. В supervisor — ещё реже (≤1 update / 5-60s).
 - **`state.set(...)` использование**. Допустим только в setter `stateForTesting`. KDoc и code
@@ -410,10 +474,12 @@ review-замечаний прошлого PR, новых flag'ов на эту 
   `updateAndGet`/`getAndUpdate`», «`state.set(...)` — только в `stateForTesting`-setter». Нет
   runtime-проверки; добавление прямого writer-а в будущем — баг review-уровня. KDoc на поле
   `state` фиксирует invariant.
-- В WatchRecordsTask `currentBackoff` обновляется в нескольких местах: `runSupervised` (tail
-  bump после `delay`), `onPollCompleted/maybeResetBackoff` (success path), `onLoopFailure` (если
-  применимо). Все touch'и централизуются через `updateAndGet { it.copy(currentBackoff = ...) }`
-  включая tail bump. Поведение state machine не меняется.
+- В WatchRecordsTask `currentBackoff` пишется ровно в двух местах: (a) `runSupervised` —
+  tail bump после `delay`; (b) `onPollCompleted` → `maybeResetBackoffTransform` — reset
+  на success path при достижении `SUCCESSES_TO_RESET_BACKOFF`. `onLoopFailure` **не**
+  трогает `currentBackoff` (этим занимается caller в `runSupervised`). Все touch'и
+  централизуются через `updateAndGet { it.copy(currentBackoff = ...) }`, включая tail bump.
+  Поведение state machine не меняется.
 - Если `ktlint` или Kotlin compiler требуют определённой формы lambda — corrective formatting
   применяется по результату `ktlintCheck` в каждом коммите (не open question, просто стандартная
   итерация).
