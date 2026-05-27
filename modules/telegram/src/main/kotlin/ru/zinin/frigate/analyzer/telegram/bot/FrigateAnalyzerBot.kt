@@ -2,13 +2,11 @@ package ru.zinin.frigate.analyzer.telegram.bot
 
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.extensions.api.answers.answer
-import dev.inmo.tgbotapi.extensions.api.bot.getMe
 import dev.inmo.tgbotapi.extensions.api.bot.setMyCommands
 import dev.inmo.tgbotapi.extensions.api.edit.reply_markup.editMessageReplyMarkup
 import dev.inmo.tgbotapi.extensions.api.edit.text.editMessageText
 import dev.inmo.tgbotapi.extensions.api.send.reply
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
-import dev.inmo.tgbotapi.extensions.behaviour_builder.buildBehaviourWithLongPolling
 import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onCommand
 import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onContentMessage
 import dev.inmo.tgbotapi.extensions.behaviour_builder.triggers_handling.onDataCallbackQuery
@@ -24,7 +22,6 @@ import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
 import io.github.oshai.kotlinlogging.KotlinLogging
-import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -75,36 +72,10 @@ class FrigateAnalyzerBot(
     private val appSettings: AppSettingsService,
     private val msg: MessageResolver,
 ) {
-    private val botScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val eventScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val sortedHandlers: List<CommandHandler>
         get() = handlers.sortedWith(compareBy<CommandHandler> { it.order }.thenBy { it.command })
-
-    @PostConstruct
-    fun start() {
-        logger.info { "Starting Telegram bot with long polling..." }
-
-        botScope.launch {
-            try {
-                val botInfo = bot.getMe()
-                logger.info { "Bot started: ${botInfo.username} (${botInfo.firstName})" }
-
-                registerDefaultCommands()
-
-                registerOwnerCommandsIfPossible()
-
-                bot
-                    .buildBehaviourWithLongPolling {
-                        registerRoutes(this)
-                    }.join()
-            } catch (e: CancellationException) {
-                logger.info { "Telegram bot long polling cancelled" }
-            } catch (e: Exception) {
-                logger.error(e) { "Error in Telegram bot long polling" }
-            }
-        }
-    }
 
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     suspend fun registerRoutes(context: BehaviourContext) =
@@ -368,9 +339,8 @@ class FrigateAnalyzerBot(
 
     @PreDestroy
     fun stop() {
-        logger.info { "Stopping Telegram bot..." }
-        botScope.cancel()
+        logger.info { "Stopping Telegram bot event scope..." }
         eventScope.cancel()
-        logger.info { "Telegram bot stopped" }
+        logger.info { "Telegram bot event scope stopped" }
     }
 }

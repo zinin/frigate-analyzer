@@ -75,9 +75,13 @@ class TelegramBotSupervisor(
 
     @PostConstruct
     fun start() {
-        // [D4] Stub through Task 7. The real launch is added in Task 9 atomically with the
-        //      removal of FrigateAnalyzerBot.start() to avoid two concurrent pollers.
-        logger.info { "TelegramBotSupervisor.start() stub — populated in Task 9 cutover." }
+        if (supervisorJob != null) {
+            logger.warn { "TelegramBotSupervisor.start() invoked twice; ignoring duplicate." }
+            return
+        }
+        logger.info { "Starting Telegram bot supervisor..." }
+        startupAt = Instant.now(clock)
+        supervisorJob = scope.launch { runSupervised() }
     }
 
     @PreDestroy
