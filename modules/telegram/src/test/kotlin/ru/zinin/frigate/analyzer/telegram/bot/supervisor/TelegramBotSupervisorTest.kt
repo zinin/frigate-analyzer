@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -351,6 +352,23 @@ class TelegramBotSupervisorTest {
         assertTrue((h.details["reason"] as String).startsWith("connecting"))
         sup.supervisorJob?.cancel()
     }
+
+    @Test
+    fun `runSupervised on scope, stopAndJoin cancels it cleanly`() =
+        runTest {
+            val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
+            coEvery { bot.getMe() } coAnswers { awaitCancellation() }
+
+            // start() is a stub through Task 7 [D4] — launch runSupervised directly to mirror
+            // what the populated start() does in Task 9.
+            supervisor.supervisorJob = supervisor.scope.launch { supervisor.runSupervised() }
+            runCurrent()
+            assertNotNull(supervisor.supervisorJob, "supervisorJob should be set")
+            assertTrue(supervisor.supervisorJob!!.isActive, "supervisorJob should be active")
+
+            supervisor.stopAndJoin()
+            assertEquals(false, supervisor.supervisorJob!!.isActive)
+        }
 
     private companion object {
         const val INITIAL_BACKOFF_MS = 5_000L

@@ -16,6 +16,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.health.contributor.Health
 import org.springframework.stereotype.Component
@@ -46,7 +49,7 @@ class TelegramBotSupervisor(
         @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
         Dispatchers.IO.limitedParallelism(1),
 ) {
-    private val scope =
+    internal val scope =
         CoroutineScope(SupervisorJob() + dispatcher + CoroutineName("telegram-bot-supervisor"))
     // [A6] Production default is Dispatchers.IO.limitedParallelism(1) for parity with
     //      WatchRecordsTask. Long-polling is I/O-bound and the supervisor is single-threaded
@@ -72,12 +75,44 @@ class TelegramBotSupervisor(
 
     @PostConstruct
     fun start() {
-        // Filled in Task 7.
+        // [D4] Stub through Task 7. The real launch is added in Task 9 atomically with the
+        //      removal of FrigateAnalyzerBot.start() to avoid two concurrent pollers.
+        logger.info { "TelegramBotSupervisor.start() stub — populated in Task 9 cutover." }
     }
 
     @PreDestroy
     fun shutdown() {
-        // Filled in Task 7.
+        logger.info { "Shutting down Telegram bot supervisor..." }
+        supervisorJob?.cancel()
+        // Bound the join — worst case loop is parked in delay(MAX_BACKOFF=60s) and won't
+        // observe cancel until that wakes; Spring's default 30s shutdown would interrupt
+        // us otherwise. After timeout, scope.cancel() forces termination.
+        runBlocking {
+            withTimeoutOrNull(SHUTDOWN_JOIN_TIMEOUT.toMillis()) {
+                // runCatching swallows a CancellationException that may propagate from
+                // join() — otherwise withTimeoutOrNull would see the cancel and treat it
+                // as a timeout, causing a false "did not exit within Ns" log. [A7]
+                runCatching { supervisorJob?.join() }
+                true
+            }
+        }
+        val cleanShutdown = supervisorJob?.isCompleted == true
+        if (!cleanShutdown) {
+            logger.warn {
+                "Supervisor did not exit within ${SHUTDOWN_JOIN_TIMEOUT.toSeconds()}s; forcing"
+            }
+        }
+        scope.cancel()
+        logger.info { "Telegram bot supervisor stopped" }
+    }
+
+    internal suspend fun stopAndJoin() {
+        // [AUTO-17] Test helper mirroring shutdown() shape. Does NOT null `supervisorJob` because
+        //           shutdown() doesn't either — both leave the cancelled Job reference in place
+        //           for diagnostic inspection. Tests that need to re-start the supervisor in the
+        //           same scope must reset supervisorJob manually before calling start().
+        supervisorJob?.cancel()
+        supervisorJob?.join()
         scope.cancel()
     }
 
