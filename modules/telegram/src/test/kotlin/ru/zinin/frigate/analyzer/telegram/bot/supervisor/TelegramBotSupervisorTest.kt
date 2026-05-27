@@ -35,9 +35,9 @@ class TelegramBotSupervisorTest {
     private val bot = mockk<TelegramBot>(relaxed = true)
     private val frigateAnalyzerBot = mockk<FrigateAnalyzerBot>(relaxed = true)
 
-    // [AUTO-2] `runner` is the D2 adapter dependency. Default is a relaxed mock; individual
-    //          tests override with a hand-rolled fake when they need to drive specific
-    //          polling-loop behaviour (Task 4's stable-attempt test).
+    // `runner` is the adapter dependency. Default is a relaxed mock; individual tests override
+    // with a hand-rolled fake when they need to drive specific polling-loop behaviour (see the
+    // stable-attempt test below).
     private val defaultRunner = mockk<TelegramLongPollingRunner>(relaxed = true)
     private val now = Instant.parse("2026-05-27T12:00:00Z")
     private val clock = Clock.fixed(now, ZoneOffset.UTC)
@@ -53,9 +53,9 @@ class TelegramBotSupervisorTest {
         dispatcher = dispatcher,
     )
 
-    // [AUTO-7] Ticking clock helpers shared by Tasks 3 and 4. A fixed clock would report
-    //          duration=0 for `Duration.between(attemptStart, Instant.now(clock))`, which
-    //          would silently break Task 4's stable-attempt threshold check.
+    // Ticking clock helper. A fixed clock would report duration=0 for
+    // `Duration.between(attemptStart, Instant.now(clock))`, which would silently break the
+    // stable-attempt threshold check.
     private fun tickingClock(scheduler: kotlinx.coroutines.test.TestCoroutineScheduler): Clock {
         val origin = Instant.parse("2026-05-27T12:00:00Z")
         return object : Clock() {
@@ -104,8 +104,8 @@ class TelegramBotSupervisorTest {
     @Test
     fun `runSupervised retries with exponential backoff after getMe failures`() =
         runTest {
-            // [A8] Use ticking clock so future tests adding longer attempts won't silently get
-            //      duration=0 on a fixed clock.
+            // Use ticking clock so future tests adding longer attempts won't silently get
+            // duration=0 on a fixed clock.
             val supervisor = newSupervisorWithTickingClock(testScheduler)
             var attempts = 0
             coEvery { bot.getMe() } coAnswers {
@@ -136,11 +136,9 @@ class TelegramBotSupervisorTest {
             // Drive currentBackoff up to 40s with two quick failures, then a long
             // attempt that fails after STABLE_THRESHOLD (60s) and resets the state.
             var attempts = 0
-            // [PLAN-FIX] getMe() returns ExtendedBot, not Unit. The plan's `3 -> Unit` does not
-            //            compile because the `when` expression must yield an ExtendedBot or
-            //            Nothing. We substitute a relaxed mockk<ExtendedBot>() to "succeed"
-            //            without affecting semantics — supervisor only checks that the call
-            //            did not throw.
+            // getMe() returns ExtendedBot. We substitute a relaxed mockk<ExtendedBot>() to
+            // "succeed" without affecting semantics — supervisor only checks that the call did
+            // not throw.
             val fakeMe = mockk<dev.inmo.tgbotapi.types.chat.ExtendedBot>(relaxed = true)
             coEvery { bot.getMe() } coAnswers {
                 attempts++
@@ -153,10 +151,8 @@ class TelegramBotSupervisorTest {
                     else -> throw CancellationException("done")
                 }
             }
-            // [D2] No mockkStatic — supervisor now takes TelegramLongPollingRunner. Inject a
-            //      hand-rolled fake that captures its onUpdate block, runs for 61s, then returns
-            //      a Throwable to simulate the polling crash. The fake is constructed per-test
-            //      so there's no inter-test leakage. (Obsoletes A4 + A2 teardown.)
+            // Inject a hand-rolled fake runner that runs for 61s, then returns a Throwable to
+            // simulate the polling crash. Constructed per-test so there's no inter-test leakage.
             val runner =
                 object : TelegramLongPollingRunner {
                     override suspend fun run(onUpdate: suspend BehaviourContext.() -> Unit): Throwable? {
@@ -164,12 +160,9 @@ class TelegramBotSupervisorTest {
                         return RuntimeException("connection dropped after stable run")
                     }
                 }
-            // [AUTO-3] Pass the fake runner into the supervisor via the constructor (Task 2.3
-            //          updated to take `runner` as first parameter per AUTO-2). No mockkStatic —
-            //          the [D2] adapter pattern obsoletes that approach entirely.
             val supervisorWithFakeRunner = newSupervisorWithTickingClock(testScheduler, runner = runner)
 
-            // [AUTO-13] Timing reckoning under [AUTO-19] (delay BEFORE bump):
+            // Timing under the supervisor's delay-BEFORE-bump retry shape:
             //   t=0:   attempt 1 → getMe fails ("quick fail #1"). delay(currentBackoff=5s). bump→10.
             //   t=5:   attempt 2 → getMe fails. delay(10s). bump→20.
             //   t=15:  attempt 3 → getMe OK, runner.run starts; delay(61s).
@@ -181,10 +174,10 @@ class TelegramBotSupervisorTest {
             advanceTimeBy(5_000 + 10_000 + 61_000 + 1) // = 76_001 ms, just after runner exits
             runCurrent()
 
-            // [AUTO-19] After the reset, currentBackoff is briefly INITIAL_BACKOFF (5s) before the
-            //           tail bumps it. Because the tail delay starts immediately after
-            //           onAttemptEnded, the test scheduler at t=76_001 is INSIDE that delay and
-            //           the post-delay bump has not yet run — so we observe the reset value.
+            // After the reset, currentBackoff is briefly INITIAL_BACKOFF (5s) before the tail
+            // bumps it. Because the tail delay starts immediately after onAttemptEnded, the test
+            // scheduler at t=76_001 is INSIDE that delay and the post-delay bump has not yet
+            // run — so we observe the reset value.
             assertEquals(INITIAL_BACKOFF_MS, supervisorWithFakeRunner.currentBackoff.toMillis())
             assertEquals(1L, supervisorWithFakeRunner.consecutiveFailures)
 
@@ -195,15 +188,11 @@ class TelegramBotSupervisorTest {
     fun `attempt that crashed before STABLE_THRESHOLD does not reset backoff`() =
         runTest {
             val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
-            // [PLAN-FIX] The plan used `coEvery { bot.getMe() } throws RuntimeException(...)`,
-            //            but `advanceTimeBy(35_000) + runCurrent()` advances the test scheduler
-            //            into iteration 4 (the 3rd delay completes at exactly t=35_000 and
-            //            runCurrent fires the continuation, then the loop bumps backoff to 40s
-            //            and starts attempt 4). With "always fails", that 4th attempt also
-            //            throws RuntimeException → consecutiveFailures becomes 4 (not 3).
-            //            Mirror the retry-progression test (Task 3): throw CancellationException
-            //            on the 4th call so the loop exits cleanly without bumping the counter,
-            //            preserving the plan's documented (3, 40_000) end-state.
+            // Throw CancellationException on the 4th call so the loop exits cleanly without
+            // bumping the counter. A naive "always throws RuntimeException" mock would let
+            // advanceTimeBy(35_000) + runCurrent() spill into a 4th attempt (the 3rd delay
+            // completes at t=35_000, runCurrent fires the continuation, the loop bumps backoff
+            // to 40s and starts attempt 4) — consecutiveFailures would become 4 instead of 3.
             var attempts = 0
             coEvery { bot.getMe() } coAnswers {
                 attempts++
@@ -226,10 +215,9 @@ class TelegramBotSupervisorTest {
     @Test
     fun `runner clean exit before STABLE_THRESHOLD records SilentPollingFailure`() =
         runTest {
-            // [D3] When runner returns null (clean exit) faster than STABLE_THRESHOLD,
-            //      the supervisor records a SilentPollingFailure marker and bumps
-            //      consecutiveFailures. Common cause: revoked bot token or library-swallowed
-            //      error that exits polling without raising.
+            // When runner returns null (clean exit) faster than STABLE_THRESHOLD, the supervisor
+            // records a SilentPollingFailure marker and bumps consecutiveFailures. Common cause:
+            // revoked bot token or library-swallowed error that exits polling without raising.
             val fakeMe = mockk<dev.inmo.tgbotapi.types.chat.ExtendedBot>(relaxed = true)
             coEvery { bot.getMe() } returns fakeMe
             val runner =
@@ -287,8 +275,8 @@ class TelegramBotSupervisorTest {
         sup.supervisorJob?.cancel()
     }
 
-    // [AUTO-11] Core motivation of [D1]: after recovery with sticky consecutiveFailures, a fresh
-    //           stable polling must still report UP without waiting for onAttemptEnded to fire.
+    // After recovery with sticky consecutiveFailures, a fresh stable polling must still report
+    // UP without waiting for onAttemptEnded to fire.
     @Test
     fun `computeHealth — live stable polling with sticky consecutiveFailures still yields UP`() {
         val sup = supervisorWithLiveJob()
@@ -302,9 +290,9 @@ class TelegramBotSupervisorTest {
         sup.supervisorJob?.cancel()
     }
 
-    // [AUTO-10] Invariant `lastPollingStartAt > lastFailureAt` must reject UP if a newer failure
-    //           was recorded after the polling stamp (i.e. attempt already crashed but iteration
-    //           hasn't entered the new loop body yet — stale-stamp window).
+    // Invariant `lastPollingStartAt > lastFailureAt` must reject UP if a newer failure was
+    // recorded after the polling stamp (i.e. attempt already crashed but iteration hasn't
+    // entered the new loop body yet — stale-stamp window).
     @Test
     fun `computeHealth — stale lastPollingStartAt after newer failure does not yield UP`() {
         val sup = supervisorWithLiveJob()
@@ -433,8 +421,9 @@ class TelegramBotSupervisorTest {
             val supervisor = newSupervisor(StandardTestDispatcher(testScheduler))
             coEvery { bot.getMe() } coAnswers { awaitCancellation() }
 
-            // start() is a stub through Task 7 [D4] — launch runSupervised directly to mirror
-            // what the populated start() does in Task 9.
+            // Launch runSupervised directly so the test can drive scheduling explicitly,
+            // mirroring what start() does in production (start() launches runSupervised on the
+            // supervisor scope).
             supervisor.supervisorJob = supervisor.scope.launch { supervisor.runSupervised() }
             runCurrent()
             assertNotNull(supervisor.supervisorJob, "supervisorJob should be set")

@@ -87,7 +87,7 @@ class FrigateAnalyzerBot(
         with(context) {
             // Note: `bot` inside this block resolves to BehaviourContext.bot (same TelegramBot
             // instance as this@FrigateAnalyzerBot.bot via constructor injection). The implicit
-            // receiver here is BehaviourContext. [A12]
+            // receiver here is BehaviourContext.
             sortedHandlers.forEach { handler ->
                 onCommand(handler.command, requireOnlyCommandInMessage = false) { message ->
                     val resolvedUser: TelegramUserDto? =
@@ -273,7 +273,7 @@ class FrigateAnalyzerBot(
     @EventListener
     fun onOwnerActivated(event: OwnerActivatedEvent) {
         eventScope.launch {
-            registerOwnerCommands(event.chatId) // [D5] keep direct chatId — no DB round-trip
+            registerOwnerCommands(event.chatId) // keep direct chatId — no DB round-trip
         }
     }
 
@@ -312,8 +312,8 @@ class FrigateAnalyzerBot(
                 registerOwnerCommands(owner.chatId)
             }
         } catch (e: CancellationException) {
-            // [A3] Rethrow cancellation so the supervisor's shutdown is responsive — `Exception`
-            //      catches CancellationException in Kotlin coroutines.
+            // Rethrow cancellation so the supervisor's shutdown is responsive — `Exception`
+            // catches CancellationException in Kotlin coroutines.
             throw e
         } catch (e: Exception) {
             logger.warn(e) { "Failed to look up owner for command registration" }

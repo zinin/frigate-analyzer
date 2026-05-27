@@ -27,23 +27,18 @@ fun interface TelegramLongPollingRunner {
 class KtgBotApiLongPollingRunner(
     private val bot: TelegramBot,
 ) : TelegramLongPollingRunner {
-    // [AUTO-16] Use NAMED argument `scope = this` for explicit intent and forward-compatibility.
-    //           Per ktgbotapi 33.1.0 (verified by javap on the JVM jar), `scope: CoroutineScope`
-    //           IS the first positional parameter, so `bot.buildBehaviourWithLongPolling(this) { … }`
-    //           would compile cleanly today. We still pass the scope by name because the call has 8
-    //           other parameters (defaultExceptionsHandler, timeoutSeconds, autoDisableWebhooks, …)
-    //           and the library has reordered these in past versions — naming the arg prevents a
-    //           silent semantic shift if a future ktgbotapi release reorders the head of the list.
-    // [AUTO-18] Use explicit try/catch instead of `runCatching` so CancellationException
-    //           propagates per Kotlin structured-concurrency convention (runCatching catches
-    //           all Throwable, including CancellationException, then we'd have to re-throw it
-    //           manually from a return value — fragile).
+    // Use NAMED argument `scope = this`: per ktgbotapi 33.1.0 (verified by javap), `scope` IS
+    // the first positional parameter, but the call has 8 others (defaultExceptionsHandler,
+    // timeoutSeconds, autoDisableWebhooks, …) and the library has reordered these in past
+    // versions — naming the arg prevents a silent semantic shift on future releases.
     //
-    //           Catch `Exception` rather than `Throwable` so JVM-level `Error` (OOM,
-    //           StackOverflowError, LinkageError) propagates through the standard uncaught-
-    //           exception path. supervisor.runSupervised's `catch (e: Exception)` likewise
-    //           lets Error escape — health BRANCH 1 will correctly report DOWN once the
-    //           coroutine dies.
+    // Use explicit try/catch instead of `runCatching` so CancellationException propagates per
+    // Kotlin structured-concurrency convention (runCatching catches all Throwable, including
+    // CancellationException, then we'd have to re-throw it manually from a return value).
+    //
+    // Catch `Exception` rather than `Throwable` so JVM-level `Error` (OOM, StackOverflowError,
+    // LinkageError) propagates through the standard uncaught-exception path. The supervisor's
+    // runSupervised also catches `Exception` — Error escapes and health BRANCH 1 reports DOWN.
     override suspend fun run(onUpdate: suspend BehaviourContext.() -> Unit): Throwable? =
         try {
             coroutineScope {

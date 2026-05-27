@@ -50,7 +50,6 @@ private fun sanitizeFailureMessage(message: String?): String =
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class TelegramBotSupervisor(
-    // [AUTO-2] runner is the D2 adapter dependency, FIRST constructor parameter per design §3.2
     private val runner: TelegramLongPollingRunner,
     private val bot: TelegramBot,
     private val frigateAnalyzerBot: FrigateAnalyzerBot,
@@ -61,9 +60,9 @@ class TelegramBotSupervisor(
 ) {
     internal val scope =
         CoroutineScope(SupervisorJob() + dispatcher + CoroutineName("telegram-bot-supervisor"))
-    // [A6] Production default is Dispatchers.IO.limitedParallelism(1) for parity with
-    //      WatchRecordsTask. Long-polling is I/O-bound and the supervisor is single-threaded
-    //      by design. Constructor takes `dispatcher` for testability (StandardTestDispatcher).
+    // Production default is Dispatchers.IO.limitedParallelism(1) for parity with WatchRecordsTask.
+    // Long-polling is I/O-bound and the supervisor is single-threaded by design. Constructor takes
+    // `dispatcher` for testability (StandardTestDispatcher).
 
     @Volatile internal var supervisorJob: Job? = null
 
@@ -116,7 +115,7 @@ class TelegramBotSupervisor(
             withTimeoutOrNull(SHUTDOWN_JOIN_TIMEOUT.toMillis()) {
                 // runCatching swallows a CancellationException that may propagate from
                 // join() — otherwise withTimeoutOrNull would see the cancel and treat it
-                // as a timeout, causing a false "did not exit within Ns" log. [A7]
+                // as a timeout, causing a false "did not exit within Ns" log.
                 runCatching { supervisorJob?.join() }
                 true
             }
@@ -132,10 +131,10 @@ class TelegramBotSupervisor(
     }
 
     internal suspend fun stopAndJoin() {
-        // [AUTO-17] Test helper mirroring shutdown() shape. Does NOT null `supervisorJob` because
-        //           shutdown() doesn't either — both leave the cancelled Job reference in place
-        //           for diagnostic inspection. Tests that need to re-start the supervisor in the
-        //           same scope must reset supervisorJob manually before calling start().
+        // Test helper mirroring shutdown() shape. Does NOT null `supervisorJob` because shutdown()
+        // doesn't either — both leave the cancelled Job reference in place for diagnostic
+        // inspection. Tests that need to re-start the supervisor in the same scope must reset
+        // supervisorJob manually before calling start().
         supervisorJob?.cancel()
         supervisorJob?.join()
         scope.cancel()
@@ -144,23 +143,23 @@ class TelegramBotSupervisor(
     internal suspend fun runSupervised() {
         currentBackoff = INITIAL_BACKOFF
         while (currentCoroutineContext().isActive) {
-            val attemptStart = Instant.now(clock) // [A9] consistent with WatchRecordsTask
+            val attemptStart = Instant.now(clock)
             lastAttemptAt = attemptStart
-            lastPollingStartAt = null // [A5] clear stale stamp so health branch 2 won't match
-            //      on a previous (failed) attempt's polling start.
+            // Clear stale stamp so health branch 2 won't match on a previous (failed) attempt's
+            // polling start.
+            lastPollingStartAt = null
             try {
                 bot.getMe()
                 frigateAnalyzerBot.registerDefaultCommands()
                 frigateAnalyzerBot.registerOwnerCommandsIfPossible()
                 lastPollingStartAt = Instant.now(clock)
-                logger.info { "Telegram bot polling started" } // [A11] observable reconnect log
-                // [D2] Adapter returns Throwable? — null on clean exit, otherwise the cause from
-                //      structured-concurrency propagation.
+                logger.info { "Telegram bot polling started" }
+                // Adapter returns Throwable? — null on clean exit, otherwise the cause from
+                // structured-concurrency propagation.
                 val cause = runner.run { frigateAnalyzerBot.registerRoutes(this) }
-                // [AUTO-20] Clear lastPollingStartAt the instant runner.run exits. Otherwise the
-                //           tail delay(currentBackoff) window would let computeHealth read the
-                //           stale "live polling start" stamp and report UP for a poller that has
-                //           already stopped.
+                // Clear lastPollingStartAt the instant runner.run exits. Otherwise the tail
+                // delay(currentBackoff) window would let computeHealth read the stale "live
+                // polling start" stamp and report UP for a poller that has already stopped.
                 lastPollingStartAt = null
                 if (cause != null) {
                     throw cause
@@ -179,12 +178,10 @@ class TelegramBotSupervisor(
                 }
                 onAttemptEnded(success = false, attemptStart = attemptStart, failure = e)
             }
-            // [AUTO-19] Delay FIRST, then bump for next iteration. Preserves the documented
-            //           5s→10s→20s→40s→60s progression: very first failure waits INITIAL_BACKOFF
-            //           (5s); after a stable-fail reset (onAttemptEnded sets currentBackoff=INITIAL)
-            //           the next delay is also INITIAL — exactly the intended semantics.
-            //           The previous shape (bump inside catch, before delay) made the first wait
-            //           10s and the post-stable-reset wait 10s.
+            // Delay FIRST, then bump for next iteration. Preserves the documented
+            // 5s→10s→20s→40s→60s progression: very first failure waits INITIAL_BACKOFF (5s);
+            // after a stable-fail reset (onAttemptEnded sets currentBackoff=INITIAL) the next
+            // delay is also INITIAL.
             delay(currentBackoff.toMillis())
             currentBackoff = nextBackoff(currentBackoff)
         }
@@ -197,20 +194,20 @@ class TelegramBotSupervisor(
     ) {
         val duration = Duration.between(attemptStart, Instant.now(clock))
         if (success && duration >= STABLE_THRESHOLD) {
-            // [D3] Clean polling exit AFTER a stable run — counts as success.
+            // Clean polling exit AFTER a stable run — counts as success.
             consecutiveFailures = 0
             currentBackoff = INITIAL_BACKOFF
             lastStableAt = Instant.now(clock)
         } else if (success) {
-            // [D3] Clean return faster than STABLE_THRESHOLD — library likely swallowed an error
-            //      (revoked token, etc.). Treat as fast-fail so consecutiveFailures grows and
-            //      health eventually crosses HEALTH_STALENESS into DOWN.
+            // Clean return faster than STABLE_THRESHOLD — library likely swallowed an error
+            // (revoked token, etc.). Treat as fast-fail so consecutiveFailures grows and health
+            // eventually crosses HEALTH_STALENESS into DOWN.
             lastFailure = SilentPollingFailure("clean return after $duration")
             lastFailureAt = Instant.now(clock)
             consecutiveFailures++
         } else {
             lastFailure = failure
-            lastFailureAt = Instant.now(clock) // [AUTO-9 / A9] consistent with WatchRecordsTask
+            lastFailureAt = Instant.now(clock)
             if (duration >= STABLE_THRESHOLD) {
                 // Worked long enough to count as a stable run.
                 // lastStableAt = now (the moment of crash), not attemptStart: an attempt that
@@ -218,7 +215,7 @@ class TelegramBotSupervisor(
                 // is measured from "just now", not from "1 hour ago".
                 consecutiveFailures = 1
                 currentBackoff = INITIAL_BACKOFF
-                lastStableAt = Instant.now(clock) // [AUTO-9 / A9]
+                lastStableAt = Instant.now(clock)
             } else {
                 consecutiveFailures++
             }
@@ -236,11 +233,11 @@ class TelegramBotSupervisor(
             return builder.down().withDetail("reason", "supervisor not active").build()
         }
 
-        // [AUTO-1 / D1] BRANCH 2: live stable polling → UP (checked FIRST after liveness so cold
-        //               start AND recovery-with-sticky-consecutiveFailures correctly report UP).
-        //               Invariant `lastPollingStartAt > lastFailureAt` guards against a stale stamp
-        //               from a previously-crashed attempt (companion to [A5] which nulls the field
-        //               at iteration start AND [AUTO-20] which nulls it after runner.run exits).
+        // BRANCH 2: live stable polling → UP (checked FIRST after liveness so cold start AND
+        // recovery-with-sticky-consecutiveFailures correctly report UP). Invariant
+        // `lastPollingStartAt > lastFailureAt` guards against a stale stamp from a previously
+        // crashed attempt (companion to the `lastPollingStartAt = null` writes at iteration
+        // start and just after `runner.run` exits, both in `runSupervised`).
         val pollStart = lastPollingStartAt
         val failedAt = lastFailureAt
         if (pollStart != null &&
@@ -321,11 +318,10 @@ class TelegramBotSupervisor(
             }
 }
 
-// [AUTO-5 / D3] Marker exception written into `lastFailure` when the long-polling runner returns
-//               cleanly faster than STABLE_THRESHOLD. Distinguishable in health-details under
-//               `lastFailure: "SilentPollingFailure: clean return after PT30S"`, so an operator
-//               can tell a silent failure (revoked token, library swallowed error) from a real
-//               crash.
+// Marker exception written into `lastFailure` when the long-polling runner returns cleanly
+// faster than STABLE_THRESHOLD. Distinguishable in health-details under
+// `lastFailure: "SilentPollingFailure: clean return after PT30S"`, so an operator can tell a
+// silent failure (revoked token, library swallowed error) from a real crash.
 private class SilentPollingFailure(
     message: String,
 ) : RuntimeException(message)
