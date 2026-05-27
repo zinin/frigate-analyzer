@@ -10,6 +10,7 @@ import ru.zinin.frigate.analyzer.telegram.service.model.CancellableJob
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 private val logger = KotlinLogging.logger {}
 
@@ -30,19 +31,59 @@ class ActiveExportRegistry(
 ) {
     enum class State { ACTIVE, CANCELLING }
 
-    // Plain `class` (not `data class`): Entry holds `var`s (`cancellable`, `state`) whose values
-    // mutate concurrently. A data class's synthesized equals/hashCode over mutable state is a
-    // latent footgun — Entry is identified by `exportId` alone, and this registry already keys
-    // maps on the UUID rather than on Entry instances.
+    // Plain `class` (not `data class`): Entry holds an AtomicReference whose state mutates
+    // concurrently. data class equals/hashCode over an AtomicReference is a latent footgun —
+    // Entry is identified by `exportId` alone, and this registry already keys maps on the UUID
+    // rather than on Entry instances.
     class Entry(
         val exportId: UUID,
         val chatId: Long,
         val mode: ExportMode,
         val recordingId: UUID?,
         val job: Job,
-        @Volatile var cancellable: CancellableJob? = null,
-        @Volatile var state: State = State.ACTIVE,
-    )
+    ) {
+        /**
+         * Mutable snapshot of the entry's transient state. All writes MUST go through
+         * [updateState] / [getAndUpdateState]. Convenience getters [cancellable] / [state]
+         * each do a single atomic read. For multi-field reads where pair-consistency matters,
+         * use [snapshot] and work with the returned [EntryState] locally — this guarantees
+         * no reader observes a partial snapshot (e.g., the new `cancellable` paired with the
+         * old `state`), even under concurrent writers.
+         */
+        private val stateRef = AtomicReference(EntryState())
+
+        internal data class EntryState(
+            val cancellable: CancellableJob? = null,
+            val state: State = State.ACTIVE,
+        )
+
+        val cancellable: CancellableJob? get() = stateRef.get().cancellable
+        val state: State get() = stateRef.get().state
+
+        /**
+         * Atomic snapshot for multi-field reads. Use this (NOT the individual convenience
+         * getters [cancellable] / [state]) whenever the read needs pair-consistency between
+         * `cancellable` and `state` (e.g., "cancel only if state == CANCELLING && cancellable != null").
+         * Single-field reads should keep using the convenience getters.
+         */
+        internal fun snapshot(): EntryState = stateRef.get()
+
+        /**
+         * Atomic RMW returning the **post-update** snapshot. For transition-detection
+         * (e.g., observing "ACTIVE → CANCELLING" on the actual edge), use [getAndUpdateState] instead.
+         */
+        internal fun updateState(transform: (EntryState) -> EntryState): EntryState = stateRef.updateAndGet(transform)
+
+        /**
+         * Atomic RMW returning the **previous** snapshot. Use this when the caller needs to
+         * detect a transition (e.g., observing the actual `ACTIVE → CANCELLING` edge without a
+         * check-then-act race against a concurrent writer). Entry has up to two concurrent
+         * writers: `attachCancellable` (export-coroutine path) and `markCancelling` (cancel-coroutine
+         * path); transition-detection MUST use the pre-update snapshot returned here rather than
+         * a separate `entry.state` read.
+         */
+        internal fun getAndUpdateState(transform: (EntryState) -> EntryState): EntryState = stateRef.getAndUpdate(transform)
+    }
 
     sealed class StartResult {
         data class Success(
@@ -105,29 +146,18 @@ class ActiveExportRegistry(
      * Publishes the cancel handle. If the entry is already `CANCELLING` at the time of publication
      * (because a cancel click arrived between `submitWithRetry` and this call), fire-and-forget the
      * cancel so the vision server is still told to stop.
+     *
+     * Atomicity: a single [updateState] writes the cancellable; the returned snapshot is read
+     * back for the CANCELLING check. No JMM gymnastics — happens-before is established by
+     * AtomicReference.
      */
     fun attachCancellable(
         exportId: UUID,
         cancellable: CancellableJob,
     ) {
         val entry = byExportId[exportId] ?: return
-        // Local invariant: write cancellable BEFORE reading state (closes the
-        // submitWithRetry → attachCancellable race with markCancelling).
-        // If the check came first and found ACTIVE, a concurrent markCancelling + CancelHandler
-        // read of entry.cancellable could observe null because the write wasn't flushed yet.
-        // With cancellable written first, the reader either sees the new cancellable (via @Volatile
-        // happens-before) or the cancellable arrived too late and this method's state check
-        // itself triggers the fire-and-forget cancel on line below.
-        //
-        // JMM note: @Volatile writes/reads on DIFFERENT fields don't strictly establish
-        // happens-before across threads without a shared lock or a common volatile. On
-        // x86/ARM TSO (our deployment target) this pattern works in practice, and the
-        // fallback paths (CancelExportHandler re-reads marked.cancellable and this check
-        // itself fires the cancel when state == CANCELLING) cover the edge case if a
-        // weaker-memory CPU is ever introduced. Taking synchronized(entry) here would add
-        // contention to the hot submit path for a non-observable improvement.
-        entry.cancellable = cancellable
-        if (entry.state == State.CANCELLING) {
+        val updated = entry.updateState { it.copy(cancellable = cancellable) }
+        if (updated.state == State.CANCELLING) {
             exportScope.launch {
                 // Don't use runCatching — it catches Throwable including CancellationException,
                 // which would break graceful shutdown propagation on exportScope cancellation.
@@ -149,19 +179,24 @@ class ActiveExportRegistry(
     /**
      * Atomic transition `ACTIVE → CANCELLING` under `computeIfPresent` + `synchronized(entry)`.
      * Closes the TOCTOU race vs. `release()` — if a concurrent release removes the entry from the
-     * map, `computeIfPresent` sees null and we return null cleanly.
+     * map, `computeIfPresent` sees null and we return null cleanly. `synchronized(entry)` is
+     * retained for the lock-ordering invariant with `release` (see telegram-export.md §lock-ordering),
+     * NOT for state mutation — the state mutation itself is atomic via [Entry.getAndUpdateState].
      *
-     * @return the entry snapshot after the transition on success, `null` if the entry does not
-     *   exist (released) or is already in `CANCELLING`.
+     * @return the [Entry] that just transitioned to `CANCELLING` (the live registry object, NOT
+     *   a copy of its EntryState — callers reading `entry.state` / `entry.cancellable` on it
+     *   observe the post-transition snapshot via the convenience getters), or `null` if the entry
+     *   does not exist (released) or was already in `CANCELLING`.
      */
     fun markCancelling(exportId: UUID): Entry? {
         var snapshot: Entry? = null
         byExportId.computeIfPresent(exportId) { _, entry ->
             synchronized(entry) {
-                if (entry.state != State.CANCELLING) {
-                    entry.state = State.CANCELLING
-                    snapshot = entry
-                }
+                val before =
+                    entry.getAndUpdateState {
+                        if (it.state == State.CANCELLING) it else it.copy(state = State.CANCELLING)
+                    }
+                if (before.state != State.CANCELLING) snapshot = entry
             }
             entry
         }
