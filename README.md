@@ -9,9 +9,9 @@ graph TD
     A["Frigate NVR Recordings (.mp4)"] --> B["File Watcher<br/>Detects new videos"]
     B --> C
 
-    subgraph C ["Detection Pipeline (via Vision API Server — multi-instance, priority LB)"]
+    subgraph C ["Detection Pipeline (via Vision API Server — multi-instance, priority load balancing)"]
         direction LR
-        P["<b>Producers (6x)</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect • Filter • Re-check"]
+        P["<b>Producers (6x)</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto-scaled)</b><br/>Detect • Filter • Re-check"]
     end
 
     C --> D["Save to PostgreSQL"]
