@@ -13,6 +13,7 @@ dependencies {
     implementation(project(":frigate-analyzer-ai-description"))
 
     implementation(libs.spring.boot.starter)
+    implementation(libs.spring.boot.starter.actuator)
     implementation(libs.spring.boot.starter.validation)
     implementation(libs.spring.boot.starter.data.r2dbc)
     implementation(libs.ktgbotapi)
