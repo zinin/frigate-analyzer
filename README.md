@@ -14,9 +14,9 @@ graph TD
         P["<b>Producers (6x)</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto)</b><br/>Detect • Filter • Re-check"]
     end
 
-    C --> D["Visualize (local) + Save to PostgreSQL"]
+    C --> D["Save to PostgreSQL"]
     D --> E["Object Tracker<br/>(cross-recording IoU)"]
-    E --> F["Telegram bot"]
+    E -- "annotated top frames" --> F["Telegram bot"]
 
     D -. "polled" .-> SL["Signal-loss Monitor"]
     SL -.-> F
