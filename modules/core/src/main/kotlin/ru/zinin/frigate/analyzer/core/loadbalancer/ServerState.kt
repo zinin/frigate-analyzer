@@ -19,7 +19,9 @@ class ServerState(
      * [updateHealth] or [getAndUpdateHealth]. Reads happen via [snapshot] or convenience accessors
      * [alive] / [lastCheckTimestamp] — each single-field read is safe; for
      * combined read of multiple fields use [snapshot] and work with the
-     * returned [HealthSnapshot] locally.
+     * returned [HealthSnapshot] locally. This guarantees that no reader can
+     * observe a partial snapshot (e.g., the new `alive` paired with the old
+     * `lastCheckTimestamp`), even under concurrent writers.
      */
     private val healthRef = AtomicReference(HealthSnapshot())
 
@@ -33,14 +35,22 @@ class ServerState(
 
     fun snapshot(): HealthSnapshot = healthRef.get()
 
+    /**
+     * Atomic RMW returning the **post-update** snapshot. For transition-detection
+     * (e.g., logging "alive→dead" on the actual edge), use [getAndUpdateHealth] instead.
+     */
     fun updateHealth(transform: (HealthSnapshot) -> HealthSnapshot): HealthSnapshot = healthRef.updateAndGet(transform)
 
     /**
      * Atomic RMW returning the **previous** snapshot. Use this (not [updateHealth]) when the
      * caller needs to detect a transition — e.g., "was alive, now dead" — without a check-then-act
-     * race against concurrent writers. ServerState has up to three concurrent writers (health-check
-     * success callback, error callback, `markServerDead`), so any transition-detection logic MUST
-     * use the pre-update snapshot returned here rather than a separate `server.alive` read.
+     * race against concurrent writers. ServerState has up to three potential concurrent writers
+     * (health-check success callback, error callback, and `ServerHealthMonitor.markServerDead`),
+     * so any transition-detection logic MUST use the pre-update snapshot returned here rather
+     * than a separate `server.alive` read. Note: at the time of this refactor only two writers
+     * are reachable — the only `markServerDead` call site (`DetectService.kt:113`) is commented
+     * out. The contract is written for the active design so it remains correct when that call
+     * site is re-enabled.
      */
     fun getAndUpdateHealth(transform: (HealthSnapshot) -> HealthSnapshot): HealthSnapshot = healthRef.getAndUpdate(transform)
 
@@ -66,7 +76,10 @@ class ServerState(
 
     override fun hashCode(): Int = id.hashCode()
 
-    override fun toString(): String = "ServerState(id=$id, alive=$alive, lastCheckTimestamp=$lastCheckTimestamp)"
+    override fun toString(): String {
+        val s = snapshot()
+        return "ServerState(id=$id, alive=${s.alive}, lastCheckTimestamp=${s.lastCheckTimestamp})"
+    }
 }
 
 fun ServerState.getCounter(type: RequestType): AtomicInteger =
