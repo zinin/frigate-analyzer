@@ -169,12 +169,76 @@ class TelegramBotSupervisor(
 
     fun computeHealth(now: Instant): Health {
         val builder = baseBuilder()
+
+        // BRANCH 1: supervisor not active → DOWN
         val job = supervisorJob
         if (job == null || !job.isActive) {
             return builder.down().withDetail("reason", "supervisor not active").build()
         }
-        // Remaining branches filled in Task 6.
-        return builder.outOfService().withDetail("reason", "not implemented yet").build()
+
+        // [AUTO-1 / D1] BRANCH 2: live stable polling → UP (checked FIRST after liveness so cold
+        //               start AND recovery-with-sticky-consecutiveFailures correctly report UP).
+        //               Invariant `lastPollingStartAt > lastFailureAt` guards against a stale stamp
+        //               from a previously-crashed attempt (companion to [A5] which nulls the field
+        //               at iteration start AND [AUTO-20] which nulls it after runner.run exits).
+        val pollStart = lastPollingStartAt
+        val failedAt = lastFailureAt
+        if (pollStart != null &&
+            (failedAt == null || pollStart.isAfter(failedAt)) &&
+            Duration.between(pollStart, now) >= STABLE_THRESHOLD
+        ) {
+            return builder.up().withDetail("reason", "healthy").build()
+        }
+
+        val stable = lastStableAt
+        val started = startupAt
+        val sinceStartup = if (started != null) Duration.between(started, now) else Duration.ZERO
+
+        // BRANCH 3: never stable, threshold OR grace expired → DOWN
+        if (stable == null &&
+            (consecutiveFailures >= STARTUP_FAILURE_THRESHOLD || sinceStartup > STARTUP_GRACE)
+        ) {
+            return builder
+                .down()
+                .withDetail(
+                    "reason",
+                    "startup failed: $consecutiveFailures attempts / $sinceStartup",
+                ).build()
+        }
+
+        // BRANCH 4: never stable, still in grace → OUT_OF_SERVICE
+        if (stable == null) {
+            return builder
+                .outOfService()
+                .withDetail("reason", "connecting... attempts=$consecutiveFailures")
+                .build()
+        }
+
+        // BRANCH 5: in backoff with stale stable point → DOWN
+        if (consecutiveFailures > 0 && Duration.between(stable, now) > HEALTH_STALENESS) {
+            return builder
+                .down()
+                .withDetail(
+                    "reason",
+                    "stale: failing for ${Duration.between(stable, now)} since lastStable=$stable",
+                ).build()
+        }
+
+        // BRANCH 6: transient backoff (recent stable) → OUT_OF_SERVICE
+        if (consecutiveFailures > 0) {
+            return builder
+                .outOfService()
+                .withDetail(
+                    "reason",
+                    "in backoff (failures=$consecutiveFailures, backoff=${currentBackoff.toMillis()}ms)",
+                ).build()
+        }
+
+        // BRANCH 7: just (re)connected, polling < STABLE_THRESHOLD → OUT_OF_SERVICE
+        return builder
+            .outOfService()
+            .withDetail("reason", "connecting... (just (re)started, <STABLE_THRESHOLD)")
+            .build()
     }
 
     private fun baseBuilder(): Health.Builder =

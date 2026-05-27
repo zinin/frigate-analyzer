@@ -19,10 +19,12 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.boot.health.contributor.Status
 import ru.zinin.frigate.analyzer.telegram.bot.FrigateAnalyzerBot
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 
@@ -73,6 +75,17 @@ class TelegramBotSupervisorTest {
         clock = tickingClock(scheduler),
         dispatcher = StandardTestDispatcher(scheduler),
     )
+
+    /**
+     * Returns a supervisor with a dummy alive supervisorJob so computeHealth doesn't return
+     * the branch-1 DOWN. Caller can then set internal state fields and assert on computeHealth.
+     */
+    private fun supervisorWithLiveJob(): TelegramBotSupervisor {
+        val sup = newSupervisor()
+        val dummyScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
+        sup.supervisorJob = dummyScope.launch { awaitCancellation() }
+        return sup
+    }
 
     // ----- computeHealth branches -----
 
@@ -225,6 +238,119 @@ class TelegramBotSupervisorTest {
             assertNull(supervisor.lastFailure)
             assertNull(supervisor.lastFailureAt)
         }
+
+    @Test
+    fun `computeHealth — live stable polling yields UP`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minus(Duration.ofHours(1))
+        sup.lastStableAt = now.minusSeconds(120)
+        sup.lastPollingStartAt = now.minusSeconds(90) // > STABLE_THRESHOLD (60s)
+        sup.consecutiveFailures = 0L
+        val h = sup.computeHealth(now)
+        assertEquals(Status.UP, h.status)
+        assertEquals("healthy", h.details["reason"])
+        sup.supervisorJob?.cancel()
+    }
+
+    // [AUTO-11] Core motivation of [D1]: after recovery with sticky consecutiveFailures, a fresh
+    //           stable polling must still report UP without waiting for onAttemptEnded to fire.
+    @Test
+    fun `computeHealth — live stable polling with sticky consecutiveFailures still yields UP`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minus(Duration.ofHours(1))
+        sup.lastStableAt = now.minus(Duration.ofMinutes(2)) // older stable; still within freshness
+        sup.lastPollingStartAt = now.minusSeconds(70) // > STABLE_THRESHOLD
+        sup.lastFailureAt = now.minus(Duration.ofMinutes(3)) // older than pollStart → invariant ok
+        sup.consecutiveFailures = 4L // sticky from before recovery
+        val h = sup.computeHealth(now)
+        assertEquals(Status.UP, h.status)
+        sup.supervisorJob?.cancel()
+    }
+
+    // [AUTO-10] Invariant `lastPollingStartAt > lastFailureAt` must reject UP if a newer failure
+    //           was recorded after the polling stamp (i.e. attempt already crashed but iteration
+    //           hasn't entered the new loop body yet — stale-stamp window).
+    @Test
+    fun `computeHealth — stale lastPollingStartAt after newer failure does not yield UP`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minus(Duration.ofHours(1))
+        sup.lastStableAt = now.minusSeconds(120)
+        sup.lastPollingStartAt = now.minusSeconds(90) // > STABLE_THRESHOLD, but...
+        sup.lastFailureAt = now.minusSeconds(30) // ...newer failure invalidates UP
+        sup.consecutiveFailures = 1L
+        val h = sup.computeHealth(now)
+        assertTrue(h.status != Status.UP, "expected fall-through to backoff branches, was UP")
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `computeHealth — startup failure threshold reached → DOWN`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minusSeconds(30) // inside grace
+        sup.consecutiveFailures = 5L // == STARTUP_FAILURE_THRESHOLD
+        val h = sup.computeHealth(now)
+        assertEquals(Status.DOWN, h.status)
+        assertTrue((h.details["reason"] as String).startsWith("startup failed"))
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `computeHealth — startup grace expired → DOWN`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minus(Duration.ofMinutes(3)) // past STARTUP_GRACE (2m)
+        sup.consecutiveFailures = 1L
+        val h = sup.computeHealth(now)
+        assertEquals(Status.DOWN, h.status)
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `computeHealth — still in grace, never stable → OUT_OF_SERVICE`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minusSeconds(30)
+        sup.consecutiveFailures = 2L // < STARTUP_FAILURE_THRESHOLD
+        val h = sup.computeHealth(now)
+        assertEquals(Status.OUT_OF_SERVICE, h.status)
+        assertTrue((h.details["reason"] as String).startsWith("connecting"))
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `computeHealth — failing past HEALTH_STALENESS → DOWN`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minus(Duration.ofHours(1))
+        sup.lastStableAt = now.minus(Duration.ofMinutes(10)) // > HEALTH_STALENESS (5m)
+        sup.consecutiveFailures = 3L
+        val h = sup.computeHealth(now)
+        assertEquals(Status.DOWN, h.status)
+        assertTrue((h.details["reason"] as String).startsWith("stale"))
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `computeHealth — failing but recent stable → OUT_OF_SERVICE`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minus(Duration.ofHours(1))
+        sup.lastStableAt = now.minusSeconds(30) // < HEALTH_STALENESS
+        sup.consecutiveFailures = 2L
+        val h = sup.computeHealth(now)
+        assertEquals(Status.OUT_OF_SERVICE, h.status)
+        assertTrue((h.details["reason"] as String).startsWith("in backoff"))
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `computeHealth — just (re)connected, polling under STABLE_THRESHOLD → OUT_OF_SERVICE`() {
+        val sup = supervisorWithLiveJob()
+        sup.startupAt = now.minus(Duration.ofHours(1))
+        sup.lastStableAt = now.minusSeconds(30)
+        sup.lastPollingStartAt = now.minusSeconds(30) // < STABLE_THRESHOLD
+        sup.consecutiveFailures = 0L
+        val h = sup.computeHealth(now)
+        assertEquals(Status.OUT_OF_SERVICE, h.status)
+        assertTrue((h.details["reason"] as String).startsWith("connecting"))
+        sup.supervisorJob?.cancel()
+    }
 
     private companion object {
         const val INITIAL_BACKOFF_MS = 5_000L
