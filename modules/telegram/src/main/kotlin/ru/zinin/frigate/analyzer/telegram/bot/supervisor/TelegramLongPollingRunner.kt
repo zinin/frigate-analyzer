@@ -18,10 +18,13 @@ fun interface TelegramLongPollingRunner {
 class KtgBotApiLongPollingRunner(
     private val bot: TelegramBot,
 ) : TelegramLongPollingRunner {
-    // [AUTO-16] Use NAMED argument `scope = this`. Per Context7-verified ktgbotapi 33.1.0
-    //           signature, the first positional parameter is `timeoutSeconds: Int = 30`, so a
-    //           positional `this` (CoroutineScope) would land on `timeoutSeconds` and fail to
-    //           compile with a type mismatch.
+    // [AUTO-16] Use NAMED argument `scope = this` for explicit intent and forward-compatibility.
+    //           Per ktgbotapi 33.1.0 (verified by javap on the JVM jar), `scope: CoroutineScope`
+    //           IS the first positional parameter, so `bot.buildBehaviourWithLongPolling(this) { … }`
+    //           would compile cleanly today. We still pass the scope by name because the call has 8
+    //           other parameters (defaultExceptionsHandler, timeoutSeconds, autoDisableWebhooks, …)
+    //           and the library has reordered these in past versions — naming the arg prevents a
+    //           silent semantic shift if a future ktgbotapi release reorders the head of the list.
     // [AUTO-18] Use explicit try/catch instead of `runCatching` so CancellationException
     //           propagates per Kotlin structured-concurrency convention (runCatching catches
     //           all Throwable, including CancellationException, then we'd have to re-throw it

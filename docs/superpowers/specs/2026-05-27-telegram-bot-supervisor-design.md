@@ -134,10 +134,13 @@ fun interface TelegramLongPollingRunner {
 class KtgBotApiLongPollingRunner(
     private val bot: TelegramBot,
 ) : TelegramLongPollingRunner {
-    // [AUTO-16] Use NAMED argument `scope = this`. Per Context7-verified ktgbotapi 33.1.0
-    //           signature, the first positional parameter is `timeoutSeconds: Int = 30`, so a
-    //           positional `this` (CoroutineScope) would land on `timeoutSeconds` and fail to
-    //           compile with a type mismatch.
+    // [AUTO-16] Use NAMED argument `scope = this` for explicit intent and forward-compatibility.
+    //           Per ktgbotapi 33.1.0 (verified by javap on the JVM jar), `scope: CoroutineScope`
+    //           IS the first positional parameter, so `bot.buildBehaviourWithLongPolling(this) { … }`
+    //           would compile cleanly today. We still pass the scope by name because the call has 8
+    //           other parameters (defaultExceptionsHandler, timeoutSeconds, autoDisableWebhooks, …)
+    //           and the library has reordered these in past versions — naming the arg prevents a
+    //           silent semantic shift if a future ktgbotapi release reorders the head of the list.
     // [AUTO-18] Use explicit try/catch instead of `runCatching` so CancellationException
     //           propagates per Kotlin structured-concurrency convention (runCatching catches
     //           all Throwable, including CancellationException, then we'd have to re-throw it
@@ -164,21 +167,24 @@ any internal failure through the enclosing scope on `join()` — our `try/catch`
 the returned cause. If the library swallows an error internally and returns cleanly, `run()`
 returns `null`.
 
-**ktgbotapi 33.1.0 signature (Context7-verified):**
+**ktgbotapi 33.1.0 signature (verified by `javap -p` on the JVM jar):**
 
 ```kotlin
 fun TelegramBot.buildBehaviourWithLongPolling(
+    scope: CoroutineScope = defaultCoroutineScopeProvider(),
+    defaultExceptionsHandler: ExceptionHandler<Unit>? = null,
     timeoutSeconds: Int = 30,
     autoDisableWebhooks: Boolean = true,
-    mediaGroupsDebounceTimeMillis: Long = 1000L,
-    scope: CoroutineScope = ...,
+    autoSkipTimeoutExceptions: Boolean = true,
+    mediaGroupsDebounceTimeMillis: Long? = 1000L,
     ...,
     block: suspend BehaviourContext.() -> Unit
 ): Job
 ```
 
-The named-argument call is therefore mandatory — `buildBehaviourWithLongPolling(this) { … }`
-would not compile (positional `this: CoroutineScope` → `timeoutSeconds: Int`).
+The named-argument call is not strictly required today (positional `this: CoroutineScope`
+matches `scope` as the first parameter), but we use it for explicit intent and
+forward-compatibility against future library reorderings.
 
 ### 3.4 TelegramBotSupervisorHealthIndicator — new component
 
