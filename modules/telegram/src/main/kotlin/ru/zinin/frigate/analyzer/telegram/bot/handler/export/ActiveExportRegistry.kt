@@ -61,21 +61,6 @@ class ActiveExportRegistry(
         val state: State get() = stateRef.get().state
 
         /**
-         * Atomic snapshot for multi-field reads. Use this (NOT the individual convenience
-         * getters [cancellable] / [state]) whenever the read needs pair-consistency between
-         * `cancellable` and `state` (e.g., "cancel only if state == CANCELLING && cancellable != null").
-         * Single-field reads should keep using the convenience getters.
-         *
-         * Note: currently no production caller needs pair-consistency — every existing site
-         * reads either `cancellable` or `state` alone, so the convenience getters cover today's
-         * call sites. This API is provided proactively for future readers that combine
-         * `cancellable` and `state` in one decision; mirrors the snapshot accessor pattern
-         * established in [ServerState] / [TelegramBotSupervisor.SupervisorState] /
-         * [WatchRecordsTask.WatchTaskState].
-         */
-        internal fun snapshot(): EntryState = stateRef.get()
-
-        /**
          * Atomic RMW returning the **post-update** snapshot. For transition-detection
          * (e.g., observing "ACTIVE → CANCELLING" on the actual edge), use [getAndUpdateState] instead.
          */

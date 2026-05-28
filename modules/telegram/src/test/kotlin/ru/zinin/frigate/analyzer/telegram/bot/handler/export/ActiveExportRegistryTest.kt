@@ -304,6 +304,94 @@ class ActiveExportRegistryTest {
         }
 
     @Test
+    fun `concurrent attachCancellable vs markCancelling — final state CANCELLING, cancel never lost`() =
+        runBlocking {
+            // Races the two writers on Entry.stateRef:
+            //   - attachCancellable (export-coroutine path) writes cancellable, post-CAS launches
+            //     cancel if state==CANCELLING.
+            //   - markCancelling (cancel-coroutine path) writes state→CANCELLING, returns Entry
+            //     which CancelExportHandler then uses to call entry.cancellable?.cancel().
+            //
+            // Invariants verified per iteration:
+            //   (1) Final state == CANCELLING — markCancelling's write must always commit.
+            //   (2) Final cancellable === the one passed to attachCancellable — attach's write
+            //       must always commit (post-refactor: a single AtomicReference update).
+            //   (3) cancel() invoked ≥ 1 time — the cancel signal must never be lost.
+            //   (4) cancel() invoked ≤ 2 times — in the interleave where attach's post-CAS
+            //       read AND CancelExportHandler-side `marked.cancellable?.cancel()` both
+            //       observe a CANCELLING-with-cancellable snapshot, both paths legitimately
+            //       launch cancel. The vision-server cancelJob is idempotent per design §9,
+            //       so 2 cancels are harmless; 3+ would indicate a writer-side bug.
+            //
+            // Repeats to expose both orderings of the underlying CAS race on stateRef. A single
+            // run on a quiet machine almost always lands on the same interleave; 50 is enough
+            // to hit both in practice without inflating CI time.
+            repeat(50) { iter ->
+                val exportId = UUID.randomUUID()
+                registry.tryStartQuickExport(
+                    exportId,
+                    10_000L + iter,
+                    ExportMode.ANNOTATED,
+                    UUID.randomUUID(),
+                    newJob(),
+                )
+                val cancelCount = AtomicInteger(0)
+                val cancellable = CancellableJob { cancelCount.incrementAndGet() }
+                val barrier = java.util.concurrent.CyclicBarrier(2)
+
+                val threadA =
+                    Thread {
+                        barrier.await()
+                        registry.attachCancellable(exportId, cancellable)
+                    }
+                val threadB =
+                    Thread {
+                        barrier.await()
+                        // Mirror CancelExportHandler's flow: markCancelling, then if the entry was
+                        // returned (actual transition), cancel the published cancellable.
+                        val marked = registry.markCancelling(exportId)
+                        marked?.cancellable?.let { ec ->
+                            runBlocking { ec.cancel() }
+                        }
+                    }
+                threadA.start()
+                threadB.start()
+                threadA.join()
+                threadB.join()
+
+                // Wait for any fire-and-forget cancel scheduled by attachCancellable on
+                // exportScope (Dispatchers.IO). Bound at 2s so a writer-side bug can't hang CI;
+                // typical landing is < 50ms.
+                val deadlineNs = System.nanoTime() + 2_000_000_000L
+                while (System.nanoTime() < deadlineNs && cancelCount.get() < 1) {
+                    Thread.sleep(10)
+                }
+                // Small grace after the first cancel so a potential second (legitimate
+                // double-cancel in the overlapping-write interleave) can land before assert.
+                Thread.sleep(50)
+
+                val entry = registry.get(exportId)!!
+                assertEquals(
+                    ActiveExportRegistry.State.CANCELLING,
+                    entry.state,
+                    "iter=$iter: final state must be CANCELLING",
+                )
+                assertSame(
+                    cancellable,
+                    entry.cancellable,
+                    "iter=$iter: final cancellable must be the one attached",
+                )
+                val count = cancelCount.get()
+                assertTrue(
+                    count in 1..2,
+                    "iter=$iter: cancel must be called 1 or 2 times (0=lost signal, 3+=bug); got $count",
+                )
+
+                registry.release(exportId)
+            }
+        }
+
+    @Test
     fun `start-vs-release race — tryStart after release returns Success, not a false Duplicate`() {
         // Guards iter-3 codex BUG-1: `release()` removes from byExportId BEFORE taking
         // `synchronized(entry)` to avoid reverse-order deadlock, but that leaves a window where
