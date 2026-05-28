@@ -26,10 +26,13 @@ import ru.zinin.frigate.analyzer.telegram.bot.FrigateAnalyzerBot
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicReference
 
 private val logger = KotlinLogging.logger {}
 
-private val INITIAL_BACKOFF: Duration = Duration.ofSeconds(5)
+// Visibility is `internal` (not file-private) so tests in this module can reference the
+// same value via import rather than maintaining a hand-mirrored duplicate.
+internal val INITIAL_BACKOFF: Duration = Duration.ofSeconds(5)
 private val MAX_BACKOFF: Duration = Duration.ofSeconds(60)
 private val STABLE_THRESHOLD: Duration = Duration.ofSeconds(60)
 private val HEALTH_STALENESS: Duration = Duration.ofMinutes(5)
@@ -66,21 +69,40 @@ class TelegramBotSupervisor(
 
     @Volatile internal var supervisorJob: Job? = null
 
-    @Volatile internal var startupAt: Instant? = null
+    internal data class SupervisorState(
+        val startupAt: Instant? = null,
+        val lastAttemptAt: Instant? = null,
+        val lastPollingStartAt: Instant? = null,
+        val lastStableAt: Instant? = null,
+        val lastFailure: Throwable? = null,
+        val lastFailureAt: Instant? = null,
+        val consecutiveFailures: Long = 0,
+        val currentBackoff: Duration = INITIAL_BACKOFF,
+    )
 
-    @Volatile internal var lastAttemptAt: Instant? = null
+    /**
+     * Single source of truth for runtime metrics. ALL writes MUST go through
+     * [AtomicReference.updateAndGet] / [AtomicReference.getAndUpdate] on [state]; direct
+     * `state.set(...)` is reserved for test fixtures via [stateForTesting]. Reader code MUST
+     * do exactly one `state.get()` at the top of any method that touches more than one field.
+     * This guarantees that no reader observes a partial snapshot — e.g., a new
+     * `consecutiveFailures` paired with the old `currentBackoff` — even under concurrent writers.
+     */
+    private val state = AtomicReference(SupervisorState())
 
-    @Volatile internal var lastPollingStartAt: Instant? = null
-
-    @Volatile internal var lastStableAt: Instant? = null
-
-    @Volatile internal var lastFailure: Throwable? = null
-
-    @Volatile internal var lastFailureAt: Instant? = null
-
-    @Volatile internal var consecutiveFailures: Long = 0
-
-    @Volatile internal var currentBackoff: Duration = INITIAL_BACKOFF
+    /**
+     * Test-fixture access for the supervisor's runtime state. **DO NOT USE FROM
+     * PRODUCTION CODE.** Direct `state.set(...)` bypasses the CAS discipline maintained
+     * by [AtomicReference.updateAndGet] / [AtomicReference.getAndUpdate] — production writers
+     * MUST go through one of those two APIs. Visibility is `internal` to confine misuse to
+     * the test source set within this module; review discipline enforces the rule (no
+     * runtime check).
+     */
+    internal var stateForTesting: SupervisorState
+        get() = state.get()
+        set(value) {
+            state.set(value)
+        }
 
     /**
      * Launches the supervised polling loop.
@@ -98,7 +120,10 @@ class TelegramBotSupervisor(
             return
         }
         logger.info { "Starting Telegram bot supervisor..." }
-        startupAt = Instant.now(clock)
+        // Hoist clock read out of the CAS lambda; @PostConstruct is single-threaded for the Spring
+        // use case but the pattern stays consistent with the rest of the file.
+        val now = Instant.now(clock)
+        state.updateAndGet { it.copy(startupAt = now) }
         supervisorJob = scope.launch { runSupervised() }
     }
 
@@ -141,18 +166,17 @@ class TelegramBotSupervisor(
     }
 
     internal suspend fun runSupervised() {
-        currentBackoff = INITIAL_BACKOFF
+        state.updateAndGet { it.copy(currentBackoff = INITIAL_BACKOFF) }
         while (currentCoroutineContext().isActive) {
             val attemptStart = Instant.now(clock)
-            lastAttemptAt = attemptStart
-            // Clear stale stamp so health branch 2 won't match on a previous (failed) attempt's
-            // polling start.
-            lastPollingStartAt = null
+            // Stamp lastAttemptAt and clear stale lastPollingStartAt atomically in one snapshot.
+            state.updateAndGet { it.copy(lastAttemptAt = attemptStart, lastPollingStartAt = null) }
             try {
                 bot.getMe()
                 frigateAnalyzerBot.registerDefaultCommands()
                 frigateAnalyzerBot.registerOwnerCommandsIfPossible()
-                lastPollingStartAt = Instant.now(clock)
+                val pollStart = Instant.now(clock)
+                state.updateAndGet { it.copy(lastPollingStartAt = pollStart) }
                 logger.info { "Telegram bot polling started" }
                 // Adapter returns Throwable? — null on clean exit, otherwise the cause from
                 // structured-concurrency propagation.
@@ -160,7 +184,7 @@ class TelegramBotSupervisor(
                 // Clear lastPollingStartAt the instant runner.run exits. Otherwise the tail
                 // delay(currentBackoff) window would let computeHealth read the stale "live
                 // polling start" stamp and report UP for a poller that has already stopped.
-                lastPollingStartAt = null
+                state.updateAndGet { it.copy(lastPollingStartAt = null) }
                 if (cause != null) {
                     throw cause
                 }
@@ -172,52 +196,83 @@ class TelegramBotSupervisor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // INTENTIONAL: keep a separate state.get() here so the log message reports the
+                // pre-onAttemptEnded backoff value (matches pre-refactor log content). The tail
+                // getAndUpdate below uses its own pre-bump snapshot for the actual delay; this
+                // log read may diverge from the eventual delay if onAttemptEnded resets the
+                // backoff to INITIAL on the "failure && duration >= STABLE_THRESHOLD" branch.
+                // That's a pre-existing observable property — out of scope for this refactor.
+                val preFailureBackoff = state.get().currentBackoff
                 logger.error(e) {
                     "Telegram bot bootstrap/polling failed; " +
-                        "next backoff=${currentBackoff.toMillis()}ms"
+                        "next backoff=${preFailureBackoff.toMillis()}ms"
                 }
                 onAttemptEnded(success = false, attemptStart = attemptStart, failure = e)
             }
-            // Delay FIRST, then bump for next iteration. Preserves the documented
-            // 5s→10s→20s→40s→60s progression: very first failure waits INITIAL_BACKOFF (5s);
-            // after a stable-fail reset (onAttemptEnded sets currentBackoff=INITIAL) the next
-            // delay is also INITIAL.
-            delay(currentBackoff.toMillis())
-            currentBackoff = nextBackoff(currentBackoff)
+            // CRITICAL-2 (per review iter-1 decision option A): single atomic RMW for the tail
+            // bump. getAndUpdate returns the PRE-bump snapshot, whose currentBackoff drives the
+            // upcoming delay; the bumped value persists for the next iteration. Replaces the
+            // prior 3-op pattern (state.get() for delay + state.updateAndGet for bump + logger's
+            // own state.get()).
+            val effectiveBackoff =
+                state
+                    .getAndUpdate { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                    .currentBackoff
+            delay(effectiveBackoff.toMillis())
         }
     }
 
-    private fun onAttemptEnded(
+    internal fun onAttemptEnded(
         success: Boolean,
         attemptStart: Instant,
         failure: Throwable?,
     ) {
-        val duration = Duration.between(attemptStart, Instant.now(clock))
+        val now = Instant.now(clock)
+        val duration = Duration.between(attemptStart, now)
         if (success && duration >= STABLE_THRESHOLD) {
-            // Clean polling exit AFTER a stable run — counts as success.
-            consecutiveFailures = 0
-            currentBackoff = INITIAL_BACKOFF
-            lastStableAt = Instant.now(clock)
+            // Clean polling exit AFTER a stable run — counts as success. Sticky semantics:
+            // lastFailure / lastFailureAt are NOT cleared here (preserves the most-recent
+            // failure for diagnostics across recovery cycles — see review iter-1 CRITICAL-4).
+            state.updateAndGet {
+                it.copy(
+                    consecutiveFailures = 0,
+                    currentBackoff = INITIAL_BACKOFF,
+                    lastStableAt = now,
+                )
+            }
         } else if (success) {
             // Clean return faster than STABLE_THRESHOLD — library likely swallowed an error
             // (revoked token, etc.). Treat as fast-fail so consecutiveFailures grows and health
             // eventually crosses HEALTH_STALENESS into DOWN.
-            lastFailure = SilentPollingFailure("clean return after $duration")
-            lastFailureAt = Instant.now(clock)
-            consecutiveFailures++
+            state.updateAndGet {
+                it.copy(
+                    lastFailure = SilentPollingFailure("clean return after $duration"),
+                    lastFailureAt = now,
+                    consecutiveFailures = it.consecutiveFailures + 1,
+                )
+            }
         } else {
-            lastFailure = failure
-            lastFailureAt = Instant.now(clock)
             if (duration >= STABLE_THRESHOLD) {
-                // Worked long enough to count as a stable run.
-                // lastStableAt = now (the moment of crash), not attemptStart: an attempt that
-                // ran for an hour should leave a fresh stable timestamp so HEALTH_STALENESS
-                // is measured from "just now", not from "1 hour ago".
-                consecutiveFailures = 1
-                currentBackoff = INITIAL_BACKOFF
-                lastStableAt = Instant.now(clock)
+                // Crash after a stable run — reset counters; lastStableAt = now (the moment of
+                // crash) per original semantics so HEALTH_STALENESS is measured from "just now",
+                // not from "1 hour ago".
+                state.updateAndGet {
+                    it.copy(
+                        lastFailure = failure,
+                        lastFailureAt = now,
+                        consecutiveFailures = 1,
+                        currentBackoff = INITIAL_BACKOFF,
+                        lastStableAt = now,
+                    )
+                }
             } else {
-                consecutiveFailures++
+                state.updateAndGet {
+                    it.copy(
+                        lastFailure = failure,
+                        lastFailureAt = now,
+                        consecutiveFailures = it.consecutiveFailures + 1,
+                    )
+                }
             }
         }
     }
@@ -225,7 +280,8 @@ class TelegramBotSupervisor(
     private fun nextBackoff(current: Duration): Duration = minOf(current.multipliedBy(2), MAX_BACKOFF)
 
     fun computeHealth(now: Instant): Health {
-        val builder = baseBuilder()
+        val s = state.get()
+        val builder = baseBuilder(s)
 
         // BRANCH 1: supervisor not active → DOWN
         val job = supervisorJob
@@ -238,8 +294,8 @@ class TelegramBotSupervisor(
         // `lastPollingStartAt > lastFailureAt` guards against a stale stamp from a previously
         // crashed attempt (companion to the `lastPollingStartAt = null` writes at iteration
         // start and just after `runner.run` exits, both in `runSupervised`).
-        val pollStart = lastPollingStartAt
-        val failedAt = lastFailureAt
+        val pollStart = s.lastPollingStartAt
+        val failedAt = s.lastFailureAt
         if (pollStart != null &&
             (failedAt == null || pollStart.isAfter(failedAt)) &&
             Duration.between(pollStart, now) >= STABLE_THRESHOLD
@@ -247,19 +303,19 @@ class TelegramBotSupervisor(
             return builder.up().withDetail("reason", "healthy").build()
         }
 
-        val stable = lastStableAt
-        val started = startupAt
+        val stable = s.lastStableAt
+        val started = s.startupAt
         val sinceStartup = if (started != null) Duration.between(started, now) else Duration.ZERO
 
         // BRANCH 3: never stable, threshold OR grace expired → DOWN
         if (stable == null &&
-            (consecutiveFailures >= STARTUP_FAILURE_THRESHOLD || sinceStartup > STARTUP_GRACE)
+            (s.consecutiveFailures >= STARTUP_FAILURE_THRESHOLD || sinceStartup > STARTUP_GRACE)
         ) {
             return builder
                 .down()
                 .withDetail(
                     "reason",
-                    "startup failed: $consecutiveFailures attempts / $sinceStartup",
+                    "startup failed: ${s.consecutiveFailures} attempts / $sinceStartup",
                 ).build()
         }
 
@@ -267,12 +323,12 @@ class TelegramBotSupervisor(
         if (stable == null) {
             return builder
                 .outOfService()
-                .withDetail("reason", "connecting... attempts=$consecutiveFailures")
+                .withDetail("reason", "connecting... attempts=${s.consecutiveFailures}")
                 .build()
         }
 
         // BRANCH 5: in backoff with stale stable point → DOWN
-        if (consecutiveFailures > 0 && Duration.between(stable, now) > HEALTH_STALENESS) {
+        if (s.consecutiveFailures > 0 && Duration.between(stable, now) > HEALTH_STALENESS) {
             return builder
                 .down()
                 .withDetail(
@@ -282,12 +338,12 @@ class TelegramBotSupervisor(
         }
 
         // BRANCH 6: transient backoff (recent stable) → OUT_OF_SERVICE
-        if (consecutiveFailures > 0) {
+        if (s.consecutiveFailures > 0) {
             return builder
                 .outOfService()
                 .withDetail(
                     "reason",
-                    "in backoff (failures=$consecutiveFailures, backoff=${currentBackoff.toMillis()}ms)",
+                    "in backoff (failures=${s.consecutiveFailures}, backoff=${s.currentBackoff.toMillis()}ms)",
                 ).build()
         }
 
@@ -298,18 +354,18 @@ class TelegramBotSupervisor(
             .build()
     }
 
-    private fun baseBuilder(): Health.Builder =
+    private fun baseBuilder(s: SupervisorState): Health.Builder =
         Health
             .Builder()
-            .withDetail("startupAt", startupAt?.toString() ?: "never")
-            .withDetail("lastAttemptAt", lastAttemptAt?.toString() ?: "never")
-            .withDetail("lastPollingStartAt", lastPollingStartAt?.toString() ?: "never")
-            .withDetail("lastStableAt", lastStableAt?.toString() ?: "never")
-            .withDetail("lastFailureAt", lastFailureAt?.toString() ?: "never")
-            .withDetail("consecutiveFailures", consecutiveFailures)
-            .withDetail("currentBackoffMs", currentBackoff.toMillis())
+            .withDetail("startupAt", s.startupAt?.toString() ?: "never")
+            .withDetail("lastAttemptAt", s.lastAttemptAt?.toString() ?: "never")
+            .withDetail("lastPollingStartAt", s.lastPollingStartAt?.toString() ?: "never")
+            .withDetail("lastStableAt", s.lastStableAt?.toString() ?: "never")
+            .withDetail("lastFailureAt", s.lastFailureAt?.toString() ?: "never")
+            .withDetail("consecutiveFailures", s.consecutiveFailures)
+            .withDetail("currentBackoffMs", s.currentBackoff.toMillis())
             .also { b ->
-                lastFailure?.let {
+                s.lastFailure?.let {
                     b.withDetail(
                         "lastFailure",
                         "${it.javaClass.simpleName}: ${sanitizeFailureMessage(it.message)}",

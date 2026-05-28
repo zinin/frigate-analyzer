@@ -68,7 +68,7 @@ class DetectServiceTest {
                 videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
             )
         registry.register("test", serverProps)
-        registry.getServer("test")!!.alive = true
+        registry.getServer("test")!!.updateHealth { it.copy(alive = true) }
 
         val detectProperties = detectProperties()
 
@@ -252,7 +252,7 @@ class DetectServiceTest {
         runBlocking {
             mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1000)
             val server = registry.getServer("test")!!
-            server.alive = true
+            server.updateHealth { it.copy(alive = true) }
 
             assertFailsWith<DetectTimeoutException> {
                 detectService.detectWithRetry(byteArrayOf(1, 2, 3), timeoutMs = 100)
@@ -269,7 +269,7 @@ class DetectServiceTest {
         runBlocking {
             mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 2)
             val server = registry.getServer("test")!!
-            server.alive = true
+            server.updateHealth { it.copy(alive = true) }
 
             val response = detectService.detectWithRetry(byteArrayOf(1, 2, 3))
 
@@ -286,7 +286,7 @@ class DetectServiceTest {
         runBlocking {
             mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1000)
             val server = registry.getServer("test")!!
-            server.alive = true
+            server.updateHealth { it.copy(alive = true) }
 
             assertFailsWith<DetectTimeoutException> {
                 detectService.detectWithRetry(byteArrayOf(1, 2, 3), timeoutMs = 100)
@@ -302,7 +302,7 @@ class DetectServiceTest {
     fun `detectWithRetry uses priority-based server selection`() =
         runBlocking {
             val primaryServer = registry.getServer("test")!!
-            primaryServer.alive = true
+            primaryServer.updateHealth { it.copy(alive = true) }
 
             // Add secondary server with lower priority (higher priority number)
             val secondaryProps =
@@ -316,7 +316,7 @@ class DetectServiceTest {
                     videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 10),
                 )
             registry.register("secondary", secondaryProps)
-            registry.getServer("secondary")!!.alive = true
+            registry.getServer("secondary")!!.updateHealth { it.copy(alive = true) }
 
             val response = detectService.detectWithRetry(byteArrayOf(1, 2, 3))
 
@@ -330,7 +330,7 @@ class DetectServiceTest {
     fun `detectWithRetry fails over to secondary server when primary at capacity`() =
         runBlocking {
             val primaryServer = registry.getServer("test")!!
-            primaryServer.alive = true
+            primaryServer.updateHealth { it.copy(alive = true) }
             // Set primary server to full capacity
             primaryServer.processingFrameRequestsCount.set(1)
 
@@ -347,7 +347,7 @@ class DetectServiceTest {
                 )
             registry.register("secondary", secondaryProps)
             val secondaryServer = registry.getServer("secondary")!!
-            secondaryServer.alive = true
+            secondaryServer.updateHealth { it.copy(alive = true) }
 
             val response = detectService.detectWithRetry(byteArrayOf(1, 2, 3))
 
@@ -364,7 +364,7 @@ class DetectServiceTest {
         runBlocking {
             mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 422)
             val server = registry.getServer("test")!!
-            server.alive = true
+            server.updateHealth { it.copy(alive = true) }
 
             assertFailsWith<UnprocessableVideoException> {
                 detectService.extractFramesRemoteWithRetry(
@@ -385,7 +385,7 @@ class DetectServiceTest {
         runBlocking {
             mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 400)
             val server = registry.getServer("test")!!
-            server.alive = true
+            server.updateHealth { it.copy(alive = true) }
 
             assertFailsWith<UnprocessableVideoException> {
                 detectService.extractFramesRemoteWithRetry(
@@ -404,7 +404,7 @@ class DetectServiceTest {
         runBlocking {
             mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 1, httpErrorCode = 413)
             val server = registry.getServer("test")!!
-            server.alive = true
+            server.updateHealth { it.copy(alive = true) }
 
             assertFailsWith<UnprocessableVideoException> {
                 detectService.extractFramesRemoteWithRetry(
@@ -424,7 +424,7 @@ class DetectServiceTest {
             // 500 should be retried — use 2 failures then success
             mockWebServer.dispatcher = ConfigurableDetectServiceDispatcher(initialFailureCount = 2, httpErrorCode = 500)
             val server = registry.getServer("test")!!
-            server.alive = true
+            server.updateHealth { it.copy(alive = true) }
 
             val response =
                 detectService.extractFramesRemoteWithRetry(

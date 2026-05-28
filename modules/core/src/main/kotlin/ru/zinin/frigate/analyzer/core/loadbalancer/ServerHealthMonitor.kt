@@ -35,20 +35,25 @@ class ServerHealthMonitor(
             .timeout(detectProperties.healthCheckTimeout)
             .subscribe(
                 {
-                    val wasAlive = server.alive
-                    server.alive = true
-                    server.lastCheckTimestamp = clock.instant()
-
-                    if (!wasAlive) {
+                    // Hoist clock read out of the CAS lambda: getAndUpdateHealth may invoke the
+                    // transform multiple times under contention, and we want the timestamp to
+                    // reflect the callback entry, not the winning CAS run.
+                    val now = clock.instant()
+                    val prev =
+                        server.getAndUpdateHealth {
+                            it.copy(alive = true, lastCheckTimestamp = now)
+                        }
+                    if (!prev.alive) {
                         logger.info { "Server ${server.id} is now ALIVE" }
                     }
                 },
                 { error ->
-                    val wasAlive = server.alive
-                    server.alive = false
-                    server.lastCheckTimestamp = clock.instant()
-
-                    if (wasAlive) {
+                    val now = clock.instant()
+                    val prev =
+                        server.getAndUpdateHealth {
+                            it.copy(alive = false, lastCheckTimestamp = now)
+                        }
+                    if (prev.alive) {
                         logger.warn(error) { "Server ${server.id} is now DEAD" }
                     }
                 },
@@ -57,9 +62,16 @@ class ServerHealthMonitor(
 
     fun markServerDead(id: String) {
         registry.getServer(id)?.let { server ->
-            server.alive = false
-            server.lastCheckTimestamp = clock.instant()
-            logger.warn { "Server $id marked as dead" }
+            // Transition-detection: log "marked as dead" only on the actual alive→dead edge.
+            // If multiple callers race to mark the same server dead, only the first one logs.
+            val now = clock.instant()
+            val prev =
+                server.getAndUpdateHealth {
+                    it.copy(alive = false, lastCheckTimestamp = now)
+                }
+            if (prev.alive) {
+                logger.warn { "Server $id marked as dead" }
+            }
         }
     }
 }

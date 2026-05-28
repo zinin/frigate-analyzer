@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.boot.health.contributor.Status
 import ru.zinin.frigate.analyzer.telegram.bot.FrigateAnalyzerBot
+import ru.zinin.frigate.analyzer.telegram.bot.supervisor.INITIAL_BACKOFF
+import ru.zinin.frigate.analyzer.telegram.bot.supervisor.TelegramBotSupervisor.SupervisorState
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -124,8 +126,9 @@ class TelegramBotSupervisorTest {
             runCurrent()
             // We've executed: attempt 1 fail, delay 5s, attempt 2 fail, delay 10s, attempt 3 fail, delay 20s
             // currentBackoff after each failure: 5→10, 10→20, 20→40
-            assertEquals(40_000L, supervisor.currentBackoff.toMillis())
-            assertEquals(3L, supervisor.consecutiveFailures)
+            val s = supervisor.stateForTesting
+            assertEquals(40_000L, s.currentBackoff.toMillis())
+            assertEquals(3L, s.consecutiveFailures)
 
             job.cancelAndJoin()
         }
@@ -162,24 +165,31 @@ class TelegramBotSupervisorTest {
                 }
             val supervisorWithFakeRunner = newSupervisorWithTickingClock(testScheduler, runner = runner)
 
-            // Timing under the supervisor's delay-BEFORE-bump retry shape:
-            //   t=0:   attempt 1 → getMe fails ("quick fail #1"). delay(currentBackoff=5s). bump→10.
-            //   t=5:   attempt 2 → getMe fails. delay(10s). bump→20.
-            //   t=15:  attempt 3 → getMe OK, runner.run starts; delay(61s).
+            // Timing under the supervisor's bump-BEFORE-delay retry shape (post-CRITICAL-2: tail
+            // does ONE getAndUpdate that returns the pre-bump snapshot driving the upcoming
+            // delay; the bumped value is what's persisted in `state` during the delay):
+            //   t=0:   attempt 1 → getMe fails ("quick fail #1"). Tail bumps currentBackoff 5→10
+            //          (persisted) and delays(5s — the pre-bump value).
+            //   t=5:   attempt 2 → getMe fails. Tail bumps 10→20 (persisted) and delays(10s).
+            //   t=15:  attempt 3 → getMe OK, runner.run starts; delay(61s) inside runner.
             //   t=76:  runner.run returns RTE. Catch: onAttemptEnded(success=false, duration=61s ≥
-            //          STABLE) → reset currentBackoff=5s, consecutiveFailures=1. Tail: delay(5s).
-            //          bump→10. Iteration 4 starts at t=81.
-            //   We assert at t≈76 (just past the runner-end) BEFORE the tail delay completes.
+            //          STABLE) → reset currentBackoff=5s, consecutiveFailures=1. Tail: bump 5→10
+            //          (persisted) and delays(5s — the pre-bump). Iteration 4 starts at t=81.
+            //   We assert at t≈76 (just past the runner-end) AFTER the tail's getAndUpdate has
+            //   run (persisted=10s) but BEFORE the tail delay has elapsed.
             val job = launch { supervisorWithFakeRunner.runSupervised() }
             advanceTimeBy(5_000 + 10_000 + 61_000 + 1) // = 76_001 ms, just after runner exits
             runCurrent()
 
-            // After the reset, currentBackoff is briefly INITIAL_BACKOFF (5s) before the tail
-            // bumps it. Because the tail delay starts immediately after onAttemptEnded, the test
-            // scheduler at t=76_001 is INSIDE that delay and the post-delay bump has not yet
-            // run — so we observe the reset value.
-            assertEquals(INITIAL_BACKOFF_MS, supervisorWithFakeRunner.currentBackoff.toMillis())
-            assertEquals(1L, supervisorWithFakeRunner.consecutiveFailures)
+            // Reset-then-bump pattern: onAttemptEnded reset currentBackoff to INITIAL_BACKOFF (5s).
+            // The atomic tail getAndUpdate then immediately bumps it to 10s (the persisted post-bump
+            // value), while the delay() runs against the returned pre-bump 5s value. The test reads
+            // the persisted value here, so observes 10s. The reset is still verifiable: without it,
+            // the persisted value after this point would be 40s (the prior 20s bumped by the tail,
+            // not yet capped at MAX_BACKOFF=60s — that cap hits one cycle later), not 10s.
+            val s = supervisorWithFakeRunner.stateForTesting
+            assertEquals(2 * INITIAL_BACKOFF.toMillis(), s.currentBackoff.toMillis())
+            assertEquals(1L, s.consecutiveFailures)
 
             job.cancelAndJoin()
         }
@@ -206,8 +216,9 @@ class TelegramBotSupervisorTest {
             val job = launch { supervisor.runSupervised() }
             advanceTimeBy(5_000 + 10_000 + 20_000) // three quick failures, backoff grows 5→10→20→40
             runCurrent()
-            assertEquals(3L, supervisor.consecutiveFailures)
-            assertEquals(40_000L, supervisor.currentBackoff.toMillis())
+            val s = supervisor.stateForTesting
+            assertEquals(3L, s.consecutiveFailures)
+            assertEquals(40_000L, s.currentBackoff.toMillis())
 
             job.cancelAndJoin()
         }
@@ -238,10 +249,11 @@ class TelegramBotSupervisorTest {
             advanceTimeBy(10_001)
             runCurrent()
 
-            assertEquals(1L, supervisor.consecutiveFailures)
-            assertNotNull(supervisor.lastFailure)
-            assertEquals("SilentPollingFailure", supervisor.lastFailure!!.javaClass.simpleName)
-            assertNotNull(supervisor.lastFailureAt)
+            val s = supervisor.stateForTesting
+            assertEquals(1L, s.consecutiveFailures)
+            assertNotNull(s.lastFailure)
+            assertEquals("SilentPollingFailure", s.lastFailure!!.javaClass.simpleName)
+            assertNotNull(s.lastFailureAt)
 
             job.cancelAndJoin()
         }
@@ -257,18 +269,178 @@ class TelegramBotSupervisorTest {
             job.cancel()
             job.join()
 
-            assertEquals(0L, supervisor.consecutiveFailures)
-            assertNull(supervisor.lastFailure)
-            assertNull(supervisor.lastFailureAt)
+            val s = supervisor.stateForTesting
+            assertEquals(0L, s.consecutiveFailures)
+            assertNull(s.lastFailure)
+            assertNull(s.lastFailureAt)
         }
+
+    // ----- onAttemptEnded transition tests -----
+    // Per review iter-1 SUGGESTION-2: deterministic per-branch snapshot-equality assertions on
+    // `onAttemptEnded`. The fixed `clock` returns `now` from `Instant.now(clock)`, so transitions
+    // are deterministic. Each test asserts the FULL post-transition snapshot in a single
+    // `assertEquals` — this catches any accidental field modification on top of the expected ones.
+
+    @Test
+    fun `onAttemptEnded — success stable resets counters, bumps lastStableAt, preserves sticky lastFailure`() {
+        // Fixture: in-progress backoff (3 failures, 40s backoff) with a prior failure recorded.
+        // attemptStart is chosen so duration = (now - attemptStart) > STABLE_THRESHOLD (60s).
+        // After onAttemptEnded(success=true, duration >= STABLE):
+        //   - consecutiveFailures reset to 0
+        //   - currentBackoff reset to INITIAL_BACKOFF (5s)
+        //   - lastStableAt = now (the clock fixture)
+        //   - STICKY: lastFailure / lastFailureAt UNCHANGED (per CRITICAL-4)
+        //   - All other fields preserved from the prior state.
+        val attemptStart = now.minusSeconds(120) // duration = 120s > STABLE_THRESHOLD (60s)
+        val initialFixture =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofMinutes(10)),
+                lastAttemptAt = attemptStart,
+                consecutiveFailures = 3,
+                currentBackoff = Duration.ofSeconds(40),
+                lastFailure = RuntimeException("prior failure"),
+                lastFailureAt = now.minus(Duration.ofMinutes(2)),
+            )
+        val sup = supervisorWithLiveJob()
+        sup.stateForTesting = initialFixture
+        sup.onAttemptEnded(success = true, attemptStart = attemptStart, failure = null)
+        assertEquals(
+            initialFixture.copy(
+                consecutiveFailures = 0,
+                currentBackoff = INITIAL_BACKOFF,
+                lastStableAt = now,
+            ),
+            sup.stateForTesting,
+        )
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `onAttemptEnded — success fast records SilentPollingFailure and bumps consecutiveFailures`() {
+        // Fixture: prior stable run + 2 sticky failures. attemptStart is chosen so duration = 10s
+        // < STABLE_THRESHOLD (60s). After onAttemptEnded(success=true, duration < STABLE):
+        //   - lastFailure = SilentPollingFailure("clean return after PT10S")
+        //   - lastFailureAt = now
+        //   - consecutiveFailures = 3 (was 2; bumped by 1)
+        //   - All other fields preserved (notably currentBackoff — only the tail in
+        //     runSupervised bumps that).
+        val attemptStart = now.minusSeconds(10) // duration = 10s < STABLE_THRESHOLD
+        val initialFixture =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofMinutes(10)),
+                lastAttemptAt = attemptStart,
+                lastStableAt = now.minus(Duration.ofMinutes(5)),
+                consecutiveFailures = 2,
+                currentBackoff = Duration.ofSeconds(20),
+                lastFailure = RuntimeException("prior failure"),
+                lastFailureAt = now.minus(Duration.ofMinutes(1)),
+            )
+        val sup = supervisorWithLiveJob()
+        sup.stateForTesting = initialFixture
+        sup.onAttemptEnded(success = true, attemptStart = attemptStart, failure = null)
+        val after = sup.stateForTesting
+        // SilentPollingFailure is private — compare via class name + message.
+        val recordedFailure = after.lastFailure!!
+        assertEquals("SilentPollingFailure", recordedFailure.javaClass.simpleName)
+        assertEquals("clean return after PT10S", recordedFailure.message)
+        // Now full-snapshot-equality on all other fields by replacing lastFailure with the actual
+        // instance (we just validated its identity above).
+        assertEquals(
+            initialFixture.copy(
+                lastFailure = recordedFailure,
+                lastFailureAt = now,
+                consecutiveFailures = 3,
+            ),
+            after,
+        )
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `onAttemptEnded — failure after stable resets backoff, sets lastStableAt to now`() {
+        // Fixture: prior stable run + 4 sticky failures. attemptStart chosen so duration > STABLE.
+        // After onAttemptEnded(success=false, duration >= STABLE):
+        //   - lastFailure = the supplied failure
+        //   - lastFailureAt = now
+        //   - consecutiveFailures = 1 (reset to 1, not bumped — this branch counts as a fresh
+        //     "first failure after stable run")
+        //   - currentBackoff = INITIAL_BACKOFF
+        //   - lastStableAt = now (the moment of crash, per existing semantics)
+        //   - All other fields preserved.
+        val attemptStart = now.minusSeconds(120) // duration = 120s > STABLE_THRESHOLD
+        val initialFixture =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofMinutes(10)),
+                lastAttemptAt = attemptStart,
+                lastStableAt = now.minus(Duration.ofMinutes(5)),
+                consecutiveFailures = 4,
+                currentBackoff = Duration.ofSeconds(40),
+                lastFailure = RuntimeException("prior failure"),
+                lastFailureAt = now.minus(Duration.ofMinutes(1)),
+            )
+        val sup = supervisorWithLiveJob()
+        sup.stateForTesting = initialFixture
+        val freshFailure = RuntimeException("crash after stable run")
+        sup.onAttemptEnded(success = false, attemptStart = attemptStart, failure = freshFailure)
+        assertEquals(
+            initialFixture.copy(
+                lastFailure = freshFailure,
+                lastFailureAt = now,
+                consecutiveFailures = 1,
+                currentBackoff = INITIAL_BACKOFF,
+                lastStableAt = now,
+            ),
+            sup.stateForTesting,
+        )
+        sup.supervisorJob?.cancel()
+    }
+
+    @Test
+    fun `onAttemptEnded — failure fast bumps consecutiveFailures, preserves currentBackoff`() {
+        // Fixture: 2 prior failures, currentBackoff=20s. attemptStart chosen so duration < STABLE.
+        // After onAttemptEnded(success=false, duration < STABLE):
+        //   - lastFailure = the supplied failure
+        //   - lastFailureAt = now
+        //   - consecutiveFailures = 3 (bumped by 1)
+        //   - currentBackoff UNCHANGED (it's the tail bump in runSupervised that changes it).
+        //   - lastStableAt UNCHANGED.
+        //   - All other fields preserved.
+        val attemptStart = now.minusSeconds(10) // duration = 10s < STABLE_THRESHOLD
+        val initialFixture =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofMinutes(10)),
+                lastAttemptAt = attemptStart,
+                lastStableAt = now.minus(Duration.ofMinutes(5)),
+                consecutiveFailures = 2,
+                currentBackoff = Duration.ofSeconds(20),
+                lastFailure = RuntimeException("prior failure"),
+                lastFailureAt = now.minus(Duration.ofMinutes(1)),
+            )
+        val sup = supervisorWithLiveJob()
+        sup.stateForTesting = initialFixture
+        val freshFailure = RuntimeException("quick fail")
+        sup.onAttemptEnded(success = false, attemptStart = attemptStart, failure = freshFailure)
+        assertEquals(
+            initialFixture.copy(
+                lastFailure = freshFailure,
+                lastFailureAt = now,
+                consecutiveFailures = 3,
+            ),
+            sup.stateForTesting,
+        )
+        sup.supervisorJob?.cancel()
+    }
 
     @Test
     fun `computeHealth — live stable polling yields UP`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minus(Duration.ofHours(1))
-        sup.lastStableAt = now.minusSeconds(120)
-        sup.lastPollingStartAt = now.minusSeconds(90) // > STABLE_THRESHOLD (60s)
-        sup.consecutiveFailures = 0L
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofHours(1)),
+                lastStableAt = now.minusSeconds(120),
+                lastPollingStartAt = now.minusSeconds(90), // > STABLE_THRESHOLD (60s)
+                consecutiveFailures = 0L,
+            )
         val h = sup.computeHealth(now)
         assertEquals(Status.UP, h.status)
         assertEquals("healthy", h.details["reason"])
@@ -280,11 +452,14 @@ class TelegramBotSupervisorTest {
     @Test
     fun `computeHealth — live stable polling with sticky consecutiveFailures still yields UP`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minus(Duration.ofHours(1))
-        sup.lastStableAt = now.minus(Duration.ofMinutes(2)) // older stable; still within freshness
-        sup.lastPollingStartAt = now.minusSeconds(70) // > STABLE_THRESHOLD
-        sup.lastFailureAt = now.minus(Duration.ofMinutes(3)) // older than pollStart → invariant ok
-        sup.consecutiveFailures = 4L // sticky from before recovery
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofHours(1)),
+                lastStableAt = now.minus(Duration.ofMinutes(2)), // older stable; still within freshness
+                lastPollingStartAt = now.minusSeconds(70), // > STABLE_THRESHOLD
+                lastFailureAt = now.minus(Duration.ofMinutes(3)), // older than pollStart → invariant ok
+                consecutiveFailures = 4L, // sticky from before recovery
+            )
         val h = sup.computeHealth(now)
         assertEquals(Status.UP, h.status)
         sup.supervisorJob?.cancel()
@@ -296,11 +471,14 @@ class TelegramBotSupervisorTest {
     @Test
     fun `computeHealth — stale lastPollingStartAt after newer failure does not yield UP`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minus(Duration.ofHours(1))
-        sup.lastStableAt = now.minusSeconds(120)
-        sup.lastPollingStartAt = now.minusSeconds(90) // > STABLE_THRESHOLD, but...
-        sup.lastFailureAt = now.minusSeconds(30) // ...newer failure invalidates UP
-        sup.consecutiveFailures = 1L
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofHours(1)),
+                lastStableAt = now.minusSeconds(120),
+                lastPollingStartAt = now.minusSeconds(90), // > STABLE_THRESHOLD, but...
+                lastFailureAt = now.minusSeconds(30), // ...newer failure invalidates UP
+                consecutiveFailures = 1L,
+            )
         val h = sup.computeHealth(now)
         assertTrue(h.status != Status.UP, "expected fall-through to backoff branches, was UP")
         sup.supervisorJob?.cancel()
@@ -309,8 +487,11 @@ class TelegramBotSupervisorTest {
     @Test
     fun `computeHealth — startup failure threshold reached → DOWN`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minusSeconds(30) // inside grace
-        sup.consecutiveFailures = 5L // == STARTUP_FAILURE_THRESHOLD
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minusSeconds(30), // inside grace
+                consecutiveFailures = 5L, // == STARTUP_FAILURE_THRESHOLD
+            )
         val h = sup.computeHealth(now)
         assertEquals(Status.DOWN, h.status)
         assertTrue((h.details["reason"] as String).startsWith("startup failed"))
@@ -320,8 +501,11 @@ class TelegramBotSupervisorTest {
     @Test
     fun `computeHealth — startup grace expired → DOWN`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minus(Duration.ofMinutes(3)) // past STARTUP_GRACE (2m)
-        sup.consecutiveFailures = 1L
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofMinutes(3)), // past STARTUP_GRACE (2m)
+                consecutiveFailures = 1L,
+            )
         val h = sup.computeHealth(now)
         assertEquals(Status.DOWN, h.status)
         sup.supervisorJob?.cancel()
@@ -330,8 +514,11 @@ class TelegramBotSupervisorTest {
     @Test
     fun `computeHealth — still in grace, never stable → OUT_OF_SERVICE`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minusSeconds(30)
-        sup.consecutiveFailures = 2L // < STARTUP_FAILURE_THRESHOLD
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minusSeconds(30),
+                consecutiveFailures = 2L, // < STARTUP_FAILURE_THRESHOLD
+            )
         val h = sup.computeHealth(now)
         assertEquals(Status.OUT_OF_SERVICE, h.status)
         assertTrue((h.details["reason"] as String).startsWith("connecting"))
@@ -341,9 +528,12 @@ class TelegramBotSupervisorTest {
     @Test
     fun `computeHealth — failing past HEALTH_STALENESS → DOWN`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minus(Duration.ofHours(1))
-        sup.lastStableAt = now.minus(Duration.ofMinutes(10)) // > HEALTH_STALENESS (5m)
-        sup.consecutiveFailures = 3L
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofHours(1)),
+                lastStableAt = now.minus(Duration.ofMinutes(10)), // > HEALTH_STALENESS (5m)
+                consecutiveFailures = 3L,
+            )
         val h = sup.computeHealth(now)
         assertEquals(Status.DOWN, h.status)
         assertTrue((h.details["reason"] as String).startsWith("stale"))
@@ -353,9 +543,12 @@ class TelegramBotSupervisorTest {
     @Test
     fun `computeHealth — failing but recent stable → OUT_OF_SERVICE`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minus(Duration.ofHours(1))
-        sup.lastStableAt = now.minusSeconds(30) // < HEALTH_STALENESS
-        sup.consecutiveFailures = 2L
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofHours(1)),
+                lastStableAt = now.minusSeconds(30), // < HEALTH_STALENESS
+                consecutiveFailures = 2L,
+            )
         val h = sup.computeHealth(now)
         assertEquals(Status.OUT_OF_SERVICE, h.status)
         assertTrue((h.details["reason"] as String).startsWith("in backoff"))
@@ -365,10 +558,13 @@ class TelegramBotSupervisorTest {
     @Test
     fun `computeHealth — just (re)connected, polling under STABLE_THRESHOLD → OUT_OF_SERVICE`() {
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minus(Duration.ofHours(1))
-        sup.lastStableAt = now.minusSeconds(30)
-        sup.lastPollingStartAt = now.minusSeconds(30) // < STABLE_THRESHOLD
-        sup.consecutiveFailures = 0L
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofHours(1)),
+                lastStableAt = now.minusSeconds(30),
+                lastPollingStartAt = now.minusSeconds(30), // < STABLE_THRESHOLD
+                consecutiveFailures = 0L,
+            )
         val h = sup.computeHealth(now)
         assertEquals(Status.OUT_OF_SERVICE, h.status)
         assertTrue((h.details["reason"] as String).startsWith("connecting"))
@@ -381,14 +577,17 @@ class TelegramBotSupervisorTest {
         // in their message. baseBuilder() must redact the token before surfacing it in
         // /actuator/health.
         val sup = supervisorWithLiveJob()
-        sup.startupAt = now.minus(Duration.ofMinutes(1))
-        sup.lastStableAt = now.minusSeconds(30)
-        sup.consecutiveFailures = 1L
-        sup.lastFailure =
-            RuntimeException(
-                "Client request(GET https://api.telegram.org/bot12345:ABCdef-xyz_token/getMe) invalid: 401",
+        sup.stateForTesting =
+            SupervisorState(
+                startupAt = now.minus(Duration.ofMinutes(1)),
+                lastStableAt = now.minusSeconds(30),
+                consecutiveFailures = 1L,
+                lastFailure =
+                    RuntimeException(
+                        "Client request(GET https://api.telegram.org/bot12345:ABCdef-xyz_token/getMe) invalid: 401",
+                    ),
+                lastFailureAt = now.minusSeconds(15),
             )
-        sup.lastFailureAt = now.minusSeconds(15)
         val h = sup.computeHealth(now)
         val detail = h.details["lastFailure"] as String
         assertTrue(detail.contains("bot[REDACTED]"), "token must be redacted; got: $detail")
@@ -463,18 +662,16 @@ class TelegramBotSupervisorTest {
             val job = launch { supervisor.runSupervised() }
             runCurrent()
             // After the first attempt fails, supervisor is in delay(5s). consecutiveFailures=1.
-            assertEquals(1L, supervisor.consecutiveFailures)
-            val failureBeforeCancel = supervisor.lastFailure
+            val beforeCancel = supervisor.stateForTesting
+            assertEquals(1L, beforeCancel.consecutiveFailures)
+            val failureBeforeCancel = beforeCancel.lastFailure
 
             // Cancel while supervisor is parked in the backoff delay.
             job.cancelAndJoin()
 
             // The cancellation must not bump the counter or replace lastFailure.
-            assertEquals(1L, supervisor.consecutiveFailures)
-            assertSame(failureBeforeCancel, supervisor.lastFailure)
+            val afterCancel = supervisor.stateForTesting
+            assertEquals(1L, afterCancel.consecutiveFailures)
+            assertSame(failureBeforeCancel, afterCancel.lastFailure)
         }
-
-    private companion object {
-        const val INITIAL_BACKOFF_MS = 5_000L
-    }
 }

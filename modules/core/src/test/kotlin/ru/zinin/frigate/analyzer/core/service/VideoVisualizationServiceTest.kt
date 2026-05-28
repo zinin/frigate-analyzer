@@ -73,7 +73,7 @@ class VideoVisualizationServiceTest {
                 videoVisualizeRequests = RequestConfig(simultaneousCount = 1, priority = 0),
             )
         registry.register("test", serverProps)
-        registry.getServer("test")!!.alive = true
+        registry.getServer("test")!!.updateHealth { it.copy(alive = true) }
 
         val detectProperties = detectProperties()
 
