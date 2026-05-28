@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.boot.health.contributor.Status
 import ru.zinin.frigate.analyzer.telegram.bot.FrigateAnalyzerBot
+import ru.zinin.frigate.analyzer.telegram.bot.supervisor.INITIAL_BACKOFF
 import ru.zinin.frigate.analyzer.telegram.bot.supervisor.TelegramBotSupervisor.SupervisorState
 import java.time.Clock
 import java.time.Duration
@@ -187,7 +188,7 @@ class TelegramBotSupervisorTest {
             // the persisted value after this point would be 40s (the prior 20s bumped by the tail,
             // not yet capped at MAX_BACKOFF=60s — that cap hits one cycle later), not 10s.
             val s = supervisorWithFakeRunner.stateForTesting
-            assertEquals(2 * INITIAL_BACKOFF_MS, s.currentBackoff.toMillis())
+            assertEquals(2 * INITIAL_BACKOFF.toMillis(), s.currentBackoff.toMillis())
             assertEquals(1L, s.consecutiveFailures)
 
             job.cancelAndJoin()
@@ -306,7 +307,7 @@ class TelegramBotSupervisorTest {
         assertEquals(
             initialFixture.copy(
                 consecutiveFailures = 0,
-                currentBackoff = INITIAL_BACKOFF_DURATION,
+                currentBackoff = INITIAL_BACKOFF,
                 lastStableAt = now,
             ),
             sup.stateForTesting,
@@ -386,7 +387,7 @@ class TelegramBotSupervisorTest {
                 lastFailure = freshFailure,
                 lastFailureAt = now,
                 consecutiveFailures = 1,
-                currentBackoff = INITIAL_BACKOFF_DURATION,
+                currentBackoff = INITIAL_BACKOFF,
                 lastStableAt = now,
             ),
             sup.stateForTesting,
@@ -673,11 +674,4 @@ class TelegramBotSupervisorTest {
             assertEquals(1L, afterCancel.consecutiveFailures)
             assertSame(failureBeforeCancel, afterCancel.lastFailure)
         }
-
-    private companion object {
-        // Mirrors INITIAL_BACKOFF in TelegramBotSupervisor.kt (file-private there) —
-        // keep in sync if changed; otherwise the assertions below silently drift.
-        const val INITIAL_BACKOFF_MS = 5_000L
-        val INITIAL_BACKOFF_DURATION: Duration = Duration.ofMillis(INITIAL_BACKOFF_MS)
-    }
 }

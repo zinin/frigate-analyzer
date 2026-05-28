@@ -35,18 +35,23 @@ class ServerHealthMonitor(
             .timeout(detectProperties.healthCheckTimeout)
             .subscribe(
                 {
+                    // Hoist clock read out of the CAS lambda: getAndUpdateHealth may invoke the
+                    // transform multiple times under contention, and we want the timestamp to
+                    // reflect the callback entry, not the winning CAS run.
+                    val now = clock.instant()
                     val prev =
                         server.getAndUpdateHealth {
-                            it.copy(alive = true, lastCheckTimestamp = clock.instant())
+                            it.copy(alive = true, lastCheckTimestamp = now)
                         }
                     if (!prev.alive) {
                         logger.info { "Server ${server.id} is now ALIVE" }
                     }
                 },
                 { error ->
+                    val now = clock.instant()
                     val prev =
                         server.getAndUpdateHealth {
-                            it.copy(alive = false, lastCheckTimestamp = clock.instant())
+                            it.copy(alive = false, lastCheckTimestamp = now)
                         }
                     if (prev.alive) {
                         logger.warn(error) { "Server ${server.id} is now DEAD" }
@@ -59,9 +64,10 @@ class ServerHealthMonitor(
         registry.getServer(id)?.let { server ->
             // Transition-detection: log "marked as dead" only on the actual alive→dead edge.
             // If multiple callers race to mark the same server dead, only the first one logs.
+            val now = clock.instant()
             val prev =
                 server.getAndUpdateHealth {
-                    it.copy(alive = false, lastCheckTimestamp = clock.instant())
+                    it.copy(alive = false, lastCheckTimestamp = now)
                 }
             if (prev.alive) {
                 logger.warn { "Server $id marked as dead" }

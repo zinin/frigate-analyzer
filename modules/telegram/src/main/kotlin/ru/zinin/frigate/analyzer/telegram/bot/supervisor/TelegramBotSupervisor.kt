@@ -30,7 +30,9 @@ import java.util.concurrent.atomic.AtomicReference
 
 private val logger = KotlinLogging.logger {}
 
-private val INITIAL_BACKOFF: Duration = Duration.ofSeconds(5)
+// Visibility is `internal` (not file-private) so tests in this module can reference the
+// same value via import rather than maintaining a hand-mirrored duplicate.
+internal val INITIAL_BACKOFF: Duration = Duration.ofSeconds(5)
 private val MAX_BACKOFF: Duration = Duration.ofSeconds(60)
 private val STABLE_THRESHOLD: Duration = Duration.ofSeconds(60)
 private val HEALTH_STALENESS: Duration = Duration.ofMinutes(5)
@@ -118,7 +120,10 @@ class TelegramBotSupervisor(
             return
         }
         logger.info { "Starting Telegram bot supervisor..." }
-        state.updateAndGet { it.copy(startupAt = Instant.now(clock)) }
+        // Hoist clock read out of the CAS lambda; @PostConstruct is single-threaded for the Spring
+        // use case but the pattern stays consistent with the rest of the file.
+        val now = Instant.now(clock)
+        state.updateAndGet { it.copy(startupAt = now) }
         supervisorJob = scope.launch { runSupervised() }
     }
 

@@ -6,6 +6,13 @@ import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * Plain `class` (not `data class`): ServerState holds an AtomicReference whose snapshot mutates
+ * concurrently. Auto-generated `equals` / `hashCode` over a mutable atomic ref is a latent
+ * footgun — two server instances with the same `id` but different live health would compare
+ * unequal at one moment and equal at the next. Identity is by `id` alone; the registry already
+ * keys maps on the server id rather than on ServerState instances.
+ */
 class ServerState(
     val id: String,
     val properties: DetectServerProperties,
@@ -38,6 +45,9 @@ class ServerState(
     /**
      * Atomic RMW returning the **post-update** snapshot. For transition-detection
      * (e.g., logging "alive→dead" on the actual edge), use [getAndUpdateHealth] instead.
+     *
+     * The `transform` may be invoked multiple times under CAS contention and MUST be pure
+     * (no logging, no I/O, no clock reads inside the lambda — hoist clock reads to the caller).
      */
     fun updateHealth(transform: (HealthSnapshot) -> HealthSnapshot): HealthSnapshot = healthRef.updateAndGet(transform)
 

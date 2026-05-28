@@ -37,9 +37,14 @@ private val logger = KotlinLogging.logger {}
 
 // iter-2 CONCERN-3: ApplicationReadyEvent imports; removed unused PostConstruct.
 // iter-2 CRITICAL-1: STARTUP_GRACE / STARTUP_FAILURE_THRESHOLD added for health-branches 2/3 (design §5.2).
-private val INITIAL_BACKOFF: Duration = Duration.ofSeconds(5)
+// Visibility is `internal` (not file-private) so tests in this module can reference the
+// same value via import rather than maintaining a hand-mirrored duplicate.
+internal val INITIAL_BACKOFF: Duration = Duration.ofSeconds(5)
 private val MAX_BACKOFF: Duration = Duration.ofSeconds(60)
-private const val SUCCESSES_TO_RESET_BACKOFF: Int = 5
+
+// Visibility is `internal` (not file-private) so tests in this module can reference the
+// same value via import rather than maintaining a hand-mirrored duplicate.
+internal const val SUCCESSES_TO_RESET_BACKOFF: Int = 5
 private val HEALTH_STALENESS: Duration = Duration.ofMinutes(2)
 private val STARTUP_GRACE: Duration = Duration.ofMinutes(2)
 private const val STARTUP_FAILURE_THRESHOLD: Long = 5L
@@ -117,7 +122,10 @@ class WatchRecordsTask(
             return
         }
         logger.info { "Starting watch records in folder: ${recordsWatcherProperties.folder}" }
-        state.updateAndGet { it.copy(startupAt = Instant.now(clock)) }
+        // Hoist clock read out of the CAS lambda; @EventListener is single-threaded for the
+        // Spring use case but the pattern stays consistent with the rest of the file.
+        val now = Instant.now(clock)
+        state.updateAndGet { it.copy(startupAt = now) }
         supervisorJob = scope.launch { runSupervised() }
     }
 
@@ -190,6 +198,11 @@ class WatchRecordsTask(
                 logger.warn { "WatchService closed; will recreate next iteration" }
                 closeWatchServiceQuietly()
                 registeredDirs.clear()
+                // Two-write window: onLoopFailure updates failure counters; getAndUpdate below
+                // bumps currentBackoff. A health read between the two writes sees the new
+                // consecutiveFailures but the pre-bump currentBackoff — only the
+                // `currentBackoffMs` detail can lag by one bump; BRANCH 6 ("in backoff after N
+                // consecutive iteration failures") is the verdict either way.
                 onLoopFailure(e)
                 val effectiveBackoff =
                     state
@@ -263,10 +276,11 @@ class WatchRecordsTask(
         eventFailures: Int,
     ) {
         val now = Instant.now(clock)
-        // Capture-on-every-retry: these vars are unconditionally assigned at the top of
-        // each transform invocation, so their final value reflects the SUCCESSFUL CAS run.
-        // Spec §7: transform must be pure; the only side-effect (logger.info) happens once
-        // after updateAndGet returns.
+        // Capture-on-every-retry: AtomicReference.updateAndGet may invoke the lambda multiple
+        // times under contention. The only side effects in the transform are these two local
+        // vars, which are unconditionally re-initialized at the top of each invocation, so
+        // their final value reflects the winning CAS run. The logger.info call is hoisted
+        // outside the CAS-loop and fires exactly once per onPollCompleted invocation.
         var didResetBackoff = false
         var resetAfterSuccesses = 0
         state.updateAndGet { s ->

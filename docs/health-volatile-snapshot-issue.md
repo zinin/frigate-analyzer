@@ -261,7 +261,7 @@ fun computeHealth(now: Instant): Health {
 - Java AtomicReference vs Volatile: https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html
 - Kotlin coroutines memory model: https://github.com/Kotlin/kotlinx.coroutines/issues/2143
 
-## Statust
+## Status
 
 Не открытый bug — production impact ≈ 0. Это **technical-debt cleanup** для будущей итерации.
 Решение через `/brainstorming` → дизайн → план → реализация.

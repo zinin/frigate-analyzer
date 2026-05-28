@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Test
 import org.springframework.boot.health.contributor.Status
 import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
 import ru.zinin.frigate.analyzer.core.helper.SpringProfileHelper
+import ru.zinin.frigate.analyzer.core.task.INITIAL_BACKOFF
+import ru.zinin.frigate.analyzer.core.task.SUCCESSES_TO_RESET_BACKOFF
 import ru.zinin.frigate.analyzer.core.task.WatchRecordsTask.BackoffResetResult
 import ru.zinin.frigate.analyzer.core.task.WatchRecordsTask.WatchTaskState
 import java.nio.file.ClosedWatchServiceException
@@ -186,7 +188,7 @@ class WatchRecordsTaskTest {
             job.join()
 
             val s = task.stateForTesting
-            assertEquals(Duration.ofSeconds(5), s.currentBackoff, "Backoff should reset to INITIAL_BACKOFF=5s")
+            assertEquals(INITIAL_BACKOFF, s.currentBackoff, "Backoff should reset to INITIAL_BACKOFF=5s")
             assertEquals(0, s.consecutiveFailures)
         }
 
@@ -765,12 +767,5 @@ class WatchRecordsTaskTest {
             ),
             task.stateForTesting,
         )
-    }
-
-    private companion object {
-        // Mirrors INITIAL_BACKOFF / SUCCESSES_TO_RESET_BACKOFF in WatchRecordsTask.kt (file-private
-        // there) — keep in sync if changed; otherwise the assertions below silently drift.
-        val INITIAL_BACKOFF: Duration = Duration.ofSeconds(5)
-        const val SUCCESSES_TO_RESET_BACKOFF: Int = 5
     }
 }

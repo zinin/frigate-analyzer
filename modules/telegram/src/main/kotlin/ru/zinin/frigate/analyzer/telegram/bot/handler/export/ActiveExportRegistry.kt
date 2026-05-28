@@ -191,9 +191,12 @@ class ActiveExportRegistry(
      * NOT for state mutation — the state mutation itself is atomic via [Entry.getAndUpdateState].
      *
      * @return the [Entry] that just transitioned to `CANCELLING` (the live registry object, NOT
-     *   a copy of its EntryState — callers reading `entry.state` / `entry.cancellable` on it
-     *   observe the post-transition snapshot via the convenience getters), or `null` if the entry
-     *   does not exist (released) or was already in `CANCELLING`.
+     *   a frozen copy of its EntryState — the convenience getters `entry.state` /
+     *   `entry.cancellable` each re-read `stateRef.get()` at call time, so a concurrent
+     *   `attachCancellable` may publish a new `cancellable` after this method returns; the
+     *   returned `state` is guaranteed to be CANCELLING (or newer, e.g., a future state that
+     *   does not exist today)), or `null` if the entry does not exist (released) or was already
+     *   in `CANCELLING`.
      */
     fun markCancelling(exportId: UUID): Entry? {
         var snapshot: Entry? = null
