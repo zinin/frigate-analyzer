@@ -31,6 +31,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 private val logger = KotlinLogging.logger {}
 
@@ -60,30 +61,46 @@ class WatchRecordsTask(
     private var watchService: WatchService? = null
     internal val registeredDirs: ConcurrentHashMap<Path, WatchKey> = ConcurrentHashMap()
 
-    // iter-2 CRITICAL-1 (D2 Variant A): 10-field SupervisorState per design §4.1.
+    // iter-2 CRITICAL-1 (D2 Variant A): 11-field WatchTaskState per design §4.2.
     // Poll heartbeat updates on any non-throwing poll; event-processing on events>0 only;
     // registration tracking enables startup-failure detection via STARTUP_GRACE / STARTUP_FAILURE_THRESHOLD.
-    @Volatile internal var lastSuccessfulPollAt: Instant? = null
+    internal data class WatchTaskState(
+        val startupAt: Instant? = null,
+        val lastSuccessfulPollAt: Instant? = null,
+        val lastEventProcessedAt: Instant? = null,
+        val lastSuccessfulRegistrationAt: Instant? = null,
+        val consecutiveEventFailures: Long = 0,
+        val consecutiveRegistrationFailures: Long = 0,
+        val consecutiveFailures: Long = 0,
+        val successesSinceLastFailure: Int = 0,
+        val currentBackoff: Duration = INITIAL_BACKOFF,
+        val lastFailure: Throwable? = null,
+        val lastFailureAt: Instant? = null,
+    )
 
-    @Volatile internal var lastEventProcessedAt: Instant? = null
+    /**
+     * Single source of truth for runtime metrics. ALL writes MUST go through
+     * [AtomicReference.updateAndGet] / [AtomicReference.getAndUpdate] on [state]; direct
+     * `state.set(...)` is reserved for test fixtures via [stateForTesting]. Reader code MUST
+     * do exactly one `state.get()` at the top of any method that touches more than one field.
+     * This guarantees that no reader observes a partial snapshot — e.g., a new
+     * `consecutiveFailures` paired with the old `currentBackoff` — even under concurrent writers.
+     */
+    private val state = AtomicReference(WatchTaskState())
 
-    @Volatile internal var lastSuccessfulRegistrationAt: Instant? = null
-
-    @Volatile internal var consecutiveEventFailures: Long = 0
-
-    @Volatile internal var consecutiveRegistrationFailures: Long = 0
-
-    @Volatile internal var consecutiveFailures: Long = 0
-
-    @Volatile private var successesSinceLastFailure: Int = 0
-
-    @Volatile internal var currentBackoff: Duration = INITIAL_BACKOFF
-
-    @Volatile internal var lastFailure: Throwable? = null
-
-    @Volatile internal var lastFailureAt: Instant? = null
-
-    @Volatile internal var startupAt: Instant? = null
+    /**
+     * Test-fixture access for the task's runtime state. **DO NOT USE FROM PRODUCTION
+     * CODE.** Direct `state.set(...)` bypasses the CAS discipline maintained by
+     * [AtomicReference.updateAndGet] / [AtomicReference.getAndUpdate] — production writers
+     * MUST go through one of those two APIs. Visibility is `internal` to confine misuse to
+     * the test source set within this module; review discipline enforces the rule (no
+     * runtime check).
+     */
+    internal var stateForTesting: WatchTaskState
+        get() = state.get()
+        set(value) {
+            state.set(value)
+        }
 
     // iter-1 D6 + iter-2 CRITICAL-3 Variant B: @EventListener(ApplicationReadyEvent::class) — consistent with
     // FirstTimeScanTask lifecycle. Concurrent start with FirstTimeScanTask accepted; DB unique constraint
@@ -100,7 +117,7 @@ class WatchRecordsTask(
             return
         }
         logger.info { "Starting watch records in folder: ${recordsWatcherProperties.folder}" }
-        startupAt = Instant.now(clock)
+        state.updateAndGet { it.copy(startupAt = Instant.now(clock)) }
         supervisorJob = scope.launch { runSupervised() }
     }
 
@@ -143,7 +160,7 @@ class WatchRecordsTask(
     }
 
     internal suspend fun runSupervised() {
-        currentBackoff = INITIAL_BACKOFF
+        state.updateAndGet { it.copy(currentBackoff = INITIAL_BACKOFF) }
         var lastCleanup = Instant.now(clock)
         while (currentCoroutineContext().isActive) {
             try {
@@ -158,8 +175,14 @@ class WatchRecordsTask(
                     // success (some events processed + some failed) means the supervisor and
                     // WatchService are alive; BRANCH 5 already surfaces event-failures as transient,
                     // no need to also throttle the loop.
-                    delay(currentBackoff.toMillis())
-                    currentBackoff = nextBackoff(currentBackoff)
+                    // CRITICAL-2 (per review iter-1 decision option A): single atomic RMW for the
+                    // tail bump. getAndUpdate returns the PRE-bump snapshot, whose currentBackoff
+                    // drives the upcoming delay; the bumped value persists for the next iteration.
+                    val effectiveBackoff =
+                        state
+                            .getAndUpdate { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                            .currentBackoff
+                    delay(effectiveBackoff.toMillis())
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -168,16 +191,24 @@ class WatchRecordsTask(
                 closeWatchServiceQuietly()
                 registeredDirs.clear()
                 onLoopFailure(e)
-                delay(currentBackoff.toMillis())
-                currentBackoff = nextBackoff(currentBackoff)
+                val effectiveBackoff =
+                    state
+                        .getAndUpdate { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                        .currentBackoff
+                delay(effectiveBackoff.toMillis())
             } catch (e: Exception) {
                 // Registration / unexpected loop failures (per-event ones are caught inside runIteration).
-                logger.error(e) { "WatchRecordsTask iteration failed; backing off for ${currentBackoff.toMillis()}ms" }
                 // If ensureWatchService threw, it was a registration failure (see ensureWatchService body).
                 // Otherwise — generic loop failure: increments both counters.
                 onLoopFailure(e)
-                delay(currentBackoff.toMillis())
-                currentBackoff = nextBackoff(currentBackoff)
+                val effectiveBackoff =
+                    state
+                        .getAndUpdate { it.copy(currentBackoff = nextBackoff(it.currentBackoff)) }
+                        .currentBackoff
+                logger.error(e) {
+                    "WatchRecordsTask iteration failed; backing off for ${effectiveBackoff.toMillis()}ms"
+                }
+                delay(effectiveBackoff.toMillis())
             }
         }
     }
@@ -213,59 +244,148 @@ class WatchRecordsTask(
 
     // iter-2 CRITICAL-1 (D2): 3 transition methods — separation of event/registration/general failure tracking.
 
-    private fun onPollCompleted(
+    /**
+     * Result of [maybeResetBackoffTransform]. Bundles the new state with a side-effect-free
+     * indication of whether a reset actually happened, so that the caller can log **outside**
+     * `updateAndGet` (the transform itself must remain pure — `AtomicReference.updateAndGet`
+     * may retry the lambda under CAS contention, and a side-effect-in-transform pattern
+     * would produce duplicate log entries on retry).
+     */
+    internal data class BackoffResetResult(
+        val state: WatchTaskState,
+        val didReset: Boolean = false,
+        /** Successes count at the moment of reset — used by the caller for the log message. */
+        val nextSuccessesAtReset: Int = 0,
+    )
+
+    internal fun onPollCompleted(
         eventsProcessed: Int,
         eventFailures: Int,
     ) {
-        lastSuccessfulPollAt = Instant.now(clock)
-        if (eventsProcessed > 0) {
-            lastEventProcessedAt = Instant.now(clock)
-            consecutiveEventFailures = 0
-            consecutiveFailures = 0 // reset; subsequent ++ below handles mixed (some-processed + some-failed) iterations
-            maybeResetBackoff()
+        val now = Instant.now(clock)
+        // Capture-on-every-retry: these vars are unconditionally assigned at the top of
+        // each transform invocation, so their final value reflects the SUCCESSFUL CAS run.
+        // Spec §7: transform must be pure; the only side-effect (logger.info) happens once
+        // after updateAndGet returns.
+        var didResetBackoff = false
+        var resetAfterSuccesses = 0
+        state.updateAndGet { s ->
+            didResetBackoff = false
+            resetAfterSuccesses = 0
+            var n = s.copy(lastSuccessfulPollAt = now)
+            if (eventsProcessed > 0) {
+                val applied = applyEventsProcessedTransform(n, now)
+                n = applied.state
+                didResetBackoff = applied.didReset
+                resetAfterSuccesses = applied.nextSuccessesAtReset
+                // NOTE: maybeResetBackoffTransform increments successesSinceLastFailure.
+                // When the same poll also brought event-failures (eventFailures > 0, handled
+                // below), that increment is immediately zeroed by the failure branch — a
+                // "wasted" increment. The didResetBackoff flag, however, is NOT cleared by
+                // the failure branch: an actual backoff reset (currentBackoff -> INITIAL)
+                // remains observable in the final state, so logging it is correct. This
+                // is the same observable behavior the pre-refactor code produced.
+            }
+            if (eventFailures > 0) {
+                n =
+                    n.copy(
+                        consecutiveEventFailures = n.consecutiveEventFailures + eventFailures,
+                        consecutiveFailures = n.consecutiveFailures + 1,
+                        successesSinceLastFailure = 0,
+                    )
+            } else if (eventsProcessed == 0) {
+                // Empty poll with no failures — supervisor reached a clean iteration end (e.g. CWS
+                // recovery followed by an idle period in a quiet deployment). Clear the general-
+                // failure signal so BRANCH 6 doesn't latch until the next real event.
+                n = n.copy(consecutiveFailures = 0)
+            }
+            n
         }
-        if (eventFailures > 0) {
-            consecutiveEventFailures += eventFailures
-            consecutiveFailures++
-            successesSinceLastFailure = 0
-        } else if (eventsProcessed == 0) {
-            // Empty poll with no failures — supervisor reached a clean iteration end (e.g. CWS
-            // recovery followed by an idle period in a quiet deployment). Clear the general-
-            // failure signal so BRANCH 6 doesn't latch until the next real event.
-            consecutiveFailures = 0
+        // Side-effect log: fires exactly once per onPollCompleted invocation, AFTER the
+        // CAS-loop has settled. Idempotent under retry: didResetBackoff is only true if
+        // the committed transform did the reset.
+        if (didResetBackoff) {
+            logger.info { "Backoff reset after $resetAfterSuccesses consecutive successes" }
         }
     }
 
-    private fun onRegistrationSuccess() {
-        lastSuccessfulRegistrationAt = Instant.now(clock)
-        consecutiveRegistrationFailures = 0
-        // Registration is not a "full iteration success"; consecutiveFailures resets only on processed > 0.
+    /**
+     * Pure transform applied when `eventsProcessed > 0`. Updates `lastEventProcessedAt`,
+     * zeros `consecutiveEventFailures` and `consecutiveFailures`, then delegates to
+     * [maybeResetBackoffTransform] for backoff-reset bookkeeping. Propagates the result
+     * up so the caller can observe whether the backoff was reset.
+     */
+    private fun applyEventsProcessedTransform(
+        s: WatchTaskState,
+        now: Instant,
+    ): BackoffResetResult {
+        val withSuccess =
+            s.copy(
+                lastEventProcessedAt = now,
+                consecutiveEventFailures = 0,
+                // reset; subsequent ++ below handles mixed (some-processed + some-failed) iterations
+                consecutiveFailures = 0,
+            )
+        return maybeResetBackoffTransform(withSuccess)
     }
 
-    private fun onRegistrationFailure(t: Throwable) {
-        consecutiveRegistrationFailures++
-        consecutiveFailures++
-        successesSinceLastFailure = 0
-        lastFailure = t
-        lastFailureAt = Instant.now(clock)
+    internal fun onRegistrationSuccess() {
+        val now = Instant.now(clock)
+        state.updateAndGet {
+            it.copy(
+                lastSuccessfulRegistrationAt = now,
+                consecutiveRegistrationFailures = 0,
+                // Registration is not a "full iteration success"; consecutiveFailures resets only on processed > 0.
+            )
+        }
+    }
+
+    internal fun onRegistrationFailure(t: Throwable) {
+        val now = Instant.now(clock)
+        state.updateAndGet {
+            it.copy(
+                consecutiveRegistrationFailures = it.consecutiveRegistrationFailures + 1,
+                consecutiveFailures = it.consecutiveFailures + 1,
+                successesSinceLastFailure = 0,
+                lastFailure = t,
+                lastFailureAt = now,
+            )
+        }
     }
 
     // Used for ClosedWatchServiceException and generic loop failures (not registration / not per-event).
-    private fun onLoopFailure(t: Throwable) {
-        consecutiveFailures++
-        successesSinceLastFailure = 0
-        lastFailure = t
-        lastFailureAt = Instant.now(clock)
+    internal fun onLoopFailure(t: Throwable) {
+        val now = Instant.now(clock)
+        state.updateAndGet {
+            it.copy(
+                consecutiveFailures = it.consecutiveFailures + 1,
+                successesSinceLastFailure = 0,
+                lastFailure = t,
+                lastFailureAt = now,
+            )
+        }
     }
 
-    private fun maybeResetBackoff() {
-        if (currentBackoff > INITIAL_BACKOFF) {
-            successesSinceLastFailure++
-            if (successesSinceLastFailure >= SUCCESSES_TO_RESET_BACKOFF) {
-                logger.info { "Backoff reset after $successesSinceLastFailure consecutive successes" }
-                currentBackoff = INITIAL_BACKOFF
-                successesSinceLastFailure = 0
-            }
+    /**
+     * Pure transform: returns a new state with `successesSinceLastFailure` incremented and
+     * `currentBackoff` reset to [INITIAL_BACKOFF] if the consecutive-success threshold is reached.
+     * If `currentBackoff` is already [INITIAL_BACKOFF] (or smaller), returns input unchanged with
+     * `didReset=false`.
+     *
+     * **No side-effects.** The caller (typically [onPollCompleted]) is responsible for
+     * emitting the "Backoff reset" log line after the enclosing `updateAndGet` has settled.
+     */
+    internal fun maybeResetBackoffTransform(s: WatchTaskState): BackoffResetResult {
+        if (s.currentBackoff <= INITIAL_BACKOFF) return BackoffResetResult(state = s)
+        val nextSuccesses = s.successesSinceLastFailure + 1
+        return if (nextSuccesses >= SUCCESSES_TO_RESET_BACKOFF) {
+            BackoffResetResult(
+                state = s.copy(currentBackoff = INITIAL_BACKOFF, successesSinceLastFailure = 0),
+                didReset = true,
+                nextSuccessesAtReset = nextSuccesses,
+            )
+        } else {
+            BackoffResetResult(state = s.copy(successesSinceLastFailure = nextSuccesses))
         }
     }
 
@@ -273,24 +393,8 @@ class WatchRecordsTask(
 
     // iter-2 CRITICAL-1 (D2): 8-branch health table per design §5.2 (priority-ordered, first-match wins).
     fun computeHealth(now: Instant): Health {
-        val builder =
-            Health
-                .Builder()
-                .withDetail("lastSuccessfulPollAt", lastSuccessfulPollAt?.toString() ?: "never")
-                .withDetail("lastEventProcessedAt", lastEventProcessedAt?.toString() ?: "never")
-                .withDetail("lastSuccessfulRegistrationAt", lastSuccessfulRegistrationAt?.toString() ?: "never")
-                .withDetail("consecutiveEventFailures", consecutiveEventFailures)
-                .withDetail("consecutiveRegistrationFailures", consecutiveRegistrationFailures)
-                .withDetail("consecutiveFailures", consecutiveFailures)
-                .withDetail("currentBackoffMs", currentBackoff.toMillis())
-                .withDetail("registeredDirs", registeredDirs.size)
-        lastFailure?.let {
-            builder.withDetail(
-                "lastFailure",
-                "${it.javaClass.simpleName}: ${it.message?.take(500) ?: "<no-message>"}",
-            )
-        }
-        lastFailureAt?.let { builder.withDetail("lastFailureAt", it.toString()) }
+        val s = state.get()
+        val builder = baseBuilder(s)
 
         // Health branches are priority-ordered, first match wins (see design §5.2).
 
@@ -300,20 +404,20 @@ class WatchRecordsTask(
             return builder.down().withDetail("reason", "supervisor not active").build()
         }
 
-        val regAt = lastSuccessfulRegistrationAt
-        val started = startupAt
+        val regAt = s.lastSuccessfulRegistrationAt
+        val started = s.startupAt
         val sinceStartup = if (started != null) Duration.between(started, now) else Duration.ZERO
 
         // BRANCH 2: startup failure — never registered, threshold reached OR grace expired
         if (regAt == null &&
-            (consecutiveRegistrationFailures >= STARTUP_FAILURE_THRESHOLD || sinceStartup > STARTUP_GRACE)
+            (s.consecutiveRegistrationFailures >= STARTUP_FAILURE_THRESHOLD || sinceStartup > STARTUP_GRACE)
         ) {
             return builder
                 .down()
                 .withDetail(
                     "reason",
                     "startup failed: no successful registration after " +
-                        "$consecutiveRegistrationFailures attempts / $sinceStartup",
+                        "${s.consecutiveRegistrationFailures} attempts / $sinceStartup",
                 ).build()
         }
 
@@ -321,7 +425,7 @@ class WatchRecordsTask(
         if (regAt == null) {
             return builder
                 .outOfService()
-                .withDetail("reason", "registering... attempts=$consecutiveRegistrationFailures")
+                .withDetail("reason", "registering... attempts=${s.consecutiveRegistrationFailures}")
                 .build()
         }
 
@@ -336,7 +440,7 @@ class WatchRecordsTask(
                 .build()
         }
 
-        val lastEvent = lastEventProcessedAt
+        val lastEvent = s.lastEventProcessedAt
 
         // BRANCH 4: event-failures + stale → DOWN.
         // Staleness reference falls back to lastSuccessfulRegistrationAt when no event ever
@@ -344,7 +448,7 @@ class WatchRecordsTask(
         // file-naming convention changed and createRecording rejects everything). Without the
         // fallback, we'd stay in BRANCH 5 (transient) forever for such regressions.
         val staleReference = lastEvent ?: regAt
-        if (consecutiveEventFailures > 0 &&
+        if (s.consecutiveEventFailures > 0 &&
             Duration.between(staleReference, now) > HEALTH_STALENESS
         ) {
             val anchor = if (lastEvent != null) "last processed at $lastEvent" else "no event ever processed (registered at $regAt)"
@@ -357,22 +461,22 @@ class WatchRecordsTask(
         }
 
         // BRANCH 5: event-failures, not stale → transient OUT_OF_SERVICE
-        if (consecutiveEventFailures > 0) {
+        if (s.consecutiveEventFailures > 0) {
             return builder
                 .outOfService()
                 .withDetail(
                     "reason",
-                    "transient event-processing failures ($consecutiveEventFailures consecutive)",
+                    "transient event-processing failures (${s.consecutiveEventFailures} consecutive)",
                 ).build()
         }
 
         // BRANCH 6: general backoff (e.g., ClosedWatchServiceException recovery cycle)
-        if (consecutiveFailures > 0) {
+        if (s.consecutiveFailures > 0) {
             return builder
                 .outOfService()
                 .withDetail(
                     "reason",
-                    "in backoff after $consecutiveFailures consecutive iteration failures",
+                    "in backoff after ${s.consecutiveFailures} consecutive iteration failures",
                 ).build()
         }
 
@@ -386,5 +490,27 @@ class WatchRecordsTask(
 
         // BRANCH 8: all good
         return builder.up().withDetail("reason", "healthy").build()
+    }
+
+    private fun baseBuilder(s: WatchTaskState): Health.Builder {
+        val builder =
+            Health
+                .Builder()
+                .withDetail("lastSuccessfulPollAt", s.lastSuccessfulPollAt?.toString() ?: "never")
+                .withDetail("lastEventProcessedAt", s.lastEventProcessedAt?.toString() ?: "never")
+                .withDetail("lastSuccessfulRegistrationAt", s.lastSuccessfulRegistrationAt?.toString() ?: "never")
+                .withDetail("consecutiveEventFailures", s.consecutiveEventFailures)
+                .withDetail("consecutiveRegistrationFailures", s.consecutiveRegistrationFailures)
+                .withDetail("consecutiveFailures", s.consecutiveFailures)
+                .withDetail("currentBackoffMs", s.currentBackoff.toMillis())
+                .withDetail("registeredDirs", registeredDirs.size)
+        s.lastFailure?.let {
+            builder.withDetail(
+                "lastFailure",
+                "${it.javaClass.simpleName}: ${it.message?.take(500) ?: "<no-message>"}",
+            )
+        }
+        s.lastFailureAt?.let { builder.withDetail("lastFailureAt", it.toString()) }
+        return builder
     }
 }
