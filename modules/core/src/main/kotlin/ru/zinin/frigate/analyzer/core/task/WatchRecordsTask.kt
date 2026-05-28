@@ -168,6 +168,10 @@ class WatchRecordsTask(
     }
 
     internal suspend fun runSupervised() {
+        // Fresh-start invariant: this function is only entered from start() right after
+        // construction, so resetting currentBackoff is safe. Tests that pre-seed state via
+        // stateForTesting must not also call runSupervised(), or the seeded backoff would be
+        // clobbered.
         state.updateAndGet { it.copy(currentBackoff = INITIAL_BACKOFF) }
         var lastCleanup = Instant.now(clock)
         while (currentCoroutineContext().isActive) {

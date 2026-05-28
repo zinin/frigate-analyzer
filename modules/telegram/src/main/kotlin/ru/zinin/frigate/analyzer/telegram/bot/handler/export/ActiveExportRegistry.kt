@@ -46,9 +46,10 @@ class ActiveExportRegistry(
          * Mutable snapshot of the entry's transient state. All writes MUST go through
          * [updateState] / [getAndUpdateState]. Convenience getters [cancellable] / [state]
          * each do a single atomic read. For multi-field reads where pair-consistency matters,
-         * use [snapshot] and work with the returned [EntryState] locally — this guarantees
-         * no reader observes a partial snapshot (e.g., the new `cancellable` paired with the
-         * old `state`), even under concurrent writers.
+         * capture the snapshot via the return value of [updateState] (post-update) or
+         * [getAndUpdateState] (pre-update) and work with the returned [EntryState] locally —
+         * the convenience getters do separate atomic reads and can return values from
+         * different writers.
          */
         private val stateRef = AtomicReference(EntryState())
 
