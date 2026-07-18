@@ -19,6 +19,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
+import ru.zinin.frigate.analyzer.telegram.i18n.TimezonePresets
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.time.Clock
@@ -52,33 +53,12 @@ class TimezoneCommandHandler(
                     InlineKeyboardMarkup(
                         keyboard =
                             matrix {
-                                row {
-                                    +CallbackDataInlineKeyboardButton(
-                                        msg.get("command.timezone.zone.kaliningrad", lang),
-                                        "tz:Europe/Kaliningrad",
-                                    )
-                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.moscow", lang), "tz:Europe/Moscow")
-                                }
-                                row {
-                                    +CallbackDataInlineKeyboardButton(
-                                        msg.get("command.timezone.zone.yekaterinburg", lang),
-                                        "tz:Asia/Yekaterinburg",
-                                    )
-                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.omsk", lang), "tz:Asia/Omsk")
-                                }
-                                row {
-                                    +CallbackDataInlineKeyboardButton(
-                                        msg.get("command.timezone.zone.krasnoyarsk", lang),
-                                        "tz:Asia/Krasnoyarsk",
-                                    )
-                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.irkutsk", lang), "tz:Asia/Irkutsk")
-                                }
-                                row {
-                                    +CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.yakutsk", lang), "tz:Asia/Yakutsk")
-                                    +CallbackDataInlineKeyboardButton(
-                                        msg.get("command.timezone.zone.vladivostok", lang),
-                                        "tz:Asia/Vladivostok",
-                                    )
+                                TimezonePresets.CITIES.chunked(2).forEach { pair ->
+                                    row {
+                                        pair.forEach { (labelKey, olson) ->
+                                            +CallbackDataInlineKeyboardButton(msg.get(labelKey, lang), "tz:$olson")
+                                        }
+                                    }
                                 }
                                 row {
                                     +CallbackDataInlineKeyboardButton(msg.get("command.timezone.manual.input", lang), "tz:manual")
