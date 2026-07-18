@@ -14,7 +14,10 @@ interface NotificationDecisionService {
      *   3. cluster detections → if all filtered by confidenceFloor, NO_VALID_DETECTIONS, no tracker call.
      *   4. tracker.evaluate → state is updated unconditionally so it stays coherent
      *      when the global toggle returns ON.
-     *   5. compose decision: GLOBAL_OFF if !globalEnabled, otherwise NEW_OBJECTS / ALL_REPEATED.
+     *   5. compose decision — reason = first tripped gate (normative precedence, see spec):
+     *      GLOBAL_OFF if !globalEnabled, OUT_OF_SCHEDULE if the recording's recordTimestamp
+     *      is outside the configured notification window (schedule read is fail-open and
+     *      never throws), otherwise NEW_OBJECTS / ALL_REPEATED.
      *
      * On tracker exceptions while globalEnabled = true: returns shouldNotify = true with
      * TRACKER_ERROR (fail-open).

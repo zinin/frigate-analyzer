@@ -7,14 +7,18 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.model.dto.DetectionDelta
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecisionReason
+import ru.zinin.frigate.analyzer.model.dto.NotificationSchedule
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
+import ru.zinin.frigate.analyzer.model.dto.ScheduleWindow
 import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
+import ru.zinin.frigate.analyzer.service.NotificationScheduleService
 import ru.zinin.frigate.analyzer.service.ObjectTrackerService
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
@@ -25,7 +29,11 @@ import kotlin.test.assertTrue
 class NotificationDecisionServiceImplTest {
     private val tracker = mockk<ObjectTrackerService>()
     private val settings = mockk<AppSettingsService>()
-    private val service = NotificationDecisionServiceImpl(tracker, settings)
+    private val scheduleService =
+        mockk<NotificationScheduleService> {
+            coEvery { getRecordingSchedule() } returns null
+        }
+    private val service = NotificationDecisionServiceImpl(tracker, settings, scheduleService)
 
     private val now = Instant.parse("2026-04-27T12:00:00Z")
     private val recording: RecordingDto =
@@ -171,5 +179,101 @@ class NotificationDecisionServiceImplTest {
             coVerify(exactly = 0) {
                 settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
             }
+        }
+
+    private val nightUtc = NotificationSchedule(ScheduleWindow.parse("00:00-07:00")!!, ZoneId.of("UTC"))
+    private val dayUtc = NotificationSchedule(ScheduleWindow.parse("10:00-14:00")!!, ZoneId.of("UTC"))
+
+    @Test
+    fun `recording outside schedule window is suppressed with OUT_OF_SCHEDULE`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(1, 0, 0, listOf("car"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.OUT_OF_SCHEDULE, decision.reason)
+        }
+
+    @Test
+    fun `recording inside schedule window notifies as usual`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns dayUtc
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(1, 0, 0, listOf("car"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertTrue(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.NEW_OBJECTS, decision.reason)
+        }
+
+    @Test
+    fun `GLOBAL_OFF wins over OUT_OF_SCHEDULE`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(1, 0, 0, listOf("car"))
+
+            val decision = service.evaluate(recording, listOf(det()), globalEnabled = false)
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.GLOBAL_OFF, decision.reason)
+        }
+
+    @Test
+    fun `OUT_OF_SCHEDULE wins over ALL_REPEATED (first tripped gate)`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 1, 0, emptyList())
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.OUT_OF_SCHEDULE, decision.reason)
+        }
+
+    @Test
+    fun `NO_VALID_DETECTIONS wins over OUT_OF_SCHEDULE (empty delta is checked first)`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 0, 0, emptyList())
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.NO_VALID_DETECTIONS, decision.reason)
+        }
+
+    @Test
+    fun `tracker error honors schedule (outside window means no notify)`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            coEvery { tracker.evaluate(recording, any()) } throws RuntimeException("boom")
+
+            val decision = service.evaluate(recording, listOf(det()), globalEnabled = true)
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.TRACKER_ERROR, decision.reason)
+        }
+
+    @Test
+    fun `tracker error inside window stays fail-open`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns dayUtc
+            coEvery { tracker.evaluate(recording, any()) } throws RuntimeException("boom")
+
+            val decision = service.evaluate(recording, listOf(det()), globalEnabled = true)
+
+            assertTrue(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.TRACKER_ERROR, decision.reason)
         }
 }

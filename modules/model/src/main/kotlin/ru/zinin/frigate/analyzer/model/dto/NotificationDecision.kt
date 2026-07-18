@@ -14,5 +14,8 @@ enum class NotificationDecisionReason {
     /** Detections were present but all were filtered out by `confidenceFloor` before tracker. */
     NO_VALID_DETECTIONS,
     GLOBAL_OFF,
+
+    /** Recording's recordTimestamp falls outside the configured global notification window. */
+    OUT_OF_SCHEDULE,
     TRACKER_ERROR,
 }
