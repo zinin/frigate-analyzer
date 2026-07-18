@@ -180,6 +180,10 @@ class NotificationsMessageRendererTest {
         val rendered = renderer.render(ownerState(true, "00:00–07:00", "Europe/Moscow"))
         assertTrue(rendered.text.contains("00:00–07:00"), "text=${rendered.text}")
         assertTrue(rendered.text.contains("Europe/Moscow"), "text=${rendered.text}")
+        // The disabled-but-configured line carries the same window and zone, so without this the
+        // ON and OFF branches are indistinguishable. Every flag in ownerState() is true, so the
+        // owner format lines render ON/ON and "OFF" has no other source in the text.
+        assertFalse(rendered.text.contains("OFF"), "text=${rendered.text}")
     }
 
     @Test
@@ -200,12 +204,18 @@ class NotificationsMessageRendererTest {
     fun `owner text shows misconfigured warning when enabled but window missing`() {
         val rendered = renderer.render(ownerState(true))
         assertTrue(rendered.text.contains("misconfigured", ignoreCase = true), "text=${rendered.text}")
+        // "misconfigured" also occurs in the message key, which MessageResolver returns verbatim
+        // when it cannot resolve it — assert the body and the absence of a raw key instead.
+        assertTrue(rendered.text.contains("notifications are delivered"), "text=${rendered.text}")
+        assertFalse(rendered.text.contains("notifications.settings"), "text=${rendered.text}")
     }
 
     @Test
     fun `owner text shows misconfigured warning when enabled but zone missing`() {
         val rendered = renderer.render(ownerState(true, scheduleWindow = "00:00–07:00"))
         assertTrue(rendered.text.contains("misconfigured", ignoreCase = true), "text=${rendered.text}")
+        assertTrue(rendered.text.contains("notifications are delivered"), "text=${rendered.text}")
+        assertFalse(rendered.text.contains("notifications.settings"), "text=${rendered.text}")
         assertFalse(rendered.text.contains("00:00–07:00"), "text=${rendered.text}")
     }
 
