@@ -71,6 +71,12 @@ keys are created on first configuration; absent keys mean "schedule disabled"):
   computed **before** the tracker `try` block (independent of tracker results; reads go
   through the settings cache, so no prefetch/interface change is needed — the
   `globalEnabled` parameter of `evaluate()` stays as is).
+- `getRecordingSchedule()` **never throws**: read failures degrade to `null` (schedule
+  disabled) with a warn log. This deliberately diverges from the global flag's
+  propagate-to-retry semantics: the facade prefetches the flag before
+  `saveProcessingResult` precisely so settings failures keep the recording retryable,
+  while the schedule is read inside `evaluate()` (after the save) — its safe failure
+  direction is "extra notification", never a lost one.
 - New suppression branch immediately **after** the `!resolvedGlobalEnabled` check:
   `!scheduleAllows` → `NotificationDecision(false, OUT_OF_SCHEDULE, delta)`.
   `OUT_OF_SCHEDULE` is a new `NotificationDecisionReason` value.
@@ -118,15 +124,21 @@ Key UI decisions:
 - **Stateless picker:** the start hour rides inside the end-hour callback data
   (`nfs:g:sched:e:23:7` ≈ 18 bytes, well under Telegram's 64-byte limit). No in-memory
   dialog state; survives restarts and stale keyboards.
-- **`end == start` is rejected** with an `answerCallbackQuery` toast ("end must differ
-  from start"); the screen stays.
+- **`end == start` is rejected** by re-rendering the end-hour picker with a warning line
+  in the message text ("end must differ from start"). A toast is not possible: the bot
+  answers every `nfs:` callback immediately (to clear the button spinner) and a callback
+  cannot be answered twice.
+- **Enabling without a window** (`nfs:g:sched:on` when no window is configured) opens
+  the start-hour picker instead of enabling — prevents an "on but empty" state that
+  would silently behave as disabled.
 - **Saving a window auto-enables the schedule** — "picked a window, expected it to work"
   is the base scenario; disabling remains an explicit button.
 - **Zone materialization:** on first enable/save, if the zone key is absent it is set
   from the owner's current `olson_code` (fallback `UTC`) and immediately shown in the
   status line.
 - **Zone screen:** same city presets as `/timezone` plus manual input via waiter — both
-  patterns already exist in the project.
+  patterns already exist in the project. Manual input uses the `/timezone` dialog
+  conventions: 120-second timeout, `/cancel` to abort, error message on unknown zone.
 - **OWNER-only:** `nfs:g:sched:*` goes through the same owner check as existing
   `nfs:g:*` callbacks.
 
