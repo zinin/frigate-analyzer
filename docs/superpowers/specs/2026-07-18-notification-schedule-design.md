@@ -48,7 +48,12 @@ keys are created on first configuration; absent keys mean "schedule disabled"):
 | `notifications.recording.schedule.zone` | IANA code, e.g. `"Europe/Moscow"` | |
 
 - `AppSettingsService` gains `getString`/`setString`, mirroring the existing
-  `getBoolean`/`setBoolean` (storage is already string-typed; per-key cache unchanged).
+  `getBoolean`/`setBoolean` (storage is already string-typed). The per-key cache
+  additionally learns to remember key ABSENCE (negative caching): the unconfigured
+  schedule — the permanent default state of most installations — must not hit the DB on
+  every `evaluate()`. `set*` invalidation clears value and absence marks alike; a failed
+  repository read caches nothing, so read errors stay transient (fail-open must not
+  outlive the failure).
 - Toggling `enabled` and setting the zone write exactly one key each (window survives
   toggles). Saving a window writes up to three keys in a fixed order — window → zone
   (materialized if absent) → enabled LAST — so a concurrent reader sees either the old
@@ -80,8 +85,9 @@ keys are created on first configuration; absent keys mean "schedule disabled"):
 
 - `scheduleAllows = schedule == null || schedule.contains(recording.recordTimestamp)` is
   computed **before** the tracker `try` block (independent of tracker results; reads go
-  through the settings cache, so no prefetch/interface change is needed — the
-  `globalEnabled` parameter of `evaluate()` stays as is).
+  through the settings cache — absent keys included, see negative caching in Storage — so
+  no prefetch/interface change is needed — the `globalEnabled` parameter of `evaluate()`
+  stays as is).
 - `getRecordingSchedule()` **never throws**: read failures degrade to `null` (schedule
   disabled) with a warn log. This deliberately diverges from the global flag's
   propagate-to-retry semantics: the facade prefetches the flag before
@@ -91,6 +97,13 @@ keys are created on first configuration; absent keys mean "schedule disabled"):
 - New suppression branch immediately **after** the `!resolvedGlobalEnabled` check:
   `!scheduleAllows` → `NotificationDecision(false, OUT_OF_SCHEDULE, delta)`.
   `OUT_OF_SCHEDULE` is a new `NotificationDecisionReason` value.
+- Reason precedence is normative — "first tripped gate", matching how `GLOBAL_OFF`
+  already overrides `ALL_REPEATED` today: `NO_DETECTIONS` → `NO_VALID_DETECTIONS` →
+  `GLOBAL_OFF` → `OUT_OF_SCHEDULE` → `NEW_OBJECTS` / `ALL_REPEATED` (`TRACKER_ERROR` is
+  the separate exception path). Accepted consequences: an out-of-window recording with
+  only repeated objects reports `OUT_OF_SCHEDULE`, not `ALL_REPEATED`; an empty delta
+  reports `NO_VALID_DETECTIONS` even outside the window. `reason` answers "which gate
+  suppressed THIS recording" for logs — not "would it have been delivered otherwise".
 - `TRACKER_ERROR` branch becomes `shouldNotify = resolvedGlobalEnabled && scheduleAllows`:
   a tracker failure outside the window is suppressed even though `newTracksCount` is
   unknown — deliberate, the schedule is a hard time gate independent of tracker state
@@ -109,7 +122,10 @@ Visible to OWNER only, inside the existing global section.
 
 - Status line: `⏰ Detection schedule: 00:00–07:00 (Europe/Moscow)` when enabled; when
   disabled — `…: OFF (00:00–07:00, Europe/Moscow)` if a window is stored (the owner sees
-  what `Enable` will activate), plain `…: OFF` otherwise.
+  what `Enable` will activate), plain `…: OFF` otherwise. A third state covers external
+  DB corruption — `enabled` with a missing/unparsable window or zone renders
+  `…: ⚠️ misconfigured — notifications are delivered` (truthful about the fail-open
+  reality; the `Disable` button stays — turning a broken schedule off is legitimate).
 - Two extra keyboard rows: `[⏰ Schedule on/off]` and `[🕐 Window] [🌐 Zone]` — the owner
   keyboard grows from 5 to 7 rows (a single three-button row is too narrow for the labels).
   Window/Zone buttons are always visible even while the schedule is disabled (the zone
@@ -158,7 +174,11 @@ Key UI decisions:
   input via waiter — both patterns already exist in the project. Manual input uses the
   `/timezone` dialog conventions: 120-second timeout, `/cancel` to abort, error message
   on unknown zone. The preset list is a UI shortcut, NOT a whitelist —
-  `nfs:g:sched:z:<olson>` accepts any valid IANA id.
+  `nfs:g:sched:z:<olson>` accepts any valid IANA id. Manual-input validation is
+  deliberately wider than `/timezone`'s `contains('/')` city filter: any
+  `ZoneId.of`-valid id is accepted, including `UTC` (the feature's own materialization
+  fallback) and fixed offsets (DST-stable for a fixed window); relaxing `/timezone` the
+  same way is a possible follow-up outside this branch.
 - **OWNER-only:** `nfs:g:sched:*` goes through the same owner check as existing
   `nfs:g:*` callbacks.
 
@@ -176,7 +196,9 @@ Key UI decisions:
 
 1. **Corrupt settings** (unparsable window, unknown zone, `start == end`, zone missing
    while enabled): warn log + schedule treated as disabled → notifications flow
-   (**fail-open**: for a security system, noise beats a missed alarm).
+   (**fail-open**: for a security system, noise beats a missed alarm). The
+   `/notifications` status line renders this state as "misconfigured" rather than a
+   misleading `ON` (see UI).
 2. **DST transitions:** `Instant → ZonedDateTime → LocalTime` is always unambiguous (we
    never parse a local time into an instant). On transition nights the window is
    physically one hour longer/shorter — accepted, no special handling. (Spring-forward:
@@ -237,3 +259,8 @@ Key UI decisions:
 - Minute-granularity input in the UI (format supports it; picker offers hours).
 - Prefetching the schedule in the facade or reading it in parallel with the tracker —
   rejected: the cached read is O(1), there is nothing to win.
+- Caching the assembled `NotificationSchedule` inside `NotificationScheduleService` —
+  rejected (iter 1) in favor of negative caching in `AppSettingsServiceImpl`: with key
+  absence cached, steady-state reads are in-memory either way; re-parsing window/zone per
+  evaluation is negligible, and a per-record warn on a corrupt stored value is a
+  deliberately loud anomaly signal, not a log defect.

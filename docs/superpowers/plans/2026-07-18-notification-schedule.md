@@ -300,7 +300,7 @@ git commit -m "feat(model): schedule window and notification schedule types"
 
 ---
 
-### Task 2: `AppSettingsService.getString` / `setString`
+### Task 2: `AppSettingsService.getString` / `setString` + negative caching of absent keys
 
 **Files:**
 - Modify: `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/AppSettingsService.kt`
@@ -310,6 +310,7 @@ git commit -m "feat(model): schedule window and notification schedule types"
 **Interfaces:**
 - Consumes: existing `AppSettingRepository.upsert/findBySettingKey`, existing cache/mutex fields.
 - Produces (used by Task 3): `suspend fun getString(key: String, default: String? = null): String?`, `suspend fun setString(key: String, value: String, updatedBy: String? = null)`.
+- Behavioral guarantee (the schedule hot path in Tasks 3–4 relies on it): absent keys are negatively cached — after the first miss, repeated reads of an unconfigured key are answered from memory until a `set*` of that key; a failed repository read caches nothing (errors stay transient).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -353,6 +354,32 @@ Append to `AppSettingsServiceImplTest` (inside the class; reuse existing `repo`/
             coVerify(exactly = 1) { repo.upsert("s", "new", fixed, "alice") }
             coVerify(atLeast = 2) { repo.findBySettingKey("s") }
         }
+
+    @Test
+    fun `absent key is negatively cached until invalidated`() =
+        runTest {
+            coEvery { repo.findBySettingKey("absent") } returns null
+
+            assertNull(service.getString("absent"))
+            assertNull(service.getString("absent"))
+            assertFalse(service.getBoolean("absent", default = false))
+
+            coVerify(exactly = 1) { repo.findBySettingKey("absent") }
+        }
+
+    @Test
+    fun `setString clears the negative cache entry`() =
+        runTest {
+            coEvery { repo.findBySettingKey("nk") } returns null
+            assertNull(service.getString("nk"))
+
+            coEvery { repo.upsert("nk", "v", fixed, null) } returns 1L
+            service.setString("nk", "v")
+
+            coEvery { repo.findBySettingKey("nk") } returns AppSettingEntity("nk", "v", fixed, null)
+            assertEquals("v", service.getString("nk"))
+            coVerify(exactly = 2) { repo.findBySettingKey("nk") }
+        }
 ```
 
 `git add` the test file.
@@ -381,19 +408,39 @@ In `AppSettingsService.kt` add below `setBoolean`:
 
 - [ ] **Step 4: Implement in `AppSettingsServiceImpl`**
 
-Add below `setBoolean` (same file structure — cache lookup mirrors `getBoolean`, write mirrors `setBoolean`):
+Two changes in one edit: (a) the cache learns to remember key ABSENCE (negative caching) —
+an unconfigured key, e.g. the schedule triple in its permanent default state, must stop
+hitting the DB under `cacheMutex` on every read; (b) `getString`/`setString` on top of the
+shared raw-read path. `ConcurrentHashMap` forbids `null` values, hence the wrapper.
+
+Replace the cache field, `loadAndCache` and the body of `getBoolean`, and add the new methods:
 
 ```kotlin
+    // Wrapper so the cache can also hold "key is absent" (value == null):
+    // ConcurrentHashMap forbids null values. A failed repository read caches
+    // NOTHING — read errors must stay transient, or fail-open would outlive the failure.
+    private class CachedValue(
+        val value: String?,
+    )
+
+    private val cache = ConcurrentHashMap<String, CachedValue>()
+    private val cacheMutex = Mutex()
+
+    override suspend fun getBoolean(
+        key: String,
+        default: Boolean,
+    ): Boolean {
+        val raw = getRaw(key) ?: return default
+        return raw.toBooleanStrictOrNull() ?: run {
+            logger.warn { "AppSettings: invalid stored value for '$key'='$raw'; falling back to default=$default" }
+            default
+        }
+    }
+
     override suspend fun getString(
         key: String,
         default: String?,
-    ): String? {
-        val raw =
-            cache[key] ?: cacheMutex.withLock {
-                cache[key] ?: loadAndCache(key)
-            }
-        return raw ?: default
-    }
+    ): String? = getRaw(key) ?: default
 
     override suspend fun setString(
         key: String,
@@ -411,10 +458,25 @@ Add below `setBoolean` (same file structure — cache lookup mirrors `getBoolean
         logger.info { "AppSettings: '$key' set by ${updatedBy ?: "<system>"}" }
         logger.debug { "AppSettings: '$key' value: '$value'" }
     }
+
+    private suspend fun getRaw(key: String): String? {
+        val cached =
+            cache[key] ?: cacheMutex.withLock {
+                cache[key] ?: loadAndCache(key)
+            }
+        return cached.value
+    }
+
+    private suspend fun loadAndCache(key: String): CachedValue {
+        val entity = repository.findBySettingKey(key)
+        return CachedValue(entity?.settingValue).also { cache[key] = it }
+    }
 ```
 
-Apply the same two changes to the existing `setBoolean` for consistency (check the upsert
-return with a `0L` warn; move the value from the info line to a debug line).
+`setBoolean` keeps its shape (upsert → invalidate under mutex): its `cache.remove(key)` now
+clears value and absence marks alike, no further change needed for invalidation. Apply the
+same two logging changes to it for consistency (check the upsert return with a `0L` warn;
+move the value from the info line to a debug line).
 
 `git add` both files.
 
@@ -859,6 +921,34 @@ Append new tests (fixture `recording.recordTimestamp` is `2026-04-27T12:00:00Z`;
         }
 
     @Test
+    fun `OUT_OF_SCHEDULE wins over ALL_REPEATED (first tripped gate)`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 1, 0, emptyList())
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.OUT_OF_SCHEDULE, decision.reason)
+        }
+
+    @Test
+    fun `NO_VALID_DETECTIONS wins over OUT_OF_SCHEDULE (empty delta is checked first)`() =
+        runTest {
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 0, 0, emptyList())
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.NO_VALID_DETECTIONS, decision.reason)
+        }
+
+    @Test
     fun `tracker error honors schedule (outside window means no notify)`() =
         runTest {
             coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
@@ -883,7 +973,7 @@ Append new tests (fixture `recording.recordTimestamp` is `2026-04-27T12:00:00Z`;
         }
 ```
 
-**Note for the implementer:** the `DetectionDelta(1, 0, 0, listOf("car"))` literal was verified against this file's existing "new objects → notify" test (`NotificationDecisionServiceImplTest.kt:81`, checked 2026-07-18); if the file has drifted, copy the literal from that test instead.
+**Note for the implementer:** the `DetectionDelta(1, 0, 0, listOf("car"))` literal was verified against this file's existing "new objects → notify" test (`NotificationDecisionServiceImplTest.kt:81`, checked 2026-07-18); if the file has drifted, copy the literal from that test instead. Field order is `(newTracksCount, matchedTracksCount, staleTracksCount, newClasses)` (verified against `DetectionDelta.kt`), so the precedence tests use `(0, 1, 0, emptyList())` = only repeats and `(0, 0, 0, emptyList())` = empty delta.
 
 `git add` the test file.
 
@@ -968,9 +1058,10 @@ Replace the catch-block decision so the tracker-error path honors both gates:
 In `NotificationDecisionService.kt`, in the `Order:` list of the `evaluate` KDoc, replace item 5 with:
 
 ```
-     *   5. compose decision: GLOBAL_OFF if !globalEnabled, OUT_OF_SCHEDULE if the recording's
-     *      recordTimestamp is outside the configured notification window (schedule read is
-     *      fail-open and never throws), otherwise NEW_OBJECTS / ALL_REPEATED.
+     *   5. compose decision — reason = first tripped gate (normative precedence, see spec):
+     *      GLOBAL_OFF if !globalEnabled, OUT_OF_SCHEDULE if the recording's recordTimestamp
+     *      is outside the configured notification window (schedule read is fail-open and
+     *      never throws), otherwise NEW_OBJECTS / ALL_REPEATED.
 ```
 
 `git add` the three modified main files.
@@ -1371,6 +1462,19 @@ In `NotificationsMessageRendererTest.kt`:
     }
 
     @Test
+    fun `owner text shows misconfigured warning when enabled but window missing`() {
+        val rendered = renderer.render(ownerState(true))
+        assertTrue(rendered.text.contains("misconfigured", ignoreCase = true), "text=${rendered.text}")
+    }
+
+    @Test
+    fun `owner text shows misconfigured warning when enabled but zone missing`() {
+        val rendered = renderer.render(ownerState(true, scheduleWindow = "00:00–07:00"))
+        assertTrue(rendered.text.contains("misconfigured", ignoreCase = true), "text=${rendered.text}")
+        assertFalse(rendered.text.contains("00:00–07:00"), "text=${rendered.text}")
+    }
+
+    @Test
     fun `schedule toggle button emits explicit enable callback when disabled`() {
         val rendered = renderer.render(ownerState(false))
         val toggle = rendered.keyboard.keyboard[4][0] as CallbackDataInlineKeyboardButton
@@ -1428,6 +1532,7 @@ Append to `messages_en.properties` (after line `notifications.settings.line.owne
 notifications.settings.sched.line.on.format=⏰ Detection schedule: {0} ({1})
 notifications.settings.sched.line.off.format=⏰ Detection schedule: {0}
 notifications.settings.sched.line.off.configured.format=⏰ Detection schedule: {0} ({1}, {2})
+notifications.settings.sched.line.misconfigured=⏰ Detection schedule: ⚠️ misconfigured — notifications are delivered
 notifications.settings.button.sched.enable=⏰ Enable schedule
 notifications.settings.button.sched.disable=⏰ Disable schedule
 notifications.settings.button.sched.window=🕐 Window
@@ -1443,6 +1548,7 @@ Append to `messages_ru.properties` (same location):
 notifications.settings.sched.line.on.format=⏰ Расписание детектов: {0} ({1})
 notifications.settings.sched.line.off.format=⏰ Расписание детектов: {0}
 notifications.settings.sched.line.off.configured.format=⏰ Расписание детектов: {0} ({1}, {2})
+notifications.settings.sched.line.misconfigured=⏰ Расписание детектов: ⚠️ настроено некорректно — уведомления доставляются
 notifications.settings.button.sched.enable=⏰ Включить расписание
 notifications.settings.button.sched.disable=⏰ Выключить расписание
 notifications.settings.button.sched.window=🕐 Окно
@@ -1476,12 +1582,17 @@ In `NotificationsMessageRenderer.kt`:
                 val offLabel = msg.get("notifications.settings.state.off", lang)
                 val scheduleLine =
                     when {
-                        state.scheduleEnabled == true && state.scheduleWindow != null ->
+                        state.scheduleEnabled == true && (state.scheduleWindow == null || state.scheduleZone == null) ->
+                            // Reachable only via external DB corruption (the UI materializes the zone
+                            // on every enable/save): the schedule fail-opens and notifications flow —
+                            // say so instead of rendering a misleading ON with placeholders.
+                            msg.get("notifications.settings.sched.line.misconfigured", lang)
+                        state.scheduleEnabled == true && state.scheduleWindow != null && state.scheduleZone != null ->
                             msg.get(
                                 "notifications.settings.sched.line.on.format",
                                 lang,
                                 state.scheduleWindow,
-                                state.scheduleZone ?: "?",
+                                state.scheduleZone,
                             )
                         state.scheduleWindow != null ->
                             // Disabled but configured: show what "Enable schedule" will activate.
@@ -2490,8 +2601,8 @@ In `.claude/rules/telegram-notifications.md`:
 5. Operational notes — append:
 
 ```markdown
-- **Schedule ops:** `app_settings` values are cached per-process without TTL — direct SQL edits
-  of `notifications.recording.schedule.*` are NOT picked up until restart (single-instance
+- **Schedule ops:** `app_settings` values and key absence are cached per-process without TTL —
+  direct SQL edits or inserts of `notifications.recording.schedule.*` are NOT picked up until restart (single-instance
   deployment assumed). The manual-zone waiter does not survive a bot restart; one active waiter
   per chat. Rollback: disable via the `/notifications` toggle (instant), or
   `DELETE FROM app_settings WHERE setting_key LIKE 'notifications.recording.schedule.%'` +
