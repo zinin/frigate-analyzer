@@ -38,21 +38,13 @@ class AppSettingsServiceImpl(
         }
     }
 
+    // Booleans are stored as their string form; the whole write path lives in setString.
     override suspend fun setBoolean(
         key: String,
         value: Boolean,
         updatedBy: String?,
     ) {
-        val v = value.toString()
-        val rows = repository.upsert(key, v, Instant.now(clock), updatedBy)
-        if (rows == 0L) {
-            logger.warn { "AppSettings: upsert of '$key' reported 0 affected rows" }
-        }
-        cacheMutex.withLock {
-            cache.remove(key)
-        }
-        logger.info { "AppSettings: '$key' set by ${updatedBy ?: "<system>"}" }
-        logger.debug { "AppSettings: '$key' value: '$v'" }
+        setString(key, value.toString(), updatedBy)
     }
 
     override suspend fun getString(

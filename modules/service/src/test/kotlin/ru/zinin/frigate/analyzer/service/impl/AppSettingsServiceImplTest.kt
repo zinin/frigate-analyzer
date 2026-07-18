@@ -116,7 +116,7 @@ class AppSettingsServiceImplTest {
             assertEquals("new", service.getString("s"))
 
             coVerify(exactly = 1) { repo.upsert("s", "new", fixed, "alice") }
-            coVerify(atLeast = 2) { repo.findBySettingKey("s") }
+            coVerify(exactly = 2) { repo.findBySettingKey("s") }
         }
 
     @Test
