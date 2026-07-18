@@ -17,18 +17,21 @@ class AppSettingsServiceImpl(
     private val repository: AppSettingRepository,
     private val clock: Clock,
 ) : AppSettingsService {
-    private val cache = ConcurrentHashMap<String, String>()
+    // Wrapper so the cache can also hold "key is absent" (value == null):
+    // ConcurrentHashMap forbids null values. A failed repository read caches
+    // NOTHING — read errors must stay transient, or fail-open would outlive the failure.
+    private class CachedValue(
+        val value: String?,
+    )
+
+    private val cache = ConcurrentHashMap<String, CachedValue>()
     private val cacheMutex = Mutex()
 
     override suspend fun getBoolean(
         key: String,
         default: Boolean,
     ): Boolean {
-        val raw =
-            cache[key] ?: cacheMutex.withLock {
-                cache[key] ?: loadAndCache(key)
-            }
-        if (raw == null) return default
+        val raw = getRaw(key) ?: return default
         return raw.toBooleanStrictOrNull() ?: run {
             logger.warn { "AppSettings: invalid stored value for '$key'='$raw'; falling back to default=$default" }
             default
@@ -41,17 +44,49 @@ class AppSettingsServiceImpl(
         updatedBy: String?,
     ) {
         val v = value.toString()
-        repository.upsert(key, v, Instant.now(clock), updatedBy)
+        val rows = repository.upsert(key, v, Instant.now(clock), updatedBy)
+        if (rows == 0L) {
+            logger.warn { "AppSettings: upsert of '$key' reported 0 affected rows" }
+        }
         cacheMutex.withLock {
             cache.remove(key)
         }
-        logger.info { "AppSettings: '$key' set to $v by ${updatedBy ?: "<system>"}" }
+        logger.info { "AppSettings: '$key' set by ${updatedBy ?: "<system>"}" }
+        logger.debug { "AppSettings: '$key' value: '$v'" }
     }
 
-    private suspend fun loadAndCache(key: String): String? {
-        val entity = repository.findBySettingKey(key) ?: return null
-        val v = entity.settingValue ?: return null
-        cache[key] = v
-        return v
+    override suspend fun getString(
+        key: String,
+        default: String?,
+    ): String? = getRaw(key) ?: default
+
+    override suspend fun setString(
+        key: String,
+        value: String,
+        updatedBy: String?,
+    ) {
+        val rows = repository.upsert(key, value, Instant.now(clock), updatedBy)
+        if (rows == 0L) {
+            logger.warn { "AppSettings: upsert of '$key' reported 0 affected rows" }
+        }
+        cacheMutex.withLock {
+            cache.remove(key)
+        }
+        // Value at debug only: general-purpose method, a future key may hold something sensitive.
+        logger.info { "AppSettings: '$key' set by ${updatedBy ?: "<system>"}" }
+        logger.debug { "AppSettings: '$key' value: '$value'" }
+    }
+
+    private suspend fun getRaw(key: String): String? {
+        val cached =
+            cache[key] ?: cacheMutex.withLock {
+                cache[key] ?: loadAndCache(key)
+            }
+        return cached.value
+    }
+
+    private suspend fun loadAndCache(key: String): CachedValue {
+        val entity = repository.findBySettingKey(key)
+        return CachedValue(entity?.settingValue).also { cache[key] = it }
     }
 }
