@@ -60,6 +60,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -96,6 +97,17 @@ class NotificationScheduleTest {
     }
 
     @Test
+    fun `parse rejects hour 24`() {
+        // SMART resolver would silently turn "24:00" into 00:00 — STRICT must reject it.
+        assertNull(ScheduleWindow.parse("24:00-07:00"))
+    }
+
+    @Test
+    fun `parse rejects invalid minutes`() {
+        assertNull(ScheduleWindow.parse("00:60-07:00"))
+    }
+
+    @Test
     fun `parse rejects equal start and end`() {
         assertNull(ScheduleWindow.parse("07:00-07:00"))
     }
@@ -114,6 +126,11 @@ class NotificationScheduleTest {
     @Test
     fun `ofHours builds whole-hour window`() {
         assertEquals(plain, ScheduleWindow.ofHours(0, 7))
+    }
+
+    @Test
+    fun `equal start and end is rejected at construction`() {
+        assertFailsWith<IllegalArgumentException> { ScheduleWindow.ofHours(7, 7) }
     }
 
     // -- contains: plain window --
@@ -153,6 +170,11 @@ class NotificationScheduleTest {
     @Test
     fun `crossing window includes early morning`() {
         assertTrue(crossing.contains(LocalTime.of(3, 0)))
+    }
+
+    @Test
+    fun `crossing window includes midnight`() {
+        assertTrue(crossing.contains(LocalTime.MIDNIGHT))
     }
 
     @Test
@@ -204,16 +226,21 @@ import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.ResolverStyle
 
 /**
  * Daily notification window over the half-open interval [start, end).
  * start > end means the window crosses midnight (e.g. 23:00-07:00).
- * start == end is not a valid window and is rejected by [parse].
+ * start == end is not a valid window: [parse] returns null, direct construction throws.
  */
 data class ScheduleWindow(
     val start: LocalTime,
     val end: LocalTime,
 ) {
+    init {
+        require(start != end) { "Window start must differ from end" }
+    }
+
     /** Membership in [start, end) with midnight wrap when start > end. */
     fun contains(time: LocalTime): Boolean =
         if (start < end) {
@@ -229,7 +256,7 @@ data class ScheduleWindow(
     fun displayFormat(): String = "${FORMATTER.format(start)}–${FORMATTER.format(end)}"
 
     companion object {
-        private val FORMATTER = DateTimeFormatter.ofPattern("HH:mm")
+        private val FORMATTER = DateTimeFormatter.ofPattern("HH:mm").withResolverStyle(ResolverStyle.STRICT)
 
         /** Parses the storage form; null on malformed input or start == end. */
         fun parse(raw: String): ScheduleWindow? {
@@ -373,13 +400,21 @@ Add below `setBoolean` (same file structure — cache lookup mirrors `getBoolean
         value: String,
         updatedBy: String?,
     ) {
-        repository.upsert(key, value, Instant.now(clock), updatedBy)
+        val rows = repository.upsert(key, value, Instant.now(clock), updatedBy)
+        if (rows == 0L) {
+            logger.warn { "AppSettings: upsert of '$key' reported 0 affected rows" }
+        }
         cacheMutex.withLock {
             cache.remove(key)
         }
-        logger.info { "AppSettings: '$key' set to '$value' by ${updatedBy ?: "<system>"}" }
+        // Value at debug only: general-purpose method, a future key may hold something sensitive.
+        logger.info { "AppSettings: '$key' set by ${updatedBy ?: "<system>"}" }
+        logger.debug { "AppSettings: '$key' value: '$value'" }
     }
 ```
+
+Apply the same two changes to the existing `setBoolean` for consistency (check the upsert
+return with a `0L` warn; move the value from the info line to a debug line).
 
 `git add` both files.
 
@@ -594,13 +629,22 @@ interface NotificationScheduleService {
      */
     suspend fun getRecordingSchedule(): NotificationSchedule?
 
-    /** Raw enabled flag for the settings dialog (false when absent or invalid). */
+    /**
+     * Raw enabled flag for the settings dialog (false when absent or invalid).
+     * NOT fail-open: settings read failures propagate — only [getRecordingSchedule] never throws.
+     */
     suspend fun isEnabled(): Boolean
 
-    /** Configured window regardless of the enabled flag; null when absent or corrupt. */
+    /**
+     * Configured window regardless of the enabled flag; null when absent or corrupt.
+     * NOT fail-open: settings read failures propagate — only [getRecordingSchedule] never throws.
+     */
     suspend fun getWindow(): ScheduleWindow?
 
-    /** Configured zone regardless of the enabled flag; null when absent or corrupt. */
+    /**
+     * Configured zone regardless of the enabled flag; null when absent or corrupt.
+     * NOT fail-open: settings read failures propagate — only [getRecordingSchedule] never throws.
+     */
     suspend fun getZone(): ZoneId?
 
     suspend fun setEnabled(
@@ -779,7 +823,7 @@ Append new tests (fixture `recording.recordTimestamp` is `2026-04-27T12:00:00Z`;
             coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
             coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
             coEvery { tracker.evaluate(recording, any()) } returns
-                DetectionDelta(/* same args as the existing new-objects test: newTracksCount = 1, etc. */)
+                DetectionDelta(1, 0, 0, listOf("car"))
 
             val decision = service.evaluate(recording, listOf(det()))
 
@@ -793,7 +837,7 @@ Append new tests (fixture `recording.recordTimestamp` is `2026-04-27T12:00:00Z`;
             coEvery { scheduleService.getRecordingSchedule() } returns dayUtc
             coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
             coEvery { tracker.evaluate(recording, any()) } returns
-                DetectionDelta(/* same args as the existing new-objects test */)
+                DetectionDelta(1, 0, 0, listOf("car"))
 
             val decision = service.evaluate(recording, listOf(det()))
 
@@ -806,7 +850,7 @@ Append new tests (fixture `recording.recordTimestamp` is `2026-04-27T12:00:00Z`;
         runTest {
             coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
             coEvery { tracker.evaluate(recording, any()) } returns
-                DetectionDelta(/* same args as the existing new-objects test */)
+                DetectionDelta(1, 0, 0, listOf("car"))
 
             val decision = service.evaluate(recording, listOf(det()), globalEnabled = false)
 
@@ -839,7 +883,7 @@ Append new tests (fixture `recording.recordTimestamp` is `2026-04-27T12:00:00Z`;
         }
 ```
 
-**Note for the implementer:** the `DetectionDelta(...)` placeholders above MUST be replaced with the literal constructor call copied from this file's existing "new objects → notify" test (the one asserting `NEW_OBJECTS`), so the delta reports `newTracksCount > 0` and zero-vs-nonzero fields match that test exactly.
+**Note for the implementer:** the `DetectionDelta(1, 0, 0, listOf("car"))` literal was verified against this file's existing "new objects → notify" test (`NotificationDecisionServiceImplTest.kt:81`, checked 2026-07-18); if the file has drifted, copy the literal from that test instead.
 
 `git add` the test file.
 
@@ -889,6 +933,8 @@ In `evaluate()`, after `val resolvedGlobalEnabled = ...`:
 
 ```kotlin
         // Never throws: fail-open null on unreadable/corrupt settings (see NotificationScheduleService).
+        // Deliberate asymmetry with the global flag: flag read failures propagate (recording stays
+        // retryable), schedule read failures yield an EXTRA notification, never a lost one.
         val schedule = scheduleService.getRecordingSchedule()
         val scheduleAllows = schedule == null || schedule.contains(recording.recordTimestamp)
 ```
@@ -1277,8 +1323,9 @@ In `NotificationsMessageRendererTest.kt`:
     }
 ```
 
-2. Search the whole test file for every other construction with `isOwner = true` (there may be
-   additional owner-variant tests beyond the row-count one). Each of them MUST add
+2. Update every other construction with `isOwner = true` in this file — currently exactly two
+   besides the row-count one, at lines 128 and 146 (verified 2026-07-18; re-check with a search
+   for `isOwner = true` if the file has drifted). Each of them MUST add
    `scheduleEnabled = false,` to the `NotificationsViewState(...)` call — after Step 4 the
    renderer `requireNotNull`s this field for owners and those tests would otherwise fail at
    runtime. Non-owner constructions stay untouched (defaults are correct for them).
@@ -1310,9 +1357,17 @@ In `NotificationsMessageRendererTest.kt`:
     }
 
     @Test
-    fun `owner text shows schedule off when disabled`() {
+    fun `owner text shows off with stored window when disabled`() {
         val rendered = renderer.render(ownerState(false, "00:00–07:00", "Europe/Moscow"))
         assertTrue(rendered.text.contains("OFF"), "text=${rendered.text}")
+        assertTrue(rendered.text.contains("00:00–07:00"), "text=${rendered.text}")
+    }
+
+    @Test
+    fun `owner text shows plain off when nothing configured`() {
+        val rendered = renderer.render(ownerState(false))
+        assertTrue(rendered.text.contains("OFF"), "text=${rendered.text}")
+        assertFalse(rendered.text.contains("00:00"), "text=${rendered.text}")
     }
 
     @Test
@@ -1371,18 +1426,23 @@ Append to `messages_en.properties` (after line `notifications.settings.line.owne
 
 ```properties
 notifications.settings.sched.line.on.format=⏰ Detection schedule: {0} ({1})
-notifications.settings.sched.line.off=⏰ Detection schedule: OFF
+notifications.settings.sched.line.off.format=⏰ Detection schedule: {0}
+notifications.settings.sched.line.off.configured.format=⏰ Detection schedule: {0} ({1}, {2})
 notifications.settings.button.sched.enable=⏰ Enable schedule
 notifications.settings.button.sched.disable=⏰ Disable schedule
 notifications.settings.button.sched.window=🕐 Window
 notifications.settings.button.sched.zone=🌐 Timezone
 ```
 
+(`{0}` in both off-formats is the localized OFF label — reuse the existing
+`notifications.settings.state.off` key so the OFF/ВЫКЛ translation lives in one place.)
+
 Append to `messages_ru.properties` (same location):
 
 ```properties
 notifications.settings.sched.line.on.format=⏰ Расписание детектов: {0} ({1})
-notifications.settings.sched.line.off=⏰ Расписание детектов: ВЫКЛ
+notifications.settings.sched.line.off.format=⏰ Расписание детектов: {0}
+notifications.settings.sched.line.off.configured.format=⏰ Расписание детектов: {0} ({1}, {2})
 notifications.settings.button.sched.enable=⏰ Включить расписание
 notifications.settings.button.sched.disable=⏰ Выключить расписание
 notifications.settings.button.sched.window=🕐 Окно
@@ -1413,16 +1473,26 @@ In `NotificationsMessageRenderer.kt`:
 
 ```kotlin
             if (state.isOwner) {
+                val offLabel = msg.get("notifications.settings.state.off", lang)
                 val scheduleLine =
-                    if (state.scheduleEnabled == true && state.scheduleWindow != null) {
-                        msg.get(
-                            "notifications.settings.sched.line.on.format",
-                            lang,
-                            state.scheduleWindow,
-                            state.scheduleZone ?: "?",
-                        )
-                    } else {
-                        msg.get("notifications.settings.sched.line.off", lang)
+                    when {
+                        state.scheduleEnabled == true && state.scheduleWindow != null ->
+                            msg.get(
+                                "notifications.settings.sched.line.on.format",
+                                lang,
+                                state.scheduleWindow,
+                                state.scheduleZone ?: "?",
+                            )
+                        state.scheduleWindow != null ->
+                            // Disabled but configured: show what "Enable schedule" will activate.
+                            msg.get(
+                                "notifications.settings.sched.line.off.configured.format",
+                                lang,
+                                offLabel,
+                                state.scheduleWindow,
+                                state.scheduleZone ?: "?",
+                            )
+                        else -> msg.get("notifications.settings.sched.line.off.format", lang, offLabel)
                     }
                 appendLine(scheduleLine)
             }
@@ -1476,6 +1546,8 @@ git commit -m "feat(telegram): schedule status and buttons in /notifications"
 
 **Files:**
 - Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/ScheduleKeyboardRenderer.kt`
+- Create: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/i18n/TimezonePresets.kt`
+- Modify: `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/TimezoneCommandHandler.kt`
 - Modify: `modules/telegram/src/main/resources/messages_en.properties`
 - Modify: `modules/telegram/src/main/resources/messages_ru.properties`
 - Test: `modules/telegram/src/test/kotlin/ru/zinin/frigate/analyzer/telegram/bot/handler/notifications/ScheduleKeyboardRendererTest.kt`
@@ -1697,7 +1769,8 @@ class ScheduleKeyboardRenderer(
                     (0..23).chunked(6).forEach { hours ->
                         row {
                             hours.forEach { hour ->
-                                +CallbackDataInlineKeyboardButton(formatHour(hour).substringBefore(":"), callbackFor(hour))
+                                // Picker hours are always 00–23 zero-padded, locale-independent.
+                                +CallbackDataInlineKeyboardButton("%02d".format(hour), callbackFor(hour))
                             }
                         }
                     }
@@ -1708,23 +1781,41 @@ class ScheduleKeyboardRenderer(
         )
 
     private fun formatHour(hour: Int): String = "%02d:00".format(hour)
-
-    companion object {
-        /** Same city presets as /timezone (label message key → IANA id). */
-        private val ZONE_PRESETS =
-            listOf(
-                "command.timezone.zone.kaliningrad" to "Europe/Kaliningrad",
-                "command.timezone.zone.moscow" to "Europe/Moscow",
-                "command.timezone.zone.yekaterinburg" to "Asia/Yekaterinburg",
-                "command.timezone.zone.omsk" to "Asia/Omsk",
-                "command.timezone.zone.krasnoyarsk" to "Asia/Krasnoyarsk",
-                "command.timezone.zone.irkutsk" to "Asia/Irkutsk",
-                "command.timezone.zone.yakutsk" to "Asia/Yakutsk",
-                "command.timezone.zone.vladivostok" to "Asia/Vladivostok",
-            )
-    }
 }
 ```
+
+In `zoneScreen`, `ZONE_PRESETS.chunked(2)` becomes `TimezonePresets.CITIES.chunked(2)` (add
+import `ru.zinin.frigate.analyzer.telegram.i18n.TimezonePresets`).
+
+- [ ] **Step 4a: Extract the shared preset list and reuse it in `/timezone`**
+
+Create `modules/telegram/src/main/kotlin/ru/zinin/frigate/analyzer/telegram/i18n/TimezonePresets.kt`:
+
+```kotlin
+package ru.zinin.frigate.analyzer.telegram.i18n
+
+/** City presets shared by /timezone and the schedule zone screen (label message key → IANA id). */
+object TimezonePresets {
+    val CITIES =
+        listOf(
+            "command.timezone.zone.kaliningrad" to "Europe/Kaliningrad",
+            "command.timezone.zone.moscow" to "Europe/Moscow",
+            "command.timezone.zone.yekaterinburg" to "Asia/Yekaterinburg",
+            "command.timezone.zone.omsk" to "Asia/Omsk",
+            "command.timezone.zone.krasnoyarsk" to "Asia/Krasnoyarsk",
+            "command.timezone.zone.irkutsk" to "Asia/Irkutsk",
+            "command.timezone.zone.yakutsk" to "Asia/Yakutsk",
+            "command.timezone.zone.vladivostok" to "Asia/Vladivostok",
+        )
+}
+```
+
+In `TimezoneCommandHandler` replace the eight hardcoded preset buttons (currently four
+inline rows of two `CallbackDataInlineKeyboardButton(msg.get("command.timezone.zone.…"), "tz:<olson>")`)
+with a loop over `TimezonePresets.CITIES.chunked(2)` producing `"tz:$olson"` callbacks — the
+resulting 4×2 layout, labels and callback data are IDENTICAL to today (the manual-input row
+stays as is), so existing behavior and any existing tests are unchanged. The two preset lists
+can no longer drift apart.
 
 `git add` all modified/created files.
 
@@ -1798,6 +1889,20 @@ class ScheduleCallbackHandlerTest {
             coEvery { scheduleService.getWindow() } returns ScheduleWindow.ofHours(0, 7)
             val outcome = dispatch("nfs:g:sched:on")
             assertEquals(ScheduleCallbackHandler.Outcome.RenderMain, outcome)
+            coVerify(exactly = 1) { scheduleService.setEnabled(true, "owner") }
+        }
+
+    @Test
+    fun `on with window but missing zone materializes zone before enabling`() =
+        runTest {
+            coEvery { scheduleService.getWindow() } returns ScheduleWindow.ofHours(0, 7)
+            coEvery { scheduleService.getZone() } returns null
+            coEvery { userService.getUserZone(chatId) } returns ZoneId.of("Europe/Moscow")
+
+            val outcome = dispatch("nfs:g:sched:on")
+
+            assertEquals(ScheduleCallbackHandler.Outcome.RenderMain, outcome)
+            coVerify(exactly = 1) { scheduleService.setZone(ZoneId.of("Europe/Moscow"), "owner") }
             coVerify(exactly = 1) { scheduleService.setEnabled(true, "owner") }
         }
 
@@ -1914,6 +2019,8 @@ class ScheduleCallbackHandlerTest {
             val outcome = dispatch("nfs:g:sched:home")
             assertEquals(ScheduleCallbackHandler.Outcome.RenderMain, outcome)
             coVerify(exactly = 0) { scheduleService.setEnabled(any(), any()) }
+            coVerify(exactly = 0) { scheduleService.setWindow(any(), any()) }
+            coVerify(exactly = 0) { scheduleService.setZone(any(), any()) }
         }
 
     @Test
@@ -1996,6 +2103,11 @@ class ScheduleCallbackHandler(
                     // of creating an "on but empty" state that behaves as disabled.
                     Outcome.RenderStartPicker
                 } else {
+                    // Spec: the zone materializes on first enable/save — repair it here too so
+                    // "enabled + window + no zone" (externally corrupted DB) cannot survive.
+                    if (scheduleService.getZone() == null) {
+                        scheduleService.setZone(userService.getUserZone(ownerChatId), updatedBy)
+                    }
                     scheduleService.setEnabled(true, updatedBy)
                     Outcome.RenderMain
                 }
@@ -2028,6 +2140,8 @@ class ScheduleCallbackHandler(
                     start == end -> Outcome.RenderEndPicker(start, rejectedEqualEnd = true)
 
                     else -> {
+                        // Write-order invariant: window → zone → enabled LAST, so a concurrent
+                        // reader sees either the old enabled=false or the complete new state.
                         scheduleService.setWindow(ScheduleWindow.ofHours(start, end), updatedBy)
                         if (scheduleService.getZone() == null) {
                             scheduleService.setZone(userService.getUserZone(ownerChatId), updatedBy)
@@ -2100,7 +2214,7 @@ notifications.sched.zone.manual.prompt=Send an IANA timezone code (e.g. Europe/M
 notifications.sched.zone.saved=✅ Schedule timezone saved: {0}
 notifications.sched.zone.invalid=⚠️ Unknown timezone. Open the zone screen and try again.
 notifications.sched.zone.cancelled=Timezone input cancelled
-notifications.sched.zone.timeout=⏰ Timed out waiting for a timezone. Open /notifications again.
+notifications.sched.zone.timeout=⏰ Timed out waiting for a timezone.
 ```
 
 `messages_ru.properties`:
@@ -2110,7 +2224,7 @@ notifications.sched.zone.manual.prompt=Пришлите код таймзоны 
 notifications.sched.zone.saved=✅ Часовой пояс расписания сохранён: {0}
 notifications.sched.zone.invalid=⚠️ Неизвестный часовой пояс. Откройте экран пояса и попробуйте снова.
 notifications.sched.zone.cancelled=Ввод часового пояса отменён
-notifications.sched.zone.timeout=⏰ Время ожидания часового пояса истекло. Откройте /notifications заново.
+notifications.sched.zone.timeout=⏰ Время ожидания часового пояса истекло.
 ```
 
 `git add` both files.
@@ -2166,7 +2280,12 @@ class ScheduleSettingsFlow(
         current: TelegramUserDto,
         isOwner: Boolean,
     ) {
-        val chatId = current.chatId ?: return
+        val chatId =
+            current.chatId ?: run {
+                // Owner is always ACTIVE with a chatId — reaching here means a broken invariant.
+                logger.warn { "sched callback from user without chatId: ${current.username}" }
+                return
+            }
         val lang = current.languageCode ?: "en"
         when (val outcome = callbackHandler.dispatch(data, isOwner, chatId, current.username)) {
             ScheduleCallbackHandler.Outcome.RenderMain -> renderMain(callbackMsg, current, isOwner)
@@ -2259,6 +2378,8 @@ class ScheduleSettingsFlow(
 3. Inside the `onDataCallbackQuery(initialFilter = { it.data.startsWith("nfs:") })` block, immediately after `val owner = userService.isOwner(current.username)` and BEFORE the `notificationsSettingsCallbackHandler.dispatch(...)` call, insert:
 
 ```kotlin
+                    // Routing invariant: the sched subtree MUST be intercepted BEFORE the generic
+                    // notificationsSettingsCallbackHandler.dispatch (which silently IGNOREs it).
                     if (callback.data.startsWith(ScheduleCallbackHandler.PREFIX)) {
                         @Suppress("UNCHECKED_CAST")
                         with(scheduleSettingsFlow) {
@@ -2270,14 +2391,37 @@ class ScheduleSettingsFlow(
 
 (`ContentMessage` is already imported in this file for the existing `editMessageText` cast; if not, add `dev.inmo.tgbotapi.types.message.abstracts.ContentMessage`.)
 
-`git add` the file.
+4. Guard the routing invariant: in the existing `NotificationsSettingsCallbackHandlerTest` add a
+   test asserting that `dispatch("nfs:g:sched:on", ...)` returns the IGNORE outcome (copy the
+   dispatch-call signature from a neighbouring test in that file) — if someone later reorders the
+   bot checks, the silent swallow becomes visible.
+
+`git add` the files.
 
 - [ ] **Step 4: Full telegram module test run**
 
 Via `build-runner` agent: `./gradlew :frigate-analyzer-telegram:test`
 Expected: PASS (includes `MessageKeyParityTest` for the new keys). Fix any ktlint findings with `./gradlew ktlintFormat`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Manual waiter verification (live bot) — REQUIRED before merge**
+
+The manual-zone waiter runs from a callback context for the first time (see the plan-quality
+warning). On a live bot verify:
+
+1. `zman` → valid zone (e.g. `Europe/Berlin`) → saved message + main screen re-rendered.
+2. `zman` → invalid input → error message, flow exits (one-shot).
+3. `zman` → `/cancel` → cancelled message.
+4. `zman` → no input for 120 s → timeout message.
+5. `zman`, then immediately click another `nfs:` button — the button spinner must not hang for
+   120 s (ktgbotapi callback-concurrency semantics are unverified for waiters).
+6. Double `zman` click → no duplicated saves/messages.
+
+Document the waiter limitations while here (Task 10 covers the rules file): the waiter does not
+survive a bot restart; one active waiter per chat.
+
+If any check fails — STOP and discuss (do not improvise around the waiter).
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git commit -m "feat(telegram): wire schedule flow into bot"
@@ -2289,6 +2433,7 @@ git commit -m "feat(telegram): wire schedule flow into bot"
 
 **Files:**
 - Modify: `.claude/rules/telegram-notifications.md`
+- Modify: `.claude/rules/database.md`
 
 **Interfaces:** none (docs + verification only).
 
@@ -2331,19 +2476,48 @@ In `.claude/rules/telegram-notifications.md`:
 ```markdown
 - **Detection schedule** — `NotificationDecisionServiceImpl` additionally suppresses recording
   notifications with reason `OUT_OF_SCHEDULE` when the schedule is enabled and
-  `recording.recordTimestamp` (in the schedule's zone) falls outside the window. Schedule reads
-  are fail-open: corrupt/unreadable settings degrade to "no schedule" with a warn log.
-  Signal-loss alerts ignore the schedule.
+  `recording.recordTimestamp` falls outside the window. The timestamp is event time (a morning
+  backlog run still delivers night events) evaluated in the schedule's own zone — the zone the
+  window is interpreted in, independent of the camera and of the owner's personal `/timezone`.
+  The gate applies before per-user fan-out (suppresses for ALL users; only the OWNER sees it)
+  and only matters while the global recording flag is on. Schedule reads are fail-open:
+  corrupt/unreadable settings degrade to "no schedule" with a warn log — deliberately
+  asymmetric with the global flag, whose read failures keep the recording retryable; a schedule
+  read failure produces extra notifications, never lost ones. Signal-loss alerts ignore the
+  schedule.
 ```
 
-`git add .claude/rules/telegram-notifications.md`
+5. Operational notes — append:
 
-- [ ] **Step 2: Full build**
+```markdown
+- **Schedule ops:** `app_settings` values are cached per-process without TTL — direct SQL edits
+  of `notifications.recording.schedule.*` are NOT picked up until restart (single-instance
+  deployment assumed). The manual-zone waiter does not survive a bot restart; one active waiter
+  per chat. Rollback: disable via the `/notifications` toggle (instant), or
+  `DELETE FROM app_settings WHERE setting_key LIKE 'notifications.recording.schedule.%'` +
+  restart for a full reset.
+```
+
+6. In `.claude/rules/database.md`, `app_settings` section — after the seeding sentence add:
+
+```markdown
+Schedule keys `notifications.recording.schedule.{enabled,window,zone}` are NOT seeded — they are
+created on first configuration via `/notifications`; absent keys mean "schedule disabled".
+```
+
+`git add .claude/rules/telegram-notifications.md .claude/rules/database.md`
+
+- [ ] **Step 2: Branch-wide code review**
+
+Dispatch the `superpowers:code-reviewer` agent over the full feature-branch diff; fix critical
+findings and repeat until clean (project CLAUDE.md: review BEFORE build).
+
+- [ ] **Step 3: Full build**
 
 Dispatch the `build-runner` agent: `./gradlew build`
 Expected: BUILD SUCCESSFUL (all modules, all tests, ktlint). On ktlint errors run `./gradlew ktlintFormat` and retry.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git commit -m "docs: schedule settings in telegram-notifications rule"
@@ -2354,6 +2528,6 @@ git commit -m "docs: schedule settings in telegram-notifications rule"
 ## Self-Review (performed at plan time)
 
 - **Spec coverage:** storage keys → Task 3; `AppSettingsService` strings → Task 2; window/zone types + `[start,end)` + midnight + DST → Task 1; `OUT_OF_SCHEDULE` + branch order + tracker-error + fail-open never-throws → Task 4; ViewState/factory fields → Task 5; status line + buttons → Task 6; pickers/zone screens + stateless callback data + equal-end warning → Tasks 7–8; auto-enable on save, zone materialization, `on`-without-window → Task 8; OWNER-only → Task 8; manual zone waiter (120 s, `/cancel`) → Task 9; bot routing → Task 9; docs → Task 10. No DB migration by design.
-- **Known intentional deviation:** none — spec was amended before planning (inline warning instead of toast; `on` without window opens picker; never-throws schedule reads).
+- **Known intentional deviation:** none after the iter-1 review sync — the spec now records the two-row keyboard (owner keyboard 5 → 7 rows) and the bot-level interception of `nfs:g:sched:*` (formerly implied handler-level dispatch), in addition to the pre-planning amendments (inline warning instead of toast; `on` without window opens picker; never-throws schedule reads).
 - **Type consistency:** `ScheduleWindow.ofHours/parse/storageFormat/displayFormat/contains`, `NotificationSchedule.contains(Instant)`, `NotificationScheduleService` method set, `Outcome.RenderEndPicker(startHour, rejectedEqualEnd)` ↔ `endPicker(startHour, showEqualWarning, lang)`, `PREFIX = "nfs:g:sched:"` — verified consistent across Tasks 1/3/7/8/9.
 - **Single placeholder-by-reference:** Task 4 asks the implementer to copy the literal `DetectionDelta(...)` argument list from the existing NEW_OBJECTS test in the same file (constructor not visible at plan time; copying the in-file literal is safer than inventing one).

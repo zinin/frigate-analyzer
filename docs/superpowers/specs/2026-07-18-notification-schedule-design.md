@@ -19,7 +19,7 @@ moving around during the day).
 | Notification types | **Recording detections only**; signal-loss alerts are unaffected |
 | Outside the window | **Drop** — notification is never created (detections still stored in DB; no AI description job) |
 | Schedule structure | **One daily window** `start–end`, same every day, midnight crossing supported (e.g. 23:00–07:00) |
-| Timezone | **Explicit zone stored with the schedule** (defaults to owner's `olson_code` when first enabled); not tied to owner's current zone afterwards |
+| Timezone | **Explicit zone stored with the schedule** (defaults to the owner's current timezone via `TelegramUserService.getUserZone`, UTC fallback, when first enabled); not tied to owner's current zone afterwards |
 | Time basis | **`recording.recordTimestamp`** (event time), not processing/send time — a night event processed from backlog in the morning is still delivered; a daytime event is never delivered |
 | Configuration UI | Extend the existing `/notifications` dialog (OWNER global section) with an **inline hour picker** (whole hours) |
 
@@ -31,6 +31,10 @@ recording.global_enabled AND (schedule disabled OR recordTimestamp in window) AN
 
 The schedule is an additional constraint layered on top of the existing flags; flag
 semantics do not change.
+
+The gate applies in `evaluate()` before per-user fan-out: an enabled schedule suppresses
+detection notifications for ALL users, while only the OWNER sees or controls it in
+`/notifications` — accepted (single-owner household system).
 
 ## Storage
 
@@ -45,8 +49,12 @@ keys are created on first configuration; absent keys mean "schedule disabled"):
 
 - `AppSettingsService` gains `getString`/`setString`, mirroring the existing
   `getBoolean`/`setBoolean` (storage is already string-typed; per-key cache unchanged).
-- Each UI operation writes exactly one key: toggling `enabled` does not lose the
-  configured window; window and zone are independent. Per-key upserts are atomic.
+- Toggling `enabled` and setting the zone write exactly one key each (window survives
+  toggles). Saving a window writes up to three keys in a fixed order — window → zone
+  (materialized if absent) → enabled LAST — so a concurrent reader sees either the old
+  `enabled=false` or the complete new state. Per-key upserts are atomic, the sequence is
+  not (a mid-sequence failure is covered by fail-open reads). The write order is an
+  invariant — keep `enabled` last.
 - Minutes are stored (`HH:mm`) even though the UI offers whole hours — format headroom
   without a future migration.
 
@@ -62,6 +70,9 @@ keys are created on first configuration; absent keys mean "schedule disabled"):
   - `suspend fun setEnabled(Boolean)`, `setWindow(LocalTime, LocalTime)`, `setZone(ZoneId)`.
   - Encapsulates the three keys and window parsing/formatting; used by both the decision
     service and the Telegram handlers.
+  - Lives in the `service` module and is deliberately NOT gated by
+    `application.telegram.enabled` — the decision layer applies the schedule regardless
+    of the bot being enabled.
 
 ## Decision Enforcement
 
@@ -80,7 +91,10 @@ keys are created on first configuration; absent keys mean "schedule disabled"):
 - New suppression branch immediately **after** the `!resolvedGlobalEnabled` check:
   `!scheduleAllows` → `NotificationDecision(false, OUT_OF_SCHEDULE, delta)`.
   `OUT_OF_SCHEDULE` is a new `NotificationDecisionReason` value.
-- `TRACKER_ERROR` branch becomes `shouldNotify = resolvedGlobalEnabled && scheduleAllows`.
+- `TRACKER_ERROR` branch becomes `shouldNotify = resolvedGlobalEnabled && scheduleAllows`:
+  a tracker failure outside the window is suppressed even though `newTracksCount` is
+  unknown — deliberate, the schedule is a hard time gate independent of tracker state
+  ("a daytime event is never delivered").
 - Branch order is otherwise unchanged: the object tracker still runs and updates its
   state even when the notification is suppressed, so cross-recording dedup state stays
   fresh.
@@ -93,8 +107,11 @@ Visible to OWNER only, inside the existing global section.
 
 ### Main screen additions
 
-- Status line: `⏰ Detection schedule: 00:00–07:00 (Europe/Moscow)` or `…: off`.
-- One extra keyboard row: `[⏰ Schedule on/off] [🕐 Window] [🌐 Zone]`.
+- Status line: `⏰ Detection schedule: 00:00–07:00 (Europe/Moscow)` when enabled; when
+  disabled — `…: OFF (00:00–07:00, Europe/Moscow)` if a window is stored (the owner sees
+  what `Enable` will activate), plain `…: OFF` otherwise.
+- Two extra keyboard rows: `[⏰ Schedule on/off]` and `[🕐 Window] [🌐 Zone]` — the owner
+  keyboard grows from 5 to 7 rows (a single three-button row is too narrow for the labels).
   Window/Zone buttons are always visible even while the schedule is disabled (the zone
   can be pre-configured without enabling; saving a window auto-enables, see below).
 
@@ -133,12 +150,15 @@ Key UI decisions:
   would silently behave as disabled.
 - **Saving a window auto-enables the schedule** — "picked a window, expected it to work"
   is the base scenario; disabling remains an explicit button.
-- **Zone materialization:** on first enable/save, if the zone key is absent it is set
-  from the owner's current `olson_code` (fallback `UTC`) and immediately shown in the
-  status line.
-- **Zone screen:** same city presets as `/timezone` plus manual input via waiter — both
-  patterns already exist in the project. Manual input uses the `/timezone` dialog
-  conventions: 120-second timeout, `/cancel` to abort, error message on unknown zone.
+- **Zone materialization:** on first enable/save (BOTH the `on` action and the window
+  save), if the zone key is absent it is set from the owner's current timezone via
+  `getUserZone` (fallback `UTC`) and immediately shown in the status line — the state
+  "enabled + window + no zone" must not survive any UI path.
+- **Zone screen:** same city presets as `/timezone` (shared preset constant) plus manual
+  input via waiter — both patterns already exist in the project. Manual input uses the
+  `/timezone` dialog conventions: 120-second timeout, `/cancel` to abort, error message
+  on unknown zone. The preset list is a UI shortcut, NOT a whitelist —
+  `nfs:g:sched:z:<olson>` accepts any valid IANA id.
 - **OWNER-only:** `nfs:g:sched:*` goes through the same owner check as existing
   `nfs:g:*` callbacks.
 
@@ -148,7 +168,7 @@ Key UI decisions:
 |---|---|
 | `NotificationsViewState` | new nullable fields: `scheduleEnabled`, `scheduleWindow` (pre-formatted string), `scheduleZone` — populated for OWNER only |
 | `NotificationsMessageRenderer` | status line + button row; picker/zone screens live in a new `ScheduleKeyboardRenderer` to keep the file small |
-| `NotificationsSettingsCallbackHandler` | dispatches the `nfs:g:sched:*` subtree to a new dedicated handler class (exact wiring per existing callback dispatch mechanics) |
+| `FrigateAnalyzerBot` | intercepts `nfs:g:sched:*` BEFORE the generic `NotificationsSettingsCallbackHandler.dispatch` and routes it to the schedule flow (routing-order invariant; guarded by a test that the legacy dispatch IGNOREs `nfs:g:sched:*`) |
 | `NotificationsCommandHandler` | fills the new state fields via `NotificationScheduleService` |
 | i18n bundles (ru/en) | new keys for all strings; `MessageKeyParityTest` guards parity |
 
@@ -159,17 +179,30 @@ Key UI decisions:
    (**fail-open**: for a security system, noise beats a missed alarm).
 2. **DST transitions:** `Instant → ZonedDateTime → LocalTime` is always unambiguous (we
    never parse a local time into an instant). On transition nights the window is
-   physically one hour longer/shorter — accepted, no special handling.
+   physically one hour longer/shorter — accepted, no special handling. (Spring-forward:
+   some of the window's local times don't exist that night; fall-back: the repeated
+   local hour maps two distinct instants into the window — each instant still resolves
+   to exactly one local time.)
 3. **Stale keyboards:** every callback carries explicit values — a stale click rewrites
-   the same value or opens a fresh screen; no toggle surprises.
+   the same value or opens a fresh screen. One accepted exception: a stale end-picker
+   click (`nfs:g:sched:e:<S>:<E>`, e.g. on an older `/notifications` message) re-saves
+   that window AND re-enables the schedule even if it was explicitly disabled in the
+   meantime (single owner, low likelihood).
 4. **Double taps / concurrent clicks:** idempotent operations, atomic per-key upsert,
    last write wins.
 5. **Setting changed between decision and send:** decision is taken once in
-   `evaluate()` — same behavior as the existing global flag. Accepted.
-6. **Invalid manual zone input:** error message + re-await, cancel pattern as in
-   `/timezone`.
+   `evaluate()` — same behavior as the existing global flag. Additionally the schedule
+   state is three keys read non-atomically: a concurrent settings change can yield a
+   mixed read for one evaluation (either a valid window — delivery follows it, or an
+   invalid combination — fail-open delivers). Accepted (fail-open, single owner).
+6. **Invalid manual zone input:** error message, then the flow exits (one-shot — matches
+   the actual `/timezone` behavior); the owner re-opens manual input via the zone screen.
+   `/cancel` and the 120-second timeout behave as in `/timezone`.
 7. **Suppressed decision:** no AI-description job is created (existing suppression
    behavior, unchanged). Signal-loss pipeline untouched.
+8. **Backlog retroactivity:** events are checked against the CURRENT schedule
+   configuration at processing time (no schedule history) — accepted, the window
+   changes rarely and backlogs are short.
 
 ## Testing
 
@@ -192,11 +225,15 @@ Key UI decisions:
 
 - Update `.claude/rules/telegram-notifications.md`: new callbacks, storage keys,
   schedule semantics.
-- `database.md` / `configuration.md`: no changes (no schema, no env vars).
+- `database.md`: add the three `app_settings` schedule keys (no schema change).
+- `configuration.md`: no changes (no env vars).
 
 ## Out of Scope
 
 - Per-user schedules; multiple windows per day; day-of-week variation.
+- Cron-style expressions (single daily window chosen; the stored format can evolve).
 - Digest/summary of suppressed notifications.
 - Applying the schedule to signal-loss alerts.
 - Minute-granularity input in the UI (format supports it; picker offers hours).
+- Prefetching the schedule in the facade or reading it in parallel with the tracker —
+  rejected: the cached read is O(1), there is nothing to win.
