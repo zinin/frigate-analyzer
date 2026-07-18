@@ -25,6 +25,9 @@ class NotificationsMessageRenderer(
             requireNotNull(state.signalGlobalEnabled) {
                 "OWNER NotificationsViewState.signalGlobalEnabled must not be null"
             }
+            requireNotNull(state.scheduleEnabled) {
+                "OWNER NotificationsViewState.scheduleEnabled must not be null"
+            }
         }
         val text = renderText(state)
         val keyboard = renderKeyboard(state)
@@ -86,6 +89,42 @@ class NotificationsMessageRenderer(
             appendLine()
             appendLine(recordingLine)
             appendLine(signalLine)
+            if (state.isOwner) {
+                val scheduleLine =
+                    when {
+                        state.scheduleEnabled == true && (state.scheduleWindow == null || state.scheduleZone == null) -> {
+                            // Reachable only via external DB corruption (the UI materializes the zone
+                            // on every enable/save): the schedule fail-opens and notifications flow —
+                            // say so instead of rendering a misleading ON with placeholders.
+                            msg.get("notifications.settings.sched.line.misconfigured", lang)
+                        }
+
+                        state.scheduleEnabled == true && state.scheduleWindow != null && state.scheduleZone != null -> {
+                            msg.get(
+                                "notifications.settings.sched.line.on.format",
+                                lang,
+                                state.scheduleWindow,
+                                state.scheduleZone,
+                            )
+                        }
+
+                        state.scheduleWindow != null -> {
+                            // Disabled but configured: show what "Enable schedule" will activate.
+                            msg.get(
+                                "notifications.settings.sched.line.off.configured.format",
+                                lang,
+                                off,
+                                state.scheduleWindow,
+                                state.scheduleZone ?: "?",
+                            )
+                        }
+
+                        else -> {
+                            msg.get("notifications.settings.sched.line.off.format", lang, off)
+                        }
+                    }
+                appendLine(scheduleLine)
+            }
         }
     }
 
@@ -121,6 +160,30 @@ class NotificationsMessageRenderer(
                             +CallbackDataInlineKeyboardButton(
                                 msg.get(toggleKey("signal", "global", sigGlobal), lang),
                                 "nfs:g:sig:${targetValue(sigGlobal)}",
+                            )
+                        }
+                        val schedEnabled = state.scheduleEnabled!!
+                        row {
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get(
+                                    if (schedEnabled) {
+                                        "notifications.settings.button.sched.disable"
+                                    } else {
+                                        "notifications.settings.button.sched.enable"
+                                    },
+                                    lang,
+                                ),
+                                if (schedEnabled) "nfs:g:sched:off" else "nfs:g:sched:on",
+                            )
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get("notifications.settings.button.sched.window", lang),
+                                "nfs:g:sched:cfg",
+                            )
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get("notifications.settings.button.sched.zone", lang),
+                                "nfs:g:sched:zone",
                             )
                         }
                     }
