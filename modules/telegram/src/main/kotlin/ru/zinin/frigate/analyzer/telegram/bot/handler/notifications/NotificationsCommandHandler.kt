@@ -7,10 +7,7 @@ import dev.inmo.tgbotapi.types.message.content.TextContent
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.service.AppSettingKeys
-import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
-import ru.zinin.frigate.analyzer.telegram.dto.NotificationsViewState
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -21,7 +18,7 @@ private val logger = KotlinLogging.logger {}
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class NotificationsCommandHandler(
     private val userService: TelegramUserService,
-    private val appSettings: AppSettingsService,
+    private val viewStateFactory: NotificationsViewStateFactory,
     private val renderer: NotificationsMessageRenderer,
 ) : CommandHandler {
     override val command: String = "notifications"
@@ -37,29 +34,7 @@ class NotificationsCommandHandler(
         val isOwner = userService.isOwner(user.username)
         logger.debug { "/notifications opened by chatId=$chatId username=${user.username} isOwner=$isOwner" }
 
-        val recordingGlobal =
-            if (isOwner) {
-                appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
-            } else {
-                null
-            }
-        val signalGlobal =
-            if (isOwner) {
-                appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
-            } else {
-                null
-            }
-
-        val state =
-            NotificationsViewState(
-                isOwner = isOwner,
-                recordingUserEnabled = user.notificationsRecordingEnabled,
-                signalUserEnabled = user.notificationsSignalEnabled,
-                recordingGlobalEnabled = recordingGlobal,
-                signalGlobalEnabled = signalGlobal,
-                language = user.languageCode ?: "en",
-            )
-
+        val state = viewStateFactory.build(user, isOwner)
         val rendered = renderer.render(state)
         sendTextMessage(chatId, rendered.text, replyMarkup = rendered.keyboard)
     }

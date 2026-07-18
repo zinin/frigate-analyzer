@@ -32,17 +32,15 @@ import kotlinx.coroutines.launch
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.service.AppSettingKeys
-import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.OwnerActivatedEvent
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsMessageRenderer
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsSettingsCallbackHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsViewStateFactory
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
-import ru.zinin.frigate.analyzer.telegram.dto.NotificationsViewState
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
@@ -69,7 +67,7 @@ class FrigateAnalyzerBot(
     private val cancelExportHandler: CancelExportHandler,
     private val notificationsSettingsCallbackHandler: NotificationsSettingsCallbackHandler,
     private val notificationsMessageRenderer: NotificationsMessageRenderer,
-    private val appSettings: AppSettingsService,
+    private val notificationsViewStateFactory: NotificationsViewStateFactory,
     private val msg: MessageResolver,
 ) {
     private val eventScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -191,25 +189,7 @@ class FrigateAnalyzerBot(
                     when (outcome) {
                         NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER -> {
                             val updated = userService.findByChatIdAsDto(cid) ?: current
-                            val state =
-                                NotificationsViewState(
-                                    isOwner = owner,
-                                    recordingUserEnabled = updated.notificationsRecordingEnabled,
-                                    signalUserEnabled = updated.notificationsSignalEnabled,
-                                    recordingGlobalEnabled =
-                                        if (owner) {
-                                            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
-                                        } else {
-                                            null
-                                        },
-                                    signalGlobalEnabled =
-                                        if (owner) {
-                                            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
-                                        } else {
-                                            null
-                                        },
-                                    language = updated.languageCode ?: "en",
-                                )
+                            val state = notificationsViewStateFactory.build(updated, owner)
                             val rendered = notificationsMessageRenderer.render(state)
                             try {
                                 @Suppress("UNCHECKED_CAST")

@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
+import ru.zinin.frigate.analyzer.service.NotificationScheduleService
 import ru.zinin.frigate.analyzer.telegram.dto.NotificationsViewState
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.model.UserRole
@@ -28,8 +29,14 @@ import kotlin.test.assertTrue
 class NotificationsCommandHandlerTest {
     private val userService = mockk<TelegramUserService>()
     private val appSettings = mockk<AppSettingsService>()
+    private val scheduleService = mockk<NotificationScheduleService>()
     private val renderer = mockk<NotificationsMessageRenderer>(relaxed = true)
-    private val handler = NotificationsCommandHandler(userService, appSettings, renderer)
+    private val handler =
+        NotificationsCommandHandler(
+            userService,
+            NotificationsViewStateFactory(appSettings, scheduleService),
+            renderer,
+        )
 
     private val chatId = ChatId(RawChatId(123L))
 
@@ -83,6 +90,9 @@ class NotificationsCommandHandlerTest {
             assertFalse(captured.isOwner)
             assertNull(captured.recordingGlobalEnabled)
             assertNull(captured.signalGlobalEnabled)
+            assertNull(captured.scheduleEnabled)
+            assertNull(captured.scheduleWindow)
+            assertNull(captured.scheduleZone)
             coVerify(exactly = 0) { appSettings.getBoolean(any(), any()) }
         }
 
@@ -95,6 +105,9 @@ class NotificationsCommandHandlerTest {
             every { userService.isOwner("owner_user") } returns true
             coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
             coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true) } returns false
+            coEvery { scheduleService.isEnabled() } returns false
+            coEvery { scheduleService.getWindow() } returns null
+            coEvery { scheduleService.getZone() } returns null
             coEvery { renderer.render(capture(stateSlot)) } returns
                 RenderedNotifications("ignored", mockk(relaxed = true))
 
@@ -117,6 +130,9 @@ class NotificationsCommandHandlerTest {
             every { userService.isOwner("owner_user") } returns true
             coEvery { appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } throws
                 RuntimeException("db down")
+            coEvery { scheduleService.isEnabled() } returns false
+            coEvery { scheduleService.getWindow() } returns null
+            coEvery { scheduleService.getZone() } returns null
 
             val ctx = mockk<BehaviourContext>(relaxed = true)
             try {
@@ -135,6 +151,9 @@ class NotificationsCommandHandlerTest {
             val stateSlot = slot<NotificationsViewState>()
             every { userService.isOwner("alice_custom") } returns true
             coEvery { appSettings.getBoolean(any(), any()) } returns true
+            coEvery { scheduleService.isEnabled() } returns false
+            coEvery { scheduleService.getWindow() } returns null
+            coEvery { scheduleService.getZone() } returns null
             coEvery { renderer.render(capture(stateSlot)) } returns
                 RenderedNotifications("ignored", mockk(relaxed = true))
 
