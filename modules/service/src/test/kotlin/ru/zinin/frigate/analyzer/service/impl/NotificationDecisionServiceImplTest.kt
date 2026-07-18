@@ -196,6 +196,7 @@ class NotificationDecisionServiceImplTest {
 
             assertFalse(decision.shouldNotify)
             assertEquals(NotificationDecisionReason.OUT_OF_SCHEDULE, decision.reason)
+            coVerify(exactly = 1) { tracker.evaluate(recording, any()) }
         }
 
     @Test
