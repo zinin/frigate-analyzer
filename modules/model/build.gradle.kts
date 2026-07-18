@@ -14,4 +14,7 @@ dependencies {
     implementation(libs.spring.data.r2dbc)
     implementation(libs.uuid.creator)
     implementation(libs.kotlin.logging)
+
+    testImplementation(libs.kotlin.test.junit5)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
