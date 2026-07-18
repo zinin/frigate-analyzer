@@ -1,81 +1,122 @@
 ## TASK
 
-Execute the implementation plan for the **notification schedule** feature (global OWNER-configured daily window that suppresses recording-detection Telegram notifications outside e.g. 00:00–07:00).
+Execute the implementation plan for the **notification schedule** feature (global
+OWNER-configured daily window that suppresses recording-detection Telegram notifications
+outside e.g. 00:00–07:00).
 
-Use `/superpowers:subagent-driven-development` skill for execution.
+Use `/superpowers:subagent-driven-development` skill for execution (or the
+`/claude-mesh:do-plan` wrapper — the user will say which).
+
+## CRITICAL: DO NOT START WORKING
+
+**STOP. READ THIS CAREFULLY.**
+
+After loading all context below, you MUST:
+1. Read the documents and understand the context
+2. Report what you understood (brief summary)
+3. **WAIT for explicit user instructions** before taking ANY action
+
+**DO NOT:** implement tasks, change code, or run commands (beyond reading) until the user
+explicitly says to begin.
 
 ## DOCUMENTS
 
-- Design: `docs/superpowers/specs/2026-07-18-notification-schedule-design.md`
-- Plan: `docs/superpowers/plans/2026-07-18-notification-schedule.md`
+- Design (final, review iter 1 applied): `docs/superpowers/specs/2026-07-18-notification-schedule-design.md`
+- Plan (final, review iter 1 applied; 10 tasks): `docs/superpowers/plans/2026-07-18-notification-schedule.md`
+- Review decision log: `docs/superpowers/specs/2026-07-18-notification-schedule-review-iter-1.md` —
+  50 замечаний со статусами и обоснованиями. НЕ читать целиком сразу; открывать точечно,
+  когда шаг плана выглядит спорным — скорее всего это сознательное решение ревью.
 
-Read both documents first.
+Read design + plan fully before summarizing.
 
-## IMPORTANT: DO NOT START WORK YET
+## PROGRESS
 
-After reading the documents:
-1. Confirm you have loaded all context
-2. Summarize your understanding briefly
-3. **WAIT for user instruction before taking any action**
-
-Do NOT begin implementation until the user explicitly tells you to start.
+- [x] Brainstorming → spec approved
+- [x] Plan written (10 tasks)
+- [x] mesh-design-review iteration 1: 7 внешних ревьюеров, 50 уникальных замечаний — все
+  разрешены (33 авто-фикса, 1 авто-после-анализа, 6 обсуждено, 10 отклонено). Коммиты:
+  `aaf98b8` (авто-фиксы), `ec63805` (merged+parsed), `ecc1e5b` (решения + журнал).
+  Пользователь остановил цикл ревью — переход к имплементации.
+- [ ] Implementation: NOT started — все 10 задач плана впереди (Task 1 … Task 10)
 
 ## SESSION CONTEXT
 
-Decisions made during brainstorming (with rationale), beyond what the spec records:
+### Решения brainstorming (вне спеки)
 
-- **Rejected alternatives:** per-user schedules (global OWNER-only chosen); applying the schedule
-  to signal-loss alerts (they stay always-on — system health); silent delivery
-  (`disable_notification`) and digest of suppressed notifications (dropped entirely — daytime
+- **Rejected alternatives:** per-user schedules (global OWNER-only chosen); applying the
+  schedule to signal-loss alerts (they stay always-on — system health); silent delivery
+  (`disable_notification`) and digest of suppressed notifications (dropped — daytime
   detections are pure noise, data stays in DB); free-text window input and a separate
-  `/schedule` command (hour picker inside `/notifications` chosen); `answerCallbackQuery` toast
-  for `end == start` (impossible — the bot answers every `nfs:` callback immediately to clear
-  the spinner, a callback cannot be answered twice; inline warning in the screen text instead).
-- **Time basis is `recording.recordTimestamp`** (event time), deliberately NOT "now": during
-  backlog catch-up a night detection processed in the morning must still be delivered, a
-  daytime detection must never be. Do not "simplify" to `Instant.now()`.
+  `/schedule` command (hour picker inside `/notifications` chosen); `answerCallbackQuery`
+  toast for `end == start` (impossible — the bot answers every `nfs:` callback immediately
+  to clear the spinner; inline warning in the screen text instead).
+- **Time basis is `recording.recordTimestamp`** (event time), deliberately NOT "now":
+  during backlog catch-up a night detection processed in the morning must still be
+  delivered, a daytime detection must never be. Do not "simplify" to `Instant.now()`.
 - **`evaluate()` signature intentionally unchanged.** The facade prefetches the global flag
-  before `saveProcessingResult` so settings failures keep recordings retryable; the schedule is
-  instead read inside `evaluate()` via `getRecordingSchedule()` which NEVER throws (fail-open
-  null + warn). Do not "improve" this by prefetching the schedule in the facade or letting
-  reads propagate.
+  before `saveProcessingResult` so settings failures keep recordings retryable; the schedule
+  is instead read inside `evaluate()` via `getRecordingSchedule()` which NEVER throws
+  (fail-open null + warn). Do not "improve" this by prefetching the schedule in the facade
+  or letting reads propagate.
 - **Fail-open direction is a security decision:** corrupt/unreadable schedule settings must
   produce extra notifications, never lost ones.
 
-Git state and repo conventions:
+### Решения review iter 1, которые НЕЛЬЗЯ «улучшать» при имплементации
 
-- Work on branch **`feature/notification-schedule`** (already created; spec, plan and this
-  prompt are committed there). Verify with `git branch --show-current` before starting.
-- The working tree contains **unrelated uncommitted files** (staged
-  `docs/deep-research-review-report.md`; untracked `.taskmaster/`, `docs/log-token-sanitization-issue.md`,
-  `docs/reset-liquibase-checksums.sh`, `tmp_diff_handler.txt`). Do NOT commit or delete them.
-  `git add` only files you create/modify (project rule), and prefer `git commit -- <paths>` if
-  anything unrelated is staged.
-- Gradle module names carry the `frigate-analyzer-` prefix (`:frigate-analyzer-model`, etc.).
-- Builds/tests go through the `build-runner` agent, never `./gradlew` directly in the main
-  session. On ktlint errors: `./gradlew ktlintFormat`, retry.
-- Before any future PR: `git rm` everything under `docs/superpowers/` and commit (plan docs
-  must not appear in the PR diff) — but that is a finishing step, not part of this execution.
+- **Task 2 включает негативное кэширование absent-ключей** (`CachedValue`-обёртка в
+  `AppSettingsServiceImpl`). Ошибочные чтения репозитория НЕ кэшируются — иначе fail-open
+  переживёт сбой БД. Существующий `AppSettingsServiceImplTest` проверен — совместим.
+- **Порядок reason нормативен** («первый сработавший гейт»): `NO_DETECTIONS →
+  NO_VALID_DETECTIONS → GLOBAL_OFF → OUT_OF_SCHEDULE → NEW_OBJECTS/ALL_REPEATED`. Не
+  «уточнять» ветку до `newTracksCount > 0 && !scheduleAllows` — отклонено на ревью.
+- **`ScheduleSettingsFlow` (Task 9) сознательно БЕЗ юнит-тестов** (решение против
+  mockkStatic-акробатики на extension-функциях ktgbotapi); обязательный ручной чек-лист
+  Task 9 Step 5 — гейт мержа. Если waiter ведёт себя неожиданно — STOP, не импровизировать.
+- **Строка статуса имеет три состояния + «misconfigured»** (`enabled` при `window == null
+  || zone == null`); ON-ветка рендерера требует окно И зону (smart cast).
+- **Ручной ввод зоны сознательно шире `/timezone`:** принимает «UTC» (собственный
+  materialization-fallback фичи) и offset-зоны. НЕ копировать `contains('/')`.
+- **`OUT_OF_SCHEDULE` логируется на debug сознательно** (единая конвенция всех веток
+  решения) — не поднимать до INFO, не добавлять метрики/счётчики.
 
-Implementation warnings discovered during planning:
+### Git-состояние и конвенции репозитория
 
-- **Task 4:** the `DetectionDelta(...)` argument lists in the new decision-service tests are
-  placeholders by design — copy the literal constructor call from the existing NEW_OBJECTS
-  test in the same file (`NotificationDecisionServiceImplTest`); the constructor was not
-  visible at plan time.
-- **Task 6:** `NotificationsMessageRendererTest` was only partially inspected; besides the
-  rewritten row-count test, ANY other test constructing a state with `isOwner = true` must add
-  `scheduleEnabled = false` (step 2 of the task covers this — do not skip the file-wide search).
-- **Task 1** adds test infrastructure to the `model` module (it had none); root build already
-  applies `useJUnitPlatform()` globally.
-- **Task 9:** `ScheduleSettingsFlow.manualZoneInput` uses the ktgbotapi waiter
-  (`waitTextMessage`) inside a callback-handler context — the pattern is copied from
-  `TimezoneCommandHandler` (120 s timeout, `/cancel`), but this is its first use from a
-  callback flow. If the waiter misbehaves there, STOP and discuss rather than improvising.
-- **Task 5 bot refactor:** before removing `appSettings` from `FrigateAnalyzerBot`, grep the
-  file to confirm its only usages are the two `getBoolean` calls in the RERENDER block.
-- Keyboard row indices in Task 6 tests assume owner rows: [0] rec user, [1] sig user,
-  [2] rec global, [3] sig global, [4] sched toggle, [5] window+zone, [6] close.
+- Ветка **`feature/notification-schedule`** (создана и активна; spec/plan/журналы
+  закоммичены в ней). Проверить: `git branch --show-current`, `git log --oneline -3`.
+- Рабочее дерево содержит **несвязанные незакоммиченные файлы** (staged
+  `docs/deep-research-review-report.md`; untracked `.taskmaster/`, старые
+  `docs/superpowers/plans/*-prompt.md`, `docs/log-token-sanitization-issue.md`,
+  `docs/reset-liquibase-checksums.sh`, `tmp_diff_handler.txt`). НЕ коммитить и НЕ удалять;
+  коммитить только явными путями (`git commit -- <paths>`); `git add <file>` сразу после
+  каждого создания/изменения (правило проекта).
+- Gradle-модули с префиксом `frigate-analyzer-` (`:frigate-analyzer-model` и т.д.).
+- Сборки/тесты — только через `build-runner` агент, никогда `./gradlew` напрямую в главной
+  сессии. На ktlint-ошибках: `./gradlew ktlintFormat`, повторить.
+- Каждая user-visible строка — в ОБА файла `messages_en.properties` /
+  `messages_ru.properties` (`MessageKeyParityTest` падает иначе).
+- Перед будущим PR: `git rm` всего `docs/superpowers/` и коммит (plan-доки не должны попасть
+  в PR-дифф) — это finishing-шаг, не часть execution.
+
+### Предупреждения по задачам
+
+- **Task 1** добавляет тест-инфраструктуру в `model`-модуль (её там не было); root build
+  уже применяет `useJUnitPlatform()` глобально.
+- **Task 4:** литералы `DetectionDelta(...)` в тестах теперь точные — порядок полей
+  `(newTracksCount, matchedTracksCount, staleTracksCount, newClasses)` сверен с
+  `DetectionDelta.kt`; референс — существующий тест `NotificationDecisionServiceImplTest.kt:81`;
+  при дрейфе файла копировать литерал оттуда.
+- **Task 5:** перед удалением `appSettings` из `FrigateAnalyzerBot` — grep, что единственные
+  использования — два `getBoolean` в RERENDER-блоке.
+- **Task 6:** помимо переписанного row-count теста, конструкции с `isOwner = true` в
+  renderer-тестах — строки 128/146 (сверено 2026-07-18); при дрейфе — искать `isOwner = true`
+  по файлу. Индексы рядов owner-клавиатуры: [0] rec user, [1] sig user, [2] rec global,
+  [3] sig global, [4] sched toggle, [5] window+zone, [6] close.
+- **Task 7:** рефакторинг `TimezoneCommandHandler` на общий `TimezonePresets.CITIES` обязан
+  сохранить сегодняшние labels/callbacks/раскладку 4×2 в точности (поведение и тесты
+  `/timezone` не меняются).
+- **Task 9:** waiter (`waitTextMessage`) впервые используется из callback-контекста; паттерн
+  из `TimezoneCommandHandler` (120 с таймаут, `/cancel`). Ручная проверка Step 5 —
+  REQUIRED before merge.
 
 ## PLAN QUALITY WARNING
 
@@ -91,4 +132,14 @@ The plan was written for a large task and may contain:
 3. Explain why the plan doesn't work or seems incorrect
 4. Ask the user how to proceed
 
-Do NOT silently work around plan issues or make significant deviations without user approval.
+Do NOT silently work around plan issues or make significant deviations without user
+approval. Перед «исправлением» странно выглядящего места — свериться с iter-1 журналом:
+возможно, это сознательное решение ревью.
+
+## INSTRUCTIONS
+
+1. Прочитать design и plan (целиком); iter-1 журнал — точечно при вопросах.
+2. Кратко изложить понимание: цель фичи, состав 10 задач, статус (имплементация не начата).
+3. **STOP и ждать** явной команды пользователя.
+4. Спросить: «С чего начать?» (ожидаемо: Task 1 через
+   `/superpowers:subagent-driven-development` либо `/claude-mesh:do-plan`).
