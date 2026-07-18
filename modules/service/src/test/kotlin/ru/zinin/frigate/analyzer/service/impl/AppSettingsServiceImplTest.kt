@@ -11,6 +11,7 @@ import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -142,5 +143,20 @@ class AppSettingsServiceImplTest {
             coEvery { repo.findBySettingKey("nk") } returns AppSettingEntity("nk", "v", fixed, null)
             assertEquals("v", service.getString("nk"))
             coVerify(exactly = 2) { repo.findBySettingKey("nk") }
+        }
+
+    @Test
+    fun `failed repository read caches nothing (errors stay transient)`() =
+        runTest {
+            coEvery { repo.findBySettingKey("boom") } throws RuntimeException("db down")
+
+            // The failure reaches the caller — it is never swallowed into an "absent" mark
+            assertFailsWith<RuntimeException> { service.getString("boom") }
+
+            // ...and it cached nothing, so the next read hits the DB and sees the real value
+            coEvery { repo.findBySettingKey("boom") } returns AppSettingEntity("boom", "v", fixed, null)
+            assertEquals("v", service.getString("boom"))
+
+            coVerify(exactly = 2) { repo.findBySettingKey("boom") }
         }
 }
