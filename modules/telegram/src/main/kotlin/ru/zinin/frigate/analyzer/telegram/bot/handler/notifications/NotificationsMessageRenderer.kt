@@ -90,32 +90,40 @@ class NotificationsMessageRenderer(
             appendLine(recordingLine)
             appendLine(signalLine)
             if (state.isOwner) {
+                // Locals give smart casts so the ON / OFF-configured branches pass a non-null
+                // window and zone without `?:` or `!!`.
+                val window = state.scheduleWindow
+                val zone = state.scheduleZone
+                // A stored window with no zone is as corrupt as "enabled but incomplete": the UI
+                // materializes the zone on every enable/save, so only external DB corruption splits
+                // the pair. Report it truthfully whatever the enabled flag says — the schedule
+                // fail-opens and notifications flow. A zone set alone (no window) is a legitimate
+                // preconfiguration and stays plain OFF.
+                val misconfigured =
+                    (state.scheduleEnabled == true && (window == null || zone == null)) || (window != null && zone == null)
                 val scheduleLine =
                     when {
-                        state.scheduleEnabled == true && (state.scheduleWindow == null || state.scheduleZone == null) -> {
-                            // Reachable only via external DB corruption (the UI materializes the zone
-                            // on every enable/save): the schedule fail-opens and notifications flow —
-                            // say so instead of rendering a misleading ON with placeholders.
+                        misconfigured -> {
                             msg.get("notifications.settings.sched.line.misconfigured", lang)
                         }
 
-                        state.scheduleEnabled == true && state.scheduleWindow != null && state.scheduleZone != null -> {
+                        state.scheduleEnabled == true && window != null && zone != null -> {
                             msg.get(
                                 "notifications.settings.sched.line.on.format",
                                 lang,
-                                state.scheduleWindow,
-                                state.scheduleZone,
+                                window,
+                                zone,
                             )
                         }
 
-                        state.scheduleWindow != null -> {
-                            // Disabled but configured: show what "Enable schedule" will activate.
+                        window != null && zone != null -> {
+                            // Disabled but fully configured: show what "Enable schedule" will activate.
                             msg.get(
                                 "notifications.settings.sched.line.off.configured.format",
                                 lang,
                                 off,
-                                state.scheduleWindow,
-                                state.scheduleZone ?: "?",
+                                window,
+                                zone,
                             )
                         }
 

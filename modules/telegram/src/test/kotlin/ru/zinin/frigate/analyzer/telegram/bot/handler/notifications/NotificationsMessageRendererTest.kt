@@ -32,6 +32,9 @@ class NotificationsMessageRendererTest {
                     signalUserEnabled = true,
                     recordingGlobalEnabled = null,
                     signalGlobalEnabled = null,
+                    scheduleEnabled = null,
+                    scheduleWindow = null,
+                    scheduleZone = null,
                     language = "en",
                 ),
             )
@@ -49,6 +52,8 @@ class NotificationsMessageRendererTest {
                     recordingGlobalEnabled = true,
                     signalGlobalEnabled = true,
                     scheduleEnabled = false,
+                    scheduleWindow = null,
+                    scheduleZone = null,
                     language = "en",
                 ),
             )
@@ -65,6 +70,9 @@ class NotificationsMessageRendererTest {
                     signalUserEnabled = true,
                     recordingGlobalEnabled = null,
                     signalGlobalEnabled = null,
+                    scheduleEnabled = null,
+                    scheduleWindow = null,
+                    scheduleZone = null,
                     language = "en",
                 ),
             )
@@ -83,6 +91,9 @@ class NotificationsMessageRendererTest {
                     signalUserEnabled = true,
                     recordingGlobalEnabled = null,
                     signalGlobalEnabled = null,
+                    scheduleEnabled = null,
+                    scheduleWindow = null,
+                    scheduleZone = null,
                     language = "en",
                 ),
             )
@@ -100,6 +111,9 @@ class NotificationsMessageRendererTest {
                     signalUserEnabled = true,
                     recordingGlobalEnabled = null,
                     signalGlobalEnabled = null,
+                    scheduleEnabled = null,
+                    scheduleWindow = null,
+                    scheduleZone = null,
                     language = "ru",
                 ),
             )
@@ -116,6 +130,9 @@ class NotificationsMessageRendererTest {
                     signalUserEnabled = true,
                     recordingGlobalEnabled = null,
                     signalGlobalEnabled = null,
+                    scheduleEnabled = null,
+                    scheduleWindow = null,
+                    scheduleZone = null,
                     language = "fr",
                 ),
             )
@@ -133,6 +150,8 @@ class NotificationsMessageRendererTest {
                     recordingGlobalEnabled = true,
                     signalGlobalEnabled = true,
                     scheduleEnabled = false,
+                    scheduleWindow = null,
+                    scheduleZone = null,
                     language = "en",
                 ),
             )
@@ -152,6 +171,8 @@ class NotificationsMessageRendererTest {
                 recordingGlobalEnabled = null,
                 signalGlobalEnabled = null,
                 scheduleEnabled = false,
+                scheduleWindow = null,
+                scheduleZone = null,
                 language = "en",
             )
         kotlin
@@ -220,6 +241,28 @@ class NotificationsMessageRendererTest {
     }
 
     @Test
+    fun `owner text shows misconfigured warning when disabled with stored window but no zone`() {
+        val rendered = renderer.render(ownerState(false, scheduleWindow = "00:00–07:00"))
+        assertTrue(rendered.text.contains("misconfigured", ignoreCase = true), "text=${rendered.text}")
+        assertTrue(rendered.text.contains("notifications are delivered"), "text=${rendered.text}")
+        assertFalse(rendered.text.contains("notifications.settings"), "text=${rendered.text}")
+        // Being switched off is no licence to render the corrupt pair: this state used to come
+        // out as "OFF (00:00–07:00, ?)" — a stored window beside a placeholder zone.
+        assertFalse(rendered.text.contains("00:00–07:00"), "text=${rendered.text}")
+        assertFalse(rendered.text.contains(", ?)"), "text=${rendered.text}")
+    }
+
+    @Test
+    fun `owner text shows plain off for a zone set before any window is configured`() {
+        // The zone can legitimately be set before the window and before enabling, so a stored zone
+        // with no window is NOT corruption: it must render plain OFF, never the misconfigured line.
+        val rendered = renderer.render(ownerState(false, scheduleZone = "Europe/Moscow"))
+        assertTrue(rendered.text.contains("OFF"), "text=${rendered.text}")
+        assertFalse(rendered.text.contains("misconfigured", ignoreCase = true), "text=${rendered.text}")
+        assertFalse(rendered.text.contains("Europe/Moscow"), "text=${rendered.text}")
+    }
+
+    @Test
     fun `schedule toggle button emits explicit enable callback when disabled`() {
         val rendered = renderer.render(ownerState(false))
         val toggle = rendered.keyboard.keyboard[4][0] as CallbackDataInlineKeyboardButton
@@ -252,6 +295,9 @@ class NotificationsMessageRendererTest {
                     signalUserEnabled = true,
                     recordingGlobalEnabled = null,
                     signalGlobalEnabled = null,
+                    scheduleEnabled = null,
+                    scheduleWindow = null,
+                    scheduleZone = null,
                     language = "en",
                 ),
             )
