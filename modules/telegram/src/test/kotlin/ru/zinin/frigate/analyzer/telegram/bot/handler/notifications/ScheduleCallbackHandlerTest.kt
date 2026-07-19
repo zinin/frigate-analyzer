@@ -59,6 +59,7 @@ class ScheduleCallbackHandlerTest {
 
             assertEquals(ScheduleCallbackHandler.Outcome.RenderMain, outcome)
             coVerify(exactly = 1) { scheduleService.setZone(ZoneId.of("Europe/Moscow"), "owner") }
+            coVerify(exactly = 1) { scheduleService.setEnabled(true, "owner") }
             coVerifyOrder {
                 scheduleService.setZone(ZoneId.of("Europe/Moscow"), "owner")
                 scheduleService.setEnabled(true, "owner")

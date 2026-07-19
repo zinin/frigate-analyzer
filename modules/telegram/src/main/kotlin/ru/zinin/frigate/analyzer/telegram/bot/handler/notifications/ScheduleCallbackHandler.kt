@@ -58,11 +58,7 @@ class ScheduleCallbackHandler(
                     // of creating an "on but empty" state that behaves as disabled.
                     Outcome.RenderStartPicker
                 } else {
-                    // Spec: the zone materializes on first enable/save — repair it here too so
-                    // "enabled + window + no zone" (externally corrupted DB) cannot survive.
-                    if (scheduleService.getZone() == null) {
-                        scheduleService.setZone(userService.getUserZone(ownerChatId), updatedBy)
-                    }
+                    materializeZoneIfMissing(ownerChatId, updatedBy)
                     scheduleService.setEnabled(true, updatedBy)
                     Outcome.RenderMain
                 }
@@ -112,9 +108,7 @@ class ScheduleCallbackHandler(
                         // Write-order invariant: window → zone → enabled LAST, so a concurrent
                         // reader sees either the old enabled=false or the complete new state.
                         scheduleService.setWindow(ScheduleWindow.ofHours(start, end), updatedBy)
-                        if (scheduleService.getZone() == null) {
-                            scheduleService.setZone(userService.getUserZone(ownerChatId), updatedBy)
-                        }
+                        materializeZoneIfMissing(ownerChatId, updatedBy)
                         scheduleService.setEnabled(true, updatedBy)
                         Outcome.RenderMain
                     }
@@ -135,6 +129,22 @@ class ScheduleCallbackHandler(
             else -> {
                 ignore(data)
             }
+        }
+    }
+
+    /**
+     * Seeds the zone from the owner's timezone when it is still unset.
+     *
+     * Invariant: an enabled schedule always has a zone — "enabled + window + no zone"
+     * (first enable, or an externally corrupted DB) must not survive any UI path, so
+     * every branch that flips `enabled` to `true` calls this beforehand.
+     */
+    private suspend fun materializeZoneIfMissing(
+        ownerChatId: Long,
+        updatedBy: String?,
+    ) {
+        if (scheduleService.getZone() == null) {
+            scheduleService.setZone(userService.getUserZone(ownerChatId), updatedBy)
         }
     }
 
