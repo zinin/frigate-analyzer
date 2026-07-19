@@ -89,7 +89,7 @@ outstanding. The whole-branch review predicts its check #5 will FAIL (see the co
 
 **Interfaces:** none (docs + verification only).
 
-- [ ] **Step 1: Update the module rule doc**
+- [x] **Step 1: Update the module rule doc** — ✅ done: `854cfa6` (+ KDoc fixes `48614cd`, padding test `687d159`)
 
 In `.claude/rules/telegram-notifications.md`:
 
@@ -159,17 +159,17 @@ created on first configuration via `/notifications`; absent keys mean "schedule 
 
 `git add .claude/rules/telegram-notifications.md .claude/rules/database.md`
 
-- [ ] **Step 2: Branch-wide code review**
+- [x] **Step 2: Branch-wide code review** — ✅ done: no Critical; three Important (the waiter decision is pending with the human — see the SDD ledger); the seven triaged minor fixes landed in `72e1f81..8486a65`, re-review Approved
 
 Dispatch the `superpowers:code-reviewer` agent over the full feature-branch diff; fix critical
 findings and repeat until clean (project CLAUDE.md: review BEFORE build).
 
-- [ ] **Step 3: Full build**
+- [x] **Step 3: Full build** — ✅ done 2026-07-19: BUILD SUCCESSFUL in 5m04s, 692 tests / 0 failures / 1 pre-existing skip (ai-description, untouched by this branch), model jacoco first-ever verification passed (11.15% ≥ 1%)
 
 Dispatch the `build-runner` agent: `./gradlew build`
 Expected: BUILD SUCCESSFUL (all modules, all tests, ktlint). On ktlint errors run `./gradlew ktlintFormat` and retry.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit** — ✅ done: docs in `854cfa6`/`48614cd`/`687d159`, review fixes in `72e1f81..8486a65` (all with explicit pathspecs)
 
 ```bash
 git commit -m "docs: schedule settings in telegram-notifications rule"
