@@ -52,8 +52,11 @@ class ScheduleKeyboardRendererTest {
     }
 
     @Test
-    fun `end picker without warning has no warning line`() {
+    fun `end picker without warning shows zero-padded start hour and no warning line`() {
         val rendered = renderer.endPicker(startHour = 5, showEqualWarning = false, lang = "en")
+        // Single-digit hour: the only case that distinguishes "%02d:00" from "$hour:00".
+        // "5:00" would match either, so the padded form must be asserted.
+        assertTrue(rendered.text.contains("05:00"), "text=${rendered.text}")
         assertFalse(rendered.text.contains("must differ", ignoreCase = true), "text=${rendered.text}")
     }
 
