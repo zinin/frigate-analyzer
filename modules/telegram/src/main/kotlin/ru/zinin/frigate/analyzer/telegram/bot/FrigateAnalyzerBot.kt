@@ -39,6 +39,8 @@ import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsMessageRenderer
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsSettingsCallbackHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsViewStateFactory
+import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.ScheduleCallbackHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.ScheduleSettingsFlow
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
@@ -68,6 +70,7 @@ class FrigateAnalyzerBot(
     private val notificationsSettingsCallbackHandler: NotificationsSettingsCallbackHandler,
     private val notificationsMessageRenderer: NotificationsMessageRenderer,
     private val notificationsViewStateFactory: NotificationsViewStateFactory,
+    private val scheduleSettingsFlow: ScheduleSettingsFlow,
     private val msg: MessageResolver,
 ) {
     private val eventScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -185,6 +188,15 @@ class FrigateAnalyzerBot(
                     val current = userService.findActiveByUsername(senderUsername) ?: return@onDataCallbackQuery
                     val cid = current.chatId ?: return@onDataCallbackQuery
                     val owner = userService.isOwner(current.username)
+                    // Routing invariant: the sched subtree MUST be intercepted BEFORE the generic
+                    // notificationsSettingsCallbackHandler.dispatch (which silently IGNOREs it).
+                    if (callback.data.startsWith(ScheduleCallbackHandler.PREFIX)) {
+                        @Suppress("UNCHECKED_CAST")
+                        with(scheduleSettingsFlow) {
+                            handle(callback.data, callbackMsg as ContentMessage<TextContent>, current, owner)
+                        }
+                        return@onDataCallbackQuery
+                    }
                     val outcome = notificationsSettingsCallbackHandler.dispatch(callback.data, cid, owner, current)
                     when (outcome) {
                         NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER -> {

@@ -119,4 +119,44 @@ class NotificationsSettingsCallbackHandlerTest {
             val result = handler.dispatch("nfs:unknown", chatId, isOwner = true, user())
             assertEquals(NotificationsSettingsCallbackHandler.DispatchOutcome.IGNORE, result)
         }
+
+    /**
+     * Pins the precondition behind the bot's routing invariant: this handler silently IGNOREs the
+     * whole `nfs:g:sched:*` subtree, side-effect free. The first six payloads are the dangerous
+     * ones — they split into exactly 4 parts and do reach the `parts.size == 4` branch, where a
+     * last token that is neither `1` nor `0` short-circuits before the scope/stream `when`.
+     *
+     * Scope: this test does NOT verify that FrigateAnalyzerBot intercepts the subtree BEFORE
+     * calling [NotificationsSettingsCallbackHandler.dispatch]. A reorder there would still compile
+     * and this test would still pass; catching that needs behaviour-builder mocking.
+     */
+    @Test
+    fun `sched subtree is ignored side-effect free by the legacy handler`() =
+        runTest {
+            val schedPayloads =
+                listOf(
+                    "nfs:g:sched:on",
+                    "nfs:g:sched:off",
+                    "nfs:g:sched:cfg",
+                    "nfs:g:sched:zone",
+                    "nfs:g:sched:zman",
+                    "nfs:g:sched:home",
+                    "nfs:g:sched:s:7",
+                    "nfs:g:sched:e:7:19",
+                    "nfs:g:sched:z:Europe/Moscow",
+                )
+
+            schedPayloads.forEach { payload ->
+                val result = handler.dispatch(payload, chatId, isOwner = true, user())
+                assertEquals(
+                    NotificationsSettingsCallbackHandler.DispatchOutcome.IGNORE,
+                    result,
+                    "$payload must be routed to ScheduleSettingsFlow, not handled here",
+                )
+            }
+
+            coVerify(exactly = 0) { appSettings.setBoolean(any(), any(), any()) }
+            coVerify(exactly = 0) { userService.updateNotificationsRecordingEnabled(any(), any()) }
+            coVerify(exactly = 0) { userService.updateNotificationsSignalEnabled(any(), any()) }
+        }
 }
