@@ -95,6 +95,12 @@ Index: `idx_object_tracks_cam_lastseen (cam_id, last_seen_at DESC)`. Cleanup via
 
 Seeded with `notifications.recording.global_enabled=true` and `notifications.signal.global_enabled=true`.
 
+Schedule keys `notifications.recording.schedule.{enabled,window,zone}` are NOT seeded — they are
+created on first configuration via `/notifications`; absent keys mean "schedule disabled".
+
+`AppSettingsService` caches keys per-process without TTL, absence included, so direct SQL edits to
+this table need an application restart — see "Operational Notes" in `telegram-notifications.md`.
+
 ## Patterns
 
 - All repositories use Spring Data R2DBC
