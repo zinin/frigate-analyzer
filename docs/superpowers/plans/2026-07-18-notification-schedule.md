@@ -83,97 +83,16 @@ outstanding. The whole-branch review predicts its check #5 will FAIL (see the co
 
 ### Task 10: Documentation + full build
 
-**Files:**
-- Modify: `.claude/rules/telegram-notifications.md`
-- Modify: `.claude/rules/database.md`
+✅ Done — all four steps:
 
-**Interfaces:** none (docs + verification only).
-
-- [x] **Step 1: Update the module rule doc** — ✅ done: `854cfa6` (+ KDoc fixes `48614cd`, padding test `687d159`)
-
-In `.claude/rules/telegram-notifications.md`:
-
-1. Components table — add rows:
-
-```markdown
-| `NotificationsViewStateFactory` | `bot/handler/notifications/` | Single assembly point for `NotificationsViewState` (command, re-render, schedule flow) |
-| `ScheduleCallbackHandler` | `bot/handler/notifications/` | Pure dispatch for `nfs:g:sched:*`, mutates schedule settings |
-| `ScheduleKeyboardRenderer` | `bot/handler/notifications/` | Hour-picker and timezone screens of the schedule sub-dialog |
-| `ScheduleSettingsFlow` | `bot/handler/notifications/` | Telegram I/O: maps dispatch outcomes to screen edits, manual-zone waiter |
-```
-
-2. Callback Protocol table — add rows:
-
-```markdown
-| `nfs:g:sched:on` / `nfs:g:sched:off` | Enable / disable the detection schedule (OWNER only; `on` without a configured window opens the picker) |
-| `nfs:g:sched:cfg` | Open the start-hour picker |
-| `nfs:g:sched:s:<H>` | Start hour chosen → end-hour picker (start rides in callback data) |
-| `nfs:g:sched:e:<S>:<E>` | End hour chosen → save window `[S:00, E:00)`, materialize zone if unset, auto-enable |
-| `nfs:g:sched:zone` | Open the timezone screen (presets as in `/timezone` + manual input) |
-| `nfs:g:sched:z:<olson>` | Set schedule zone from preset |
-| `nfs:g:sched:zman` | Manual zone input via waiter (120 s timeout, `/cancel`) |
-| `nfs:g:sched:home` | Back to the main screen |
-```
-
-3. State Storage table — add rows:
-
-```markdown
-| Schedule enabled | `app_settings` → `notifications.recording.schedule.enabled` | absent = `FALSE` |
-| Schedule window | `app_settings` → `notifications.recording.schedule.window` (`HH:mm-HH:mm`, `[start,end)`, start>end crosses midnight) | absent |
-| Schedule zone | `app_settings` → `notifications.recording.schedule.zone` (IANA id) | absent |
-```
-
-4. Consumers section — append:
-
-```markdown
-- **Detection schedule** — `NotificationDecisionServiceImpl` additionally suppresses recording
-  notifications with reason `OUT_OF_SCHEDULE` when the schedule is enabled and
-  `recording.recordTimestamp` falls outside the window. The timestamp is event time (a morning
-  backlog run still delivers night events) evaluated in the schedule's own zone — the zone the
-  window is interpreted in, independent of the camera and of the owner's personal `/timezone`.
-  The gate applies before per-user fan-out (suppresses for ALL users; only the OWNER sees it)
-  and only matters while the global recording flag is on. Schedule reads are fail-open:
-  corrupt/unreadable settings degrade to "no schedule" with a warn log — deliberately
-  asymmetric with the global flag, whose read failures keep the recording retryable; a schedule
-  read failure produces extra notifications, never lost ones. Signal-loss alerts ignore the
-  schedule.
-```
-
-5. Operational notes — append:
-
-```markdown
-- **Schedule ops:** `app_settings` values and key absence are cached per-process without TTL —
-  direct SQL edits or inserts of `notifications.recording.schedule.*` are NOT picked up until restart (single-instance
-  deployment assumed). The manual-zone waiter does not survive a bot restart; one active waiter
-  per chat. Rollback: disable via the `/notifications` toggle (instant), or
-  `DELETE FROM app_settings WHERE setting_key LIKE 'notifications.recording.schedule.%'` +
-  restart for a full reset.
-```
-
-6. In `.claude/rules/database.md`, `app_settings` section — after the seeding sentence add:
-
-```markdown
-Schedule keys `notifications.recording.schedule.{enabled,window,zone}` are NOT seeded — they are
-created on first configuration via `/notifications`; absent keys mean "schedule disabled".
-```
-
-`git add .claude/rules/telegram-notifications.md .claude/rules/database.md`
-
-- [x] **Step 2: Branch-wide code review** — ✅ done: no Critical; three Important (the waiter decision is pending with the human — see the SDD ledger); the seven triaged minor fixes landed in `72e1f81..8486a65`, re-review Approved
-
-Dispatch the `superpowers:code-reviewer` agent over the full feature-branch diff; fix critical
-findings and repeat until clean (project CLAUDE.md: review BEFORE build).
-
-- [x] **Step 3: Full build** — ✅ done 2026-07-19: BUILD SUCCESSFUL in 5m04s, 692 tests / 0 failures / 1 pre-existing skip (ai-description, untouched by this branch), model jacoco first-ever verification passed (11.15% ≥ 1%)
-
-Dispatch the `build-runner` agent: `./gradlew build`
-Expected: BUILD SUCCESSFUL (all modules, all tests, ktlint). On ktlint errors run `./gradlew ktlintFormat` and retry.
-
-- [x] **Step 4: Commit** — ✅ done: docs in `854cfa6`/`48614cd`/`687d159`, review fixes in `72e1f81..8486a65` (all with explicit pathspecs)
-
-```bash
-git commit -m "docs: schedule settings in telegram-notifications rule"
-```
+- Step 1 (docs): `854cfa6` + KDoc fixes `48614cd` + padding test `687d159`
+- Step 2 (branch-wide review): no Critical; three Important (the waiter decision is pending with
+  the human — see the SDD ledger); the seven triaged minor fixes landed in `72e1f81..8486a65`,
+  re-review Spec ✅ / Approved
+- Step 3 (full build, 2026-07-19): BUILD SUCCESSFUL in 5m04s — 692 tests / 0 failures /
+  1 pre-existing skip (ai-description, untouched by this branch); model jacoco first-ever
+  verification passed (11.15% ≥ 1%)
+- Step 4 (commit): explicit-pathspec commits listed above; plan status marked in `e63df58`
 
 ---
 
