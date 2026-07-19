@@ -7,6 +7,7 @@ import dev.inmo.tgbotapi.utils.row
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.i18n.TimezonePresets
+import java.util.Locale
 
 /**
  * Screens of the /notifications schedule sub-dialog: hour pickers and the timezone
@@ -84,8 +85,9 @@ class ScheduleKeyboardRenderer(
                     (0..23).chunked(6).forEach { hours ->
                         row {
                             hours.forEach { hour ->
-                                // Picker hours are always 00–23 zero-padded, locale-independent.
-                                +CallbackDataInlineKeyboardButton("%02d".format(hour), callbackFor(hour))
+                                // Picker hours are always 00–23 zero-padded; Locale.ROOT keeps the
+                                // digits ASCII regardless of the JVM default locale.
+                                +CallbackDataInlineKeyboardButton("%02d".format(Locale.ROOT, hour), callbackFor(hour))
                             }
                         }
                     }
@@ -95,5 +97,6 @@ class ScheduleKeyboardRenderer(
                 },
         )
 
-    private fun formatHour(hour: Int): String = "%02d:00".format(hour)
+    // Locale.ROOT so the start-hour label stays ASCII "HH:00" whatever the JVM default locale is.
+    private fun formatHour(hour: Int): String = "%02d:00".format(Locale.ROOT, hour)
 }
