@@ -118,12 +118,18 @@ class ScheduleCallbackHandler(
             // Matched by structure, not by prefix: "zone"/"zman" are distinct actions that a
             // startsWith("z") check would silently swallow.
             parts.size == 2 && parts[0] == "z" -> {
-                try {
-                    scheduleService.setZone(ZoneId.of(parts[1]), updatedBy)
-                    Outcome.RenderMain
-                } catch (_: DateTimeException) {
-                    ignore(data)
-                }
+                val zone =
+                    try {
+                        ZoneId.of(parts[1])
+                    } catch (_: DateTimeException) {
+                        return ignore(data)
+                    }
+                // setZone is OUTSIDE the try on purpose: only ZoneId.of parsing an invalid preset
+                // id is the "ignore" case. A DateTimeException raised inside the service is a real
+                // failure and must propagate (ScheduleSettingsFlow catches service failures
+                // upstream), not be misclassified as an invalid zone id.
+                scheduleService.setZone(zone, updatedBy)
+                Outcome.RenderMain
             }
 
             else -> {

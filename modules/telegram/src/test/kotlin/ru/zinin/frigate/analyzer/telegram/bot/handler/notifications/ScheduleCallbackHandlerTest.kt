@@ -9,8 +9,10 @@ import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.model.dto.ScheduleWindow
 import ru.zinin.frigate.analyzer.service.NotificationScheduleService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import java.time.DateTimeException
 import java.time.ZoneId
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class ScheduleCallbackHandlerTest {
     private val scheduleService = mockk<NotificationScheduleService>(relaxed = true)
@@ -120,6 +122,7 @@ class ScheduleCallbackHandlerTest {
             val outcome = dispatch("nfs:g:sched:e:5:5")
             assertEquals(ScheduleCallbackHandler.Outcome.RenderEndPicker(5, rejectedEqualEnd = true), outcome)
             coVerify(exactly = 0) { scheduleService.setWindow(any(), any()) }
+            coVerify(exactly = 0) { scheduleService.setZone(any(), any()) }
             coVerify(exactly = 0) { scheduleService.setEnabled(any(), any()) }
         }
 
@@ -188,6 +191,19 @@ class ScheduleCallbackHandlerTest {
         runTest {
             assertEquals(ScheduleCallbackHandler.Outcome.Ignore, dispatch("nfs:g:sched:z:Not/AZone"))
             coVerify(exactly = 0) { scheduleService.setZone(any(), any()) }
+        }
+
+    @Test
+    fun `zone preset propagates a service DateTimeException instead of classifying it as invalid`() =
+        runTest {
+            // The zone id is valid, so ZoneId.of succeeds and the DateTimeException comes from the
+            // service. With setZone narrowed out of the parse try, it must escape dispatch
+            // (ScheduleSettingsFlow catches service failures upstream) rather than be swallowed as
+            // an invalid-zone "ignore". This is the only automated proof the try stays narrow.
+            coEvery { scheduleService.setZone(any(), any()) } throws DateTimeException("service boom")
+            assertFailsWith<DateTimeException> {
+                dispatch("nfs:g:sched:z:Asia/Irkutsk")
+            }
         }
 
     @Test
