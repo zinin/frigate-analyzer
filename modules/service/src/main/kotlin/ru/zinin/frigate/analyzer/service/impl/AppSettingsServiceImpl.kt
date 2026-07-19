@@ -65,6 +65,9 @@ class AppSettingsServiceImpl(
             cache.remove(key)
         }
         // Value at debug only: general-purpose method, a future key may hold something sensitive.
+        // Corrupt stored values are the deliberate exception, NOT an inconsistency: getBoolean's
+        // warn above and NotificationScheduleServiceImpl's window/zone warns log the raw value,
+        // because diagnosing an anomaly outweighs redaction on the failure path.
         logger.info { "AppSettings: '$key' set by ${updatedBy ?: "<system>"}" }
         logger.debug { "AppSettings: '$key' value: '$value'" }
     }
