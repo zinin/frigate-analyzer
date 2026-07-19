@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.telegram.bot.handler.notifications
 
+import dev.inmo.tgbotapi.bot.exceptions.MessageIsNotModifiedException
 import dev.inmo.tgbotapi.extensions.api.edit.text.editMessageText
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
@@ -110,14 +111,19 @@ class ScheduleSettingsFlow(
                     sendTextMessage(cid, msg.get("notifications.sched.zone.cancelled", lang))
                     return@withTimeoutOrNull
                 }
-                try {
-                    val zone = ZoneId.of(input)
-                    scheduleService.setZone(zone, current.username)
-                    sendTextMessage(cid, msg.get("notifications.sched.zone.saved", lang, zone.id))
-                    renderMain(callbackMsg, current, isOwner)
-                } catch (_: DateTimeException) {
-                    sendTextMessage(cid, msg.get("notifications.sched.zone.invalid", lang))
-                }
+                // Only the parse is guarded. A DateTimeException from the save or the re-render
+                // (corrupt stored window/zone) must not be reported as "unknown timezone" — least
+                // of all right after the "saved" confirmation; those surface via handle's catch.
+                val zone =
+                    try {
+                        ZoneId.of(input)
+                    } catch (_: DateTimeException) {
+                        sendTextMessage(cid, msg.get("notifications.sched.zone.invalid", lang))
+                        return@withTimeoutOrNull
+                    }
+                scheduleService.setZone(zone, current.username)
+                sendTextMessage(cid, msg.get("notifications.sched.zone.saved", lang, zone.id))
+                renderMain(callbackMsg, current, isOwner)
             }
         if (completed == null) {
             sendTextMessage(cid, msg.get("notifications.sched.zone.timeout", lang))
@@ -140,14 +146,14 @@ class ScheduleSettingsFlow(
     ) {
         try {
             editMessageText(callbackMsg, rendered.text, replyMarkup = rendered.keyboard)
+        } catch (_: MessageIsNotModifiedException) {
+            // Re-click of the button that already reflects the current state — Telegram rejects
+            // the identical edit and there is nothing to repair.
+            logger.debug { "sched edit no-op (message not modified)" }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (e.message?.contains("message is not modified", ignoreCase = true) == true) {
-                logger.debug { "sched edit no-op (message not modified)" }
-            } else {
-                logger.warn(e) { "Failed to edit /notifications schedule screen" }
-            }
+            logger.warn(e) { "Failed to edit /notifications schedule screen" }
         }
     }
 
