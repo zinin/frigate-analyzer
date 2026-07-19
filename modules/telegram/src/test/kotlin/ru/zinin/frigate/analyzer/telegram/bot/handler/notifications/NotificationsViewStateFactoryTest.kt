@@ -92,4 +92,15 @@ class NotificationsViewStateFactoryTest {
             assertNull(state.scheduleZone)
             assertEquals("en", state.language)
         }
+
+    @Test
+    fun `language code is passed through, not defaulted`() =
+        runTest {
+            val state = factory.build(user(languageCode = "ru"), isOwner = false)
+
+            // Counterpart to the `languageCode = null` fallback above: "en" is both the default
+            // input and the fallback, so without one non-default language every assertion in this
+            // class would still hold for a factory that hardcoded language = "en".
+            assertEquals("ru", state.language)
+        }
 }
