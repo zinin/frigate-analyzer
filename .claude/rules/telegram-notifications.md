@@ -21,6 +21,7 @@ loaded alongside this file whenever you touch `modules/telegram/**`.
 | `ScheduleCallbackHandler` | `bot/handler/notifications/` | Pure dispatch for `nfs:g:sched:*`, mutates schedule settings |
 | `ScheduleKeyboardRenderer` | `bot/handler/notifications/` | Hour-picker and timezone screens of the schedule sub-dialog |
 | `ScheduleSettingsFlow` | `bot/handler/notifications/` | Telegram I/O: maps dispatch outcomes to screen edits, manual-zone waiter |
+| `ActiveZoneInputTracker` | `bot/handler/notifications/` | Dialog-phase lock for the manual-zone waiter — one pending `zman` input per chat |
 
 ## Callback Protocol
 
@@ -39,7 +40,7 @@ Callback prefix: `nfs:`. Variants:
 | `nfs:g:sched:e:<S>:<E>` | End hour chosen → save window `[S:00, E:00)`, materialize zone if unset, auto-enable |
 | `nfs:g:sched:zone` | Open the timezone screen (presets as in `/timezone` + manual input) |
 | `nfs:g:sched:z:<olson>` | Set schedule zone from preset |
-| `nfs:g:sched:zman` | Manual zone input via waiter (120 s timeout, `/cancel`) |
+| `nfs:g:sched:zman` | Manual zone input via waiter (120 s timeout; any command cancels; one per chat) |
 | `nfs:g:sched:home` | Back to the main screen |
 
 On the per-user and global flag rows the `:1` / `:0` suffix is always explicit (never a toggle) —
@@ -95,18 +96,34 @@ state; a `FALSE` per-user flag only suppresses delivery to that user.
   key such as `notifications.recording.global_enabled` just as much as an `INSERT` of an absent
   one such as the `notifications.recording.schedule.*` triple. Treat a restart as mandatory after
   any manual SQL edit. Single-instance deployment assumed.
+- **`nfs:` callbacks are registered with `markerFactory = null`** (`FrigateAnalyzerBot`), i.e. each
+  update is handled in its own coroutine, fully parallel. With the library default
+  (`ByUserCallbackQueryMarkerFactory`) every `nfs:` callback of one user is serialized through one
+  consumer, and the `zman` waiter — which runs *inside* the handler for up to 120 s — froze every
+  later `nfs:` click for its whole lifetime and then replayed it late over the unbounded channel
+  (observed 2026-07-22). Parallel handling is safe here because every payload carries an explicit
+  value (`:1` / `:0`, never a toggle) and re-renders read state back from the DB. The quick-export
+  and cancel/noop registrations keep the default marker on purpose — no waiter runs there, so their
+  serialization is free double-click protection.
 - **Manual-zone waiter (`nfs:g:sched:zman`)** — the only waiter in the codebase started from a
-  callback query rather than an `onCommand` trigger. Limitations:
+  callback query rather than an `onCommand` trigger. Behaviour and limitations:
+  - **Double `zman` is prevented by `ActiveZoneInputTracker`** (per chat, same shape as `/export`'s
+    `ActiveExportTracker`): the second click gets `notifications.sched.zone.manual.busy` instead of
+    a second waiter. Acquired before the prompt, released in a `finally` — timeout, failed save and
+    cancellation all release it.
+  - **A command sent while the waiter pends is treated as cancel.** The waiter subscribes to the
+    subcontext's update flow, so a command reaches it *and* its own `onCommand` registration; the
+    predicate `isCancelInput` (any text starting with `/`) stops the flow from also answering
+    "unknown timezone". No IANA zone id starts with `/`. **Divergence:** `/timezone`'s waiter does
+    NOT do this — a command there is both executed and consumed by the waiter. Pre-existing, out of
+    scope for the schedule branch, worth a follow-up.
   - Does **not** survive a bot restart: it is in-memory coroutine state in the polling scope, so a
     restart or a `TelegramBotSupervisor` reconnect drops it silently — the owner replies to the
     prompt and gets nothing back, not even the timeout message.
-  - **Concurrent waiters compete.** `waitTextMessage()` filters on `chat.id` only, so two
-    overlapping waiters in the same DM both consume the same message. A double `zman` click
-    plausibly yields two saves and two confirmations (same value, duplicated UX). There is
-    deliberately no dialog lock here, unlike `/export`'s `ActiveExportTracker`.
-  - **Cross-dialog interference** follows from the same filter: a pending `zman` and a concurrent
-    `/timezone` or `/export` waiter in one DM both see the owner's next text message, and which
-    one wins is not defined by anything in our code.
+  - **Cross-dialog interference** remains: `waitTextMessage()` filters on `chat.id` only and the
+    tracker guards only the `zman` dialog, so a pending `zman` and a concurrent `/timezone` or
+    `/export` waiter in one DM both see the owner's next text message, and which one wins is not
+    defined by anything in our code.
   - 120 s hard timeout, matching `/timezone`.
   - One-shot on invalid input by design: a bad zone id gets the error message and the waiter exits
     rather than re-prompting.
