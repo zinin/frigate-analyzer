@@ -172,10 +172,15 @@ class FrigateAnalyzerBot(
             // starts a 120 s waiter INSIDE this handler: with the default per-user marker that
             // waiter froze every later nfs: click and then replayed it late. Do NOT "clean this
             // up" — the two registrations above keep the default on purpose (no waiter there, so
-            // their serialization is free double-click protection). Parallel nfs: handling is safe:
-            // every payload carries an explicit value (:1 / :0, never a toggle) and is idempotent,
-            // and RERENDER re-reads state from the DB. Double `zman` is guarded by
-            // ActiveZoneInputTracker instead.
+            // their serialization is free double-click protection). Parallel nfs: handling keeps
+            // state WELL-FORMED: every payload carries an explicit value (:1 / :0, never a toggle)
+            // and is idempotent, RERENDER re-reads state from the DB, and the write-order
+            // invariant (window → zone → enabled LAST) is sequenced within each writer, so
+            // "enabled without a window" stays unreachable. What it does NOT preserve is click
+            // ORDER: two conflicting clicks milliseconds apart may commit in either order, and
+            // their two edits may reach Telegram out of order, leaving the keyboard one step
+            // behind until the next render. Accepted — single owner, single instance, and the
+            // window is milliseconds. Double `zman` is guarded by ActiveZoneInputTracker instead.
             onDataCallbackQuery(
                 initialFilter = { it.data.startsWith("nfs:") },
                 markerFactory = null,

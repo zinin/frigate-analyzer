@@ -101,10 +101,15 @@ state; a `FALSE` per-user flag only suppresses delivery to that user.
   (`ByUserCallbackQueryMarkerFactory`) every `nfs:` callback of one user is serialized through one
   consumer, and the `zman` waiter — which runs *inside* the handler for up to 120 s — froze every
   later `nfs:` click for its whole lifetime and then replayed it late over the unbounded channel
-  (observed 2026-07-22). Parallel handling is safe here because every payload carries an explicit
-  value (`:1` / `:0`, never a toggle) and re-renders read state back from the DB. The quick-export
-  and cancel/noop registrations keep the default marker on purpose — no waiter runs there, so their
-  serialization is free double-click protection.
+  (observed 2026-07-22). Parallel handling keeps state **well-formed** — every payload carries an
+  explicit value (`:1` / `:0`, never a toggle), re-renders read state back from the DB, and each
+  writer sequences the `window → zone → enabled` order itself, so "enabled without a window" stays
+  unreachable. It does **not** preserve click ORDER: two conflicting clicks milliseconds apart may
+  commit in either order, and their edits may reach Telegram out of order, leaving the keyboard one
+  step behind the DB until the next render. Under the default marker both orders were guaranteed —
+  this is a real behaviour change, accepted for a single-owner single-instance deployment. The
+  quick-export and cancel/noop registrations keep the default marker on purpose — no waiter runs
+  there, so their serialization is free double-click protection.
 - **Manual-zone waiter (`nfs:g:sched:zman`)** — the only waiter in the codebase started from a
   callback query rather than an `onCommand` trigger. Behaviour and limitations:
   - **Double `zman` is prevented by `ActiveZoneInputTracker`** (per chat, same shape as `/export`'s
@@ -117,6 +122,11 @@ state; a `FALSE` per-user flag only suppresses delivery to that user.
     "unknown timezone". No IANA zone id starts with `/`. **Divergence:** `/timezone`'s waiter does
     NOT do this — a command there is both executed and consumed by the waiter. Pre-existing, out of
     scope for the schedule branch, worth a follow-up.
+  - **A click made while the prompt is pending now really executes** — that is the point of
+    `markerFactory = null`. Consequence to expect: an owner who opens the hour picker while a `zman`
+    prompt pends sees that picker replaced by the main screen the instant the timezone is saved,
+    because `renderMain` edits the same message. Nothing is corrupted and it beats the previous
+    freeze-and-replay, but on screen it looks like a jump.
   - Does **not** survive a bot restart: it is in-memory coroutine state in the polling scope, so a
     restart or a `TelegramBotSupervisor` reconnect drops it silently — the owner replies to the
     prompt and gets nothing back, not even the timeout message.
