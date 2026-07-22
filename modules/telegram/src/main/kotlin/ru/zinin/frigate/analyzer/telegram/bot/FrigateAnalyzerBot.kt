@@ -16,7 +16,7 @@ import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.chat.CommonUser
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeChat
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeDefault
-import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
@@ -54,7 +54,7 @@ import ru.zinin.frigate.analyzer.telegram.service.impl.TelegramUserServiceImpl
 
 private val logger = KotlinLogging.logger {}
 
-private fun CommonMessage<*>.telegramLanguageCode(): String? =
+private fun ChatContentMessage<*>.telegramLanguageCode(): String? =
     ((this as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code
 
 @Component

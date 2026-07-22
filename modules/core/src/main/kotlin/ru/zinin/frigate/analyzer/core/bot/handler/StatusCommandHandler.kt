@@ -4,7 +4,7 @@ import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
 import dev.inmo.tgbotapi.types.ReplyParameters
 import dev.inmo.tgbotapi.types.message.HTMLParseMode
-import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
@@ -31,7 +31,7 @@ class StatusCommandHandler(
     override val order: Int = 8
 
     override suspend fun BehaviourContext.handle(
-        message: CommonMessage<TextContent>,
+        message: ChatContentMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
         val snapshot = statusService.collect()

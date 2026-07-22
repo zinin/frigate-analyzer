@@ -13,11 +13,16 @@ jakarta-inject-api = "2.0.1"
 uuid-creator = "6.1.1"
 testcontainers = "2.0.5"
 openapi-starter = "3.0.3"
-ktgbotapi = "33.1.0"
-# Stay on 3.4.x: ktor 3.5.0 requires kotlinx-coroutines-core 1.11.0,
-# but Spring Boot 4.1.0 BOM still pins it to 1.10.2 -> NoSuchMethodError at runtime.
-# Revisit when Spring Boot ships a BOM with coroutines 1.11+ or override BOM here.
-ktor = "3.4.2"
+ktgbotapi = "35.1.0"
+# Keep in lockstep with what ktgbotapi pulls in transitively: 35.1.0 -> ktor 3.5.1 and
+# kotlinx-coroutines 1.11.0 (33.1.0 -> ktor 3.4.2 / coroutines 1.10.2). Mismatching them
+# puts ktor out of step with the library compiled against it.
+ktor = "3.5.1"
+# ktor 3.5.x and ktgbotapi 35.1.0 are built against coroutines 1.11.0, but the Spring Boot
+# 4.1.0 BOM still pins 1.10.2 -> NoSuchMethodError at runtime. The root build overrides the
+# BOM property kotlin-coroutines.version with this value; drop the override once a Spring
+# Boot BOM ships coroutines 1.11+.
+coroutines = "1.11.0"
 mockwebserver = "5.4.0"
 mockk = "1.14.11"
 liquibase = "5.0.3"

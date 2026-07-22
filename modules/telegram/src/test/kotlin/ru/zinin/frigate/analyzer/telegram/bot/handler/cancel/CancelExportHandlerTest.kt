@@ -9,7 +9,7 @@ import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.Username
 import dev.inmo.tgbotapi.types.chat.CommonUser
 import dev.inmo.tgbotapi.types.chat.PrivateChatImpl
-import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
+import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.MessageContent
 import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
 import io.mockk.coEvery
@@ -87,7 +87,7 @@ class CancelExportHandlerTest {
         runTest {
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@alice"))
                 }
             val cb =
@@ -116,7 +116,7 @@ class CancelExportHandlerTest {
         runTest {
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@alice"))
                 }
             val unknown = UUID.randomUUID()
@@ -150,7 +150,7 @@ class CancelExportHandlerTest {
         runTest {
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@alice"))
                 }
             val exportId = UUID.randomUUID()
@@ -195,7 +195,7 @@ class CancelExportHandlerTest {
         runTest {
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@alice"))
                 }
             val exportId = UUID.randomUUID()
@@ -232,7 +232,7 @@ class CancelExportHandlerTest {
         runTest {
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@alice"))
                 }
             val exportId = UUID.randomUUID()
@@ -271,7 +271,7 @@ class CancelExportHandlerTest {
         runTest {
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@bob"))
                 }
             val cb =
@@ -307,7 +307,7 @@ class CancelExportHandlerTest {
             // гарантирует корректное поведение, если придёт).
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@bob"))
                 }
             val cb =
@@ -341,7 +341,7 @@ class CancelExportHandlerTest {
             // Guards iter-2 codex TEST-2: design §8 requires test for malformed callback data.
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@alice"))
                 }
             val cb =
@@ -377,7 +377,7 @@ class CancelExportHandlerTest {
             // edit keyboard. `runCatching` in handler must not let the error abort the cancellation.
             val chatId = ChatId(RawChatId(111L))
             val msgMock =
-                mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                     every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@alice"))
                 }
             val exportId = UUID.randomUUID()

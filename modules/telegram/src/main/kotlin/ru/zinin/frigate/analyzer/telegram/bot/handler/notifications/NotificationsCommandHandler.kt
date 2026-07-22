@@ -2,7 +2,7 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler.notifications
 
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
-import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -26,7 +26,7 @@ class NotificationsCommandHandler(
     override val order: Int = 7
 
     override suspend fun BehaviourContext.handle(
-        message: CommonMessage<TextContent>,
+        message: ChatContentMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
         if (user == null) return

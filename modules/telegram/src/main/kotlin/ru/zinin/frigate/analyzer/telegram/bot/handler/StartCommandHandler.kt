@@ -3,7 +3,7 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler
 import dev.inmo.tgbotapi.extensions.api.send.reply
 import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
 import dev.inmo.tgbotapi.types.chat.CommonUser
-import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -27,7 +27,7 @@ class StartCommandHandler(
     override val order: Int = 1
 
     override suspend fun BehaviourContext.handle(
-        message: CommonMessage<TextContent>,
+        message: ChatContentMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
         val privateMessage = message as? PrivateContentMessage<*>

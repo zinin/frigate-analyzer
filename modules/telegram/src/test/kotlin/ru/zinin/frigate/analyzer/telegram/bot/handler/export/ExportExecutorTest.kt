@@ -7,7 +7,7 @@ import dev.inmo.tgbotapi.requests.send.SendTextMessage
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.chat.PrivateChatImpl
-import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
+import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.MessageContent
 import io.mockk.coEvery
 import io.mockk.every
@@ -86,19 +86,19 @@ class ExportExecutorTest {
             // inline-class hierarchies trips mockk's matcher logic (packRef null), so we verify via
             // the underlying bot.execute(...) requests instead (same fallback pattern as
             // CancelExportHandlerTest and QuickExportHandlerTest's cancellation test).
-            // SendTextMessage returns a ContentMessage — default `mockk(relaxed = true)` yields
+            // SendTextMessage returns a PrivateContentMessage — default `mockk(relaxed = true)` yields
             // a plain java.lang.Object that crashes on the checkcast into `statusMessage`.
             val capturedRequests = mutableListOf<Request<*>>()
             coEvery { bot.execute(any<Request<*>>()) } coAnswers {
                 val req = firstArg<Request<*>>()
                 capturedRequests.add(req)
                 if (req is SendTextMessage) {
-                    // sendTextMessage → ContentMessage. editMessageText (used later on
+                    // sendTextMessage → PrivateContentMessage. editMessageText (used later on
                     // statusMessage) accesses `.chat` and passes it down to tgbotapi's inline-class
                     // chat identifiers. A plain relaxed mock returns default `Object`s which blow
                     // up inside BusinessChatId.getBusinessConnectionId. Back the chat with a real
                     // PrivateChatImpl so the inline-class path is exercised cleanly.
-                    mockk<ContentMessage<MessageContent>>(relaxed = true).apply {
+                    mockk<PrivateContentMessage<MessageContent>>(relaxed = true).apply {
                         every { chat } returns PrivateChatImpl(id = chatId, firstName = "Test")
                     }
                 } else {
@@ -142,8 +142,11 @@ class ExportExecutorTest {
             val editRequests = capturedRequests.filterIsInstance<EditChatMessageText>()
             val cancelledEdit =
                 editRequests.find {
-                    it.text.contains("cancelled", ignoreCase = true) ||
-                        it.text.contains("Отменён")
+                    // EditChatMessageText.text is nullable since ktgbotapi 35.1.0 (a rich message
+                    // may replace it). orEmpty() keeps a null out of the match so it surfaces as
+                    // the assertNotNull failure below instead of an NPE.
+                    val text = it.text.orEmpty()
+                    text.contains("cancelled", ignoreCase = true) || text.contains("Отменён")
                 }
             assertNotNull(
                 cancelledEdit,
@@ -177,12 +180,12 @@ class ExportExecutorTest {
                 val req = firstArg<Request<*>>()
                 capturedRequests.add(req)
                 if (req is SendTextMessage) {
-                    // sendTextMessage → ContentMessage. editMessageText (used later on
+                    // sendTextMessage → PrivateContentMessage. editMessageText (used later on
                     // statusMessage) accesses `.chat` and passes it down to tgbotapi's inline-class
                     // chat identifiers. A plain relaxed mock returns default `Object`s which blow
                     // up inside BusinessChatId.getBusinessConnectionId. Back the chat with a real
                     // PrivateChatImpl so the inline-class path is exercised cleanly.
-                    mockk<ContentMessage<MessageContent>>(relaxed = true).apply {
+                    mockk<PrivateContentMessage<MessageContent>>(relaxed = true).apply {
                         every { chat } returns PrivateChatImpl(id = chatId, firstName = "Test")
                     }
                 } else {
