@@ -1,12 +1,12 @@
 [versions]
-kotlin = "2.3.21"
-spring-boot = "4.0.6"
+kotlin = "2.4.10"
+spring-boot = "4.1.0"
 spring-dependency-management = "1.1.7"
 ktlint-gradle = "14.2.0"
-git-properties = "2.5.7"
+git-properties = "4.0.1"
 
-kotlin-logging = "8.0.02"
-postgresql = "42.7.11"
+kotlin-logging = "8.0.4"
+postgresql = "42.7.13"
 mapstruct = "1.6.3"
 mapstruct-spring-extensions = "2.0.0"
 jakarta-inject-api = "2.0.1"
@@ -15,15 +15,15 @@ testcontainers = "2.0.5"
 openapi-starter = "3.0.3"
 ktgbotapi = "33.1.0"
 # Stay on 3.4.x: ktor 3.5.0 requires kotlinx-coroutines-core 1.11.0,
-# but Spring Boot 4.0.6 BOM pins it to 1.10.2 -> NoSuchMethodError at runtime.
+# but Spring Boot 4.1.0 BOM still pins it to 1.10.2 -> NoSuchMethodError at runtime.
 # Revisit when Spring Boot ships a BOM with coroutines 1.11+ or override BOM here.
 ktor = "3.4.2"
-mockwebserver = "5.3.2"
-mockk = "1.14.9"
+mockwebserver = "5.4.0"
+mockk = "1.14.11"
 liquibase = "5.0.3"
 picocli = "4.7.7"
 ktlint-tool = "1.8.0"
-jacoco = "0.8.14"
+jacoco = "0.8.15"
 spring-ai-claude-code-sdk = "1.0.0"
 
 [libraries]

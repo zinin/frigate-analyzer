@@ -81,7 +81,9 @@ subprojects {
 
     kotlin {
         compilerOptions {
-            freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+            // -Xannotation-default-target=param-property был опт-ином в поведение,
+            // ставшее умолчанием в Kotlin 2.4 — с 2.4.10 флаг избыточен и удалён.
+            freeCompilerArgs.addAll("-Xjsr305=strict")
         }
     }
 
