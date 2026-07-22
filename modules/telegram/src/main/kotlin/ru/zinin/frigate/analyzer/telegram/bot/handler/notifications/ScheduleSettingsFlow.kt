@@ -24,9 +24,18 @@ import java.time.ZoneId
 private val logger = KotlinLogging.logger {}
 
 /**
+ * Treats any command as a cancel of the manual-zone waiter. The waiter subscribes to the
+ * subcontext's update flow directly, so a command sent while it pends is delivered to BOTH its
+ * own `onCommand` registration and the waiter; without this the command runs AND draws a bogus
+ * "unknown timezone" reply (observed live). No IANA zone id starts with `/`, so nothing
+ * legitimate is rejected.
+ */
+internal fun isCancelInput(text: String): Boolean = text.startsWith("/")
+
+/**
  * Telegram I/O for the /notifications schedule sub-dialog: maps [ScheduleCallbackHandler]
- * outcomes to screen edits and runs the manual-zone waiter (same conventions as /timezone:
- * 120 s timeout, /cancel, error reply on unknown zone).
+ * outcomes to screen edits and runs the manual-zone waiter (120 s timeout, error reply on
+ * unknown zone — as in /timezone; unlike /timezone any command cancels, see [isCancelInput]).
  */
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
@@ -37,6 +46,7 @@ class ScheduleSettingsFlow(
     private val viewStateFactory: NotificationsViewStateFactory,
     private val mainRenderer: NotificationsMessageRenderer,
     private val scheduleRenderer: ScheduleKeyboardRenderer,
+    private val zoneInputTracker: ActiveZoneInputTracker,
     private val msg: MessageResolver,
 ) {
     suspend fun BehaviourContext.handle(
@@ -102,31 +112,42 @@ class ScheduleSettingsFlow(
         lang: String,
     ) {
         val cid = callbackMsg.chat.id
-        sendTextMessage(cid, msg.get("notifications.sched.zone.manual.prompt", lang))
-        val completed =
-            withTimeoutOrNull(MANUAL_ZONE_TIMEOUT_MS) {
-                val inputMsg = waitTextMessage().filter { it.chat.id == cid }.first()
-                val input = inputMsg.content.text.trim()
-                if (input == "/cancel") {
-                    sendTextMessage(cid, msg.get("notifications.sched.zone.cancelled", lang))
-                    return@withTimeoutOrNull
-                }
-                // Only the parse is guarded. A DateTimeException from the save or the re-render
-                // (corrupt stored window/zone) must not be reported as "unknown timezone" — least
-                // of all right after the "saved" confirmation; those surface via handle's catch.
-                val zone =
-                    try {
-                        ZoneId.of(input)
-                    } catch (_: DateTimeException) {
-                        sendTextMessage(cid, msg.get("notifications.sched.zone.invalid", lang))
+        // Dialog-phase lock: waitTextMessage() filters on chat.id only, so two overlapping
+        // waiters in the same DM would both consume the owner's next message.
+        val cidLong = cid.chatId.long
+        if (!zoneInputTracker.tryAcquire(cidLong)) {
+            sendTextMessage(cid, msg.get("notifications.sched.zone.manual.busy", lang))
+            return
+        }
+        try {
+            sendTextMessage(cid, msg.get("notifications.sched.zone.manual.prompt", lang))
+            val completed =
+                withTimeoutOrNull(MANUAL_ZONE_TIMEOUT_MS) {
+                    val inputMsg = waitTextMessage().filter { it.chat.id == cid }.first()
+                    val input = inputMsg.content.text.trim()
+                    if (isCancelInput(input)) {
+                        sendTextMessage(cid, msg.get("notifications.sched.zone.cancelled", lang))
                         return@withTimeoutOrNull
                     }
-                scheduleService.setZone(zone, current.username)
-                sendTextMessage(cid, msg.get("notifications.sched.zone.saved", lang, zone.id))
-                renderMain(callbackMsg, current, isOwner)
+                    // Only the parse is guarded. A DateTimeException from the save or the re-render
+                    // (corrupt stored window/zone) must not be reported as "unknown timezone" — least
+                    // of all right after the "saved" confirmation; those surface via handle's catch.
+                    val zone =
+                        try {
+                            ZoneId.of(input)
+                        } catch (_: DateTimeException) {
+                            sendTextMessage(cid, msg.get("notifications.sched.zone.invalid", lang))
+                            return@withTimeoutOrNull
+                        }
+                    scheduleService.setZone(zone, current.username)
+                    sendTextMessage(cid, msg.get("notifications.sched.zone.saved", lang, zone.id))
+                    renderMain(callbackMsg, current, isOwner)
+                }
+            if (completed == null) {
+                sendTextMessage(cid, msg.get("notifications.sched.zone.timeout", lang))
             }
-        if (completed == null) {
-            sendTextMessage(cid, msg.get("notifications.sched.zone.timeout", lang))
+        } finally {
+            zoneInputTracker.release(cidLong)
         }
     }
 

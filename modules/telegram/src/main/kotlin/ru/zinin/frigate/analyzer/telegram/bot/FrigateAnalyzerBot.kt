@@ -167,8 +167,18 @@ class FrigateAnalyzerBot(
                 }
             }
 
+            // markerFactory = null (the library's documented opt-out) makes nfs: callbacks of one
+            // user run in parallel instead of one-at-a-time. Required because `nfs:g:sched:zman`
+            // starts a 120 s waiter INSIDE this handler: with the default per-user marker that
+            // waiter froze every later nfs: click and then replayed it late. Do NOT "clean this
+            // up" — the two registrations above keep the default on purpose (no waiter there, so
+            // their serialization is free double-click protection). Parallel nfs: handling is safe:
+            // every payload carries an explicit value (:1 / :0, never a toggle) and is idempotent,
+            // and RERENDER re-reads state from the DB. Double `zman` is guarded by
+            // ActiveZoneInputTracker instead.
             onDataCallbackQuery(
                 initialFilter = { it.data.startsWith("nfs:") },
+                markerFactory = null,
             ) { callback ->
                 // Acknowledge callback FIRST so Telegram clears the button spinner.
                 try {
