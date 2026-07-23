@@ -1,6 +1,6 @@
 package ru.zinin.frigate.analyzer.telegram.filter
 
-import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.MessageContent
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -17,7 +17,7 @@ private val logger = KotlinLogging.logger {}
 class AuthorizationFilter(
     private val userService: TelegramUserService,
 ) {
-    suspend fun authorize(message: CommonMessage<MessageContent>): AuthResult {
+    suspend fun authorize(message: ChatContentMessage<MessageContent>): AuthResult {
         val username = extractUsername(message) ?: return AuthResult.Unauthorized
         return authorize(username)
     }
@@ -67,7 +67,7 @@ class AuthorizationFilter(
         }
     }
 
-    fun extractUsername(message: CommonMessage<MessageContent>): String? {
+    fun extractUsername(message: ChatContentMessage<MessageContent>): String? {
         val privateMessage = message as? PrivateContentMessage<*> ?: return null
         return privateMessage.user.username?.withoutAt
     }

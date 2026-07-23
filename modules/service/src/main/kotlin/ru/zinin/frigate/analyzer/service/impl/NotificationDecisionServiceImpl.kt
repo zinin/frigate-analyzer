@@ -10,6 +10,7 @@ import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.service.NotificationDecisionService
+import ru.zinin.frigate.analyzer.service.NotificationScheduleService
 import ru.zinin.frigate.analyzer.service.ObjectTrackerService
 
 private val logger = KotlinLogging.logger {}
@@ -18,6 +19,7 @@ private val logger = KotlinLogging.logger {}
 class NotificationDecisionServiceImpl(
     private val tracker: ObjectTrackerService,
     private val settings: AppSettingsService,
+    private val scheduleService: NotificationScheduleService,
 ) : NotificationDecisionService {
     override suspend fun evaluate(
         recording: RecordingDto,
@@ -30,6 +32,12 @@ class NotificationDecisionServiceImpl(
 
         val resolvedGlobalEnabled = globalEnabled ?: isRecordingNotificationsGloballyEnabled()
 
+        // Never throws: fail-open null on unreadable/corrupt settings (see NotificationScheduleService).
+        // Deliberate asymmetry with the global flag: flag read failures propagate (recording stays
+        // retryable), schedule read failures yield an EXTRA notification, never a lost one.
+        val schedule = scheduleService.getRecordingSchedule()
+        val scheduleAllows = schedule == null || schedule.contains(recording.recordTimestamp)
+
         return try {
             val delta = tracker.evaluate(recording, detections)
             when {
@@ -41,6 +49,11 @@ class NotificationDecisionServiceImpl(
                 !resolvedGlobalEnabled -> {
                     logger.debug { "Decision: suppress (global_off): cam=${recording.camId} recording=${recording.id}" }
                     NotificationDecision(false, NotificationDecisionReason.GLOBAL_OFF, delta)
+                }
+
+                !scheduleAllows -> {
+                    logger.debug { "Decision: suppress (out_of_schedule): cam=${recording.camId} recording=${recording.id}" }
+                    NotificationDecision(false, NotificationDecisionReason.OUT_OF_SCHEDULE, delta)
                 }
 
                 delta.newTracksCount > 0 -> {
@@ -58,11 +71,12 @@ class NotificationDecisionServiceImpl(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            val shouldNotify = resolvedGlobalEnabled && scheduleAllows
             logger.warn(e) {
                 "Tracker failure for recording=${recording.id} cam=${recording.camId}; " +
-                    "globalEnabled=$resolvedGlobalEnabled, shouldNotify=$resolvedGlobalEnabled"
+                    "globalEnabled=$resolvedGlobalEnabled, scheduleAllows=$scheduleAllows, shouldNotify=$shouldNotify"
             }
-            NotificationDecision(resolvedGlobalEnabled, NotificationDecisionReason.TRACKER_ERROR)
+            NotificationDecision(shouldNotify, NotificationDecisionReason.TRACKER_ERROR)
         }
     }
 

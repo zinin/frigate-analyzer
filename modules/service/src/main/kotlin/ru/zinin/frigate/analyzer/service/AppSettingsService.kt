@@ -11,4 +11,15 @@ interface AppSettingsService {
         value: Boolean,
         updatedBy: String? = null,
     )
+
+    suspend fun getString(
+        key: String,
+        default: String? = null,
+    ): String?
+
+    suspend fun setString(
+        key: String,
+        value: String,
+        updatedBy: String? = null,
+    )
 }

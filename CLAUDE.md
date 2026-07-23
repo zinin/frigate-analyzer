@@ -2,7 +2,7 @@
 
 Video recording analysis system for Frigate security cameras using YOLO-based object detection.
 
-**Stack:** Kotlin 2.3.21, Spring Boot 4.0.6, WebFlux, R2DBC/PostgreSQL, Coroutines, Java 25, ktgbotapi 33.1.0, Jackson 3
+**Stack:** Kotlin 2.4.10, Spring Boot 4.1.0, WebFlux, R2DBC/PostgreSQL, Coroutines, Java 25, ktgbotapi 35.1.0, Jackson 3
 
 ## Critical Rules
 

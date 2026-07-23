@@ -25,6 +25,9 @@ class NotificationsMessageRenderer(
             requireNotNull(state.signalGlobalEnabled) {
                 "OWNER NotificationsViewState.signalGlobalEnabled must not be null"
             }
+            requireNotNull(state.scheduleEnabled) {
+                "OWNER NotificationsViewState.scheduleEnabled must not be null"
+            }
         }
         val text = renderText(state)
         val keyboard = renderKeyboard(state)
@@ -86,6 +89,50 @@ class NotificationsMessageRenderer(
             appendLine()
             appendLine(recordingLine)
             appendLine(signalLine)
+            if (state.isOwner) {
+                // Locals give smart casts so the ON / OFF-configured branches pass a non-null
+                // window and zone without `?:` or `!!`.
+                val window = state.scheduleWindow
+                val zone = state.scheduleZone
+                // A stored window with no zone is as corrupt as "enabled but incomplete": the UI
+                // materializes the zone on every enable/save, so only external DB corruption splits
+                // the pair. Report it truthfully whatever the enabled flag says — the schedule
+                // fail-opens and notifications flow. A zone set alone (no window) is a legitimate
+                // preconfiguration and stays plain OFF.
+                val misconfigured =
+                    (state.scheduleEnabled == true && (window == null || zone == null)) || (window != null && zone == null)
+                val scheduleLine =
+                    when {
+                        misconfigured -> {
+                            msg.get("notifications.settings.sched.line.misconfigured", lang)
+                        }
+
+                        state.scheduleEnabled == true && window != null && zone != null -> {
+                            msg.get(
+                                "notifications.settings.sched.line.on.format",
+                                lang,
+                                window,
+                                zone,
+                            )
+                        }
+
+                        window != null && zone != null -> {
+                            // Disabled but fully configured: show what "Enable schedule" will activate.
+                            msg.get(
+                                "notifications.settings.sched.line.off.configured.format",
+                                lang,
+                                off,
+                                window,
+                                zone,
+                            )
+                        }
+
+                        else -> {
+                            msg.get("notifications.settings.sched.line.off.format", lang, off)
+                        }
+                    }
+                appendLine(scheduleLine)
+            }
         }
     }
 
@@ -121,6 +168,30 @@ class NotificationsMessageRenderer(
                             +CallbackDataInlineKeyboardButton(
                                 msg.get(toggleKey("signal", "global", sigGlobal), lang),
                                 "nfs:g:sig:${targetValue(sigGlobal)}",
+                            )
+                        }
+                        val schedEnabled = state.scheduleEnabled!!
+                        row {
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get(
+                                    if (schedEnabled) {
+                                        "notifications.settings.button.sched.disable"
+                                    } else {
+                                        "notifications.settings.button.sched.enable"
+                                    },
+                                    lang,
+                                ),
+                                if (schedEnabled) "nfs:g:sched:off" else "nfs:g:sched:on",
+                            )
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get("notifications.settings.button.sched.window", lang),
+                                "nfs:g:sched:cfg",
+                            )
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get("notifications.settings.button.sched.zone", lang),
+                                "nfs:g:sched:zone",
                             )
                         }
                     }

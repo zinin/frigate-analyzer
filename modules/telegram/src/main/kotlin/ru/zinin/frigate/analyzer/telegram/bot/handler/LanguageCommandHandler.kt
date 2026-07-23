@@ -6,7 +6,7 @@ import dev.inmo.tgbotapi.extensions.behaviour_builder.BehaviourContext
 import dev.inmo.tgbotapi.extensions.behaviour_builder.expectations.waitDataCallbackQuery
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
-import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
 import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
 import dev.inmo.tgbotapi.utils.matrix
@@ -33,7 +33,7 @@ class LanguageCommandHandler(
     override val order: Int = 6
 
     override suspend fun BehaviourContext.handle(
-        message: CommonMessage<TextContent>,
+        message: ChatContentMessage<TextContent>,
         user: TelegramUserDto?,
     ) {
         val chatId = message.chat.id

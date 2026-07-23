@@ -10,7 +10,7 @@ import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.buttons.KeyboardMarkup
-import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
+import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.MediaGroupContent
 import dev.inmo.tgbotapi.types.message.content.MediaGroupPartContent
 import dev.inmo.tgbotapi.types.message.content.PhotoContent
@@ -150,7 +150,7 @@ class TelegramNotificationSenderTest {
      * Needed because the photo request is wrapped in an internal CommonMultipartFileRequest,
      * so we first extract the inner `data` (SendPhotoData) then read its replyMarkup.
      *
-     * Coupled to tgbotapi 32.0.0 internals — if the library changes its wrapping
+     * Coupled to tgbotapi internals (re-verified against 35.1.0) — if the library changes its wrapping
      * mechanism, this method will fail at runtime. Review after version upgrades.
      */
     private fun extractReplyMarkup(request: Request<*>): KeyboardMarkup? {
@@ -183,7 +183,7 @@ class TelegramNotificationSenderTest {
     fun `send with empty frames includes inline export keyboard in text message`() =
         runTest {
             val task = createTask(frames = emptyList())
-            val textMessageResult = mockk<ContentMessage<TextContent>>()
+            val textMessageResult = mockk<PrivateContentMessage<TextContent>>()
 
             val requestSlot = slot<Request<*>>()
             coEvery { bot.execute(capture(requestSlot)) } returns textMessageResult
@@ -203,7 +203,7 @@ class TelegramNotificationSenderTest {
         runTest {
             val frame = VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1)
             val task = createTask(frames = listOf(frame))
-            val photoMessageResult = mockk<ContentMessage<PhotoContent>>()
+            val photoMessageResult = mockk<PrivateContentMessage<PhotoContent>>()
 
             val requestSlot = slot<Request<*>>()
             coEvery { bot.execute(capture(requestSlot)) } returns photoMessageResult
@@ -227,17 +227,17 @@ class TelegramNotificationSenderTest {
             val task = createTask(frames = frames)
 
             // Media-group path: sender now reads `group.messageId` off the sendMediaGroup result,
-            // so the return value must be a typed ContentMessage<MediaGroupContent<...>> rather than
+            // so the return value must be a typed PrivateContentMessage<MediaGroupContent<...>> rather than
             // a generic relaxed mock (which would fail a checkcast at runtime).
             val groupMsg =
-                mockk<ContentMessage<MediaGroupContent<MediaGroupPartContent>>>(relaxed = true) {
+                mockk<PrivateContentMessage<MediaGroupContent<MediaGroupPartContent>>>(relaxed = true) {
                     every { messageId } returns MessageId(1L)
                 }
             val capturedRequests = mutableListOf<Request<*>>()
             coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
                 val req = firstArg<Request<*>>()
                 when {
-                    req is SendTextMessage -> mockk<ContentMessage<TextContent>>(relaxed = true)
+                    req is SendTextMessage -> mockk<PrivateContentMessage<TextContent>>(relaxed = true)
                     inner(req)?.contains("MediaGroup") == true -> groupMsg
                     else -> mockk(relaxed = true)
                 }
@@ -271,14 +271,14 @@ class TelegramNotificationSenderTest {
 
             // See companion test above — sender reads `group.messageId` and needs a typed mock.
             val groupMsg =
-                mockk<ContentMessage<MediaGroupContent<MediaGroupPartContent>>>(relaxed = true) {
+                mockk<PrivateContentMessage<MediaGroupContent<MediaGroupPartContent>>>(relaxed = true) {
                     every { messageId } returns MessageId(1L)
                 }
             val capturedRequests = mutableListOf<Request<*>>()
             coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
                 val req = firstArg<Request<*>>()
                 when {
-                    req is SendTextMessage -> mockk<ContentMessage<TextContent>>(relaxed = true)
+                    req is SendTextMessage -> mockk<PrivateContentMessage<TextContent>>(relaxed = true)
                     inner(req)?.contains("MediaGroup") == true -> groupMsg
                     else -> mockk(relaxed = true)
                 }
@@ -329,7 +329,7 @@ class TelegramNotificationSenderTest {
                     VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1), detectionsCount = 1),
                 )
             val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } returns mockk<ContentMessage<PhotoContent>>(relaxed = true)
+            coEvery { bot.execute(capture(capturedRequests)) } returns mockk<PrivateContentMessage<PhotoContent>>(relaxed = true)
 
             sender.send(createTask(frames = frames))
 
@@ -353,11 +353,11 @@ class TelegramNotificationSenderTest {
             handle.complete(Result.success(DescriptionResult("two cars", "two cars approaching gate")))
 
             val photoMsg =
-                mockk<ContentMessage<PhotoContent>> {
+                mockk<PrivateContentMessage<PhotoContent>> {
                     every { messageId } returns MessageId(42L)
                 }
             val textMsg =
-                mockk<ContentMessage<TextContent>> {
+                mockk<PrivateContentMessage<TextContent>> {
                     every { messageId } returns MessageId(43L)
                 }
 
@@ -397,11 +397,11 @@ class TelegramNotificationSenderTest {
             handle.complete(Result.failure(RuntimeException("boom")))
 
             val photoMsg =
-                mockk<ContentMessage<PhotoContent>> {
+                mockk<PrivateContentMessage<PhotoContent>> {
                     every { messageId } returns MessageId(42L)
                 }
             val textMsg =
-                mockk<ContentMessage<TextContent>> {
+                mockk<PrivateContentMessage<TextContent>> {
                     every { messageId } returns MessageId(43L)
                 }
 
@@ -429,7 +429,9 @@ class TelegramNotificationSenderTest {
                 "Expected Russian fallback in caption, got: ${captionEdit.text}",
             )
             assertTrue(
-                detailsEdit.text.contains("недоступно"),
+                // EditChatMessageText.text is nullable since ktgbotapi 35.1.0; orEmpty() keeps a
+                // null failing this assertion with its message rather than throwing an NPE.
+                detailsEdit.text.orEmpty().contains("недоступно"),
                 "Expected Russian fallback in details, got: ${detailsEdit.text}",
             )
         }
@@ -443,11 +445,11 @@ class TelegramNotificationSenderTest {
             handle.complete(Result.success(DescriptionResult("two cars", "two cars approaching gate")))
 
             val groupMsg =
-                mockk<ContentMessage<MediaGroupContent<MediaGroupPartContent>>> {
+                mockk<PrivateContentMessage<MediaGroupContent<MediaGroupPartContent>>> {
                     every { messageId } returns MessageId(50L)
                 }
             val textMsg =
-                mockk<ContentMessage<TextContent>> {
+                mockk<PrivateContentMessage<TextContent>> {
                     every { messageId } returns MessageId(51L)
                 }
 
@@ -487,7 +489,7 @@ class TelegramNotificationSenderTest {
             val handle = CompletableDeferred<Result<DescriptionResult>>()
             handle.complete(Result.success(DescriptionResult("s", "d")))
 
-            val textMsg = mockk<ContentMessage<TextContent>>(relaxed = true)
+            val textMsg = mockk<PrivateContentMessage<TextContent>>(relaxed = true)
             coEvery { bot.execute(any<Request<*>>()) } returns textMsg
 
             sender.send(createTask(frames = emptyList(), descriptionHandle = handle))
@@ -513,7 +515,7 @@ class TelegramNotificationSenderTest {
                     text = "Camera \"front_door\" lost signal",
                 )
             val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } returns mockk<ContentMessage<TextContent>>(relaxed = true)
+            coEvery { bot.execute(capture(capturedRequests)) } returns mockk<PrivateContentMessage<TextContent>>(relaxed = true)
 
             sender.send(task)
 

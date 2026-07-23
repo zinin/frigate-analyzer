@@ -10,7 +10,10 @@ import ru.zinin.frigate.analyzer.service.repository.AppSettingRepository
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class AppSettingsServiceImplTest {
@@ -76,5 +79,84 @@ class AppSettingsServiceImplTest {
             coEvery { repo.findBySettingKey("k") } returns AppSettingEntity("k", "weird", fixed, null)
             assertTrue(service.getBoolean("k", default = true))
             assertFalse(service.getBoolean("k", default = false))
+        }
+
+    @Test
+    fun `getString returns stored value and caches it`() =
+        runTest {
+            coEvery { repo.findBySettingKey("s") } returns AppSettingEntity("s", "hello", fixed, null)
+
+            assertEquals("hello", service.getString("s"))
+            assertEquals("hello", service.getString("s"))
+
+            coVerify(exactly = 1) { repo.findBySettingKey("s") }
+        }
+
+    @Test
+    fun `getString returns default when key missing`() =
+        runTest {
+            coEvery { repo.findBySettingKey("missing") } returns null
+
+            assertNull(service.getString("missing"))
+            assertEquals("fallback", service.getString("missing", default = "fallback"))
+        }
+
+    @Test
+    fun `setString upserts and invalidates cache`() =
+        runTest {
+            coEvery { repo.findBySettingKey("s") } returns AppSettingEntity("s", "old", fixed, null)
+            coEvery { repo.upsert("s", "new", fixed, "alice") } returns 1L
+
+            // populate cache
+            assertEquals("old", service.getString("s"))
+            // change
+            service.setString("s", "new", updatedBy = "alice")
+            // read again — must hit DB because cache invalidated
+            coEvery { repo.findBySettingKey("s") } returns AppSettingEntity("s", "new", fixed, "alice")
+            assertEquals("new", service.getString("s"))
+
+            coVerify(exactly = 1) { repo.upsert("s", "new", fixed, "alice") }
+            coVerify(exactly = 2) { repo.findBySettingKey("s") }
+        }
+
+    @Test
+    fun `absent key is negatively cached until invalidated`() =
+        runTest {
+            coEvery { repo.findBySettingKey("absent") } returns null
+
+            assertNull(service.getString("absent"))
+            assertNull(service.getString("absent"))
+            assertFalse(service.getBoolean("absent", default = false))
+
+            coVerify(exactly = 1) { repo.findBySettingKey("absent") }
+        }
+
+    @Test
+    fun `setString clears the negative cache entry`() =
+        runTest {
+            coEvery { repo.findBySettingKey("nk") } returns null
+            assertNull(service.getString("nk"))
+
+            coEvery { repo.upsert("nk", "v", fixed, null) } returns 1L
+            service.setString("nk", "v")
+
+            coEvery { repo.findBySettingKey("nk") } returns AppSettingEntity("nk", "v", fixed, null)
+            assertEquals("v", service.getString("nk"))
+            coVerify(exactly = 2) { repo.findBySettingKey("nk") }
+        }
+
+    @Test
+    fun `failed repository read caches nothing (errors stay transient)`() =
+        runTest {
+            coEvery { repo.findBySettingKey("boom") } throws RuntimeException("db down")
+
+            // The failure reaches the caller — it is never swallowed into an "absent" mark
+            assertFailsWith<RuntimeException> { service.getString("boom") }
+
+            // ...and it cached nothing, so the next read hits the DB and sees the real value
+            coEvery { repo.findBySettingKey("boom") } returns AppSettingEntity("boom", "v", fixed, null)
+            assertEquals("v", service.getString("boom"))
+
+            coVerify(exactly = 2) { repo.findBySettingKey("boom") }
         }
 }

@@ -14,7 +14,7 @@ import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineK
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.chat.CommonUser
 import dev.inmo.tgbotapi.types.chat.PrivateChatImpl
-import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
+import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.MessageContent
 import dev.inmo.tgbotapi.types.queries.callback.DataCallbackQuery
 import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
@@ -113,7 +113,7 @@ class QuickExportHandlerTest {
     private fun makeQuickExportCallback(recordingId: UUID): MessageDataCallbackQuery {
         val chatId = ChatId(RawChatId(111L))
         val msgMock =
-            mockk<ContentMessage<MessageContent>>(relaxed = true).also {
+            mockk<PrivateContentMessage<MessageContent>>(relaxed = true).also {
                 every { it.chat } returns PrivateChatImpl(id = chatId, username = Username("@alice"))
             }
         return mockk<MessageDataCallbackQuery>(relaxed = true).also {
@@ -315,7 +315,7 @@ class QuickExportHandlerTest {
                     firstName = "TestChat",
                 )
             val mockMessage =
-                mockk<ContentMessage<MessageContent>>(relaxed = true) {
+                mockk<PrivateContentMessage<MessageContent>>(relaxed = true) {
                     every { chat } returns realChat
                 }
             return MessageDataCallbackQuery(
@@ -370,7 +370,7 @@ class QuickExportHandlerTest {
                 val tempFile = Files.createTempFile("test-export", ".mp4")
 
                 // Capture all bot requests and return type-appropriate values
-                // (AnswerCallbackQuery expects Boolean, everything else expects ContentMessage)
+                // (AnswerCallbackQuery expects Boolean, everything else expects PrivateContentMessage)
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(any<Request<*>>()) } coAnswers {
                     val request = firstArg<Request<*>>()
@@ -378,7 +378,7 @@ class QuickExportHandlerTest {
                     if (request is AnswerCallbackQuery) {
                         true
                     } else {
-                        mockk<ContentMessage<MessageContent>>(relaxed = true)
+                        mockk<PrivateContentMessage<MessageContent>>(relaxed = true)
                     }
                 }
                 coEvery {
@@ -1062,7 +1062,7 @@ class QuickExportHandlerTest {
                 val capturedRequests = mutableListOf<Request<*>>()
                 coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
                     val request = firstArg<Request<*>>()
-                    if (request is AnswerCallbackQuery) true else mockk<ContentMessage<MessageContent>>(relaxed = true)
+                    if (request is AnswerCallbackQuery) true else mockk<PrivateContentMessage<MessageContent>>(relaxed = true)
                 }
                 coEvery {
                     videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any(), any())
@@ -1082,7 +1082,7 @@ class QuickExportHandlerTest {
                     val secondCallRequests = mutableListOf<Request<*>>()
                     coEvery { bot.execute(capture(secondCallRequests)) } coAnswers {
                         val request = firstArg<Request<*>>()
-                        if (request is AnswerCallbackQuery) true else mockk<ContentMessage<MessageContent>>(relaxed = true)
+                        if (request is AnswerCallbackQuery) true else mockk<PrivateContentMessage<MessageContent>>(relaxed = true)
                     }
                     handler.handle(callback)?.join()
 
@@ -1114,7 +1114,7 @@ class QuickExportHandlerTest {
 
                 coEvery { bot.execute(any<Request<*>>()) } coAnswers {
                     val request = firstArg<Request<*>>()
-                    if (request is AnswerCallbackQuery) true else mockk<ContentMessage<MessageContent>>(relaxed = true)
+                    if (request is AnswerCallbackQuery) true else mockk<PrivateContentMessage<MessageContent>>(relaxed = true)
                 }
                 coEvery {
                     videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any(), any())
@@ -1152,7 +1152,7 @@ class QuickExportHandlerTest {
                         firstName = "TestChat",
                     )
                 val mockMessage =
-                    mockk<ContentMessage<MessageContent>>(relaxed = true) {
+                    mockk<PrivateContentMessage<MessageContent>>(relaxed = true) {
                         every { chat } returns realChat
                     }
                 val callback =
@@ -1173,7 +1173,7 @@ class QuickExportHandlerTest {
                     if (request is AnswerCallbackQuery) {
                         true
                     } else {
-                        mockk<ContentMessage<MessageContent>>(relaxed = true)
+                        mockk<PrivateContentMessage<MessageContent>>(relaxed = true)
                     }
                 }
                 coEvery {

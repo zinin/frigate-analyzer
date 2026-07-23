@@ -50,10 +50,16 @@ val ktlintToolVersion =
     libs.versions.ktlint.tool
         .get()
 val jacocoToolVersion = libs.versions.jacoco.get()
+val coroutinesVersion = libs.versions.coroutines.get()
 
 allprojects {
     group = "ru.zinin"
     version = appVersion
+
+    // Spring Boot 4.1.0 BOM pins kotlinx-coroutines to 1.10.2, но ktgbotapi 35.1.0 и ktor 3.5.1
+    // собраны против 1.11.0. Переопределяем свойство BOM, а не отдельный артефакт: так
+    // согласованно сдвигается весь kotlinx-coroutines-bom (core, reactor, test, slf4j).
+    extra["kotlin-coroutines.version"] = coroutinesVersion
 
     repositories {
         mavenCentral()
@@ -81,7 +87,9 @@ subprojects {
 
     kotlin {
         compilerOptions {
-            freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+            // -Xannotation-default-target=param-property был опт-ином в поведение,
+            // ставшее умолчанием в Kotlin 2.4 — с 2.4.10 флаг избыточен и удалён.
+            freeCompilerArgs.addAll("-Xjsr305=strict")
         }
     }
 

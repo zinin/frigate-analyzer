@@ -137,7 +137,7 @@ The router (`FrigateAnalyzerBot.registerRoutes()`) does an exhaustive `when` ove
 
 Disable for development: `java -Dapplication.telegram.enabled=false ...`
 
-## ktgbotapi Waiter API (v33.1.0)
+## ktgbotapi Waiter API (v35.1.0)
 
 Source: https://github.com/InsanusMokrassar/ktgbotapi
 
@@ -146,7 +146,7 @@ Waiters return `Flow` — no `filter` param, use Flow operators `.filter{}.first
 | Function | Returns | Use case |
 |----------|---------|----------|
 | `waitDataCallbackQuery()` | `Flow<DataCallbackQuery>` | Inline button callbacks (has `.data`, `.message?.chat?.id`) |
-| `waitTextMessage()` | `Flow<CommonMessage<TextContent>>` | Text input with chatId access (`.chat.id`, `.content.text`) |
+| `waitTextMessage()` | `Flow<ChatContentMessage<TextContent>>` | Text input with chatId access (`.chat.id`, `.content.text`) |
 | `waitText()` | `Flow<TextContent>` | Text content only (no chatId — prefer `waitTextMessage`) |
 | `answer(callbackQuery)` | — | Answer callback query (extension on BehaviourContext) |
 
@@ -165,4 +165,29 @@ val msg = waitTextMessage()
     .first()
 val text = msg.content.text
 ```
+
+## Message Type Hierarchy (changed in 34.0.0)
+
+`CommonMessage<T>` was **renamed and re-parented** in 34.0.0. Both facts matter — the rename alone
+is a trap:
+
+| ≤ 33.1.0 | ≥ 34.0.0 | Notes |
+|---|---|---|
+| `CommonMessage<T>` | `ChatContentMessage<T>` | The correct substitution — this is what handler params and `waitTextMessage()` elements use |
+| — | `CommonContentMessage<T>` | Textually identical to the old `CommonMessage<T>`, but does **not** extend the new `ChatMessage`, so `reply()` rejects it. Wrong substitution despite looking right |
+
+`reply(to = ...)` now takes `ChatMessage`, not `AccessibleMessage`. Upstream remapped its own
+typealiases the same way (`TextMessage` = `ChatContentMessage<TextContent>`).
+
+**Mocking constraint.** `ChatContentMessage` and `CommonContentMessage` are `sealed` and the Kotlin
+compiler emits a JVM `PermittedSubclasses` attribute for them, so **MockK cannot proxy them** —
+`mockk<ChatContentMessage<…>>()` fails with `IncompatibleClassChangeError`. The sealed chain is
+`ChatContentMessage` → `PossiblySentViaBotCommonMessage` → {`BusinessContentMessage`,
+`ChannelContentMessage`, `PrivateContentMessage`, `PublicContentMessage`}, of which the first three
+are ordinary interfaces. Tests use **`PrivateContentMessage<T>`** — mockable, and semantically right
+since the bot works in DMs.
+
+Untyped `coEvery { bot.execute(any()) } returns mockk(relaxed = true)` yields a bare
+`java.lang.Object` and throws `ClassCastException` at the suspend resume point. Always give the
+stub a concrete type.
 

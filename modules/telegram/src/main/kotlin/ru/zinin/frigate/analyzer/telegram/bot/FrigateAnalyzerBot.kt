@@ -16,7 +16,7 @@ import dev.inmo.tgbotapi.types.RawChatId
 import dev.inmo.tgbotapi.types.chat.CommonUser
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeChat
 import dev.inmo.tgbotapi.types.commands.BotCommandScopeDefault
-import dev.inmo.tgbotapi.types.message.abstracts.CommonMessage
+import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
@@ -32,17 +32,17 @@ import kotlinx.coroutines.launch
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.service.AppSettingKeys
-import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.OwnerActivatedEvent
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsMessageRenderer
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsSettingsCallbackHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsViewStateFactory
+import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.ScheduleCallbackHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.ScheduleSettingsFlow
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
-import ru.zinin.frigate.analyzer.telegram.dto.NotificationsViewState
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
@@ -54,7 +54,7 @@ import ru.zinin.frigate.analyzer.telegram.service.impl.TelegramUserServiceImpl
 
 private val logger = KotlinLogging.logger {}
 
-private fun CommonMessage<*>.telegramLanguageCode(): String? =
+private fun ChatContentMessage<*>.telegramLanguageCode(): String? =
     ((this as? PrivateContentMessage<*>)?.user as? CommonUser)?.ietfLanguageCode?.code
 
 @Component
@@ -69,7 +69,8 @@ class FrigateAnalyzerBot(
     private val cancelExportHandler: CancelExportHandler,
     private val notificationsSettingsCallbackHandler: NotificationsSettingsCallbackHandler,
     private val notificationsMessageRenderer: NotificationsMessageRenderer,
-    private val appSettings: AppSettingsService,
+    private val notificationsViewStateFactory: NotificationsViewStateFactory,
+    private val scheduleSettingsFlow: ScheduleSettingsFlow,
     private val msg: MessageResolver,
 ) {
     private val eventScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -166,8 +167,23 @@ class FrigateAnalyzerBot(
                 }
             }
 
+            // markerFactory = null (the library's documented opt-out) makes nfs: callbacks of one
+            // user run in parallel instead of one-at-a-time. Required because `nfs:g:sched:zman`
+            // starts a 120 s waiter INSIDE this handler: with the default per-user marker that
+            // waiter froze every later nfs: click and then replayed it late. Do NOT "clean this
+            // up" — the two registrations above keep the default on purpose (no waiter there, so
+            // their serialization is free double-click protection). Parallel nfs: handling keeps
+            // state WELL-FORMED: every payload carries an explicit value (:1 / :0, never a toggle)
+            // and is idempotent, RERENDER re-reads state from the DB, and the write-order
+            // invariant (window → zone → enabled LAST) is sequenced within each writer, so
+            // "enabled without a window" stays unreachable. What it does NOT preserve is click
+            // ORDER: two conflicting clicks milliseconds apart may commit in either order, and
+            // their two edits may reach Telegram out of order, leaving the keyboard one step
+            // behind until the next render. Accepted — single owner, single instance, and the
+            // window is milliseconds. Double `zman` is guarded by ActiveZoneInputTracker instead.
             onDataCallbackQuery(
                 initialFilter = { it.data.startsWith("nfs:") },
+                markerFactory = null,
             ) { callback ->
                 // Acknowledge callback FIRST so Telegram clears the button spinner.
                 try {
@@ -187,29 +203,20 @@ class FrigateAnalyzerBot(
                     val current = userService.findActiveByUsername(senderUsername) ?: return@onDataCallbackQuery
                     val cid = current.chatId ?: return@onDataCallbackQuery
                     val owner = userService.isOwner(current.username)
+                    // Routing invariant: the sched subtree MUST be intercepted BEFORE the generic
+                    // notificationsSettingsCallbackHandler.dispatch (which silently IGNOREs it).
+                    if (callback.data.startsWith(ScheduleCallbackHandler.PREFIX)) {
+                        @Suppress("UNCHECKED_CAST")
+                        with(scheduleSettingsFlow) {
+                            handle(callback.data, callbackMsg as ContentMessage<TextContent>, current, owner)
+                        }
+                        return@onDataCallbackQuery
+                    }
                     val outcome = notificationsSettingsCallbackHandler.dispatch(callback.data, cid, owner, current)
                     when (outcome) {
                         NotificationsSettingsCallbackHandler.DispatchOutcome.RERENDER -> {
                             val updated = userService.findByChatIdAsDto(cid) ?: current
-                            val state =
-                                NotificationsViewState(
-                                    isOwner = owner,
-                                    recordingUserEnabled = updated.notificationsRecordingEnabled,
-                                    signalUserEnabled = updated.notificationsSignalEnabled,
-                                    recordingGlobalEnabled =
-                                        if (owner) {
-                                            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true)
-                                        } else {
-                                            null
-                                        },
-                                    signalGlobalEnabled =
-                                        if (owner) {
-                                            appSettings.getBoolean(AppSettingKeys.NOTIFICATIONS_SIGNAL_GLOBAL_ENABLED, true)
-                                        } else {
-                                            null
-                                        },
-                                    language = updated.languageCode ?: "en",
-                                )
+                            val state = notificationsViewStateFactory.build(updated, owner)
                             val rendered = notificationsMessageRenderer.render(state)
                             try {
                                 @Suppress("UNCHECKED_CAST")
