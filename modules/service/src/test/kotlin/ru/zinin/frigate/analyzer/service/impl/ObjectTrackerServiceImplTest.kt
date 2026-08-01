@@ -374,6 +374,64 @@ class ObjectTrackerServiceImplTest {
         }
 
     @Test
+    fun `absence of exactly ttl under the default gap is still not a reappearance`() =
+        runTest {
+            // The boundary the test above steps around with plusSeconds(1). findActive's lower bound
+            // is inclusive, so a track last seen exactly ttl ago is returned and its absence is
+            // exactly ttl — the largest value reachable at all. Only a strict comparison keeps the
+            // documented default a real no-op.
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(props.ttl))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = service.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `absence of exactly reappearGap is not a reappearance`() =
+        runTest {
+            // Pins the same strictness for an enabled configuration, so a switch back to >= cannot
+            // slip through on the tuned deployment shape either.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            val existing =
+                track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(longTtlProps.reappearGap))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `two tracks of one class reappearing stay inside matched and repeat the class`() =
+        runTest {
+            // Both contracts DetectionDelta documents but nothing pinned: reappeared is a subset of
+            // matched, and reappearedClasses repeats a class once per track.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            val left = track("person", 0f, 0f, 0.2f, 0.2f, lastSeen = absentSince)
+            val right = track("person", 0.6f, 0.6f, 0.9f, 0.9f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(left, right)
+
+            val delta =
+                svc.evaluate(
+                    rec(),
+                    listOf(
+                        det("person", 0.01f, 0.01f, 0.21f, 0.2f),
+                        det("person", 0.61f, 0.61f, 0.91f, 0.9f),
+                    ),
+                )
+
+            assertEquals(2, delta.matchedTracksCount)
+            assertEquals(2, delta.reappearedTracksCount)
+            assertTrue(delta.reappearedTracksCount <= delta.matchedTracksCount)
+            assertEquals(listOf("person", "person"), delta.reappearedClasses)
+        }
+
+    @Test
     fun `reappearGap above ttl is rejected at construction`() {
         assertFailsWith<IllegalArgumentException> {
             ObjectTrackerProperties(ttl = Duration.ofMinutes(30), reappearGap = Duration.ofHours(1))

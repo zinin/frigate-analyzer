@@ -180,7 +180,7 @@ Settings under `application.notifications` in `application.yaml`. Object tracker
 | `NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR` | 0.3 | Ignore low-confidence detections before clustering/tracking. |
 | `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS` | 3600000 | `@Scheduled` cleanup job period in milliseconds. |
 | `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | 1h | DELETE rows with `last_seen_at < now() - retention`. Larger than TTL. |
-| `NOTIFICATIONS_TRACK_REAPPEAR_GAP` | = TTL | Matched track absent at least this long → notify as `REAPPEARED`. Must be > 0 and <= TTL; defaulting to TTL makes it a no-op. |
+| `NOTIFICATIONS_TRACK_REAPPEAR_GAP` | = TTL | Matched track absent longer than this → notify as `REAPPEARED`. Must be > 0 and <= TTL; defaulting to TTL makes it a no-op (the comparison is strict, and TTL also bounds `findActive`). |
 
 ### Tuning REAPPEAR_GAP under a long TTL
 
@@ -192,5 +192,15 @@ It works because the two cases separate cleanly when recordings are continuous: 
 re-detected at the recording cadence, while a person who left and came back has a gap of hours. Set
 it above the largest gap a *static* object shows (detector flakiness), below the smallest gap a real
 visitor shows. Measure both from `detections` before picking a value.
+
+Raising TTL on its own will not start: `cleanup-retention >= ttl` is validated in
+`ObjectTrackerProperties.init` and defaults to 1h, so the container fails at binding time with a
+`reappear-gap`/`cleanup-retention` message. The three move together:
+
+```
+NOTIFICATIONS_TRACK_TTL=PT12H
+NOTIFICATIONS_TRACK_REAPPEAR_GAP=PT1H
+NOTIFICATIONS_TRACK_CLEANUP_RETENTION=PT48H
+```
 
 Per-user toggles for recording detections and camera signal-loss alerts are stored in `telegram_users.notifications_recording_enabled` / `notifications_signal_enabled` (default `true`). Global toggles in `app_settings`: `notifications.recording.global_enabled`, `notifications.signal.global_enabled`. OWNER manages globals via `/notifications`.

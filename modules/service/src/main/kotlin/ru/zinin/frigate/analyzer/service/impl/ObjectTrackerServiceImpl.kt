@@ -40,7 +40,12 @@ class ObjectTrackerServiceImpl(
         detections: List<DetectionEntity>,
     ): DetectionDelta {
         if (detections.isEmpty()) {
-            return DetectionDelta(0, 0, 0, emptyList())
+            return DetectionDelta(
+                newTracksCount = 0,
+                matchedTracksCount = 0,
+                staleTracksCount = 0,
+                newClasses = emptyList(),
+            )
         }
         // Cluster outside the mutex + transaction: pure CPU work, no DB connection needed.
         // Avoids holding the per-camera lock and a connection-pool slot when all detections
@@ -52,7 +57,12 @@ class ObjectTrackerServiceImpl(
                 properties.confidenceFloor,
             )
         if (representatives.isEmpty()) {
-            return DetectionDelta(0, 0, 0, emptyList())
+            return DetectionDelta(
+                newTracksCount = 0,
+                matchedTracksCount = 0,
+                staleTracksCount = 0,
+                newClasses = emptyList(),
+            )
         }
         val mutex = perCameraMutex.computeIfAbsent(recording.camId) { Mutex() }
         return mutex.withLock {
@@ -113,7 +123,11 @@ class ObjectTrackerServiceImpl(
                     )
                 check(updated == 1L) { "Object track $matchId disappeared before update" }
                 matched++
-                if (absence != null && absence >= properties.reappearGap) {
+                // Strictly greater, not >=: findActive's lower bound is inclusive
+                // (last_seen_at >= recordingTimestamp - ttl), so the largest absence a matched track
+                // can show is exactly ttl. Demanding more than the gap is what keeps the default
+                // reappearGap == ttl unreachable, and so the no-op it is documented as.
+                if (absence != null && absence > properties.reappearGap) {
                     reappearedClasses += bbox.className
                 }
             } else {

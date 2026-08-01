@@ -161,6 +161,19 @@ class NotificationDecisionServiceImplTest {
         }
 
     @Test
+    fun `global off still gates a reappeared track`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns false
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 1, 0, emptyList(), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.GLOBAL_OFF, decision.reason)
+        }
+
+    @Test
     fun `tracker returns empty delta for confidence-filtered detections leads to NO_VALID_DETECTIONS`() =
         runTest {
             coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true

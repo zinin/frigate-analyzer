@@ -19,7 +19,7 @@ data class ObjectTrackerProperties(
     val cleanupIntervalMs: Long = 3_600_000,
     val cleanupRetention: Duration = Duration.ofHours(1),
     /**
-     * A matched track whose previous `lastSeenAt` is at least this far behind the current recording
+     * A matched track whose previous `lastSeenAt` is further behind the current recording than this
      * counts as a REAPPEARANCE and notifies, even though it reuses the existing track row.
      *
      * Separates two things a plain IoU match cannot tell apart under a long [ttl]: an object that is
@@ -28,11 +28,12 @@ data class ObjectTrackerProperties(
      * later. Only the latter is an event worth a notification.
      *
      * Defaults to [ttl], which is a no-op: [ttl] also bounds how far back
-     * `ObjectTrackRepository.findActive` looks, so no returned track can reach that gap. Set it
+     * `ObjectTrackRepository.findActive` looks, and it does so inclusively — the largest absence a
+     * matched track can show is exactly [ttl], which the strict comparison then rejects. Set it
      * below [ttl] to enable reappearance notifications; pick a value above the observed detector
      * flakiness gap for static objects, otherwise they re-notify.
      */
-    val reappearGap: Duration = Duration.ofMinutes(30),
+    val reappearGap: Duration = ttl,
 ) {
     init {
         require(!ttl.isZero && !ttl.isNegative) {
