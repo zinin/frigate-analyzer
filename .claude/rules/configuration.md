@@ -180,5 +180,17 @@ Settings under `application.notifications` in `application.yaml`. Object tracker
 | `NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR` | 0.3 | Ignore low-confidence detections before clustering/tracking. |
 | `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS` | 3600000 | `@Scheduled` cleanup job period in milliseconds. |
 | `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | 1h | DELETE rows with `last_seen_at < now() - retention`. Larger than TTL. |
+| `NOTIFICATIONS_TRACK_REAPPEAR_GAP` | = TTL | Matched track absent at least this long → notify as `REAPPEARED`. Must be > 0 and <= TTL; defaulting to TTL makes it a no-op. |
+
+### Tuning REAPPEAR_GAP under a long TTL
+
+A long TTL suppresses static noise (parked car, fixed false positive) but also swallows real traffic:
+tracks accumulate until any new detection overlaps one, so nothing is ever "new" again. `REAPPEAR_GAP`
+restores notifications without shortening the TTL, by using absence rather than location.
+
+It works because the two cases separate cleanly when recordings are continuous: a static object is
+re-detected at the recording cadence, while a person who left and came back has a gap of hours. Set
+it above the largest gap a *static* object shows (detector flakiness), below the smallest gap a real
+visitor shows. Measure both from `detections` before picking a value.
 
 Per-user toggles for recording detections and camera signal-loss alerts are stored in `telegram_users.notifications_recording_enabled` / `notifications_signal_enabled` (default `true`). Global toggles in `app_settings`: `notifications.recording.global_enabled`, `notifications.signal.global_enabled`. OWNER manages globals via `/notifications`.

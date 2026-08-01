@@ -120,6 +120,47 @@ class NotificationDecisionServiceImplTest {
         }
 
     @Test
+    fun `reappeared track leads to REAPPEARED and shouldNotify true`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 1, 0, emptyList(), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertTrue(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.REAPPEARED, decision.reason)
+        }
+
+    @Test
+    fun `NEW_OBJECTS wins over REAPPEARED when both are present`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(1, 1, 0, listOf("car"), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertTrue(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.NEW_OBJECTS, decision.reason)
+        }
+
+    @Test
+    fun `schedule still gates a reappeared track`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { scheduleService.getRecordingSchedule() } returns
+                NotificationSchedule(ScheduleWindow.ofHours(1, 2), ZoneId.of("UTC"))
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 1, 0, emptyList(), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.OUT_OF_SCHEDULE, decision.reason)
+        }
+
+    @Test
     fun `tracker returns empty delta for confidence-filtered detections leads to NO_VALID_DETECTIONS`() =
         runTest {
             coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true

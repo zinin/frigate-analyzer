@@ -18,6 +18,7 @@ import ru.zinin.frigate.analyzer.service.helper.BboxClusteringHelper
 import ru.zinin.frigate.analyzer.service.helper.IouHelper
 import ru.zinin.frigate.analyzer.service.repository.ObjectTrackRepository
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
@@ -72,6 +73,7 @@ class ObjectTrackerServiceImpl(
 
         var matched = 0
         val newClasses = mutableListOf<String>()
+        val reappearedClasses = mutableListOf<String>()
         for (bbox in representatives) {
             val match =
                 active
@@ -94,6 +96,11 @@ class ObjectTrackerServiceImpl(
             if (match != null) {
                 active.remove(match)
                 val matchId = requireNotNull(match.id) { "ObjectTrackEntity.id is null for matched track" }
+                // Measured against the pre-update lastSeenAt: how long this track was absent before now.
+                // Negative for out-of-order (older) recordings, which therefore never count as a
+                // reappearance — the later recording that already advanced the track had its own say.
+                // lastSeenAt is nullable on the entity but never null here: findActive filters on it.
+                val absence = match.lastSeenAt?.let { Duration.between(it, recordingTimestamp) }
                 val updated =
                     repository.updateOnMatch(
                         id = matchId,
@@ -106,6 +113,9 @@ class ObjectTrackerServiceImpl(
                     )
                 check(updated == 1L) { "Object track $matchId disappeared before update" }
                 matched++
+                if (absence != null && absence >= properties.reappearGap) {
+                    reappearedClasses += bbox.className
+                }
             } else {
                 repository.save(
                     ObjectTrackEntity(
@@ -125,10 +135,10 @@ class ObjectTrackerServiceImpl(
             }
         }
         val newCount = newClasses.size
-        if (newCount > 0) {
+        if (newCount > 0 || reappearedClasses.isNotEmpty()) {
             logger.debug {
-                "ObjectTracker: cam=${recording.camId} new=$newCount matched=$matched stale=${active.size} " +
-                    "(recording=${recording.id})"
+                "ObjectTracker: cam=${recording.camId} new=$newCount matched=$matched " +
+                    "reappeared=${reappearedClasses.size} stale=${active.size} (recording=${recording.id})"
             }
         }
         return DetectionDelta(
@@ -136,6 +146,8 @@ class ObjectTrackerServiceImpl(
             matchedTracksCount = matched,
             staleTracksCount = active.size,
             newClasses = newClasses,
+            reappearedTracksCount = reappearedClasses.size,
+            reappearedClasses = reappearedClasses,
         )
     }
 

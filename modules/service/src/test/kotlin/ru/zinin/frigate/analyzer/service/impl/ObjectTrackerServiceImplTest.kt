@@ -19,6 +19,7 @@ import ru.zinin.frigate.analyzer.model.persistent.ObjectTrackEntity
 import ru.zinin.frigate.analyzer.service.config.ObjectTrackerProperties
 import ru.zinin.frigate.analyzer.service.repository.ObjectTrackRepository
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -37,6 +38,15 @@ class ObjectTrackerServiceImplTest {
     private val fixedNow = Instant.parse("2026-04-27T12:00:00Z")
     private val clock = Clock.fixed(fixedNow, ZoneOffset.UTC)
     private val props = ObjectTrackerProperties()
+
+    /** The deployment shape this feature exists for: TTL long enough to mute static objects. */
+    private val longTtlProps =
+        ObjectTrackerProperties(
+            ttl = Duration.ofHours(12),
+            reappearGap = Duration.ofHours(1),
+            // cleanupRetention >= ttl is an existing invariant.
+            cleanupRetention = Duration.ofHours(48),
+        )
     private val transactionalOperator =
         mockk<TransactionalOperator> {
             every { execute(any<TransactionCallback<Any>>()) } answers {
@@ -298,6 +308,84 @@ class ObjectTrackerServiceImplTest {
                 )
             }
         }
+
+    @Test
+    fun `match after a long absence is reported as reappeared`() =
+        runTest {
+            // Long ttl keeps the track "active" all day; reappear-gap is what separates an object
+            // that left and came back from one that never moved.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(0, delta.newTracksCount)
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(1, delta.reappearedTracksCount)
+            assertEquals(listOf("person"), delta.reappearedClasses)
+            // Reuses the existing row rather than growing the table.
+            coVerify(exactly = 1) { repo.updateOnMatch(existing.id!!, any(), any(), any(), any(), any(), recId) }
+            coVerify(exactly = 0) { repo.save(any()) }
+        }
+
+    @Test
+    fun `continuously detected static object never counts as reappeared`() =
+        runTest {
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            // A parked car seen 40s ago: the recording cadence keeps its gap far below reappearGap.
+            val existing = track("car", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minusSeconds(40))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("car", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+            assertTrue(delta.reappearedClasses.isEmpty())
+        }
+
+    @Test
+    fun `out-of-order older recording never counts as reappeared`() =
+        runTest {
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            // Track already advanced past this recording by a later one: absence is negative.
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.plus(Duration.ofHours(3)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `default reappearGap equal to ttl keeps the old suppress-everything behaviour`() =
+        runTest {
+            // Default props: reappearGap == ttl == 30m, and findActive never returns a track older
+            // than ttl, so no match can ever reach the gap.
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(props.ttl).plusSeconds(1))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = service.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `reappearGap above ttl is rejected at construction`() {
+        assertFailsWith<IllegalArgumentException> {
+            ObjectTrackerProperties(ttl = Duration.ofMinutes(30), reappearGap = Duration.ofHours(1))
+        }
+    }
+
+    @Test
+    fun `non-positive reappearGap is rejected at construction`() {
+        assertFailsWith<IllegalArgumentException> {
+            ObjectTrackerProperties(reappearGap = Duration.ZERO)
+        }
+    }
 
     @Test
     fun `cleanupExpired delegates to repo with now-minus-retention`() =

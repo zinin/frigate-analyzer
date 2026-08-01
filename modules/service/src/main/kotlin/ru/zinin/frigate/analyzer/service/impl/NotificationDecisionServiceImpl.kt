@@ -63,6 +63,14 @@ class NotificationDecisionServiceImpl(
                     NotificationDecision(true, NotificationDecisionReason.NEW_OBJECTS, delta)
                 }
 
+                delta.reappearedTracksCount > 0 -> {
+                    logger.debug {
+                        "Decision: notify (reappeared): cam=${recording.camId} " +
+                            "reappearedClasses=${delta.reappearedClasses} recording=${recording.id}"
+                    }
+                    NotificationDecision(true, NotificationDecisionReason.REAPPEARED, delta)
+                }
+
                 else -> {
                     logger.debug { "Decision: suppress (all_repeated): cam=${recording.camId} recording=${recording.id}" }
                     NotificationDecision(false, NotificationDecisionReason.ALL_REPEATED, delta)

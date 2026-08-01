@@ -8,6 +8,12 @@ data class NotificationDecision(
 
 enum class NotificationDecisionReason {
     NEW_OBJECTS,
+
+    /**
+     * No new track, but at least one match came back after an absence of at least
+     * `ObjectTrackerProperties.reappearGap` — an object that had left the scene returned.
+     */
+    REAPPEARED,
     ALL_REPEATED,
     NO_DETECTIONS,
 

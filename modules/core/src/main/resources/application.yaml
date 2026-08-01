@@ -59,6 +59,8 @@ application:
       confidence-floor: ${NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR:0.3}
       cleanup-interval-ms: ${NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS:3600000}
       cleanup-retention: ${NOTIFICATIONS_TRACK_CLEANUP_RETENTION:PT1H}
+      # Defaults to ttl, which makes reappearance detection a no-op (ttl also bounds findActive).
+      reappear-gap: ${NOTIFICATIONS_TRACK_REAPPEAR_GAP:${NOTIFICATIONS_TRACK_TTL:PT30M}}
   ai:
     description:
       enabled: ${APP_AI_DESCRIPTION_ENABLED:false}
