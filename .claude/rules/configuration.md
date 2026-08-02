@@ -191,18 +191,25 @@ restores notifications without shortening the TTL, by using absence rather than 
 It works because the two cases separate cleanly when recordings are continuous: a static object is
 re-detected at the recording cadence, while a person who left and came back has a gap of hours. Set
 it above the largest gap a *static* object shows (detector flakiness), below the smallest gap a real
-visitor shows. Measure both from `detections` before picking a value.
+visitor shows. Measure both from `detections` before picking a value. The value must also exceed the
+camera's normal processing cadence: a wall-clock pause between evaluations longer than `REAPPEAR_GAP`
+reads as an interruption and restarts the watch window, so a gap smaller than the cadence would keep
+the feature permanently blind.
 
 Gaps in *processing* are excluded automatically, and measuring `detections` would never reveal them.
 After a restart, a deploy, a stalled pipeline or a camera signal loss, the first recordings processed
 span the whole interruption — the queue is drained newest-first — so every static object would read
 as having come back. The tracker only counts an absence that began while it was already watching that
-camera, so reappearances stay silent for a while after such an interruption; the suppressed ones
-appear in its debug line as `unobserved=N`.
+camera, so reappearances stay silent for exactly `REAPPEAR_GAP` after such an interruption (the
+window restarts at the first recording processed, and a track must then be absent for more than the
+gap *inside* the new window before it can notify — with `PT1H`, the feature is blind for an hour
+after every restart); the suppressed ones appear in its debug line as `unobserved=N`.
 
 Raising TTL on its own will not start: `cleanup-retention >= ttl` is validated in
 `ObjectTrackerProperties.init` and defaults to 1h, so the container fails at binding time with a
-`reappear-gap`/`cleanup-retention` message. The three move together:
+`cleanup-retention` message. (A `reappear-gap` message cannot appear in that scenario — the gap
+follows TTL by default; it fires only when `NOTIFICATIONS_TRACK_REAPPEAR_GAP` is explicitly set
+above TTL.) The three move together:
 
 ```
 NOTIFICATIONS_TRACK_TTL=PT12H
