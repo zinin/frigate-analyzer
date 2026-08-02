@@ -7,9 +7,13 @@ import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
 import ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest
 import ru.zinin.frigate.analyzer.service.helper.RecordingEntityHelper
 import ru.zinin.frigate.analyzer.service.helper.RecordingFileHelper
+import java.io.IOException
 import java.nio.file.ClosedWatchServiceException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.NotDirectoryException
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardWatchEventKinds.ENTRY_CREATE
 import java.nio.file.WatchEvent
 import java.nio.file.WatchKey
@@ -24,6 +28,9 @@ import kotlin.io.path.absolutePathString
 
 private val logger = KotlinLogging.logger {}
 
+/** After this many unreadable entries the per-entry WARNs collapse into one summary line. */
+private const val FAILURE_LOG_LIMIT = 100
+
 // iter-2 CRITICAL-1: 3 fields per design §5.2.1 — eventsProcessed, eventFailures
 // (for onPollCompleted), lastCleanupAt. WatchRecordsLoop.runIteration catches per-event
 // exceptions internally and counts them in eventFailures.
@@ -31,6 +38,31 @@ data class IterationResult(
     val eventsProcessed: Int,
     val eventFailures: Int,
     val lastCleanupAt: Instant,
+)
+
+/**
+ * Outcome of one [WatchRecordsLoop.registerAllDirs] traversal.
+ *
+ * [visitedFiles] is the load-bearing number: it counts entries delivered to `visitFile` — files
+ * and symlinks ABOVE the camera level. On Frigate's tree it is 0 on every call (first walk,
+ * re-walk over a populated map, runIteration sub-walks alike): the walk never descends below
+ * [CAMERA_DEPTH], so no `.mp4` is ever enumerated — which is exactly the regression this
+ * traversal exists to prevent, observable straight from the log line.
+ *
+ * [registered] counts NEW insertions only; a repeat walk over already-registered directories
+ * reports 0 while still visiting them, so no arithmetic identity ties it to [visitedEntries].
+ *
+ * [failed] counts unreadable entries the walk skipped ([java.nio.file.SimpleFileVisitor]'s
+ * visitFileFailed). Non-zero means partial blindness until the next full re-registration —
+ * an accepted, observable degradation (it is printed in the log line). A failure of the START
+ * itself is not counted here: it is rethrown so the supervisor retries with backoff.
+ */
+data class RegistrationResult(
+    val registered: Int,
+    val prunedSubtrees: Int,
+    val visitedEntries: Int,
+    val visitedFiles: Int,
+    val failed: Int,
 )
 
 @Component
@@ -129,26 +161,120 @@ class WatchRecordsLoop(
         start: Path,
         watchService: WatchService,
         registeredDirs: ConcurrentMap<Path, WatchKey>,
-    ): Int {
+    ): RegistrationResult {
+        val root = recordsWatcherProperties.folder
+        // Computed once for the whole walk: a traversal that crosses midnight would otherwise
+        // apply two different cutoffs to different branches of the same tree. The window check is
+        // deliberately duplicated with runIteration's pre-check — registerAllDirs must stay
+        // correct for ANY start, whoever calls it.
+        val cutoff = watchCutoff(recordsWatcherProperties.watchPeriod, clock)
         var registered = 0
-        var skipped = 0
-        Files.walk(start).use { stream ->
-            stream
-                .filter { Files.isDirectory(it) }
-                .forEach { dir ->
-                    if (isWithinWatchPeriod(dir, recordsWatcherProperties.folder, recordsWatcherProperties.watchPeriod, clock)) {
-                        registeredDirs.computeIfAbsent(dir) {
-                            val k = dir.register(watchService, ENTRY_CREATE)
-                            registered++
-                            k
+        var pruned = 0
+        var visited = 0
+        var visitedFiles = 0
+        var failed = 0
+        var misplacedDateReported = false
+        val startedAt = System.nanoTime()
+
+        Files.walkFileTree(
+            start,
+            object : SimpleFileVisitor<Path>() {
+                override fun preVisitDirectory(
+                    dir: Path,
+                    attrs: BasicFileAttributes,
+                ): FileVisitResult {
+                    visited++
+                    // Nothing below a camera directory ever holds a watch key, from EITHER call
+                    // path: runIteration may pass a start deeper than CAMERA_DEPTH, and a key
+                    // taken there would silently vanish after the WatchService is recreated —
+                    // the startup walk would never restore it.
+                    if (depthFromRoot(dir, root) > CAMERA_DEPTH) {
+                        return FileVisitResult.SKIP_SUBTREE
+                    }
+                    // The date check runs at EVERY level, not just at depth 1: it is pure string
+                    // work, and that keeps the PRUNE independent of where dates actually sit.
+                    // Descent is what depth controls — and with it camera registration, which is
+                    // why the misplaced-root detector below exists.
+                    if (isPrunableDate(dir, root, cutoff)) {
+                        pruned++
+                        return FileVisitResult.SKIP_SUBTREE
+                    }
+                    if (!misplacedDateReported && isDateAtUnexpectedDepth(dir, root)) {
+                        misplacedDateReported = true
+                        logger.warn {
+                            "Registration: date directory at unexpected depth: $dir — " +
+                                "check FRIGATE_RECORDS_FOLDER (it probably points one level above the recordings root)"
                         }
+                    }
+                    registeredDirs.computeIfAbsent(dir) {
+                        val k = dir.register(watchService, ENTRY_CREATE)
+                        registered++
+                        k
+                    }
+                    return if (depthFromRoot(dir, root) >= CAMERA_DEPTH) {
+                        FileVisitResult.SKIP_SUBTREE
                     } else {
-                        skipped++
+                        FileVisitResult.CONTINUE
                     }
                 }
+
+                override fun visitFile(
+                    file: Path,
+                    attrs: BasicFileAttributes,
+                ): FileVisitResult {
+                    // A start that is a plain file or a symlink (the walk runs without
+                    // FOLLOW_LINKS, so a symlinked root is classified as a FILE): an empty
+                    // "successful" registration would report health DOWN forever with no retry.
+                    if (file == start) throw NotDirectoryException(start.toString())
+                    visited++
+                    visitedFiles++
+                    return FileVisitResult.CONTINUE
+                }
+
+                // SimpleFileVisitor rethrows by default, which would abort the whole registration
+                // because of a single unreadable directory. The walk opens a directory BEFORE
+                // preVisitDirectory, so an unreadable one arrives here, not there. Message-only
+                // WARN: on a mass failure (unmounted subtree) a stack trace per entry floods the
+                // log; the full trace is one DEBUG switch away.
+                override fun visitFileFailed(
+                    file: Path,
+                    exc: IOException,
+                ): FileVisitResult {
+                    // A failure of the START itself (missing or unreadable root) must stay fatal
+                    // and retryable, exactly like Files.walk today: ensureWatchService catches,
+                    // calls onRegistrationFailure and retries with backoff.
+                    if (file == start) throw exc
+                    visited++
+                    failed++
+                    if (failed <= FAILURE_LOG_LIMIT) {
+                        logger.warn { "Registration: skipping unreadable entry $file (${exc.message})" }
+                        logger.debug(exc) { "Registration: failure details for $file" }
+                    }
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun postVisitDirectory(
+                    dir: Path,
+                    exc: IOException?,
+                ): FileVisitResult {
+                    if (exc != null) {
+                        logger.warn { "Registration: error after visiting $dir (${exc.message})" }
+                        logger.debug(exc) { "Registration: failure details for $dir" }
+                    }
+                    return FileVisitResult.CONTINUE
+                }
+            },
+        )
+
+        if (failed > FAILURE_LOG_LIMIT) {
+            logger.warn { "Registration: ${failed - FAILURE_LOG_LIMIT} more unreadable entries suppressed" }
         }
-        logger.info { "Registered $registered directories, skipped $skipped old directories." }
-        return registered
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+        logger.info {
+            "Registered $registered dirs, pruned $pruned date subtrees, " +
+                "visited $visited entries ($visitedFiles files, $failed failed) in ${elapsedMs}ms"
+        }
+        return RegistrationResult(registered, pruned, visited, visitedFiles, failed)
     }
 
     // Single-writer invariant: cleanupExpiredDirs() and event processing run on the same

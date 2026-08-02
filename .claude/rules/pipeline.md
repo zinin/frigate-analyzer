@@ -70,6 +70,44 @@ WatchRecordsLoop uses selective watching to limit monitored directories:
 - The root recordings directory is always watched to catch new date directories
 - A periodic cleanup removes expired watch keys based on `WATCH_CLEANUP_INTERVAL`
 
+`registerAllDirs` walks with `Files.walkFileTree` and prunes as it goes, rather than filtering after
+the fact. Three rules, all in `preVisitDirectory`:
+- `depthFromRoot(dir) > CAMERA_DEPTH` (reachable only when `runIteration` passes a deep `start`)
+  returns `SKIP_SUBTREE` **without registering**: nothing below a camera directory ever holds a
+  watch key, from either call path — such a key would silently vanish after the WatchService is
+  recreated.
+- `isPrunableDate` (fail-CLOSED, `RecordingsTree.kt`) returns `SKIP_SUBTREE` for a date outside the
+  window. It is deliberately not `!isWithinWatchPeriod` (fail-OPEN) — the root's date never
+  extracts, and pruning the root would blind the watcher to new date directories.
+- `depthFromRoot(dir) >= CAMERA_DEPTH` returns `SKIP_SUBTREE` after registering the camera
+  directory. Below it there are only `.mp4` files, and the watch key on the camera directory is
+  what delivers ENTRY_CREATE. **`RegistrationResult.visitedFiles == 0` is the observable
+  invariant: no recording file is ever enumerated during registration**, and the log line shows it
+  directly (`... visited 320 entries (0 files) in 41ms`).
+
+The cutoff is computed once per traversal so a walk crossing midnight cannot apply two different
+windows. A date directory whose first path segment under the root is not the date itself triggers a
+one-shot WARN (`isDateAtUnexpectedDepth`): the typical cause is `FRIGATE_RECORDS_FOLDER` pointing
+one level above the recordings root, which would otherwise silently stop camera registration.
+
+Operator notes: the registration log line changed from `Registered N directories, skipped 11638 old
+directories` to `Registered N dirs, pruned 122 date subtrees, visited 320 entries (0 files) in Xms`.
+`pruned` counts whole date **subtrees**, not directories one by one — the number dropping by two
+orders of magnitude is expected, not a regression. Before relying on the old line, check no external
+log parsing is tied to its format. Symlinks inside the recordings tree are unsupported: the walk
+does not follow them and they no longer acquire watch keys.
+
+Error policy — strict root, soft-but-visible subtrees. A failure of the START itself (missing or
+unreadable root: `visitFileFailed` rethrows; root that is a plain file or symlink:
+`NotDirectoryException` from `visitFile`) stays fatal and lands in the supervisor's
+backoff-and-retry, exactly like `Files.walk` before — an empty "successful" registration can never
+leave health stuck DOWN. An unreadable SUBDIRECTORY reaches `visitFileFailed` (the walk opens a
+directory before `preVisitDirectory` runs) and is counted in `RegistrationResult.failed`, logged
+(per-entry WARNs collapse into one summary after `FAILURE_LOG_LIMIT = 100`) and skipped — accepted
+observable degradation instead of a permanent retry loop over one broken directory. A failure of
+`dir.register(...)` itself (inotify ENOSPC/EACCES) still aborts the walk and lands in the
+supervisor's backoff-and-retry, as before.
+
 WatchRecordsLoop parses `.mp4` filenames to extract camera ID, date, time, timestamp.
 
 ### Supervision
