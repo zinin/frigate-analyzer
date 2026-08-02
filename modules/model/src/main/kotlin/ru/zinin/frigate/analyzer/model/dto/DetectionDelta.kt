@@ -6,4 +6,13 @@ data class DetectionDelta(
     val matchedTracksCount: Int,
     val staleTracksCount: Int,
     val newClasses: List<String>,
+    /**
+     * Subset of [matchedTracksCount]: matches whose previous `lastSeenAt` was further behind the
+     * recording than `ObjectTrackerProperties.reappearGap` — the object came back after a long
+     * absence. Counted inside [matchedTracksCount] on purpose, so "the tracker did nothing" stays
+     * expressible as new == matched == stale == 0.
+     */
+    val reappearedTracksCount: Int = 0,
+    /** Classes behind [reappearedTracksCount]; may repeat when several tracks of a class reappear. */
+    val reappearedClasses: List<String> = emptyList(),
 )

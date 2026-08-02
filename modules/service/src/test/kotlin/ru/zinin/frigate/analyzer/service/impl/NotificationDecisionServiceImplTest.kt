@@ -2,7 +2,9 @@ package ru.zinin.frigate.analyzer.service.impl
 
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.justRun
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.model.dto.DetectionDelta
@@ -73,12 +75,18 @@ class NotificationDecisionServiceImplTest {
         )
 
     @Test
-    fun `empty detections short-circuit to NO_DETECTIONS without calling tracker`() =
+    fun `empty detections short-circuit to NO_DETECTIONS but still mark the camera observed`() =
         runTest {
+            // markObserved keeps the tracker's watch window open through quiet periods; skipping it
+            // here would make a camera's own silence look like a processing interruption and
+            // suppress the next real reappearance as unobserved.
+            justRun { tracker.markObserved(recording) }
+
             val decision = service.evaluate(recording, emptyList())
 
             assertFalse(decision.shouldNotify)
             assertEquals(NotificationDecisionReason.NO_DETECTIONS, decision.reason)
+            verify(exactly = 1) { tracker.markObserved(recording) }
             coVerify(exactly = 0) { tracker.evaluate(any(), any()) }
         }
 
@@ -117,6 +125,60 @@ class NotificationDecisionServiceImplTest {
 
             assertFalse(decision.shouldNotify)
             assertEquals(NotificationDecisionReason.ALL_REPEATED, decision.reason)
+        }
+
+    @Test
+    fun `reappeared track leads to REAPPEARED and shouldNotify true`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 1, 0, emptyList(), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertTrue(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.REAPPEARED, decision.reason)
+        }
+
+    @Test
+    fun `NEW_OBJECTS wins over REAPPEARED when both are present`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(1, 1, 0, listOf("car"), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertTrue(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.NEW_OBJECTS, decision.reason)
+        }
+
+    @Test
+    fun `schedule still gates a reappeared track`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { scheduleService.getRecordingSchedule() } returns
+                NotificationSchedule(ScheduleWindow.ofHours(1, 2), ZoneId.of("UTC"))
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 1, 0, emptyList(), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.OUT_OF_SCHEDULE, decision.reason)
+        }
+
+    @Test
+    fun `global off still gates a reappeared track`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns false
+            coEvery { tracker.evaluate(recording, any()) } returns
+                DetectionDelta(0, 1, 0, emptyList(), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
+
+            val decision = service.evaluate(recording, listOf(det()))
+
+            assertFalse(decision.shouldNotify)
+            assertEquals(NotificationDecisionReason.GLOBAL_OFF, decision.reason)
         }
 
     @Test
