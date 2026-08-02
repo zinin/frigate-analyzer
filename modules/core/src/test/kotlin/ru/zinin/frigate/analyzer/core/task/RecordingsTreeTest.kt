@@ -21,6 +21,8 @@ class RecordingsTreeTest {
         assertEquals(LocalDate.of(2026, 2, 14), watchCutoff(Duration.ofDays(1), CLOCK))
         assertEquals(LocalDate.of(2026, 2, 15), watchCutoff(Duration.ZERO, CLOCK))
         assertEquals(LocalDate.of(2026, 2, 8), watchCutoff(Duration.ofDays(7), CLOCK))
+        // toDays() truncates towards zero: PT36H is one whole day, not two. Pinned deliberately.
+        assertEquals(LocalDate.of(2026, 2, 14), watchCutoff(Duration.ofHours(36), CLOCK))
     }
 
     @Test
@@ -55,8 +57,11 @@ class RecordingsTreeTest {
 
     @Test
     fun `isPrunableDate is the exact complement of isWithinWatchPeriod for dated paths`() {
-        // Wide, boundary-heavy list on purpose: a future refactor to the `!isWithinWatchPeriod`
-        // form must fail this test for SOME date, whatever the cutoff arithmetic does.
+        // Pins the identity itself, across the cutoff boundary and far from it. It does NOT catch a
+        // refactor of isPrunableDate into `!isWithinWatchPeriod(...)`: the two forms are extensionally
+        // equal on every input, so no test can distinguish them. What keeps them separate is the
+        // signature (see isPrunableDate's KDoc) and `isPrunableDate returns false for a path without a
+        // date`, which fails any implementation that flips the prune direction to fail-open.
         val cutoff = watchCutoff(Duration.ofDays(1), CLOCK)
         listOf(
             "2027-01-01",

@@ -72,10 +72,15 @@ internal fun isWithinWatchPeriod(
  * Fail-CLOSED mirror of [isWithinWatchPeriod]: a subtree may be pruned ONLY when its date was
  * successfully extracted AND falls strictly before [cutoff].
  *
- * Deliberately NOT written as `!isWithinWatchPeriod(...)`. The two are equivalent today, but the
- * negated form reads as "not in period -> cut", and the root's date never extracts. Cutting the
- * root would stop the watcher from ever noticing new date directories, and would leave
- * `registeredDirs` empty — health BRANCH 3.5 reports that as DOWN.
+ * Two reasons this is its own function rather than `!isWithinWatchPeriod(...)`, which is
+ * extensionally equal to it on every input — no test can tell the two forms apart:
+ *  - It takes an already-computed [cutoff] rather than a clock, so one traversal evaluates the
+ *    boundary once. A walk crossing midnight would otherwise apply two different windows to
+ *    different branches of the same tree.
+ *  - The prune direction is fail-closed by construction. The negated form reads as "not in period
+ *    -> cut", which invites a later author to make the undated case cut as well; the recordings
+ *    root has no extractable date, and pruning it would stop the watcher from ever noticing new
+ *    date directories, leaving `registeredDirs` empty — health BRANCH 3.5 reports that as DOWN.
  */
 internal fun isPrunableDate(
     path: Path,
@@ -109,8 +114,13 @@ internal fun depthFromRoot(
 /**
  * Misplaced-root detector: a date extracts from [path], yet the FIRST segment under [rootFolder]
  * is not a date. In Frigate's layout the date is always the first segment under the root, so this
- * means `FRIGATE_RECORDS_FOLDER` points one level above the recordings root — the walk would then
- * stop at the hour level and never register camera directories, silently dropping ENTRY_CREATE.
+ * strongly suggests `FRIGATE_RECORDS_FOLDER` points one level above the recordings root — the walk
+ * would then stop at the hour level and never register camera directories, silently dropping
+ * ENTRY_CREATE.
+ *
+ * The signal is advisory, not a proof: ANY date-like directory that is not the first segment under
+ * the root trips it — `ROOT/misc/2026-02-15` under a correctly configured root does, and so does a
+ * date-like camera ID. It belongs in a one-shot WARN and nothing louder.
  *
  * Implemented via [extractDateFromPath] rather than by matching DATE_PATTERN directly, so the
  * "is this segment a date" question has exactly one implementation.
