@@ -299,7 +299,7 @@ data class RecordsWatcherProperties(
     val disableFirstScan: Boolean = false,
     @field:NotNull val folder: Path,
     @field:NotNull val watchPeriod: Duration = Duration.ofDays(1),
-    @field:NotNull val firstScanPeriod: Duration = Duration.ofDays(1),
+    @field:NotNull val firstScanPeriod: Duration = watchPeriod,
     @field:NotNull val cleanupInterval: Duration = Duration.ofHours(1),
 ) {
     init {
@@ -319,11 +319,17 @@ data class RecordsWatcherProperties(
     disable-first-scan: ${DISABLE_FIRST_SCAN:false}
     folder: ${FRIGATE_RECORDS_FOLDER:/mnt/data/frigate/recordings}
     watch-period: ${WATCH_PERIOD:P1D}
-    first-scan-period: ${FIRST_SCAN_PERIOD:${WATCH_PERIOD:P1D}}
+    # Defaults to watch-period: the startup backfill covers exactly the window the watcher watches.
+    # The default references the RESOLVED property, not $WATCH_PERIOD — same form as reappear-gap
+    # above; reading the variable instead would silently fall back to P1D whenever watch-period is
+    # set by anything other than that one env var.
+    first-scan-period: ${FIRST_SCAN_PERIOD:${application.records-watcher.watch-period}}
     cleanup-interval: ${WATCH_CLEANUP_INTERVAL:PT1H}
 ```
 
-Вложенный placeholder даёт связь «дефолт = `WATCH_PERIOD`» и повторяет стиль соседней строки. Точка проверки при реализации: убедиться, что вложенный дефолт `${A:${B:X}}` действительно разворачивается — сбой здесь роняет старт приложения, поэтому нужен тест, поднимающий контекст с реальным `application.yaml` и читающий `firstScanPeriod` при незаданном `FIRST_SCAN_PERIOD`.
+Форма дефолта — не `${FIRST_SCAN_PERIOD:${WATCH_PERIOD:P1D}}`. Проект уже наступал на эти грабли и зафиксировал вывод прямо в `application.yaml:62-66`: вложенная **переменная окружения** следует только за самой собой, и если `watch-period` задан профильным yaml, CLI-аргументом или relaxed-именем `APPLICATION_RECORDSWATCHER_WATCHPERIOD`, дефолт молча свалится к литералу `P1D`. Ссылка на разрешённое свойство `${application.records-watcher.watch-period}` следует за значением из любого источника. Тот же приём применён для `reappear-gap` (строка 67) и для `claude.working-directory`.
+
+Дублирующая страховка — Kotlin-дефолт `firstScanPeriod: Duration = watchPeriod` в самом data-классе, ровно как `reappearGap: Duration = ttl` в `ObjectTrackerProperties`.
 
 Плюс блок, которого в файле сейчас нет вовсе:
 
@@ -413,6 +419,17 @@ management:
 2. **Сбой одного файла не останавливает скан** — `parse` бросает на одном конкретном пути; остальные 23 проиндексированы, `ScanResult.failed == 1`, `indexed == 23`
 3. **`P0D` индексирует только сегодняшнюю дату** — 12 файлов
 
+### `RecordsWatcherPropertiesBindingTest.kt` (новый)
+
+Строится по образцу существующего `ObjectTrackerPropertiesBindingTest` — он биндит продовый `src/main/resources/application.yaml` через `Binder` и синтетический `StandardEnvironment`. Это единственный способ проверить продовый yaml: тестовый classpath несёт собственный `application.yaml`, который его затеняет, поэтому все placeholder'ы продового файла иначе впервые вычисляются только на проде.
+
+1. При пустом окружении `firstScanPeriod == watchPeriod == P1D`
+2. `WATCH_PERIOD=P3D` через env → `firstScanPeriod == P3D`
+3. `application.records-watcher.watch-period=P3D` как свойство (профильный yaml / CLI) → `firstScanPeriod == P3D` — случай, который отвергнутая форма с вложенной переменной провалила бы
+4. `APPLICATION_RECORDSWATCHER_WATCHPERIOD=P3D` (relaxed-имя) → `firstScanPeriod == P3D`
+5. Явный `FIRST_SCAN_PERIOD=P0D` перебивает дефолт
+6. `management.endpoint.health.show-details` из продового yaml резолвится в `always` при пустом окружении и в `never` при `HEALTH_SHOW_DETAILS=never`
+
 ### Проверка перед сборкой
 
 `WatchRecordsTaskTest.kt` мокает `loop.registerAllDirs(...)` на строках 436 и 467 — обе через `throws`, возвращаемое значение не стабится, смена типа их не задевает. При реализации убедиться, что нигде в тестах нет `every { loop.registerAllDirs(...) } returns <Int>`.
@@ -436,6 +453,7 @@ management:
 | `core/config/properties/RecordsWatcherProperties.kt` | `firstScanPeriod` + валидация |
 | `core/src/main/resources/application.yaml` | `first-scan-period`, блок `management` |
 | `docker/deploy/.env.example` | секция watcher'а |
+| `core/src/test/.../config/properties/RecordsWatcherPropertiesBindingTest.kt` | новый; биндинг продового yaml по образцу `ObjectTrackerPropertiesBindingTest` |
 | `core/src/test/.../RecordingsTreeTest.kt` | новый; переехавшие + новые тесты чистых функций |
 | `core/src/test/.../WatchRecordsLoopTest.kt` | группа тестов `registerAllDirs` |
 | `core/src/test/.../FirstTimeScanTaskTest.kt` | новый |
