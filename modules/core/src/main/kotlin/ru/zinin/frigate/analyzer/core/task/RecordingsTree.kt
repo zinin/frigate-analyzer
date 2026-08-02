@@ -112,8 +112,8 @@ internal fun depthFromRoot(
  * means `FRIGATE_RECORDS_FOLDER` points one level above the recordings root — the walk would then
  * stop at the hour level and never register camera directories, silently dropping ENTRY_CREATE.
  *
- * Implemented via [extractDateFromPath] rather than DATE_PATTERN so it works in this task's Step 3,
- * while DATE_PATTERN is still private to WatchRecordsLoop.kt (it moves here in Step 6).
+ * Implemented via [extractDateFromPath] rather than by matching DATE_PATTERN directly, so the
+ * "is this segment a date" question has exactly one implementation.
  */
 internal fun isDateAtUnexpectedDepth(
     path: Path,
