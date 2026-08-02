@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.core.task
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.file.Path
@@ -58,8 +59,16 @@ class RecordingsTreeTest {
         // form must fail this test for SOME date, whatever the cutoff arithmetic does.
         val cutoff = watchCutoff(Duration.ofDays(1), CLOCK)
         listOf(
-            "2027-01-01", "2026-12-31", "2026-02-16", "2026-02-15", "2026-02-14",
-            "2026-02-13", "2026-02-12", "2026-01-01", "2025-12-31", "2020-06-15",
+            "2027-01-01",
+            "2026-12-31",
+            "2026-02-16",
+            "2026-02-15",
+            "2026-02-14",
+            "2026-02-13",
+            "2026-02-12",
+            "2026-01-01",
+            "2025-12-31",
+            "2020-06-15",
         ).forEach { date ->
             val path = ROOT.resolve(date)
             assertEquals(
@@ -103,5 +112,78 @@ class RecordingsTreeTest {
     @Test
     fun `CAMERA_DEPTH equals the depth of a camera directory`() {
         assertEquals(CAMERA_DEPTH, depthFromRoot(ROOT.resolve("2026-02-15/09/cam1"), ROOT))
+    }
+
+    // --- Pure-function tests migrated from WatchRecordsTaskTest ---
+
+    @Test
+    fun `extractDateFromPath returns date for date directory`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-02-15")
+        assertEquals(LocalDate.of(2026, 2, 15), extractDateFromPath(path, ROOT))
+    }
+
+    @Test
+    fun `extractDateFromPath returns date for hour subdirectory`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-02-15/09")
+        assertEquals(LocalDate.of(2026, 2, 15), extractDateFromPath(path, ROOT))
+    }
+
+    @Test
+    fun `extractDateFromPath returns date for camera subdirectory`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-02-15/09/cam1")
+        assertEquals(LocalDate.of(2026, 2, 15), extractDateFromPath(path, ROOT))
+    }
+
+    @Test
+    fun `extractDateFromPath returns null for root recordings directory`() {
+        assertNull(extractDateFromPath(ROOT, ROOT))
+    }
+
+    @Test
+    fun `extractDateFromPath returns null for invalid date like 2026-02-30`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-02-30")
+        assertNull(extractDateFromPath(path, ROOT))
+    }
+
+    @Test
+    fun `extractDateFromPath ignores date-like segments in root path`() {
+        val rootWithDate = Path.of("/data/2024-01-15/frigate/recordings")
+        val path = Path.of("/data/2024-01-15/frigate/recordings/2026-02-15/09/cam1")
+        assertEquals(LocalDate.of(2026, 2, 15), extractDateFromPath(path, rootWithDate))
+    }
+
+    @Test
+    fun `isWithinWatchPeriod returns true for today`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-02-15")
+        assertTrue(isWithinWatchPeriod(path, ROOT, Duration.ofDays(1), CLOCK))
+    }
+
+    @Test
+    fun `isWithinWatchPeriod returns true for yesterday within 1 day period`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-02-14")
+        assertTrue(isWithinWatchPeriod(path, ROOT, Duration.ofDays(1), CLOCK))
+    }
+
+    @Test
+    fun `isWithinWatchPeriod returns false for old date`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-01-01")
+        assertFalse(isWithinWatchPeriod(path, ROOT, Duration.ofDays(1), CLOCK))
+    }
+
+    @Test
+    fun `isWithinWatchPeriod returns true for root directory without date`() {
+        assertTrue(isWithinWatchPeriod(ROOT, ROOT, Duration.ofDays(1), CLOCK))
+    }
+
+    @Test
+    fun `isWithinWatchPeriod returns true for exact cutoff date`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-02-14")
+        assertTrue(isWithinWatchPeriod(path, ROOT, Duration.ofDays(1), CLOCK))
+    }
+
+    @Test
+    fun `isWithinWatchPeriod returns false for one day before cutoff`() {
+        val path = Path.of("/mnt/data/frigate/recordings/2026-02-13")
+        assertFalse(isWithinWatchPeriod(path, ROOT, Duration.ofDays(1), CLOCK))
     }
 }

@@ -5,13 +5,12 @@ import java.time.Clock
 import java.time.Duration
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.time.format.DateTimeParseException
 
-/**
- * Path arithmetic over Frigate's recordings tree: `recordings/YYYY-MM-DD/HH/camera/MM.SS.mp4`.
- *
- * Shared by [WatchRecordsLoop] (registers watch keys on directories) and [FirstTimeScanTask]
- * (indexes the files themselves).
- */
+// Path arithmetic over Frigate's recordings tree: `recordings/YYYY-MM-DD/HH/camera/MM.SS.mp4`.
+//
+// Shared by WatchRecordsLoop (registers watch keys on directories) and FirstTimeScanTask
+// (indexes the files themselves).
 
 /**
  * Depth of a camera directory relative to the recordings root: 0 = root, 1 = date, 2 = hour,
@@ -23,10 +22,51 @@ import java.time.ZoneOffset
  */
 internal const val CAMERA_DEPTH: Int = 3
 
+private val DATE_PATTERN = Regex("""\d{4}-\d{2}-\d{2}""")
+
 internal fun watchCutoff(
     watchPeriod: Duration,
     clock: Clock,
 ): LocalDate = LocalDate.now(clock.withZone(ZoneOffset.UTC)).minusDays(watchPeriod.toDays())
+
+/**
+ * Scans path segments FROM LEAF TO ROOT and returns the first date-like one. Inherited contract:
+ * a date-like camera ID or a date-like directory below the date level yields the wrong answer —
+ * change only together with `RecordingFileHelper.parse`. Date-like camera IDs are declared an
+ * unsupported configuration.
+ */
+internal fun extractDateFromPath(
+    path: Path,
+    rootFolder: Path,
+): LocalDate? {
+    val relativePath = if (path.startsWith(rootFolder)) rootFolder.relativize(path) else path
+    for (i in relativePath.nameCount - 1 downTo 0) {
+        val name = relativePath.getName(i).toString()
+        if (DATE_PATTERN.matches(name)) {
+            return try {
+                LocalDate.parse(name)
+            } catch (_: DateTimeParseException) {
+                null
+            }
+        }
+    }
+    return null
+}
+
+/**
+ * Fail-OPEN: a path whose date cannot be extracted counts as "inside the period". The recordings
+ * root itself and any non-standard directory always pass. See [isPrunableDate] for the mirror rule
+ * used when deciding whether a subtree may be skipped.
+ */
+internal fun isWithinWatchPeriod(
+    path: Path,
+    rootFolder: Path,
+    watchPeriod: Duration,
+    clock: Clock,
+): Boolean {
+    val date = extractDateFromPath(path, rootFolder) ?: return true
+    return !date.isBefore(watchCutoff(watchPeriod, clock))
+}
 
 /**
  * Fail-CLOSED mirror of [isWithinWatchPeriod]: a subtree may be pruned ONLY when its date was

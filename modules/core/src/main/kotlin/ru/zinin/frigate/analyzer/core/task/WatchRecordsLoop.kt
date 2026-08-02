@@ -18,9 +18,6 @@ import java.nio.file.attribute.BasicFileAttributes
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneOffset
-import java.time.format.DateTimeParseException
 import java.util.concurrent.ConcurrentMap
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.absolutePathString
@@ -176,35 +173,4 @@ class WatchRecordsLoop(
     private companion object {
         const val POLL_PERIOD_MS: Long = 500L
     }
-}
-
-private val DATE_PATTERN = Regex("""\d{4}-\d{2}-\d{2}""")
-
-internal fun extractDateFromPath(
-    path: Path,
-    rootFolder: Path,
-): LocalDate? {
-    val relativePath = if (path.startsWith(rootFolder)) rootFolder.relativize(path) else path
-    for (i in relativePath.nameCount - 1 downTo 0) {
-        val name = relativePath.getName(i).toString()
-        if (DATE_PATTERN.matches(name)) {
-            return try {
-                LocalDate.parse(name)
-            } catch (_: DateTimeParseException) {
-                null
-            }
-        }
-    }
-    return null
-}
-
-internal fun isWithinWatchPeriod(
-    path: Path,
-    rootFolder: Path,
-    watchPeriod: Duration,
-    clock: Clock,
-): Boolean {
-    val date = extractDateFromPath(path, rootFolder) ?: return true
-    val cutoff = LocalDate.now(clock.withZone(ZoneOffset.UTC)).minusDays(watchPeriod.toDays())
-    return !date.isBefore(cutoff)
 }
