@@ -60,7 +60,7 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 | WatchRecordsTask | `core/task/` | Coroutine supervisor that drives WatchRecordsLoop; owns lifecycle, backoff, health state |
 | WatchRecordsLoop | `core/task/` | Stateless logic of a single iteration: poll + handle ENTRY_CREATE + periodic cleanup |
 | WatchRecordsTaskHealthIndicator | `core/task/` | HealthIndicator that exposes task state via `/actuator/health` |
-| FirstTimeScanTask | `core/task/` | Initial scan on startup (disable: `DISABLE_FIRST_SCAN=true`) |
+| FirstTimeScanTask | `core/task/` | One-off startup backfill of `.mp4` files already on disk, bounded by `FIRST_SCAN_PERIOD` (defaults to `WATCH_PERIOD` truncated to whole days; the window is whole days in UTC); disabled by default — run the backfill with `DISABLE_FIRST_SCAN=false`. Prunes out-of-window date subtrees the same way `registerAllDirs` does and reuses the walk's own file attributes (no per-file re-stat). Per-file failures are counted and skipped, not fatal — the previous `.catch {}` on the outer flow terminated the whole scan on the first bad file. `indexed` means create-or-find: a re-run over an already indexed window finishes but logs ~52k "Recording already exists" warnings. Logic lives in `scan()`; `run()` is a detached fire-and-forget launch — TODO: the scope is not cancelled on shutdown (known, out of scope), which is exactly why tests drive `scan()` directly. |
 | StartupTelegramNotifier | `core/application/` | Sends owner one Telegram message on ApplicationReadyEvent (indirect restart-frequency signal) |
 
 ### Selective watching
