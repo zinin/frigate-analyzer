@@ -26,9 +26,22 @@ spring:
         max-size: 10
 application:
   records-watcher:
-    disable-first-scan: ${DISABLE_FIRST_SCAN:false}
+    # Disabled by default: the startup scan is an opt-in backfill (first install, index recovery).
+    # A fixed scan that actually finishes would otherwise run a never-observed ~52k backfill on a
+    # fresh deployment with default settings.
+    disable-first-scan: ${DISABLE_FIRST_SCAN:true}
     folder: ${FRIGATE_RECORDS_FOLDER:/mnt/data/frigate/recordings}
     watch-period: ${WATCH_PERIOD:P1D}
+    # Defaults to watch-period: the startup backfill covers exactly the window the watcher watches.
+    # The default is deliberately EMPTY rather than a ${application.records-watcher.watch-period}
+    # reference: placeholders resolve against the raw Environment, where the relaxed env name
+    # APPLICATION_RECORDSWATCHER_WATCHPERIOD is invisible (that lookup only maps dots and hyphens to
+    # underscores, never the hyphen-stripped form), so the reference would silently fall back to P1D.
+    # Empty binds as null, and the Kotlin default `firstScanPeriod = watchPeriod` then follows the
+    # RESOLVED watch-period from whichever source set it — env, the docker profile yaml, a CLI
+    # argument. notifications.tracker.reappear-gap below escapes the same trap only because
+    # `notifications.tracker.ttl` happens to contain no hyphen.
+    first-scan-period: ${FIRST_SCAN_PERIOD:}
     cleanup-interval: ${WATCH_CLEANUP_INTERVAL:PT1H}
   temp-folder: ${TEMP_FOLDER:/tmp/frigate-analyzer/}
   ffmpeg-path: ${FFMPEG_PATH:/usr/bin/ffmpeg}
@@ -151,3 +164,12 @@ application:
     base-font-size: ${LOCAL_VIZ_BASE_FONT_SIZE:16}
     label-padding: ${LOCAL_VIZ_LABEL_PADDING:4}
     max-frames: ${LOCAL_VIZ_MAX_FRAMES:10}
+
+management:
+  endpoint:
+    health:
+      # Default `always`: this is a single-deployment project, and computeHealth already builds a
+      # `reason` plus registeredDirs / lastSuccessfulRegistrationAt that Spring otherwise discards.
+      # A bare {"status":"DOWN"} is what forced the 9-minute registration stall to be diagnosed
+      # from logs instead of from the endpoint.
+      show-details: ${HEALTH_SHOW_DETAILS:always}

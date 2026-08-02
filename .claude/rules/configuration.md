@@ -21,9 +21,20 @@ Settings under `application.records-watcher` in `application.yaml`.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `FRIGATE_RECORDS_FOLDER` | /mnt/data/frigate/recordings/ | Frigate recordings path |
-| `DISABLE_FIRST_SCAN` | false | Skip initial scan on startup |
+| `DISABLE_FIRST_SCAN` | true | The startup scan is an opt-in backfill (first install, index recovery); set to `false` to run it once. |
 | `WATCH_PERIOD` | P1D | ISO-8601 duration, how far back to watch directories |
+| `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD` | ISO-8601 duration, how far back the startup scan indexes files. Whole days **in UTC** (Frigate names date directories by UTC): `P0D` = today only, `P1D` = today and yesterday; sub-day values are rejected at startup instead of being silently truncated. Defaults to the resolved `watch-period`, so it follows it from any source — raising `WATCH_PERIOD` widens the startup backfill in the same proportion. Every indexed file becomes a `recordings` row and enters the detection pipeline — one day of three cameras at 10-second segments is ~52 000 files. Note the validation asymmetry: `WATCH_PERIOD` must stay ≥ `P1D`; "today only" is expressible only here. |
 | `WATCH_CLEANUP_INTERVAL` | PT1H | How often to clean up expired watch keys |
+
+Поля `RecordsWatcherProperties` имеют Kotlin-дефолты, и `first-scan-period` добавлен последним параметром конструктора — позиционные вызовы конструктора не использовать, только именованные.
+
+`first-scan-period` в `application.yaml` намеренно имеет **пустой** дефолт (`${FIRST_SCAN_PERIOD:}`), а не ссылку `${application.records-watcher.watch-period}`. Плейсхолдеры резолвятся против сырого `Environment`, где relaxed-имя `APPLICATION_RECORDSWATCHER_WATCHPERIOD` не видно (там дефисы и точки переводятся в `_`, но форма без дефисов не проверяется) — ссылка молча откатилась бы на `P1D`. Пустая строка биндится в `null`, и срабатывает Kotlin-дефолт `firstScanPeriod = watchPeriod`, который видит уже **разрезолвленное** значение. `reappear-gap` ниже использует форму со ссылкой и уцелел лишь потому, что в `notifications.tracker.ttl` нет дефиса; копировать ту форму в свойство с дефисом в имени нельзя.
+
+## Actuator
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HEALTH_SHOW_DETAILS` | always | `management.endpoint.health.show-details`. With `never` (Spring Boot's own default) `/actuator/health` returns a bare status, and `WatchRecordsTask.computeHealth`'s `reason`, `registeredDirs` and `lastSuccessfulRegistrationAt` are discarded — which is why a 9-minute registration stall had to be diagnosed from logs. `always` exposes them — including filesystem paths (`registeredDirs`) and the text of the last failure — to anyone who can reach the published port; accepted for a single-deployment behind a closed perimeter, switch to `never`/`when-authorized` otherwise. Spring's relaxed binding also honours `MANAGEMENT_ENDPOINT_HEALTH_SHOWDETAILS`; set only one of the two variables. |
 
 ## Database
 
