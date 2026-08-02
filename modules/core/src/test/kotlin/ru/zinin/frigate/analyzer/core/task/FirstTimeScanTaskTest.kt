@@ -104,6 +104,30 @@ class FirstTimeScanTaskTest {
         }
 
     @Test
+    fun `scan skips foreign files without counting them as failures`() =
+        runTest {
+            val root = Files.createTempDirectory("fts-foreign")
+            try {
+                buildCanonicalTree(root)
+                val cameraDir = root.resolve("2026-05-23/00/cam1")
+                Files.createFile(cameraDir.resolve("thumb.jpg"))
+                Files.createFile(cameraDir.resolve("recording.mp4.tmp"))
+                every { recordingFileHelper.parse(any()) } returns sampleDto
+                coEvery { recordingEntityHelper.createRecording(any()) } returns UUID.randomUUID()
+
+                val result = taskFor(root).scan()
+
+                // Both foreign entries are visited and dropped in visitFile: parse() never sees
+                // them, so they neither index nor inflate `failed` through a doomed parse.
+                assertEquals(24, result.indexed)
+                assertEquals(0, result.failed)
+                assertEquals(43, result.visitedEntries)
+            } finally {
+                root.toFile().deleteRecursively()
+            }
+        }
+
+    @Test
     fun `scan with a P0D window indexes today only`() =
         runTest {
             val root = Files.createTempDirectory("fts-today")
