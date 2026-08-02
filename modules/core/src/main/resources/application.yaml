@@ -60,7 +60,11 @@ application:
       cleanup-interval-ms: ${NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS:3600000}
       cleanup-retention: ${NOTIFICATIONS_TRACK_CLEANUP_RETENTION:PT1H}
       # Defaults to ttl, which makes reappearance detection a no-op (ttl also bounds findActive).
-      reappear-gap: ${NOTIFICATIONS_TRACK_REAPPEAR_GAP:${NOTIFICATIONS_TRACK_TTL:PT30M}}
+      # The default references the resolved property rather than $NOTIFICATIONS_TRACK_TTL, so it
+      # follows ttl from whichever source sets it — env, the docker profile yaml, a CLI argument.
+      # Same form as claude.working-directory below; reading the variable instead would silently
+      # fall back to PT30M whenever ttl is set by anything other than that one env var.
+      reappear-gap: ${NOTIFICATIONS_TRACK_REAPPEAR_GAP:${application.notifications.tracker.ttl}}
   ai:
     description:
       enabled: ${APP_AI_DESCRIPTION_ENABLED:false}
