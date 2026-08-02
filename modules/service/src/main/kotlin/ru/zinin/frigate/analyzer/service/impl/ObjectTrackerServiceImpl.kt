@@ -35,10 +35,29 @@ class ObjectTrackerServiceImpl(
     // Camera set is static for this single-instance deployment.
     private val perCameraMutex = ConcurrentHashMap<String, Mutex>()
 
+    // A reappearance is a gap between recording timestamps, but such a gap only means "the object
+    // was gone" if the tracker was watching the camera throughout it — and it is not always. The
+    // unprocessed queue is drained newest-first (RecordingEntityRepository.findUnprocessedForUpdate)
+    // with no floor on age, so after any interruption — restart, deploy, stalled pipeline, camera
+    // signal loss — the first recording processed carries the entire interruption as an apparent
+    // absence, and every static object still matching by IoU would notify. Note that measuring gaps
+    // in `detections`, as the tuning guide suggests, cannot reveal this: the gap is in processing,
+    // not in the recordings.
+    //
+    // These two maps bound the claim. The wall clock of the previous evaluation is the only thing
+    // that can detect the interruption, since it is about processing rather than content; the
+    // recording timestamp the window restarts from is then compared against track timestamps, so
+    // the actual test stays inside one time base.
+    private val lastEvaluatedAt = ConcurrentHashMap<String, Instant>()
+    private val watchedSinceRecordTs = ConcurrentHashMap<String, Instant>()
+
     override suspend fun evaluate(
         recording: RecordingDto,
         detections: List<DetectionEntity>,
     ): DetectionDelta {
+        // Stamped for every recording, including the ones that return empty below: what this
+        // records is whether the tracker was watching the camera, not whether it found anything.
+        val watchedSince = markWatched(recording)
         if (detections.isEmpty()) {
             return DetectionDelta(
                 newTracksCount = 0,
@@ -67,14 +86,37 @@ class ObjectTrackerServiceImpl(
         val mutex = perCameraMutex.computeIfAbsent(recording.camId) { Mutex() }
         return mutex.withLock {
             transactionalOperator.executeAndAwait {
-                evaluateLocked(recording, representatives)
+                evaluateLocked(recording, representatives, watchedSince)
             }
+        }
+    }
+
+    /**
+     * Advances this camera's watch bookkeeping and returns the earliest recording timestamp an
+     * absence may reach back to and still describe something this process observed.
+     *
+     * A wall-clock gap between consecutive evaluations longer than
+     * [ObjectTrackerProperties.reappearGap] means the tracker was not watching — an absence that
+     * long is exactly what it would otherwise report — so the window restarts at this recording.
+     * Concurrent calls for one camera race here (the mutex is taken later), but every outcome
+     * either keeps the window or restarts it at a recording of the same batch, so the guard can
+     * only end up stricter, never looser.
+     */
+    private fun markWatched(recording: RecordingDto): Instant {
+        val now = Instant.now(clock)
+        val previous = lastEvaluatedAt.put(recording.camId, now)
+        val interrupted = previous == null || Duration.between(previous, now) > properties.reappearGap
+        return if (interrupted) {
+            recording.recordTimestamp.also { watchedSinceRecordTs[recording.camId] = it }
+        } else {
+            watchedSinceRecordTs.computeIfAbsent(recording.camId) { recording.recordTimestamp }
         }
     }
 
     private suspend fun evaluateLocked(
         recording: RecordingDto,
         representatives: List<RepresentativeBbox>,
+        watchedSince: Instant,
     ): DetectionDelta {
         val recordingTimestamp = recording.recordTimestamp
         val ttlThreshold = recordingTimestamp.minus(properties.ttl)
@@ -82,6 +124,7 @@ class ObjectTrackerServiceImpl(
         val active = repository.findActive(recording.camId, ttlThreshold, ttlUpperBound).toMutableList()
 
         var matched = 0
+        var unobservedAbsences = 0
         val newClasses = mutableListOf<String>()
         val reappearedClasses = mutableListOf<String>()
         for (bbox in representatives) {
@@ -110,7 +153,8 @@ class ObjectTrackerServiceImpl(
                 // Negative for out-of-order (older) recordings, which therefore never count as a
                 // reappearance — the later recording that already advanced the track had its own say.
                 // lastSeenAt is nullable on the entity but never null here: findActive filters on it.
-                val absence = match.lastSeenAt?.let { Duration.between(it, recordingTimestamp) }
+                val lastSeen = match.lastSeenAt
+                val absence = lastSeen?.let { Duration.between(it, recordingTimestamp) }
                 val updated =
                     repository.updateOnMatch(
                         id = matchId,
@@ -127,8 +171,16 @@ class ObjectTrackerServiceImpl(
                 // (last_seen_at >= recordingTimestamp - ttl), so the largest absence a matched track
                 // can show is exactly ttl. Demanding more than the gap is what keeps the default
                 // reappearGap == ttl unreachable, and so the no-op it is documented as.
-                if (absence != null && absence > properties.reappearGap) {
-                    reappearedClasses += bbox.className
+                if (lastSeen != null && absence != null && absence > properties.reappearGap) {
+                    // An absence that began before this camera's watch window is not evidence the
+                    // object left — only that nobody was looking. Checked per track rather than per
+                    // recording: a static object the detector misses in the first frame after an
+                    // interruption would otherwise slip through on the next one.
+                    if (lastSeen.isBefore(watchedSince)) {
+                        unobservedAbsences++
+                    } else {
+                        reappearedClasses += bbox.className
+                    }
                 }
             } else {
                 repository.save(
@@ -149,10 +201,11 @@ class ObjectTrackerServiceImpl(
             }
         }
         val newCount = newClasses.size
-        if (newCount > 0 || reappearedClasses.isNotEmpty()) {
+        if (newCount > 0 || reappearedClasses.isNotEmpty() || unobservedAbsences > 0) {
             logger.debug {
                 "ObjectTracker: cam=${recording.camId} new=$newCount matched=$matched " +
-                    "reappeared=${reappearedClasses.size} stale=${active.size} (recording=${recording.id})"
+                    "reappeared=${reappearedClasses.size} unobserved=$unobservedAbsences " +
+                    "stale=${active.size} (recording=${recording.id})"
             }
         }
         return DetectionDelta(

@@ -23,6 +23,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
@@ -69,6 +70,17 @@ class ObjectTrackerServiceImplTest {
 
     private val camId = "front"
     private val recId = UUID.randomUUID()
+
+    /**
+     * Opens an uninterrupted watch window starting at [from]. [ObjectTrackerServiceImpl.markWatched]
+     * refuses to call an absence a reappearance unless the tracker was already watching when that
+     * absence began, so a freshly constructed service reports nothing until this has been called.
+     * Empty detections suffice: the stamp records that the tracker looked, not what it found. The
+     * fixed clock keeps the wall-clock gap to the next call at zero, so the window stays open.
+     */
+    private suspend fun ObjectTrackerServiceImpl.watchFrom(from: Instant) {
+        evaluate(rec(from), emptyList())
+    }
 
     private fun rec(t: Instant = fixedNow): RecordingDto =
         RecordingDto(
@@ -316,6 +328,7 @@ class ObjectTrackerServiceImplTest {
             // that left and came back from one that never moved.
             val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
             val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
             val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
 
@@ -364,6 +377,7 @@ class ObjectTrackerServiceImplTest {
         runTest {
             // Default props: reappearGap == ttl == 30m, and findActive never returns a track older
             // than ttl, so no match can ever reach the gap.
+            service.watchFrom(fixedNow.minus(props.ttl))
             val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(props.ttl).plusSeconds(1))
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
 
@@ -380,6 +394,7 @@ class ObjectTrackerServiceImplTest {
             // is inclusive, so a track last seen exactly ttl ago is returned and its absence is
             // exactly ttl — the largest value reachable at all. Only a strict comparison keeps the
             // documented default a real no-op.
+            service.watchFrom(fixedNow.minus(props.ttl))
             val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(props.ttl))
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
 
@@ -395,6 +410,7 @@ class ObjectTrackerServiceImplTest {
             // Pins the same strictness for an enabled configuration, so a switch back to >= cannot
             // slip through on the tuned deployment shape either.
             val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(longTtlProps.reappearGap))
             val existing =
                 track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(longTtlProps.reappearGap))
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
@@ -412,6 +428,7 @@ class ObjectTrackerServiceImplTest {
             // matched, and reappearedClasses repeats a class once per track.
             val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
             val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
             val left = track("person", 0f, 0f, 0.2f, 0.2f, lastSeen = absentSince)
             val right = track("person", 0.6f, 0.6f, 0.9f, 0.9f, lastSeen = absentSince)
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(left, right)
@@ -430,6 +447,79 @@ class ObjectTrackerServiceImplTest {
             assertTrue(delta.reappearedTracksCount <= delta.matchedTracksCount)
             assertEquals(listOf("person", "person"), delta.reappearedClasses)
         }
+
+    @Test
+    fun `first evaluation after an interruption does not report a reappearance`() =
+        runTest {
+            // Nothing was watching while this absence accumulated. The unprocessed queue is drained
+            // newest-first, so the first recording after a restart or a stalled pipeline carries the
+            // whole interruption as an apparent absence for every static object still matching.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            val existing = track("car", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(8)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("car", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+            assertTrue(delta.reappearedClasses.isEmpty())
+        }
+
+    @Test
+    fun `a track missed on the first pass after an interruption still does not reappear`() =
+        runTest {
+            // Why the guard is per track rather than per recording. A static object the detector
+            // happens to miss in the first frame after an interruption keeps its old lastSeenAt, so
+            // a per-recording guard would let it through on the very next recording — and detector
+            // misses are common enough to make that the normal case, not an edge one.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            val existing = track("car", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(3)))
+            // First pass after the interruption detects nothing, so the track is not advanced.
+            svc.evaluate(rec(), emptyList())
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta =
+                svc.evaluate(rec(fixedNow.plusSeconds(10)), listOf(det("car", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `a wall-clock gap between evaluations closes the watch window`() =
+        runTest {
+            // The interruption is only visible on the wall clock: recording timestamps say nothing
+            // about whether this process was running between them. Same data as `match after a long
+            // absence is reported as reappeared` — only the processing gap differs.
+            val wallClock = SteppingClock(fixedNow)
+            val svc = ObjectTrackerServiceImpl(repo, uuid, wallClock, longTtlProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            wallClock.advance(longTtlProps.reappearGap.plusMinutes(1))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    /** Wall clock the test moves by hand; [Clock.fixed] cannot express a processing gap. */
+    private class SteppingClock(
+        private var current: Instant,
+        private val zone: ZoneId = ZoneOffset.UTC,
+    ) : Clock() {
+        override fun getZone(): ZoneId = zone
+
+        override fun withZone(zone: ZoneId): Clock = SteppingClock(current, zone)
+
+        override fun instant(): Instant = current
+
+        fun advance(by: Duration) {
+            current = current.plus(by)
+        }
+    }
 
     @Test
     fun `reappearGap above ttl is rejected at construction`() {

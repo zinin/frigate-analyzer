@@ -193,6 +193,13 @@ re-detected at the recording cadence, while a person who left and came back has 
 it above the largest gap a *static* object shows (detector flakiness), below the smallest gap a real
 visitor shows. Measure both from `detections` before picking a value.
 
+Gaps in *processing* are excluded automatically, and measuring `detections` would never reveal them.
+After a restart, a deploy, a stalled pipeline or a camera signal loss, the first recordings processed
+span the whole interruption — the queue is drained newest-first — so every static object would read
+as having come back. The tracker only counts an absence that began while it was already watching that
+camera, so reappearances stay silent for a while after such an interruption; the suppressed ones
+appear in its debug line as `unobserved=N`.
+
 Raising TTL on its own will not start: `cleanup-retention >= ttl` is validated in
 `ObjectTrackerProperties.init` and defaults to 1h, so the container fails at binding time with a
 `reappear-gap`/`cleanup-retention` message. The three move together:
