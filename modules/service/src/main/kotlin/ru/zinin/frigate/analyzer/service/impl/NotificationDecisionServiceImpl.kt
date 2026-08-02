@@ -56,15 +56,19 @@ class NotificationDecisionServiceImpl(
                     NotificationDecision(false, NotificationDecisionReason.OUT_OF_SCHEDULE, delta)
                 }
 
+                // Both notify branches log at INFO, matching the signal-loss alerts: a notification
+                // going out is what an operator watches for, and this is the only place `reason`
+                // surfaces at all — the telegram layer never receives it. Suppressions stay on
+                // DEBUG; they are the common case and would bury the signal.
                 delta.newTracksCount > 0 -> {
-                    logger.debug {
+                    logger.info {
                         "Decision: notify: cam=${recording.camId} newClasses=${delta.newClasses} recording=${recording.id}"
                     }
                     NotificationDecision(true, NotificationDecisionReason.NEW_OBJECTS, delta)
                 }
 
                 delta.reappearedTracksCount > 0 -> {
-                    logger.debug {
+                    logger.info {
                         "Decision: notify (reappeared): cam=${recording.camId} " +
                             "reappearedClasses=${delta.reappearedClasses} recording=${recording.id}"
                     }
