@@ -27,6 +27,11 @@ class NotificationDecisionServiceImpl(
         globalEnabled: Boolean?,
     ): NotificationDecision {
         if (detections.isEmpty()) {
+            // Detection-less recordings must still advance the tracker's watch window: they are
+            // the proof it was watching through a quiet period. Without this stamp the camera's
+            // own silence reads as a processing interruption, and a real return after a long
+            // absence — the flagship reappearance scenario — is suppressed as unobserved.
+            tracker.markObserved(recording)
             return NotificationDecision(false, NotificationDecisionReason.NO_DETECTIONS)
         }
 

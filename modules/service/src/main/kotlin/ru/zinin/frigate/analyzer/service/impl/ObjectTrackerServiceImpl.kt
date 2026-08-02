@@ -44,19 +44,33 @@ class ObjectTrackerServiceImpl(
     // in `detections`, as the tuning guide suggests, cannot reveal this: the gap is in processing,
     // not in the recordings.
     //
-    // These two maps bound the claim. The wall clock of the previous evaluation is the only thing
+    // This map bounds the claim. The wall clock of the previous evaluation is the only thing
     // that can detect the interruption, since it is about processing rather than content; the
     // recording timestamp the window restarts from is then compared against track timestamps, so
-    // the actual test stays inside one time base.
-    private val lastEvaluatedAt = ConcurrentHashMap<String, Instant>()
-    private val watchedSinceRecordTs = ConcurrentHashMap<String, Instant>()
+    // the actual test stays inside one time base. Both halves live in one value updated by a
+    // single compute(): stamping them separately let a concurrent same-camera evaluation pair a
+    // fresh lastEvaluatedAt with a stale watchedSince — a looser window than either write alone.
+    private data class Watch(
+        val lastEvaluatedAt: Instant,
+        val watchedSinceRecordTs: Instant,
+    )
+
+    private val watchByCamera = ConcurrentHashMap<String, Watch>()
+
+    override fun markObserved(recording: RecordingDto) {
+        // Detection-less recordings reach the tracker through this path only:
+        // NotificationDecisionServiceImpl short-circuits to NO_DETECTIONS before evaluate.
+        markWatched(recording)
+    }
 
     override suspend fun evaluate(
         recording: RecordingDto,
         detections: List<DetectionEntity>,
     ): DetectionDelta {
-        // Stamped for every recording, including the ones that return empty below: what this
-        // records is whether the tracker was watching the camera, not whether it found anything.
+        // Stamped for every evaluated recording, including the ones that return empty below: what
+        // this records is whether the tracker was watching the camera, not whether it found
+        // anything. Recordings with no detections at all never get here — the decision service
+        // stamps them via markObserved instead.
         val watchedSince = markWatched(recording)
         if (detections.isEmpty()) {
             return DetectionDelta(
@@ -95,23 +109,48 @@ class ObjectTrackerServiceImpl(
      * Advances this camera's watch bookkeeping and returns the earliest recording timestamp an
      * absence may reach back to and still describe something this process observed.
      *
-     * A wall-clock gap between consecutive evaluations longer than
+     * A wall-clock gap between consecutive stamps longer than
      * [ObjectTrackerProperties.reappearGap] means the tracker was not watching — an absence that
      * long is exactly what it would otherwise report — so the window restarts at this recording.
-     * Concurrent calls for one camera race here (the mutex is taken later), but every outcome
-     * either keeps the window or restarts it at a recording of the same batch, so the guard can
-     * only end up stricter, never looser.
+     * The whole decision runs inside a single compute(), so concurrent same-camera calls (the
+     * mutex is taken later) serialize per camera and can never pair a fresh lastEvaluatedAt with
+     * a stale watchedSince. On a restart the window never moves backwards (maxOf): an out-of-order
+     * recording — e.g. a stuck one re-picked after its cooldown — cannot reopen an older window.
+     *
+     * Residual imprecision, accepted: the window restarts at whichever backlog recording happens
+     * to be stamped first after the interruption. The drain is newest-first, but SKIP LOCKED
+     * spreads batches across producers, so a slightly older recording can win and leave the
+     * window marginally wider than the ideal (newest-of-backlog). Closing that would require the
+     * tracker to consult the recording queue; the monotonic guard above plus the ordering keep
+     * the exposure to the first seconds after a restart.
+     *
+     * Two more accepted trade-offs. The interruption threshold IS the reappear gap, so an
+     * in-process stall shorter than the gap keeps the window open and the first absence measured
+     * across it may notify falsely — one extra notification, consistent with the tracker's
+     * fail-open bias (see the "Known limitation" note in configuration.md). And the stamp means
+     * "an evaluation was attempted", not "it succeeded": tracker-only failures sustained longer
+     * than the gap keep the window open while lastSeenAt stagnates, which can add one reappearance
+     * burst after recovery — drowned out by the per-recording TRACKER_ERROR fail-open
+     * notifications such an outage already produces.
      */
-    private fun markWatched(recording: RecordingDto): Instant {
-        val now = Instant.now(clock)
-        val previous = lastEvaluatedAt.put(recording.camId, now)
-        val interrupted = previous == null || Duration.between(previous, now) > properties.reappearGap
-        return if (interrupted) {
-            recording.recordTimestamp.also { watchedSinceRecordTs[recording.camId] = it }
-        } else {
-            watchedSinceRecordTs.computeIfAbsent(recording.camId) { recording.recordTimestamp }
-        }
-    }
+    private fun markWatched(recording: RecordingDto): Instant =
+        watchByCamera
+            .compute(recording.camId) { _, previous ->
+                val now = Instant.now(clock)
+                val interrupted =
+                    previous == null ||
+                        Duration.between(previous.lastEvaluatedAt, now) > properties.reappearGap
+                val watchedSince =
+                    if (previous == null) {
+                        recording.recordTimestamp
+                    } else if (interrupted) {
+                        maxOf(previous.watchedSinceRecordTs, recording.recordTimestamp)
+                    } else {
+                        previous.watchedSinceRecordTs
+                    }
+                Watch(lastEvaluatedAt = now, watchedSinceRecordTs = watchedSince)
+            }!!
+            .watchedSinceRecordTs
 
     private suspend fun evaluateLocked(
         recording: RecordingDto,

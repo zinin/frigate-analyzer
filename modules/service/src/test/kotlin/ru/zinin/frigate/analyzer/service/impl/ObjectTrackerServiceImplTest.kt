@@ -75,11 +75,12 @@ class ObjectTrackerServiceImplTest {
      * Opens an uninterrupted watch window starting at [from]. [ObjectTrackerServiceImpl.markWatched]
      * refuses to call an absence a reappearance unless the tracker was already watching when that
      * absence began, so a freshly constructed service reports nothing until this has been called.
-     * Empty detections suffice: the stamp records that the tracker looked, not what it found. The
-     * fixed clock keeps the wall-clock gap to the next call at zero, so the window stays open.
+     * Uses [ObjectTrackerServiceImpl.markObserved] — the exact production path for detection-less
+     * recordings: the stamp records that the tracker looked, not what it found. The fixed clock
+     * keeps the wall-clock gap to the next call at zero, so the window stays open.
      */
-    private suspend fun ObjectTrackerServiceImpl.watchFrom(from: Instant) {
-        evaluate(rec(from), emptyList())
+    private fun ObjectTrackerServiceImpl.watchFrom(from: Instant) {
+        markObserved(rec(from))
     }
 
     private fun rec(t: Instant = fixedNow): RecordingDto =
@@ -474,8 +475,9 @@ class ObjectTrackerServiceImplTest {
             // misses are common enough to make that the normal case, not an edge one.
             val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
             val existing = track("car", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(3)))
-            // First pass after the interruption detects nothing, so the track is not advanced.
-            svc.evaluate(rec(), emptyList())
+            // First recording after the interruption carries no detections, so the track is not
+            // advanced; the decision service delivers it through markObserved.
+            svc.markObserved(rec())
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
 
             val delta =
@@ -483,6 +485,49 @@ class ObjectTrackerServiceImplTest {
 
             assertEquals(1, delta.matchedTracksCount)
             assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `markObserved through a quiet period keeps the window open so the return notifies`() =
+        runTest {
+            // The flagship scenario on a quiet camera: the only tracked object leaves, the scene
+            // stays empty (recordings keep coming but carry no detections), the object returns
+            // hours later. The detection-less recordings arrive via markObserved and each stamp
+            // keeps the wall-clock gap below reappearGap — the tracker provably watched the whole
+            // absence, so the return must notify. Without those stamps the same timeline reads as
+            // an interruption (see `a wall-clock gap between evaluations closes the watch window`).
+            val wallClock = SteppingClock(fixedNow)
+            val svc = ObjectTrackerServiceImpl(repo, uuid, wallClock, longTtlProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            repeat(4) {
+                wallClock.advance(Duration.ofMinutes(45)) // each gap stays below reappearGap=1h
+                svc.markObserved(rec())
+            }
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(1, delta.reappearedTracksCount)
+            assertEquals(listOf("person"), delta.reappearedClasses)
+        }
+
+    @Test
+    fun `absence that began strictly inside the watch window is a reappearance`() =
+        runTest {
+            // The other positive tests sit exactly on the lastSeen == watchedSince boundary; this
+            // one pins the ordinary case of an absence that began well after the window opened.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(8)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(1, delta.reappearedTracksCount)
         }
 
     @Test
@@ -497,6 +542,29 @@ class ObjectTrackerServiceImplTest {
             svc.watchFrom(absentSince)
             wallClock.advance(longTtlProps.reappearGap.plusMinutes(1))
             val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `an out-of-order stamp after a second interruption cannot move the window backwards`() =
+        runTest {
+            // A stuck recording re-picked after its cooldown arrives with an old recordTimestamp
+            // right after an interruption. If it could restart the window at its own (older)
+            // timestamp, every track last seen after that point would falsely read as observed —
+            // the guard must stay monotone: restarts may only tighten the window, never widen it.
+            val wallClock = SteppingClock(fixedNow)
+            val svc = ObjectTrackerServiceImpl(repo, uuid, wallClock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow) // window restarts at fixedNow
+            wallClock.advance(longTtlProps.reappearGap.plusMinutes(1)) // interruption
+            svc.markObserved(rec(fixedNow.minus(Duration.ofHours(6)))) // out-of-order old recording
+            // A track that vanished during the interruption: absent since 5h ago, i.e. after the
+            // out-of-order stamp but before the legitimate window start.
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(5)))
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
 
             val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))

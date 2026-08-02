@@ -205,6 +205,14 @@ window restarts at the first recording processed, and a track must then be absen
 gap *inside* the new window before it can notify — with `PT1H`, the feature is blind for an hour
 after every restart); the suppressed ones appear in its debug line as `unobserved=N`.
 
+Known limitation: the interruption detector's threshold IS `REAPPEAR_GAP`, so an in-process stall
+*shorter* than the gap (e.g. 55 min under `PT1H`, detection servers down without a restart) does not
+close the window. The first recording after such a stall measures an absence whose middle nobody
+observed, and a static object whose absence straddles the stall can notify falsely — one extra
+notification, in line with the tracker's fail-open bias. A separate, shorter interruption threshold
+would trade these rare false positives for blind windows after every minor hiccup; revisit only if
+production shows the pattern.
+
 Raising TTL on its own will not start: `cleanup-retention >= ttl` is validated in
 `ObjectTrackerProperties.init` and defaults to 1h, so the container fails at binding time with a
 `cleanup-retention` message. (A `reappear-gap` message cannot appear in that scenario — the gap
