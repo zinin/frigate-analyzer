@@ -33,14 +33,15 @@ application:
     folder: ${FRIGATE_RECORDS_FOLDER:/mnt/data/frigate/recordings}
     watch-period: ${WATCH_PERIOD:P1D}
     # Defaults to watch-period: the startup backfill covers exactly the window the watcher watches.
-    # The default is deliberately EMPTY rather than a ${application.records-watcher.watch-period}
-    # reference: placeholders resolve against the raw Environment, where the relaxed env name
-    # APPLICATION_RECORDSWATCHER_WATCHPERIOD is invisible (that lookup only maps dots and hyphens to
-    # underscores, never the hyphen-stripped form), so the reference would silently fall back to P1D.
-    # Empty binds as null, and the Kotlin default `firstScanPeriod = watchPeriod` then follows the
-    # RESOLVED watch-period from whichever source set it — env, the docker profile yaml, a CLI
-    # argument. notifications.tracker.reappear-gap below escapes the same trap only because
-    # `notifications.tracker.ttl` happens to contain no hyphen.
+    # Empty default on purpose: an empty value binds to null, so the Kotlin default
+    # `firstScanPeriod: Duration = watchPeriod` in RecordsWatcherProperties takes over and sees the
+    # already-resolved watch-period — from env, a profile yaml, a CLI argument or a relaxed name
+    # alike. The line still has to exist so the short FIRST_SCAN_PERIOD variable binds at all.
+    # Not `${FIRST_SCAN_PERIOD:${application.records-watcher.watch-period}}`: relaxed name mapping is
+    # guaranteed for @ConfigurationProperties binding but not for placeholder resolution, and
+    # RecordsWatcherPropertiesBindingTest showed that reference resolving to the yaml's own P1D
+    # instead of an APPLICATION_RECORDSWATCHER_WATCHPERIOD override. The reappear-gap line below uses
+    # the reference form safely only because its target property contains no hyphen to strip.
     first-scan-period: ${FIRST_SCAN_PERIOD:}
     cleanup-interval: ${WATCH_CLEANUP_INTERVAL:PT1H}
   temp-folder: ${TEMP_FOLDER:/tmp/frigate-analyzer/}

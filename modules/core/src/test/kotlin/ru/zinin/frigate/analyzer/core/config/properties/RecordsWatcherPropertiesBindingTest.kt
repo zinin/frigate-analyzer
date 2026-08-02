@@ -20,12 +20,14 @@ import java.time.Duration
  * for the first time when production starts.
  *
  * What is pinned here is `first-scan-period` defaulting to `watch-period` — from whichever source
- * sets it. The yaml default is empty on purpose, so binding falls through to the Kotlin default
- * `firstScanPeriod = watchPeriod`, which sees the RESOLVED watch period. Neither placeholder form
- * would do: `${FIRST_SCAN_PERIOD:${WATCH_PERIOD:P1D}}` follows only that one env var, and
- * `${FIRST_SCAN_PERIOD:${application.records-watcher.watch-period}}` is resolved against the raw
- * Environment, which cannot see the relaxed name `APPLICATION_RECORDSWATCHER_WATCHPERIOD` — both
- * silently fall back to P1D. The relaxed-name test is the one that catches the second form.
+ * sets it. The yaml default is empty on purpose: an empty value binds to null, so the Kotlin default
+ * `firstScanPeriod = watchPeriod` takes over and sees the already-resolved watch period.
+ *
+ * Neither placeholder form does that. `${FIRST_SCAN_PERIOD:${WATCH_PERIOD:P1D}}` follows only that
+ * one env var. And relaxed name mapping is guaranteed for `@ConfigurationProperties` binding but not
+ * for placeholder resolution: the relaxed-name test below is what showed
+ * `${FIRST_SCAN_PERIOD:${application.records-watcher.watch-period}}` resolving to the yaml's own P1D
+ * while `watch-period` itself bound the override.
  */
 class RecordsWatcherPropertiesBindingTest {
     @Test
@@ -56,9 +58,9 @@ class RecordsWatcherPropertiesBindingTest {
 
     @Test
     fun `first-scan-period follows a watch-period set through the relaxed variable name`() {
-        // Spring Boot's own spelling of the same property: relaxed binding strips the hyphens,
-        // placeholder resolution never does. A ${application.records-watcher.watch-period} default
-        // binds P1D here while watch-period itself binds P3D.
+        // Spring Boot's own spelling of the same property. This is the case that showed a
+        // ${application.records-watcher.watch-period} default binding P1D here, while watch-period
+        // itself bound P3D — relaxed names are guaranteed for binding, not for placeholders.
         val props = bind(env = mapOf("APPLICATION_RECORDSWATCHER_WATCHPERIOD" to "P3D"))
 
         assertThat(props.watchPeriod).isEqualTo(Duration.ofDays(3))
