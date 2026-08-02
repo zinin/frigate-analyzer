@@ -21,11 +21,12 @@ import java.time.Duration
  *
  * What is pinned here is `first-scan-period` defaulting to `watch-period` — from whichever source
  * sets it. The yaml default is empty on purpose: an empty value binds to null, so the Kotlin default
- * `firstScanPeriod = watchPeriod` takes over and sees the already-resolved watch period.
+ * `firstScanPeriod = Duration.ofDays(watchPeriod.toDays())` takes over and sees the already-resolved
+ * watch period, truncated to the whole days the scan window is measured in.
  *
- * Neither placeholder form does that. `${FIRST_SCAN_PERIOD:${WATCH_PERIOD:P1D}}` follows only that
- * one env var. And relaxed name mapping is guaranteed for `@ConfigurationProperties` binding but not
- * for placeholder resolution: the relaxed-name test below is what showed
+ * Neither placeholder form does that here. `${FIRST_SCAN_PERIOD:${WATCH_PERIOD:P1D}}` follows only
+ * that one env var. And relaxed name mapping is guaranteed for `@ConfigurationProperties` binding
+ * but not for placeholder resolution: the relaxed-name test below is what showed
  * `${FIRST_SCAN_PERIOD:${application.records-watcher.watch-period}}` resolving to the yaml's own P1D
  * while `watch-period` itself bound the override.
  */
@@ -68,6 +69,17 @@ class RecordsWatcherPropertiesBindingTest {
     }
 
     @Test
+    fun `a non-whole-day WATCH_PERIOD still binds, truncated to whole days`() {
+        // PT36H passes watchPeriod's own `toDays() >= 1` check and has always MEANT one day to
+        // watchCutoff, which truncates the same way. Inheriting it verbatim would have failed the
+        // whole-days require at startup, naming FIRST_SCAN_PERIOD — a variable the operator never set.
+        val props = bind(env = mapOf("WATCH_PERIOD" to "PT36H"))
+
+        assertThat(props.watchPeriod).isEqualTo(Duration.ofHours(36))
+        assertThat(props.firstScanPeriod).isEqualTo(Duration.ofDays(1))
+    }
+
+    @Test
     fun `an explicitly set FIRST_SCAN_PERIOD wins over the watch-period default`() {
         val props = bind(env = mapOf("WATCH_PERIOD" to "P3D", "FIRST_SCAN_PERIOD" to "P0D"))
 
@@ -92,6 +104,19 @@ class RecordsWatcherPropertiesBindingTest {
             )
         }.isInstanceOf(IllegalArgumentException::class.java)
             .hasMessageContaining("whole days")
+    }
+
+    @Test
+    fun `a negative first-scan-period is rejected`() {
+        // The whole-days require alone would let this through: ofDays(-1) equals ofDays(ofDays(-1)
+        // .toDays()). The non-negative require is the only thing rejecting it.
+        assertThatThrownBy {
+            RecordsWatcherProperties(
+                folder = Path.of("/tmp"),
+                firstScanPeriod = Duration.ofDays(-1),
+            )
+        }.isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("must not be negative")
     }
 
     @Test

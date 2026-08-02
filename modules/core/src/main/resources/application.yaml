@@ -34,9 +34,11 @@ application:
     watch-period: ${WATCH_PERIOD:P1D}
     # Defaults to watch-period: the startup backfill covers exactly the window the watcher watches.
     # Empty default on purpose: an empty value binds to null, so the Kotlin default
-    # `firstScanPeriod: Duration = watchPeriod` in RecordsWatcherProperties takes over and sees the
+    # `Duration.ofDays(watchPeriod.toDays())` in RecordsWatcherProperties takes over and sees the
     # already-resolved watch-period — from env, a profile yaml, a CLI argument or a relaxed name
-    # alike. The line still has to exist so the short FIRST_SCAN_PERIOD variable binds at all.
+    # alike. It is truncated because watchCutoff truncates too, so a PT36H watch-period yields P1D
+    # here instead of failing the whole-days check on a variable nobody set. The line still has to
+    # exist so the short FIRST_SCAN_PERIOD variable binds at all.
     # Not `${FIRST_SCAN_PERIOD:${application.records-watcher.watch-period}}`: relaxed name mapping is
     # guaranteed for @ConfigurationProperties binding but not for placeholder resolution, and
     # RecordsWatcherPropertiesBindingTest showed that reference resolving to the yaml's own P1D
