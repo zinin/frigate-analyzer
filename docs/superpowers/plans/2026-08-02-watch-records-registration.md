@@ -450,7 +450,7 @@ git commit -m "refactor: move recordings-tree path helpers out of WatchRecordsLo
 **Interfaces:**
 - Consumes: `CAMERA_DEPTH`, `watchCutoff(Duration, Clock): LocalDate`, `isPrunableDate(Path, Path, LocalDate): Boolean`, `depthFromRoot(Path, Path): Int`, `isDateAtUnexpectedDepth(Path, Path): Boolean` из Task 1; `buildCanonicalTree(Path)` из шага 1 этой задачи
 - Produces:
-  - `data class RegistrationResult(val registered: Int, val prunedSubtrees: Int, val visitedEntries: Int, val visitedFiles: Int)`
+  - `data class RegistrationResult(val registered: Int, val prunedSubtrees: Int, val visitedEntries: Int, val visitedFiles: Int, val failed: Int)`
   - `fun WatchRecordsLoop.registerAllDirs(start: Path, watchService: WatchService, registeredDirs: ConcurrentMap<Path, WatchKey>): RegistrationResult` — тип возврата изменился с `Int`
   - `internal fun buildCanonicalTree(root: Path)` — общая фикстура для тестов Task 2 и Task 4
 
@@ -518,6 +518,9 @@ internal fun canonicalRegisteredDirs(root: Path): Set<Path> =
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import org.junit.jupiter.api.assertThrows
+import java.nio.file.NoSuchFileException
+import java.nio.file.NotDirectoryException
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 ```
@@ -707,6 +710,9 @@ import java.nio.file.attribute.PosixFilePermissions
 
             // 15 expected minus the locked hour directory and its two cameras.
             assertEquals(12, result.registered)
+            assertEquals(1, result.failed)
+            // 12 registered + 2 pruned + 1 failed; the locked cameras are never reached.
+            assertEquals(15, result.visitedEntries)
             assertFalse(dirs.containsKey(locked))
             assertTrue(dirs.containsKey(root.resolve("2026-05-23/01/cam1")))
             assertTrue(dirs.containsKey(root.resolve("2026-05-22/01/cam2")))
@@ -768,6 +774,48 @@ import java.nio.file.attribute.PosixFilePermissions
     }
 
     @Test
+    fun `registerAllDirs throws when the start does not exist`() {
+        val root = Files.createTempDirectory("rad-missing-start")
+        val watchService = FileSystems.getDefault().newWatchService()
+        try {
+            val dirs = ConcurrentHashMap<Path, WatchKey>()
+
+            // A typo in FRIGATE_RECORDS_FOLDER or an unmounted NFS volume must stay retryable:
+            // ensureWatchService treats the throw as a registration failure and backs off —
+            // a silently "successful" empty registration would leave health stuck DOWN forever.
+            assertThrows<NoSuchFileException> {
+                loopFor(root).registerAllDirs(root.resolve("gone"), watchService, dirs)
+            }
+            assertTrue(dirs.isEmpty())
+        } finally {
+            watchService.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `registerAllDirs throws when the start is a symlink`() {
+        val root = Files.createTempDirectory("rad-symlink-start")
+        val watchService = FileSystems.getDefault().newWatchService()
+        try {
+            buildCanonicalTree(root)
+            val link = root.resolve("latest")
+            Files.createSymbolicLink(link, root.resolve("2026-05-23"))
+            val dirs = ConcurrentHashMap<Path, WatchKey>()
+
+            // The walk runs without FOLLOW_LINKS, so a symlinked start is classified as a FILE
+            // and the traversal would end after one visit with nothing registered.
+            assertThrows<NotDirectoryException> {
+                loopFor(root).registerAllDirs(link, watchService, dirs)
+            }
+            assertTrue(dirs.isEmpty())
+        } finally {
+            watchService.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `registerAllDirs degrades to a full walk for a start outside the root`() {
         val root = Files.createTempDirectory("rad-outside-root")
         val outside = Files.createTempDirectory("rad-outside-tree")
@@ -806,7 +854,15 @@ import java.nio.file.attribute.PosixFilePermissions
 ```kotlin
 import java.io.IOException
 import java.nio.file.FileVisitResult
+import java.nio.file.NotDirectoryException
 import java.nio.file.SimpleFileVisitor
+```
+
+и константу на уровне файла (рядом с существующими private-объявлениями):
+
+```kotlin
+/** After this many unreadable entries the per-entry WARNs collapse into one summary line. */
+private const val FAILURE_LOG_LIMIT = 100
 ```
 
 Добавить data-класс рядом с существующим `IterationResult` (перед объявлением класса `WatchRecordsLoop`):
@@ -823,12 +879,18 @@ import java.nio.file.SimpleFileVisitor
  *
  * [registered] counts NEW insertions only; a repeat walk over already-registered directories
  * reports 0 while still visiting them, so no arithmetic identity ties it to [visitedEntries].
+ *
+ * [failed] counts unreadable entries the walk skipped ([java.nio.file.SimpleFileVisitor]'s
+ * visitFileFailed). Non-zero means partial blindness until the next full re-registration —
+ * an accepted, observable degradation (it is printed in the log line). A failure of the START
+ * itself is not counted here: it is rethrown so the supervisor retries with backoff.
  */
 data class RegistrationResult(
     val registered: Int,
     val prunedSubtrees: Int,
     val visitedEntries: Int,
     val visitedFiles: Int,
+    val failed: Int,
 )
 ```
 
@@ -850,6 +912,7 @@ data class RegistrationResult(
         var pruned = 0
         var visited = 0
         var visitedFiles = 0
+        var failed = 0
         var misplacedDateReported = false
         val startedAt = System.nanoTime()
 
@@ -899,6 +962,10 @@ data class RegistrationResult(
                     file: Path,
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
+                    // A start that is a plain file or a symlink (the walk runs without
+                    // FOLLOW_LINKS, so a symlinked root is classified as a FILE): an empty
+                    // "successful" registration would report health DOWN forever with no retry.
+                    if (file == start) throw NotDirectoryException(start.toString())
                     visited++
                     visitedFiles++
                     return FileVisitResult.CONTINUE
@@ -913,9 +980,16 @@ data class RegistrationResult(
                     file: Path,
                     exc: IOException,
                 ): FileVisitResult {
+                    // A failure of the START itself (missing or unreadable root) must stay fatal
+                    // and retryable, exactly like Files.walk today: ensureWatchService catches,
+                    // calls onRegistrationFailure and retries with backoff.
+                    if (file == start) throw exc
                     visited++
-                    logger.warn { "Registration: skipping unreadable entry $file (${exc.message})" }
-                    logger.debug(exc) { "Registration: failure details for $file" }
+                    failed++
+                    if (failed <= FAILURE_LOG_LIMIT) {
+                        logger.warn { "Registration: skipping unreadable entry $file (${exc.message})" }
+                        logger.debug(exc) { "Registration: failure details for $file" }
+                    }
                     return FileVisitResult.CONTINUE
                 }
 
@@ -932,12 +1006,15 @@ data class RegistrationResult(
             },
         )
 
+        if (failed > FAILURE_LOG_LIMIT) {
+            logger.warn { "Registration: ${failed - FAILURE_LOG_LIMIT} more unreadable entries suppressed" }
+        }
         val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
         logger.info {
             "Registered $registered dirs, pruned $pruned date subtrees, " +
-                "visited $visited entries ($visitedFiles files) in ${elapsedMs}ms"
+                "visited $visited entries ($visitedFiles files, $failed failed) in ${elapsedMs}ms"
         }
-        return RegistrationResult(registered, pruned, visited, visitedFiles)
+        return RegistrationResult(registered, pruned, visited, visitedFiles, failed)
     }
 ```
 
@@ -947,7 +1024,7 @@ data class RegistrationResult(
 
 Через `claude-forge:build-runner`: `./gradlew :frigate-analyzer-core:test`
 
-Ожидается: PASS. Если `WatchRecordsTaskTest` не компилируется — найти стаб вида `every { loop.registerAllDirs(...) } returns <Int>` и заменить возвращаемое значение на `RegistrationResult(0, 0, 0, 0)`. На момент написания плана таких стабов нет: строки 436 и 467 используют `throws`.
+Ожидается: PASS. Если `WatchRecordsTaskTest` не компилируется — найти стаб вида `every { loop.registerAllDirs(...) } returns <Int>` и заменить возвращаемое значение на `RegistrationResult(0, 0, 0, 0, 0)`. На момент написания плана таких стабов нет: строки 436 и 467 используют `throws`.
 
 - [ ] **Step 6: Обновить `.claude/rules/pipeline.md`**
 
@@ -988,10 +1065,16 @@ orders of magnitude is expected, not a regression. Before relying on the old lin
 log parsing is tied to its format. Symlinks inside the recordings tree are unsupported: the walk
 does not follow them and they no longer acquire watch keys.
 
-An unreadable directory reaches `visitFileFailed` (the walk opens a directory before
-`preVisitDirectory` runs) and is logged and skipped — it no longer aborts the whole registration.
-A failure of `dir.register(...)` itself (inotify ENOSPC/EACCES) still aborts the walk and lands in
-the supervisor's backoff-and-retry, as before.
+Error policy — strict root, soft-but-visible subtrees. A failure of the START itself (missing or
+unreadable root: `visitFileFailed` rethrows; root that is a plain file or symlink:
+`NotDirectoryException` from `visitFile`) stays fatal and lands in the supervisor's
+backoff-and-retry, exactly like `Files.walk` before — an empty "successful" registration can never
+leave health stuck DOWN. An unreadable SUBDIRECTORY reaches `visitFileFailed` (the walk opens a
+directory before `preVisitDirectory` runs) and is counted in `RegistrationResult.failed`, logged
+(per-entry WARNs collapse into one summary after `FAILURE_LOG_LIMIT = 100`) and skipped — accepted
+observable degradation instead of a permanent retry loop over one broken directory. A failure of
+`dir.register(...)` itself (inotify ENOSPC/EACCES) still aborts the walk and lands in the
+supervisor's backoff-and-retry, as before.
 
 WatchRecordsLoop parses `.mp4` filenames to extract camera ID, date, time, timestamp.
 ```
@@ -1032,6 +1115,7 @@ git commit -m "perf: prune out-of-window subtrees when registering watch directo
 package ru.zinin.frigate.analyzer.core.config.properties
 
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.springframework.boot.context.properties.bind.Binder
 import org.springframework.boot.env.YamlPropertySourceLoader
@@ -1040,6 +1124,7 @@ import org.springframework.core.env.StandardEnvironment
 import org.springframework.core.env.SystemEnvironmentPropertySource
 import org.springframework.core.io.FileSystemResource
 import java.io.File
+import java.nio.file.Path
 import java.time.Duration
 
 /**
@@ -1094,6 +1179,25 @@ class RecordsWatcherPropertiesBindingTest {
 
         assertThat(props.watchPeriod).isEqualTo(Duration.ofDays(3))
         assertThat(props.firstScanPeriod).isEqualTo(Duration.ZERO)
+    }
+
+    @Test
+    fun `with nothing set, the startup scan is disabled`() {
+        // The scan is an opt-in backfill: a fixed scan that actually finishes would otherwise run
+        // a never-observed ~52k backfill on a fresh deployment with default settings.
+        assertThat(bind().disableFirstScan).isTrue()
+    }
+
+    @Test
+    fun `a sub-day first-scan-period is rejected instead of being silently truncated`() {
+        // toDays() truncates: PT12H would silently behave as "today only".
+        assertThatThrownBy {
+            RecordsWatcherProperties(
+                folder = Path.of("/tmp"),
+                firstScanPeriod = Duration.ofHours(12),
+            )
+        }.isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("whole days")
     }
 
     @Test
@@ -1188,11 +1292,33 @@ class RecordsWatcherPropertiesBindingTest {
 
 ```kotlin
         require(!firstScanPeriod.isNegative) { "firstScanPeriod must not be negative, got: $firstScanPeriod" }
+        // Целые сутки: toDays() молча усекает, и PT12H превратился бы в «только сегодня».
+        require(firstScanPeriod == Duration.ofDays(firstScanPeriod.toDays())) {
+            "firstScanPeriod must be whole days (P0D, P1D, ...), got: $firstScanPeriod"
+        }
+```
+
+В этом же файле изменить дефолт первого параметра — скан становится opt-in бэкфиллом:
+
+```kotlin
+    // true: скан — opt-in бэкфилл (первичная установка, восстановление индекса). Дефолт приведён
+    // к единственной реальной эксплуатации; починенный (наконец доживающий до конца) скан при
+    // включённом дефолте впервые исполнил бы никем не наблюдавшийся ~52k-бэкфилл на свежем деплое.
+    val disableFirstScan: Boolean = true,
 ```
 
 - [ ] **Step 4: Добавить строки в `application.yaml`**
 
-В блок `records-watcher` (строки 28-33) добавить после `watch-period`:
+В блоке `records-watcher` (строки 28-33) заменить строку `disable-first-scan`:
+
+```yaml
+    # Disabled by default: the startup scan is an opt-in backfill (first install, index recovery).
+    # A fixed scan that actually finishes would otherwise run a never-observed ~52k backfill on a
+    # fresh deployment with default settings.
+    disable-first-scan: ${DISABLE_FIRST_SCAN:true}
+```
+
+и добавить после `watch-period`:
 
 ```yaml
     # Defaults to watch-period: the startup backfill covers exactly the window the watcher watches.
@@ -1220,7 +1346,7 @@ management:
 
 Через `claude-forge:build-runner`: `./gradlew :frigate-analyzer-core:test`
 
-Ожидается: PASS, 6 новых тестов.
+Ожидается: PASS, 8 новых тестов.
 
 - [ ] **Step 6: Обновить `docker/deploy/.env.example`**
 
@@ -1228,8 +1354,9 @@ management:
 
 ```
 # --- Records watcher ---
-# Skip the one-off startup scan that indexes recordings already present on disk.
-# DISABLE_FIRST_SCAN=false
+# The one-off startup scan that indexes recordings already on disk is DISABLED by default.
+# Set to false to run the backfill once (first install, index recovery) — read FIRST_SCAN_PERIOD first.
+# DISABLE_FIRST_SCAN=true
 # How far back the watcher registers directories. Whole days in UTC, at least P1D.
 # WATCH_PERIOD=P1D
 # How far back the startup scan indexes files. Defaults to WATCH_PERIOD, so raising WATCH_PERIOD
@@ -1252,8 +1379,10 @@ management:
 В таблицу раздела «## Records Watcher» добавить строку после `WATCH_PERIOD`:
 
 ```markdown
-| `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD` | ISO-8601 duration, how far back the startup scan indexes files. Whole days **in UTC** (Frigate names date directories by UTC): `P0D` = today only, `P1D` = today and yesterday. Defaults to the resolved `watch-period`, so it follows it from any source — raising `WATCH_PERIOD` widens the startup backfill in the same proportion. Every indexed file becomes a `recordings` row and enters the detection pipeline — one day of three cameras at 10-second segments is ~52 000 files. Note the validation asymmetry: `WATCH_PERIOD` must stay ≥ `P1D`; "today only" is expressible only here. |
+| `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD` | ISO-8601 duration, how far back the startup scan indexes files. Whole days **in UTC** (Frigate names date directories by UTC): `P0D` = today only, `P1D` = today and yesterday; sub-day values are rejected at startup instead of being silently truncated. Defaults to the resolved `watch-period`, so it follows it from any source — raising `WATCH_PERIOD` widens the startup backfill in the same proportion. Every indexed file becomes a `recordings` row and enters the detection pipeline — one day of three cameras at 10-second segments is ~52 000 files. Note the validation asymmetry: `WATCH_PERIOD` must stay ≥ `P1D`; "today only" is expressible only here. |
 ```
+
+Обновить строку `DISABLE_FIRST_SCAN` в той же таблице: дефолт **true**, формулировка «the startup scan is an opt-in backfill (first install, index recovery); set to `false` to run it once».
 
 Сразу после таблицы Records Watcher добавить сноску:
 
@@ -1711,6 +1840,7 @@ git commit -m "chore: drop planning docs from the branch"
 | `prunedSubtrees` | 2 | 0 | 2 | 3 |
 | `visitedEntries` | 17 | 7 | 41 | 23 |
 | `visitedFiles` | **0** | **0** | — | — |
+| `failed` | 0 | 0 | — | — |
 | посещено `.mp4` | **0** | **0** | 24 | 12 |
 
 Для `scan()` файлы вне окна тоже не перечисляются — отсекаются вместе с датой. `visitedEntries = 41` при `P1D`: корень 1 + даты 4 + часы 4 + камеры 8 + файлы 24. При `P0D`: 1 + 4 + 2 + 4 + 12 = 23.
@@ -1718,4 +1848,4 @@ git commit -m "chore: drop planning docs from the branch"
 `registered = 15` — корень 1 + даты 2 + часы 4 + камеры 8.
 `visitedEntries = 17` — 15 зарегистрированных + 2 отсечённые даты. Проверяемый инвариант «файлы не перечислялись» — `visitedFiles == 0`: он безусловен и держится на любом вызове (повторном, из `runIteration`, при сбоях), в отличие от арифметики `registered + prunedSubtrees`, которая верна только для первого прохода по пустой map.
 
-Тест с посторонним файлом на уровне даты: `registered = 15`, `visitedEntries = 18`, `visitedFiles = 1`. Тест со `start` вне корня (дерево `a/b/c/d` + 1 файл): `registered = 5`, `visitedEntries = 6`, `visitedFiles = 1`.
+Тест с посторонним файлом на уровне даты: `registered = 15`, `visitedEntries = 18`, `visitedFiles = 1`. Тест со `start` вне корня (дерево `a/b/c/d` + 1 файл): `registered = 5`, `visitedEntries = 6`, `visitedFiles = 1`. Тест с `chmod 000` на каталоге часа: `registered = 12`, `failed = 1`, `visitedEntries = 15` (12 + 2 pruned + 1 failed). Несуществующий и симлинк-`start` бросают до каких-либо счётчиков.

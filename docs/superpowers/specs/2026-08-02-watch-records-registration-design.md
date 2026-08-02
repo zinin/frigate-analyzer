@@ -87,7 +87,8 @@ Files.walk(start).use { stream ->
 |---|---|---|
 | Стратегия обхода | `walkFileTree` + prune по дате + остановка на глубине камеры | (а) только prune по дате — оставляет ~52 000 файлов и растёт линейно по `WATCH_PERIOD`; (б) три вложенных `newDirectoryStream` — та же скорость, но раскладка зашивается в структуру управления, а вызов из `runIteration` требует диспетчера по глубине `start` |
 | Развязка health от полной регистрации | **Не делаем** | После фикса регистрация занимает миллисекунды: BRANCH 2 (grace 2 минуты) недостижима, а BRANCH 3.5 закрывается сама — корень регистрируется первым колбэком, `registeredDirs` перестаёт быть пустым немедленно |
-| Окно первого скана | Отдельная переменная `FIRST_SCAN_PERIOD`, дефолт `= WATCH_PERIOD` | Жёсткая привязка к `WATCH_PERIOD`; удаление `FirstTimeScanTask` целиком |
+| Окно первого скана | Отдельная переменная `FIRST_SCAN_PERIOD`, дефолт `= WATCH_PERIOD`; только целые сутки (`require`, субдневные значения падают на старте вместо молчаливого усечения `toDays()`) | Жёсткая привязка к `WATCH_PERIOD`; удаление `FirstTimeScanTask` целиком; часовая гранулярность окна (несоразмерное расширение скоупа) |
+| Дефолт `DISABLE_FIRST_SCAN` | **`true`** — скан становится opt-in бэкфиллом (первичная установка, восстановление индекса); включение — осознанное действие | Оставить `false`: починенный скан впервые довёл бы до конца никем не наблюдавшийся ~52k-бэкфилл на свежем деплое, одновременно со стартом watcher'а; `false` противоречит единственной реальной эксплуатации |
 | Верификация | Счётчики в возвращаемом значении + тесты на временном дереве | Синтетический бенчмарк на dev — абсолютные числа на SSD не переносятся на прод-HDD, а счётчик даёт точный инвариант |
 | `show-details` | Переменная окружения в основном `application.yaml`, дефолт `always` | Правка операторского `application-docker.yaml` — его нет в репозитории |
 
@@ -188,6 +189,8 @@ data class RegistrationResult(
      * поэтому ни один .mp4 не перечисляется — и это видно прямо в строке лога, без арифметики.
      */
     val visitedFiles: Int,
+    /** Сколько записей не удалось прочитать (visitFileFailed). Ненулевое значение — частичная слепота, видимая в логе. */
+    val failed: Int,
 )
 ```
 
@@ -206,6 +209,7 @@ fun registerAllDirs(
     var pruned = 0
     var visited = 0
     var visitedFiles = 0
+    var failed = 0
     var misplacedDateReported = false
     val startedAt = System.nanoTime()
 
@@ -241,15 +245,24 @@ fun registerAllDirs(
             }
 
             override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                // start-файл или start-симлинк (обход без FOLLOW_LINKS классифицирует симлинк
+                // как файл): пустая «успешная» регистрация оставила бы залипший DOWN без ретрая.
+                if (file == start) throw NotDirectoryException(start.toString())
                 visited++
                 visitedFiles++
                 return FileVisitResult.CONTINUE
             }
 
             override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
+                // Сбой САМОГО start (несуществующий/нечитаемый корень) фатален и retryable —
+                // как у Files.walk сегодня: ensureWatchService уходит в backoff и повторяет.
+                if (file == start) throw exc
                 visited++
-                logger.warn { "Registration: skipping unreadable entry $file (${exc.message})" }
-                logger.debug(exc) { "Registration: failure details for $file" }
+                failed++
+                if (failed <= FAILURE_LOG_LIMIT) {
+                    logger.warn { "Registration: skipping unreadable entry $file (${exc.message})" }
+                    logger.debug(exc) { "Registration: failure details for $file" }
+                }
                 return FileVisitResult.CONTINUE
             }
 
@@ -263,14 +276,19 @@ fun registerAllDirs(
         },
     )
 
+    if (failed > FAILURE_LOG_LIMIT) {
+        logger.warn { "Registration: ${failed - FAILURE_LOG_LIMIT} more unreadable entries suppressed" }
+    }
     val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
     logger.info {
         "Registered $registered dirs, pruned $pruned date subtrees, " +
-            "visited $visited entries ($visitedFiles files) in ${elapsedMs}ms"
+            "visited $visited entries ($visitedFiles files, $failed failed) in ${elapsedMs}ms"
     }
-    return RegistrationResult(registered, pruned, visited, visitedFiles)
+    return RegistrationResult(registered, pruned, visited, visitedFiles, failed)
 }
 ```
+
+Константа рядом с `CAMERA_DEPTH` в `WatchRecordsLoop.kt`: `private const val FAILURE_LOG_LIMIT = 100` — при массовом сбое (частично отвалившийся mount) первые 100 записей логируются поимённо, остальные сворачиваются в одну итоговую строку, чтобы не устроить DoS собственному логу.
 
 ### Стоимость на проде после правки
 
@@ -287,7 +305,7 @@ fun registerAllDirs(
 
 ### Изменения поведения
 
-1. **Нечитаемый подкаталог больше не роняет регистрацию.** Сейчас `Files.walk` бросает `UncheckedIOException` при потреблении стрима → `registerAllDirs` падает → `ensureWatchService` считает это ошибкой регистрации → backoff → приложение вообще не следит за записями. С `visitFileFailed → CONTINUE` каталог логируется на WARN (сообщение без stack trace; полный trace на DEBUG) и пропускается. **Граница гарантии:** изолируется только отказ *чтения* каталога (атрибуты, открытие стрима). Исключение из `dir.register(...)` — inotify `ENOSPC`/`EACCES` — бросается из тела `preVisitDirectory`, и `walkFileTree` пробрасывает его наружу, роняя обход целиком, как и сегодня: `walkFileTree` не маршрутизирует исключения самого посетителя в `visitFileFailed` (pre-existing контракт). Отдельная оговорка для вызова из `runIteration`: частичный отказ там оставляет полузарегистрированное поддерево без повтора — событие `ENTRY_CREATE` уже потреблено, механизма отката нет (тоже pre-existing).
+1. **Политика ошибок обхода разделяется: корень строгий, поддеревья мягкие и видимые.** Сбой **самого `start`** остаётся фатальным и retryable, как сегодня: несуществующий или нечитаемый `start` пробрасывается из `visitFileFailed`, а `start`-файл или `start`-симлинк (обход без `FOLLOW_LINKS` классифицирует симлинк как файл) даёт `NotDirectoryException` из `visitFile` — `ensureWatchService` уходит в backoff и повторяет; залипшего DOWN с пустым `registeredDirs` не бывает. Сбой чтения **подкаталога** логируется на WARN (сообщение без stack trace; полный trace на DEBUG; после `FAILURE_LOG_LIMIT = 100` записей — одна суммарная строка) и пропускается — это **принятая наблюдаемая деградация**, а не «строго лучше»: непрочитанное поддерево не получает watch key до следующей полной перерегистрации, зато один необратимо битый каталог больше не загоняет супервизор в вечный retry-loop, в котором приложение не следит ни за чем. Счётчик `failed` виден в строке лога рядом с `visitedFiles`. **Граница гарантии:** изолируется только отказ *чтения* каталога (атрибуты, открытие стрима). Исключение из `dir.register(...)` — inotify `ENOSPC`/`EACCES` — бросается из тела `preVisitDirectory`, и `walkFileTree` пробрасывает его наружу, роняя обход целиком, как и сегодня: `walkFileTree` не маршрутизирует исключения самого посетителя в `visitFileFailed` (pre-existing контракт). Отдельная оговорка для вызова из `runIteration`: частичный отказ там оставляет полузарегистрированное поддерево без повтора — событие `ENTRY_CREATE` уже потреблено, механизма отката нет (тоже pre-existing).
 2. **`postVisitDirectory` с ошибкой больше не роняет обход.** Дефолтный `SimpleFileVisitor` пробрасывает ненулевой `exc`; override логирует WARN и продолжает — то же семейство изменений, что и п. 1.
 3. **Строка лога меняет форму и смысл счётчика.** Было `Registered 167 directories, skipped 11638 old directories`, стало `Registered 167 dirs, pruned 122 date subtrees, visited 320 entries (0 files) in 41ms`. Считаются отсечённые **поддеревья**, а не каталоги поштучно, поэтому число падает с 11638 до 122 — формулировка изменена, чтобы это не читалось как регрессия; пояснение для оператора фиксируется в `pipeline.md`. Перед деплоем убедиться, что на старый формат строки не завязан внешний лог-парсинг.
 4. **Порядок регистрации не меняется.** Корень (при `start == folder`) регистрируется первым колбэком — как и раньше: `Files.walk` отдаёт `start` первым элементом стрима. Немедленная непустота `registeredDirs` — свойство call-site'а (`ensureWatchService` всегда передаёт корень), а не новой реализации.
@@ -298,7 +316,7 @@ fun registerAllDirs(
 
 ## Компонент 3: `FirstTimeScanTask`
 
-Тот же `Files.walk` по всем 3.2 млн файлов плюс `createRecording` на каждый. На проде выключен (`DISABLE_FIRST_SCAN=true`), но код остаётся миной. Три правки.
+Тот же `Files.walk` по всем 3.2 млн файлов плюс `createRecording` на каждый. На проде выключен (`DISABLE_FIRST_SCAN=true`), но код остаётся миной. Три правки в самом скане — плюс дефолт `DISABLE_FIRST_SCAN` переключается на `true` (Компонент 4): скан становится opt-in бэкфиллом, потому что починенный (наконец доживающий до конца) и мгновенный скан при включённом дефолте впервые исполнил бы никем не наблюдавшийся ~52k-бэкфилл на свежем деплое.
 
 ### 3.1 Ограничение окна
 
@@ -345,7 +363,10 @@ internal data class ScanResult(
 
 ```kotlin
 data class RecordsWatcherProperties(
-    val disableFirstScan: Boolean = false,
+    // true: скан — opt-in бэкфилл. Дефолт приведён к единственной реальной эксплуатации;
+    // починенный (наконец доживающий до конца) скан при включённом дефолте впервые исполнил бы
+    // никем не наблюдавшийся ~52k-бэкфилл на свежем деплое, одновременно со стартом watcher'а.
+    val disableFirstScan: Boolean = true,
     @field:NotNull val folder: Path,
     @field:NotNull val watchPeriod: Duration = Duration.ofDays(1),
     @field:NotNull val cleanupInterval: Duration = Duration.ofHours(1),
@@ -356,6 +377,10 @@ data class RecordsWatcherProperties(
     init {
         require(watchPeriod.toDays() >= 1) { "watchPeriod must be at least 1 day, got: $watchPeriod" }
         require(!firstScanPeriod.isNegative) { "firstScanPeriod must not be negative, got: $firstScanPeriod" }
+        // Целые сутки: toDays() молча усекает, и PT12H превратился бы в «только сегодня».
+        require(firstScanPeriod == Duration.ofDays(firstScanPeriod.toDays())) {
+            "firstScanPeriod must be whole days (P0D, P1D, ...), got: $firstScanPeriod"
+        }
         // строка про cleanupInterval — без изменений
     }
 }
@@ -369,7 +394,10 @@ data class RecordsWatcherProperties(
 
 ```yaml
   records-watcher:
-    disable-first-scan: ${DISABLE_FIRST_SCAN:false}
+    # Disabled by default: the startup scan is an opt-in backfill (first install, index recovery).
+    # A fixed scan that actually finishes would otherwise run a never-observed ~52k backfill on a
+    # fresh deployment with default settings.
+    disable-first-scan: ${DISABLE_FIRST_SCAN:true}
     folder: ${FRIGATE_RECORDS_FOLDER:/mnt/data/frigate/recordings}
     watch-period: ${WATCH_PERIOD:P1D}
     # Defaults to watch-period: the startup backfill covers exactly the window the watcher watches.
@@ -405,8 +433,9 @@ management:
 
 ```
 # --- Records watcher ---
-# Skip the one-off startup scan that indexes recordings already present on disk.
-# DISABLE_FIRST_SCAN=false
+# The one-off startup scan that indexes recordings already on disk is DISABLED by default.
+# Set to false to run the backfill once (first install, index recovery) — read FIRST_SCAN_PERIOD first.
+# DISABLE_FIRST_SCAN=true
 # How far back the watcher registers directories. Whole days in UTC, at least P1D.
 # WATCH_PERIOD=P1D
 # How far back the startup scan indexes files. Defaults to WATCH_PERIOD — raising WATCH_PERIOD
@@ -474,10 +503,12 @@ management:
 5. **Корень зарегистрирован, хотя даты у него нет** — guard на fail-open
 6. **`start` ниже корня** (вызов как из `runIteration`): `registerAllDirs(root/2026-05-23)` → `registered == 7`, `prunedSubtrees == 0`, `visitedEntries == 7`, корень не зарегистрирован, файлы не посещены
 7. **Идемпотентность** — повторный вызов даёт `registered == 0` при тех же `prunedSubtrees == 2`, `visitedEntries == 17`, `visitedFiles == 0`
-8. **Нечитаемый подкаталог не роняет обход** — `chmod 000` на `2026-05-23/00`, обход завершается, `2026-05-23/01` и его камеры зарегистрированы. Тест обёрнут `Assumptions.assumeTrue`: под root'ом `chmod 000` не ограничивает доступ, и проверка была бы ложноположительной. Гард — попытка `Files.newDirectoryStream` на подготовленном каталоге. Комментарий в тесте фиксирует: в CI под root assumption всегда false и тест скипается — путь `visitFileFailed` регрессионно защищён только на машинах с обычным UID
+8. **Нечитаемый подкаталог не роняет обход** — `chmod 000` на `2026-05-23/00`, обход завершается, `2026-05-23/01` и его камеры зарегистрированы; `failed == 1`, `visitedEntries == 15` (12 зарегистрированных + 2 отсечённые + 1 сбойная). Тест обёрнут `Assumptions.assumeTrue`: под root'ом `chmod 000` не ограничивает доступ, и проверка была бы ложноположительной. Гард — попытка `Files.newDirectoryStream` на подготовленном каталоге. Комментарий в тесте фиксирует: в CI под root assumption всегда false и тест скипается — путь `visitFileFailed` регрессионно защищён только на машинах с обычным UID
 9. **Посторонний файл на уровне даты посещается, но не регистрируется** — stray-файл в каталоге даты: `visitedFiles == 1`, `visitedEntries == 18`, `registered == 15`, файл не в map
 10. **`start` глубже камеры не регистрируется** (вызов как из `runIteration` для вложенного каталога): `registered == 0`, `visitedEntries == 1`, map пуста
 11. **`start` вне корня деградирует к полному обходу** — `depthFromRoot == -1`, правила глубины неактивны: все каталоги регистрируются, файлы посещаются (`visitedFiles > 0`)
+12. **Несуществующий `start` бросает** — `NoSuchFileException` пробрасывается, map пуста; ровно тот сценарий («опечатка в `FRIGATE_RECORDS_FOLDER`, NFS не смонтирован»), на котором супервизор обязан уйти в backoff-retry
+13. **`start`-симлинк бросает** — `Files.createSymbolicLink` на каталог даты, `registerAllDirs(link)` → `NotDirectoryException`, map пуста; пустая «успешная» регистрация исключена
 
 ### `FirstTimeScanTaskTest.kt` (новый)
 
@@ -497,6 +528,8 @@ management:
 4. `APPLICATION_RECORDSWATCHER_WATCHPERIOD=P3D` (relaxed-имя) → `firstScanPeriod == P3D`
 5. Явный `FIRST_SCAN_PERIOD=P0D` перебивает дефолт
 6. `management.endpoint.health.show-details` из продового yaml резолвится в `always` при пустом окружении и в `never` при `HEALTH_SHOW_DETAILS=never`
+7. При пустом окружении `disableFirstScan == true` — скан выключен по умолчанию
+8. Субдневный `firstScanPeriod` (`PT12H`) отвергается конструктором с сообщением про целые сутки — вместо молчаливого усечения
 
 ### Проверка перед сборкой
 
@@ -504,8 +537,9 @@ management:
 
 ## Критерии готовности
 
-- `visitedEntries == 17` и `visitedFiles == 0` на канонической фикстуре — закреплено тестами
-- ни один `.mp4` не посещается при регистрации — наблюдаемо напрямую: `(0 files)` в строке лога
+- `visitedEntries == 17`, `visitedFiles == 0`, `failed == 0` на канонической фикстуре — закреплено тестами
+- ни один `.mp4` не посещается при регистрации — наблюдаемо напрямую: `(0 files, 0 failed)` в строке лога
+- несуществующий/нечитаемый корень и корень-симлинк бросают → супервизор повторяет с backoff — закреплено тестами
 - `depthFromRoot(root, root) == 0` — закреплено тестом
 - на проде зафиксировать фактические числа из строки лога первого старта; ожидание — `visited` в сотнях, `0 files`, время на порядки меньше 549 с. Точная цифра — не критерий: 549 с замерены на обычном рестарте контейнера, состояние dentry-кэша в момент замера не фиксировалось, поэтому «миллисекунды» — прогноз
 - `/actuator/health` отдаёт `reason` и `registeredDirs` вместо голого статуса
