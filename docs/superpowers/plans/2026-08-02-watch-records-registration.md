@@ -45,6 +45,7 @@
   - `internal fun isWithinWatchPeriod(path: Path, rootFolder: Path, watchPeriod: Duration, clock: Clock): Boolean`
   - `internal fun isPrunableDate(path: Path, rootFolder: Path, cutoff: LocalDate): Boolean`
   - `internal fun depthFromRoot(path: Path, rootFolder: Path): Int`
+  - `internal fun isDateAtUnexpectedDepth(path: Path, rootFolder: Path): Boolean`
 
 - [ ] **Step 1: Написать падающий тест на новые функции**
 
@@ -107,8 +108,13 @@ class RecordingsTreeTest {
 
     @Test
     fun `isPrunableDate is the exact complement of isWithinWatchPeriod for dated paths`() {
+        // Wide, boundary-heavy list on purpose: a future refactor to the `!isWithinWatchPeriod`
+        // form must fail this test for SOME date, whatever the cutoff arithmetic does.
         val cutoff = watchCutoff(Duration.ofDays(1), CLOCK)
-        listOf("2026-02-16", "2026-02-15", "2026-02-14", "2026-02-13", "2025-12-31").forEach { date ->
+        listOf(
+            "2027-01-01", "2026-12-31", "2026-02-16", "2026-02-15", "2026-02-14",
+            "2026-02-13", "2026-02-12", "2026-01-01", "2025-12-31", "2020-06-15",
+        ).forEach { date ->
             val path = ROOT.resolve(date)
             assertEquals(
                 !isWithinWatchPeriod(path, ROOT, Duration.ofDays(1), CLOCK),
@@ -116,6 +122,17 @@ class RecordingsTreeTest {
                 "mismatch for $date",
             )
         }
+    }
+
+    @Test
+    fun `isDateAtUnexpectedDepth detects a root set one level too high`() {
+        assertFalse(isDateAtUnexpectedDepth(ROOT, ROOT))
+        assertFalse(isDateAtUnexpectedDepth(ROOT.resolve("2026-02-15"), ROOT))
+        assertFalse(isDateAtUnexpectedDepth(ROOT.resolve("2026-02-15/09"), ROOT))
+        assertFalse(isDateAtUnexpectedDepth(ROOT.resolve("2026-02-15/09/cam1"), ROOT))
+        val highRoot = Path.of("/mnt/data/frigate")
+        assertTrue(isDateAtUnexpectedDepth(highRoot.resolve("recordings/2026-02-15"), highRoot))
+        assertFalse(isDateAtUnexpectedDepth(Path.of("/var/tmp/elsewhere/2026-02-15"), ROOT))
     }
 
     @Test
@@ -148,7 +165,7 @@ class RecordingsTreeTest {
 
 Через агент `claude-forge:build-runner`: `./gradlew :frigate-analyzer-core:test --tests 'ru.zinin.frigate.analyzer.core.task.RecordingsTreeTest'`
 
-Ожидается: компиляция теста падает с unresolved reference на `watchCutoff`, `isPrunableDate`, `depthFromRoot`, `CAMERA_DEPTH`.
+Ожидается: компиляция теста падает с unresolved reference на `watchCutoff`, `isPrunableDate`, `depthFromRoot`, `CAMERA_DEPTH`, `isDateAtUnexpectedDepth`.
 
 - [ ] **Step 3: Создать `RecordingsTree.kt` с новыми функциями**
 
@@ -210,6 +227,9 @@ internal fun isPrunableDate(
  *
  * NOTE: `rootFolder.relativize(rootFolder)` is the EMPTY path, and an empty [Path] reports
  * `nameCount == 1`, not 0. Without the `isEmpty()` guard the root is classified as a date directory.
+ *
+ * Symlinks: the walk runs without FOLLOW_LINKS, so symlinked directories arrive in `visitFile`
+ * and depth rules never apply to them at all.
  */
 internal fun depthFromRoot(
     path: Path,
@@ -219,13 +239,32 @@ internal fun depthFromRoot(
     val rel = rootFolder.relativize(path)
     return if (rel.toString().isEmpty()) 0 else rel.nameCount
 }
+
+/**
+ * Misplaced-root detector: a date extracts from [path], yet the FIRST segment under [rootFolder]
+ * is not a date. In Frigate's layout the date is always the first segment under the root, so this
+ * means `FRIGATE_RECORDS_FOLDER` points one level above the recordings root — the walk would then
+ * stop at the hour level and never register camera directories, silently dropping ENTRY_CREATE.
+ *
+ * Implemented via [extractDateFromPath] rather than DATE_PATTERN so it works in this task's Step 3,
+ * while DATE_PATTERN is still private to WatchRecordsLoop.kt (it moves here in Step 6).
+ */
+internal fun isDateAtUnexpectedDepth(
+    path: Path,
+    rootFolder: Path,
+): Boolean {
+    if (!path.startsWith(rootFolder) || path == rootFolder) return false
+    val rel = rootFolder.relativize(path)
+    val firstSegmentIsDate = extractDateFromPath(rootFolder.resolve(rel.getName(0)), rootFolder) != null
+    return !firstSegmentIsDate && extractDateFromPath(path, rootFolder) != null
+}
 ```
 
 - [ ] **Step 4: Запустить тест и убедиться, что он проходит**
 
 Через `claude-forge:build-runner`: `./gradlew :frigate-analyzer-core:test --tests 'ru.zinin.frigate.analyzer.core.task.RecordingsTreeTest'`
 
-Ожидается: PASS, 11 тестов.
+Ожидается: PASS, 12 тестов.
 
 - [ ] **Step 5: Коммит**
 
@@ -254,6 +293,12 @@ import java.time.format.DateTimeParseException
 ```kotlin
 private val DATE_PATTERN = Regex("""\d{4}-\d{2}-\d{2}""")
 
+/**
+ * Scans path segments FROM LEAF TO ROOT and returns the first date-like one. Inherited contract:
+ * a date-like camera ID or a date-like directory below the date level yields the wrong answer —
+ * change only together with `RecordingFileHelper.parse`. Date-like camera IDs are declared an
+ * unsupported configuration.
+ */
 internal fun extractDateFromPath(
     path: Path,
     rootFolder: Path,
@@ -288,7 +333,7 @@ internal fun isWithinWatchPeriod(
 }
 ```
 
-Порядок объявлений в файле: `CAMERA_DEPTH`, `DATE_PATTERN`, `watchCutoff`, `extractDateFromPath`, `isWithinWatchPeriod`, `isPrunableDate`, `depthFromRoot`.
+Порядок объявлений в файле: `CAMERA_DEPTH`, `DATE_PATTERN`, `watchCutoff`, `extractDateFromPath`, `isWithinWatchPeriod`, `isPrunableDate`, `depthFromRoot`, `isDateAtUnexpectedDepth`.
 
 - [ ] **Step 7: Перенести тесты чистых функций в `RecordingsTreeTest.kt`**
 
@@ -378,7 +423,7 @@ internal fun isWithinWatchPeriod(
 
 Через `claude-forge:build-runner`: `./gradlew :frigate-analyzer-core:test`
 
-Ожидается: PASS. Общее число тестов не изменилось — 12 переехали, 11 добавились ранее.
+Ожидается: PASS. Общее число тестов не изменилось — 12 переехали, 12 добавились ранее.
 
 - [ ] **Step 9: Коммит**
 
@@ -403,9 +448,9 @@ git commit -m "refactor: move recordings-tree path helpers out of WatchRecordsLo
 - Modify: `.claude/rules/pipeline.md` (раздел «Selective watching»)
 
 **Interfaces:**
-- Consumes: `CAMERA_DEPTH`, `watchCutoff(Duration, Clock): LocalDate`, `isPrunableDate(Path, Path, LocalDate): Boolean`, `depthFromRoot(Path, Path): Int` из Task 1; `buildCanonicalTree(Path)` из шага 1 этой задачи
+- Consumes: `CAMERA_DEPTH`, `watchCutoff(Duration, Clock): LocalDate`, `isPrunableDate(Path, Path, LocalDate): Boolean`, `depthFromRoot(Path, Path): Int`, `isDateAtUnexpectedDepth(Path, Path): Boolean` из Task 1; `buildCanonicalTree(Path)` из шага 1 этой задачи
 - Produces:
-  - `data class RegistrationResult(val registered: Int, val prunedSubtrees: Int, val visitedEntries: Int)`
+  - `data class RegistrationResult(val registered: Int, val prunedSubtrees: Int, val visitedEntries: Int, val visitedFiles: Int)`
   - `fun WatchRecordsLoop.registerAllDirs(start: Path, watchService: WatchService, registeredDirs: ConcurrentMap<Path, WatchKey>): RegistrationResult` — тип возврата изменился с `Int`
   - `internal fun buildCanonicalTree(root: Path)` — общая фикстура для тестов Task 2 и Task 4
 
@@ -527,14 +572,10 @@ import java.nio.file.attribute.PosixFilePermissions
 
             val result = loopFor(root).registerAllDirs(root, watchService, dirs)
 
-            // 48 .mp4 files exist on disk. If any of them were visited, visitedEntries would
-            // exceed registered + pruned — that relation is the whole point of the change.
+            // 48 .mp4 files exist on disk. None of them may ever reach visitFile: the walk stops
+            // at the camera level, and visitedFiles counts exactly what visitFile saw.
             assertEquals(17, result.visitedEntries)
-            assertEquals(
-                result.registered + result.prunedSubtrees,
-                result.visitedEntries,
-                "visitedEntries must equal directories + pruned subtrees; any excess means files were enumerated",
-            )
+            assertEquals(0, result.visitedFiles, "no recording file may be enumerated during registration")
         } finally {
             watchService.close()
             root.toFile().deleteRecursively()
@@ -576,6 +617,7 @@ import java.nio.file.attribute.PosixFilePermissions
 
             assertFalse(dirs.containsKey(nested))
             assertEquals(17, result.visitedEntries, "the camera directory must not be opened")
+            assertEquals(0, result.visitedFiles)
         } finally {
             watchService.close()
             root.toFile().deleteRecursively()
@@ -613,6 +655,7 @@ import java.nio.file.attribute.PosixFilePermissions
             assertEquals(7, result.registered)
             assertEquals(0, result.prunedSubtrees)
             assertEquals(7, result.visitedEntries)
+            assertEquals(0, result.visitedFiles)
             assertFalse(dirs.containsKey(root))
         } finally {
             watchService.close()
@@ -635,6 +678,7 @@ import java.nio.file.attribute.PosixFilePermissions
             assertEquals(0, second.registered)
             assertEquals(2, second.prunedSubtrees)
             assertEquals(17, second.visitedEntries)
+            assertEquals(0, second.visitedFiles)
             assertEquals(15, dirs.size)
         } finally {
             watchService.close()
@@ -650,6 +694,9 @@ import java.nio.file.attribute.PosixFilePermissions
         try {
             buildCanonicalTree(root)
             Files.setPosixFilePermissions(locked, emptySet<PosixFilePermission>())
+            // Under root (typical CI containers) chmod 000 does not restrict access, the assumption
+            // below is always false and the test silently skips — the visitFileFailed path has
+            // automated coverage only on machines with a regular UID. Known and accepted.
             assumeTrue(
                 runCatching { Files.newDirectoryStream(locked).use { it.iterator().hasNext() } }.isFailure,
                 "chmod 000 does not restrict this user (running as root?) — cannot simulate an unreadable directory",
@@ -668,6 +715,79 @@ import java.nio.file.attribute.PosixFilePermissions
                 Files.setPosixFilePermissions(locked, PosixFilePermissions.fromString("rwx------"))
             }
             watchService.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `registerAllDirs visits but does not register a stray file at the date level`() {
+        val root = Files.createTempDirectory("rad-stray")
+        val watchService = FileSystems.getDefault().newWatchService()
+        try {
+            buildCanonicalTree(root)
+            val stray = root.resolve("2026-05-23/stray.txt")
+            Files.createFile(stray)
+            val dirs = ConcurrentHashMap<Path, WatchKey>()
+
+            val result = loopFor(root).registerAllDirs(root, watchService, dirs)
+
+            // A foreign file above the camera level is visited (that is unavoidable) but never
+            // registered; visitedFiles counts exactly it, keeping the invariant observable.
+            assertEquals(15, result.registered)
+            assertEquals(18, result.visitedEntries)
+            assertEquals(1, result.visitedFiles)
+            assertFalse(dirs.containsKey(stray))
+        } finally {
+            watchService.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `registerAllDirs does not register a start below the camera level`() {
+        val root = Files.createTempDirectory("rad-deep-start")
+        val watchService = FileSystems.getDefault().newWatchService()
+        try {
+            buildCanonicalTree(root)
+            val nested = root.resolve("2026-05-23/00/cam1/nested")
+            Files.createDirectories(nested)
+            val dirs = ConcurrentHashMap<Path, WatchKey>()
+
+            // runIteration passes freshly created directories as start. One below the camera level
+            // must not acquire a watch key: the startup walk would never restore it after the
+            // WatchService is recreated, so it would silently vanish.
+            val result = loopFor(root).registerAllDirs(nested, watchService, dirs)
+
+            assertEquals(0, result.registered)
+            assertEquals(1, result.visitedEntries)
+            assertTrue(dirs.isEmpty())
+        } finally {
+            watchService.close()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `registerAllDirs degrades to a full walk for a start outside the root`() {
+        val root = Files.createTempDirectory("rad-outside-root")
+        val outside = Files.createTempDirectory("rad-outside-tree")
+        val watchService = FileSystems.getDefault().newWatchService()
+        try {
+            val leaf = outside.resolve("a/b/c/d")
+            Files.createDirectories(leaf)
+            Files.createFile(leaf.resolve("file.bin"))
+            val dirs = ConcurrentHashMap<Path, WatchKey>()
+
+            // depthFromRoot == -1 for every path here: depth rules do not apply and the walk
+            // visits everything — today's behaviour, deliberately preserved.
+            val result = loopFor(root).registerAllDirs(outside, watchService, dirs)
+
+            assertEquals(5, result.registered)
+            assertEquals(6, result.visitedEntries)
+            assertEquals(1, result.visitedFiles)
+        } finally {
+            watchService.close()
+            outside.toFile().deleteRecursively()
             root.toFile().deleteRecursively()
         }
     }
@@ -695,14 +815,20 @@ import java.nio.file.SimpleFileVisitor
 /**
  * Outcome of one [WatchRecordsLoop.registerAllDirs] traversal.
  *
- * [visitedEntries] is the load-bearing number: it counts every filesystem entry the walk touched.
- * For a healthy prune it equals [registered] + [prunedSubtrees]; anything above that means `.mp4`
- * files were enumerated, which is exactly the regression this traversal exists to prevent.
+ * [visitedFiles] is the load-bearing number: it counts entries delivered to `visitFile` — files
+ * and symlinks ABOVE the camera level. On Frigate's tree it is 0 on every call (first walk,
+ * re-walk over a populated map, runIteration sub-walks alike): the walk never descends below
+ * [CAMERA_DEPTH], so no `.mp4` is ever enumerated — which is exactly the regression this
+ * traversal exists to prevent, observable straight from the log line.
+ *
+ * [registered] counts NEW insertions only; a repeat walk over already-registered directories
+ * reports 0 while still visiting them, so no arithmetic identity ties it to [visitedEntries].
  */
 data class RegistrationResult(
     val registered: Int,
     val prunedSubtrees: Int,
     val visitedEntries: Int,
+    val visitedFiles: Int,
 )
 ```
 
@@ -716,11 +842,15 @@ data class RegistrationResult(
     ): RegistrationResult {
         val root = recordsWatcherProperties.folder
         // Computed once for the whole walk: a traversal that crosses midnight would otherwise
-        // apply two different cutoffs to different branches of the same tree.
+        // apply two different cutoffs to different branches of the same tree. The window check is
+        // deliberately duplicated with runIteration's pre-check — registerAllDirs must stay
+        // correct for ANY start, whoever calls it.
         val cutoff = watchCutoff(recordsWatcherProperties.watchPeriod, clock)
         var registered = 0
         var pruned = 0
         var visited = 0
+        var visitedFiles = 0
+        var misplacedDateReported = false
         val startedAt = System.nanoTime()
 
         Files.walkFileTree(
@@ -731,12 +861,27 @@ data class RegistrationResult(
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
                     visited++
+                    // Nothing below a camera directory ever holds a watch key, from EITHER call
+                    // path: runIteration may pass a start deeper than CAMERA_DEPTH, and a key
+                    // taken there would silently vanish after the WatchService is recreated —
+                    // the startup walk would never restore it.
+                    if (depthFromRoot(dir, root) > CAMERA_DEPTH) {
+                        return FileVisitResult.SKIP_SUBTREE
+                    }
                     // The date check runs at EVERY level, not just at depth 1: it is pure string
-                    // work, and that keeps correctness independent of where dates actually sit.
-                    // Depth is then the single lever, and it only controls descent.
+                    // work, and that keeps the PRUNE independent of where dates actually sit.
+                    // Descent is what depth controls — and with it camera registration, which is
+                    // why the misplaced-root detector below exists.
                     if (isPrunableDate(dir, root, cutoff)) {
                         pruned++
                         return FileVisitResult.SKIP_SUBTREE
+                    }
+                    if (!misplacedDateReported && isDateAtUnexpectedDepth(dir, root)) {
+                        misplacedDateReported = true
+                        logger.warn {
+                            "Registration: date directory at unexpected depth: $dir — " +
+                                "check FRIGATE_RECORDS_FOLDER (it probably points one level above the recordings root)"
+                        }
                     }
                     registeredDirs.computeIfAbsent(dir) {
                         val k = dir.register(watchService, ENTRY_CREATE)
@@ -755,18 +900,22 @@ data class RegistrationResult(
                     attrs: BasicFileAttributes,
                 ): FileVisitResult {
                     visited++
+                    visitedFiles++
                     return FileVisitResult.CONTINUE
                 }
 
                 // SimpleFileVisitor rethrows by default, which would abort the whole registration
                 // because of a single unreadable directory. The walk opens a directory BEFORE
-                // preVisitDirectory, so an unreadable one arrives here, not there.
+                // preVisitDirectory, so an unreadable one arrives here, not there. Message-only
+                // WARN: on a mass failure (unmounted subtree) a stack trace per entry floods the
+                // log; the full trace is one DEBUG switch away.
                 override fun visitFileFailed(
                     file: Path,
                     exc: IOException,
                 ): FileVisitResult {
                     visited++
-                    logger.warn(exc) { "Registration: skipping unreadable entry $file" }
+                    logger.warn { "Registration: skipping unreadable entry $file (${exc.message})" }
+                    logger.debug(exc) { "Registration: failure details for $file" }
                     return FileVisitResult.CONTINUE
                 }
 
@@ -774,7 +923,10 @@ data class RegistrationResult(
                     dir: Path,
                     exc: IOException?,
                 ): FileVisitResult {
-                    if (exc != null) logger.warn(exc) { "Registration: error after visiting $dir" }
+                    if (exc != null) {
+                        logger.warn { "Registration: error after visiting $dir (${exc.message})" }
+                        logger.debug(exc) { "Registration: failure details for $dir" }
+                    }
                     return FileVisitResult.CONTINUE
                 }
             },
@@ -783,9 +935,9 @@ data class RegistrationResult(
         val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
         logger.info {
             "Registered $registered dirs, pruned $pruned date subtrees, " +
-                "visited $visited entries in ${elapsedMs}ms"
+                "visited $visited entries ($visitedFiles files) in ${elapsedMs}ms"
         }
-        return RegistrationResult(registered, pruned, visited)
+        return RegistrationResult(registered, pruned, visited, visitedFiles)
     }
 ```
 
@@ -795,7 +947,7 @@ data class RegistrationResult(
 
 Через `claude-forge:build-runner`: `./gradlew :frigate-analyzer-core:test`
 
-Ожидается: PASS. Если `WatchRecordsTaskTest` не компилируется — найти стаб вида `every { loop.registerAllDirs(...) } returns <Int>` и заменить возвращаемое значение на `RegistrationResult(0, 0, 0)`. На момент написания плана таких стабов нет: строки 436 и 467 используют `throws`.
+Ожидается: PASS. Если `WatchRecordsTaskTest` не компилируется — найти стаб вида `every { loop.registerAllDirs(...) } returns <Int>` и заменить возвращаемое значение на `RegistrationResult(0, 0, 0, 0)`. На момент написания плана таких стабов нет: строки 436 и 467 используют `throws`.
 
 - [ ] **Step 6: Обновить `.claude/rules/pipeline.md`**
 
@@ -810,20 +962,36 @@ WatchRecordsLoop uses selective watching to limit monitored directories:
 - A periodic cleanup removes expired watch keys based on `WATCH_CLEANUP_INTERVAL`
 
 `registerAllDirs` walks with `Files.walkFileTree` and prunes as it goes, rather than filtering after
-the fact. Two rules, both in `preVisitDirectory`:
+the fact. Three rules, all in `preVisitDirectory`:
+- `depthFromRoot(dir) > CAMERA_DEPTH` (reachable only when `runIteration` passes a deep `start`)
+  returns `SKIP_SUBTREE` **without registering**: nothing below a camera directory ever holds a
+  watch key, from either call path — such a key would silently vanish after the WatchService is
+  recreated.
 - `isPrunableDate` (fail-CLOSED, `RecordingsTree.kt`) returns `SKIP_SUBTREE` for a date outside the
   window. It is deliberately not `!isWithinWatchPeriod` (fail-OPEN) — the root's date never
   extracts, and pruning the root would blind the watcher to new date directories.
-- `depthFromRoot(dir) >= CAMERA_DEPTH` returns `SKIP_SUBTREE` at the camera directory. Below it
-  there are only `.mp4` files, and the watch key sits on the camera directory anyway. **No recording
-  file is ever enumerated during registration.**
+- `depthFromRoot(dir) >= CAMERA_DEPTH` returns `SKIP_SUBTREE` after registering the camera
+  directory. Below it there are only `.mp4` files, and the watch key on the camera directory is
+  what delivers ENTRY_CREATE. **`RegistrationResult.visitedFiles == 0` is the observable
+  invariant: no recording file is ever enumerated during registration**, and the log line shows it
+  directly (`... visited 320 entries (0 files) in 41ms`).
 
 The cutoff is computed once per traversal so a walk crossing midnight cannot apply two different
-windows. `RegistrationResult.visitedEntries` counts every filesystem entry touched; when the prune
-is healthy it equals `registered + prunedSubtrees`, and tests assert exactly that.
+windows. A date directory whose first path segment under the root is not the date itself triggers a
+one-shot WARN (`isDateAtUnexpectedDepth`): the typical cause is `FRIGATE_RECORDS_FOLDER` pointing
+one level above the recordings root, which would otherwise silently stop camera registration.
+
+Operator notes: the registration log line changed from `Registered N directories, skipped 11638 old
+directories` to `Registered N dirs, pruned 122 date subtrees, visited 320 entries (0 files) in Xms`.
+`pruned` counts whole date **subtrees**, not directories one by one — the number dropping by two
+orders of magnitude is expected, not a regression. Before relying on the old line, check no external
+log parsing is tied to its format. Symlinks inside the recordings tree are unsupported: the walk
+does not follow them and they no longer acquire watch keys.
 
 An unreadable directory reaches `visitFileFailed` (the walk opens a directory before
-`preVisitDirectory` runs) and is logged and skipped. It no longer aborts the whole registration.
+`preVisitDirectory` runs) and is logged and skipped — it no longer aborts the whole registration.
+A failure of `dir.register(...)` itself (inotify ENOSPC/EACCES) still aborts the walk and lands in
+the supervisor's backoff-and-retry, as before.
 
 WatchRecordsLoop parses `.mp4` filenames to extract camera ID, date, time, timestamp.
 ```
@@ -849,6 +1017,7 @@ git commit -m "perf: prune out-of-window subtrees when registering watch directo
 - Modify: `modules/core/src/main/resources/application.yaml:28-33` (records-watcher) и конец файла (блок `management`)
 - Modify: `docker/deploy/.env.example`
 - Modify: `.claude/rules/configuration.md`
+- Modify: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/ObjectTrackerPropertiesBindingTest.kt` (только комментарий)
 - Create: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/RecordsWatcherPropertiesBindingTest.kt`
 
 **Interfaces:**
@@ -986,6 +1155,8 @@ class RecordsWatcherPropertiesBindingTest {
 }
 ```
 
+Дополнительно (в этом же шаге): обновить устаревающий комментарий в соседнем `ObjectTrackerPropertiesBindingTest.kt` — фраза вида «Nothing else reads that file» про продовый `application.yaml` после этой задачи станет ложной: его читает и новый `RecordsWatcherPropertiesBindingTest`. Заменить на актуальную формулировку (например, «`RecordsWatcherPropertiesBindingTest` binds the same file the same way»).
+
 - [ ] **Step 2: Запустить тест и убедиться, что он падает**
 
 Через `claude-forge:build-runner`: `./gradlew :frigate-analyzer-core:test --tests 'ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherPropertiesBindingTest'`
@@ -994,16 +1165,18 @@ class RecordsWatcherPropertiesBindingTest {
 
 - [ ] **Step 3: Добавить свойство**
 
-В `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/properties/RecordsWatcherProperties.kt` добавить поле **после** `watchPeriod` (Kotlin-дефолт ссылается на предыдущий параметр конструктора — тот же приём, что `reappearGap: Duration = ttl` в `ObjectTrackerProperties`) и строку валидации:
+В `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/properties/RecordsWatcherProperties.kt` добавить поле **последним параметром конструктора, после `cleanupInterval`** — вставка в середину сломала бы будущие позиционные вызовы, а Kotlin-дефолт может ссылаться на любой более ранний параметр (тот же приём, что `reappearGap: Duration = ttl` в `ObjectTrackerProperties`) — и строку валидации:
 
 ```kotlin
     @field:NotNull
-    val watchPeriod: Duration = Duration.ofDays(1),
+    val cleanupInterval: Duration = Duration.ofHours(1),
     /**
      * How far back the one-off startup scan indexes files. Defaults to [watchPeriod]: the backfill
      * covers exactly the window the watcher watches.
      *
-     * Filtering is by date, so the window is always whole days: `P0D` means today only, `P1D` means
+     * Filtering is by date, so the window is always whole days **in UTC** — Frigate names date
+     * directories by UTC and [watchCutoff] evaluates "today" in UTC as well (documented
+     * assumption; it matters for `P0D` on hosts west of UTC). `P0D` means today only, `P1D` means
      * today and yesterday. The lower bound is `P0D` rather than `watchPeriod`'s one day, otherwise
      * "scan today only" would be inexpressible.
      */
@@ -1057,12 +1230,20 @@ management:
 # --- Records watcher ---
 # Skip the one-off startup scan that indexes recordings already present on disk.
 # DISABLE_FIRST_SCAN=false
-# How far back the watcher registers directories. Day granularity: P1D = today and yesterday.
+# How far back the watcher registers directories. Whole days in UTC, at least P1D.
 # WATCH_PERIOD=P1D
-# How far back the startup scan indexes files. Defaults to WATCH_PERIOD. P0D = today only.
-# Every indexed file becomes a recording and is fed to the detection pipeline, so keep it small.
+# How far back the startup scan indexes files. Defaults to WATCH_PERIOD, so raising WATCH_PERIOD
+# silently widens the startup backfill in the same proportion. Whole days in UTC; P0D = today only
+# (WATCH_PERIOD itself must stay at least P1D). Every indexed file becomes a recording and is fed
+# to the detection pipeline, so keep it small: one day of three cameras at 10-second segments is
+# about 52 000 files.
 # FIRST_SCAN_PERIOD=P1D
-# Expose /actuator/health details (reason, registeredDirs, timestamps): always | never | when-authorized
+# How often expired watch keys are cleaned up (ISO-8601 duration).
+# WATCH_CLEANUP_INTERVAL=PT1H
+# Expose /actuator/health details: always | never | when-authorized. `always` shows the failure
+# reason, registered directory paths, timestamps and the text of the last error to anyone who can
+# reach the published port. Spring's relaxed binding also honours
+# MANAGEMENT_ENDPOINT_HEALTH_SHOWDETAILS — set only one of the two.
 # HEALTH_SHOW_DETAILS=always
 ```
 
@@ -1071,7 +1252,13 @@ management:
 В таблицу раздела «## Records Watcher» добавить строку после `WATCH_PERIOD`:
 
 ```markdown
-| `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD` | ISO-8601 duration, how far back the startup scan indexes files. Day granularity: `P0D` = today only, `P1D` = today and yesterday. Defaults to the resolved `watch-period`, so it follows it from any source. Every indexed file becomes a `recordings` row and enters the detection pipeline — one day of three cameras at 10-second segments is ~52 000 files. |
+| `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD` | ISO-8601 duration, how far back the startup scan indexes files. Whole days **in UTC** (Frigate names date directories by UTC): `P0D` = today only, `P1D` = today and yesterday. Defaults to the resolved `watch-period`, so it follows it from any source — raising `WATCH_PERIOD` widens the startup backfill in the same proportion. Every indexed file becomes a `recordings` row and enters the detection pipeline — one day of three cameras at 10-second segments is ~52 000 files. Note the validation asymmetry: `WATCH_PERIOD` must stay ≥ `P1D`; "today only" is expressible only here. |
+```
+
+Сразу после таблицы Records Watcher добавить сноску:
+
+```markdown
+Поля `RecordsWatcherProperties` имеют Kotlin-дефолты, и `first-scan-period` добавлен последним параметром конструктора — позиционные вызовы конструктора не использовать, только именованные.
 ```
 
 Сразу после этой таблицы добавить новый раздел:
@@ -1081,7 +1268,7 @@ management:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HEALTH_SHOW_DETAILS` | always | `management.endpoint.health.show-details`. With `never` (Spring Boot's own default) `/actuator/health` returns a bare status, and `WatchRecordsTask.computeHealth`'s `reason`, `registeredDirs` and `lastSuccessfulRegistrationAt` are discarded — which is why a 9-minute registration stall had to be diagnosed from logs. `always` exposes them to anyone who can reach the port. |
+| `HEALTH_SHOW_DETAILS` | always | `management.endpoint.health.show-details`. With `never` (Spring Boot's own default) `/actuator/health` returns a bare status, and `WatchRecordsTask.computeHealth`'s `reason`, `registeredDirs` and `lastSuccessfulRegistrationAt` are discarded — which is why a 9-minute registration stall had to be diagnosed from logs. `always` exposes them — including filesystem paths (`registeredDirs`) and the text of the last failure — to anyone who can reach the published port; accepted for a single-deployment behind a closed perimeter, switch to `never`/`when-authorized` otherwise. Spring's relaxed binding also honours `MANAGEMENT_ENDPOINT_HEALTH_SHOWDETAILS`; set only one of the two variables. |
 ```
 
 - [ ] **Step 8: Коммит**
@@ -1090,6 +1277,7 @@ management:
 git add modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/config/properties/RecordsWatcherProperties.kt \
         modules/core/src/main/resources/application.yaml \
         modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/RecordsWatcherPropertiesBindingTest.kt \
+        modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/ObjectTrackerPropertiesBindingTest.kt \
         docker/deploy/.env.example \
         .claude/rules/configuration.md
 git commit -m "feat: add FIRST_SCAN_PERIOD window and expose actuator health details"
@@ -1189,6 +1377,8 @@ class FirstTimeScanTaskTest {
                 assertEquals(24, result.indexed)
                 assertEquals(0, result.failed)
                 assertEquals(2, result.prunedSubtrees)
+                // 1 root + 4 dates + 4 hours + 8 cameras + 24 files — the appendix breakdown.
+                assertEquals(41, result.visitedEntries)
                 assertEquals(24, requests.size)
                 assertTrue(
                     requests.none { req -> CANONICAL_DATES_OUT_OF_WINDOW.any { req.filePath.contains(it) } },
@@ -1234,6 +1424,8 @@ class FirstTimeScanTaskTest {
 
                 assertEquals(12, result.indexed)
                 assertEquals(3, result.prunedSubtrees)
+                // 1 root + 4 dates + 2 hours + 4 cameras + 12 files.
+                assertEquals(23, result.visitedEntries)
             } finally {
                 root.toFile().deleteRecursively()
             }
@@ -1278,6 +1470,7 @@ import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.time.Clock
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.io.path.absolutePathString
@@ -1285,6 +1478,16 @@ import kotlin.io.path.absolutePathString
 private val logger = KotlinLogging.logger {}
 
 private const val SCAN_CONCURRENCY = 8
+
+/**
+ * A file collected by the walk together with its creation time. The walk already stat-ed every
+ * entry to produce [BasicFileAttributes]; re-reading attributes per file in the processing flow
+ * would be the same double-stat defect this task removes from registerAllDirs.
+ */
+private data class ScanFile(
+    val path: Path,
+    val createdAt: Instant,
+)
 
 @Component
 class FirstTimeScanTask(
@@ -1294,9 +1497,11 @@ class FirstTimeScanTask(
     private val clock: Clock,
 ) {
     internal data class ScanResult(
+        /** Successfully processed files: create-or-find, NOT "new rows" — a duplicate returns the existing id. */
         val indexed: Int,
         val failed: Int,
         val prunedSubtrees: Int,
+        /** Every filesystem entry visited: directories + files (files are the point here, unlike registerAllDirs). */
         val visitedEntries: Int,
     )
 
@@ -1323,7 +1528,7 @@ class FirstTimeScanTask(
     internal suspend fun scan(): ScanResult {
         val root = recordsWatcherProperties.folder
         val cutoff = watchCutoff(recordsWatcherProperties.firstScanPeriod, clock)
-        val files = mutableListOf<Path>()
+        val files = mutableListOf<ScanFile>()
         var pruned = 0
         var visited = 0
 
@@ -1351,7 +1556,12 @@ class FirstTimeScanTask(
                         attrs: BasicFileAttributes,
                     ): FileVisitResult {
                         visited++
-                        if (attrs.isRegularFile) files += file
+                        // Attributes come from the walk itself — no per-file re-stat. Only real
+                        // .mp4 files are collected: foreign files (thumbnails, tmp) are skipped
+                        // silently instead of inflating `failed` via a doomed parse().
+                        if (attrs.isRegularFile && file.fileName.toString().endsWith(".mp4")) {
+                            files += ScanFile(file, attrs.creationTime().toInstant())
+                        }
                         return FileVisitResult.CONTINUE
                     }
 
@@ -1360,7 +1570,8 @@ class FirstTimeScanTask(
                         exc: IOException,
                     ): FileVisitResult {
                         visited++
-                        logger.warn(exc) { "First scan: skipping unreadable entry $file" }
+                        logger.warn { "First scan: skipping unreadable entry $file (${exc.message})" }
+                        logger.debug(exc) { "First scan: failure details for $file" }
                         return FileVisitResult.CONTINUE
                     }
 
@@ -1368,7 +1579,10 @@ class FirstTimeScanTask(
                         dir: Path,
                         exc: IOException?,
                     ): FileVisitResult {
-                        if (exc != null) logger.warn(exc) { "First scan: error after visiting $dir" }
+                        if (exc != null) {
+                            logger.warn { "First scan: error after visiting $dir (${exc.message})" }
+                            logger.debug(exc) { "First scan: failure details for $dir" }
+                        }
                         return FileVisitResult.CONTINUE
                     }
                 },
@@ -1384,22 +1598,20 @@ class FirstTimeScanTask(
 
         files
             .asFlow()
-            .flatMapMerge(concurrency = SCAN_CONCURRENCY) { path ->
+            .flatMapMerge(concurrency = SCAN_CONCURRENCY) { scanFile ->
                 flow {
                     // Per-file isolation. The previous shape put `.catch {}` on the outer chain,
-                    // which TERMINATES the flow: the first duplicate file_path or unparseable name
-                    // silently killed the whole scan.
+                    // which TERMINATES the flow: the first failing file (unparseable name, a file
+                    // Frigate deleted mid-walk, a raced IllegalStateException) silently killed the
+                    // whole scan. A duplicate file_path does NOT fail: createRecording is
+                    // create-or-find and returns the existing id with a WARN.
                     val id: UUID? =
                         try {
-                            val attrs =
-                                withContext(Dispatchers.IO) {
-                                    Files.readAttributes(path, BasicFileAttributes::class.java)
-                                }
-                            val recordingFile = recordingFileHelper.parse(path)
+                            val recordingFile = recordingFileHelper.parse(scanFile.path)
                             recordingEntityHelper.createRecording(
                                 CreateRecordingRequest(
-                                    path.absolutePathString(),
-                                    attrs.creationTime().toInstant(),
+                                    scanFile.path.absolutePathString(),
+                                    scanFile.createdAt,
                                     recordingFile.camId,
                                     recordingFile.date,
                                     recordingFile.time,
@@ -1409,7 +1621,7 @@ class FirstTimeScanTask(
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
-                            logger.warn(e) { "First scan: skipping $path" }
+                            logger.warn(e) { "First scan: skipping ${scanFile.path}" }
                             failed.incrementAndGet()
                             null
                         }
@@ -1418,7 +1630,12 @@ class FirstTimeScanTask(
                         emit(id)
                     }
                 }
-            }.catch { e -> logger.error(e) { "First scan aborted unexpectedly" } }
+            }.catch { e ->
+                // Flow.catch swallows CancellationException too — without this re-throw the
+                // documented cancellability of scan() would be fiction.
+                if (e is CancellationException) throw e
+                logger.error(e) { "First scan aborted unexpectedly" }
+            }
             // DEBUG, not INFO: a one-day window of three cameras is tens of thousands of files.
             .collect { id -> logger.debug { "First scan indexed recording $id" } }
 
@@ -1438,7 +1655,7 @@ class FirstTimeScanTask(
 В таблице «File Watching & Startup» заменить строку про `FirstTimeScanTask` на:
 
 ```markdown
-| FirstTimeScanTask | `core/task/` | One-off startup backfill of files already on disk, bounded by `FIRST_SCAN_PERIOD` (defaults to `WATCH_PERIOD`); disable with `DISABLE_FIRST_SCAN=true`. Prunes out-of-window date subtrees the same way `registerAllDirs` does. Per-file failures are counted and skipped, not fatal — the previous `.catch {}` on the outer flow terminated the whole scan on the first bad file. Logic lives in `scan()`; `run()` is the detached launch. |
+| FirstTimeScanTask | `core/task/` | One-off startup backfill of `.mp4` files already on disk, bounded by `FIRST_SCAN_PERIOD` (defaults to `WATCH_PERIOD`; whole days in UTC); disable with `DISABLE_FIRST_SCAN=true`. Prunes out-of-window date subtrees the same way `registerAllDirs` does and reuses the walk's own file attributes (no per-file re-stat). Per-file failures are counted and skipped, not fatal — the previous `.catch {}` on the outer flow terminated the whole scan on the first bad file. `indexed` means create-or-find: a re-run over an already indexed window finishes but logs ~52k "Recording already exists" warnings. Logic lives in `scan()`; `run()` is a detached fire-and-forget launch — TODO: the scope is not cancelled on shutdown (known, out of scope), which is exactly why tests drive `scan()` directly. |
 ```
 
 - [ ] **Step 6: Коммит**
@@ -1454,21 +1671,25 @@ git commit -m "fix: bound the first-time scan to its window and isolate per-file
 
 ### Финальная проверка
 
+Порядок «сначала ревью, потом сборка» задан в `CLAUDE.md`.
+
+- [ ] **Код-ревью**
+
+Через skill `superpowers:requesting-code-review` — на диффе ветки относительно `master`. Чинить критичные замечания до чистоты.
+
+На что смотреть прицельно:
+- в `preVisitDirectory` порядок правил: guard `> CAMERA_DEPTH` → prune по дате → детектор → регистрация; prune идёт ДО регистрации, иначе каталог вне окна успеет получить watch key;
+- проверка `>= CAMERA_DEPTH` (остановка спуска) вызывается после `computeIfAbsent`, а не вместо проверки даты — глубина не должна влиять на отсев;
+- ни одна ветка не превратилась в `!isWithinWatchPeriod(...)`;
+- `visitFileFailed` возвращает `CONTINUE`, а не наследует пробрасывающую реализацию `SimpleFileVisitor`;
+- внешний `.catch` в `scan()` пробрасывает `CancellationException`;
+- в `scan()` нет второго `readAttributes` — атрибуты приходят из `visitFile`.
+
 - [ ] **Полная сборка**
 
 Через `claude-forge:build-runner`: `./gradlew build`
 
-Ожидается: BUILD SUCCESSFUL. На ошибках ktlint — `./gradlew ktlintFormat`, затем повторить.
-
-- [ ] **Код-ревью**
-
-Через skill `superpowers:requesting-code-review` — на диффе ветки относительно `master`. Чинить критичные замечания до чистоты, затем повторить сборку. Порядок «сначала ревью, потом сборка» задан в `CLAUDE.md`.
-
-На что смотреть прицельно:
-- в `preVisitDirectory` порядок правил: prune по дате идёт ДО регистрации, иначе каталог вне окна успеет получить watch key;
-- `depthFromRoot` вызывается после `computeIfAbsent`, а не вместо проверки даты — глубина не должна влиять на отсев;
-- ни одна ветка не превратилась в `!isWithinWatchPeriod(...)`;
-- `visitFileFailed` возвращает `CONTINUE`, а не наследует пробрасывающую реализацию `SimpleFileVisitor`.
+Ожидается: BUILD SUCCESSFUL. На ошибках ktlint — `./gradlew ktlintFormat`, затем повторить сборку.
 
 - [ ] **Перед PR: убрать документы планирования из диффа**
 
@@ -1489,9 +1710,12 @@ git commit -m "chore: drop planning docs from the branch"
 | `registered` / `indexed` | 15 | 7 | 24 | 12 |
 | `prunedSubtrees` | 2 | 0 | 2 | 3 |
 | `visitedEntries` | 17 | 7 | 41 | 23 |
+| `visitedFiles` | **0** | **0** | — | — |
 | посещено `.mp4` | **0** | **0** | 24 | 12 |
 
 Для `scan()` файлы вне окна тоже не перечисляются — отсекаются вместе с датой. `visitedEntries = 41` при `P1D`: корень 1 + даты 4 + часы 4 + камеры 8 + файлы 24. При `P0D`: 1 + 4 + 2 + 4 + 12 = 23.
 
 `registered = 15` — корень 1 + даты 2 + часы 4 + камеры 8.
-`visitedEntries = 17` — 15 зарегистрированных + 2 отсечённые даты. Равенство `visitedEntries == registered + prunedSubtrees` и есть проверяемый инвариант «файлы не перечислялись».
+`visitedEntries = 17` — 15 зарегистрированных + 2 отсечённые даты. Проверяемый инвариант «файлы не перечислялись» — `visitedFiles == 0`: он безусловен и держится на любом вызове (повторном, из `runIteration`, при сбоях), в отличие от арифметики `registered + prunedSubtrees`, которая верна только для первого прохода по пустой map.
+
+Тест с посторонним файлом на уровне даты: `registered = 15`, `visitedEntries = 18`, `visitedFiles = 1`. Тест со `start` вне корня (дерево `a/b/c/d` + 1 файл): `registered = 5`, `visitedEntries = 6`, `visitedFiles = 1`.
