@@ -45,7 +45,8 @@ out concurrently will have two of the three fail to compile. `ObjectTrackerServi
 | `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummary.kt` | Create | Internal value types `ClassAbsence` + `TrackerSummary`: the tracker's per-recording debug line and the predicate deciding whether it is worth emitting. |
 | `modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummaryTest.kt` | Create | Pins the rendered format operators grep and tune from. |
 | `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt` | Modify | Collect absences, filter reappearances by class, emit `TrackerSummary`. |
-| `modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImplTest.kt` | Modify | Class-filter behaviour at the delta level. |
+| `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/DetectionDelta.kt` | Modify | Diagnostic `maxAbsence` field, so the tracker's accumulation is reachable from a test. |
+| `modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImplTest.kt` | Modify | `maxAbsence` accumulation (Task 1) and class-filter behaviour at the delta level (Task 2). |
 | `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/config/ObjectTrackerProperties.kt` | Modify | `reappearClasses` + its normalized lookup set + `reappearAllows`. |
 | `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/config/NotificationCooldownProperties.kt` | Create | `application.notifications.cooldown` binding + validation. |
 | `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/NotificationDecision.kt` | Modify | New `COOLDOWN` reason. |
@@ -104,9 +105,11 @@ Spec task 3. Pure observability: no behaviour changes, no new properties. Ships 
 - Create: `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummary.kt`
 - Create: `modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummaryTest.kt`
 - Modify: `modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt:165-249`
+- Modify: `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/DetectionDelta.kt`
+- Modify: `modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImplTest.kt`
 
 **Interfaces:**
-- Produces: `internal data class ClassAbsence(val className: String, val absence: Duration)` with `fun render(): String`; `internal data class TrackerSummary(camId: String, recordingId: UUID, newCount: Int, matched: Int, reappeared: List<ClassAbsence>, classFiltered: List<ClassAbsence>, unobserved: Int, stale: Int, maxAbsence: Duration?)` with `val worthLogging: Boolean` and `fun render(): String`. Task 2 populates `classFiltered`; this task always passes `emptyList()`.
+- Produces: `internal data class ClassAbsence(val className: String, val absence: Duration)` with `fun render(): String`; `internal data class TrackerSummary(camId: String, recordingId: UUID, newCount: Int, matched: Int, reappeared: List<ClassAbsence>, classFiltered: List<ClassAbsence>, unobserved: Int, stale: Int, maxAbsence: Duration?)` with `val worthLogging: Boolean` and `fun render(): String`. Task 2 populates `classFiltered`; this task always passes `emptyList()`. Also `DetectionDelta.maxAbsence: Duration?` (trailing, defaulted), which exists so the accumulation is testable through `evaluate` — no production code reads it.
 - Consumes: nothing from other tasks.
 
 Kotlin's `internal` is visible from the module's own test source set (the Kotlin Gradle plugin wires the test compilation as a friend), so these types are unit-testable without widening visibility.
@@ -373,6 +376,14 @@ with:
             )
         if (summary.worthLogging) {
             logger.debug { summary.render() }
+        } else {
+            // The recordings DEBUG deliberately keeps out — everything matched, every absence below
+            // the gap — are the only carrier of the sub-threshold distribution, and the spec asks
+            // both for that distribution and for the DEBUG line to stay rare. TRACE satisfies both:
+            // the line is no more frequent at DEBUG than before, and an operator tuning the gap
+            // downwards can switch TRACE on for one night and get the full picture. Costs nothing
+            // while off — kotlin-logging never evaluates the lambda for a disabled level.
+            logger.trace { summary.render() }
         }
         return DetectionDelta(
             newTracksCount = newClasses.size,
@@ -381,7 +392,99 @@ with:
             newClasses = newClasses,
             reappearedTracksCount = reappeared.size,
             reappearedClasses = reappeared.map { it.className },
+            maxAbsence = maxAbsence,
         )
+```
+
+- [ ] **Step 5a: Carry `maxAbsence` on the delta so the accumulation itself can be tested**
+
+Nothing in production reads this field — the debug line takes its value from the local variable. It
+exists because the accumulation is otherwise unreachable from a test: it lives inside
+`evaluateLocked`, and `TrackerSummaryTest` receives `maxAbsence` already computed. Every way of
+getting it wrong is therefore silent, and the requirement it implements — "the largest absence among
+**all** matched tracks, including those below the gap" (spec §2, task 3) — is exactly the kind that
+decays into "the largest absence among the reappearances", which reads plausibly and destroys the
+tuning signal. One reviewer already caught a live defect in these four lines; a unit test over an
+extracted helper would not have, because the failure is *where the accumulation is called from*, not
+what it computes.
+
+In `modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/DetectionDelta.kt`, append a
+parameter (trailing position, defaulted — every existing positional call site keeps compiling):
+
+```kotlin
+    /**
+     * Largest absence among **all** matched tracks, including those that never reached
+     * `ObjectTrackerProperties.reappearGap`, and `null` when nothing measurable matched.
+     *
+     * Diagnostic rather than behavioural: no decision is taken from it. It is what `reappear-gap`
+     * gets tuned against — the absences that stayed below the threshold are the ones that say where
+     * the threshold could move to, and they are invisible everywhere else.
+     */
+    val maxAbsence: Duration? = null,
+```
+
+Add `import java.time.Duration` to that file.
+
+Then add to `modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImplTest.kt`
+(and `import kotlin.test.assertNull`):
+
+```kotlin
+    @Test
+    fun `maxAbsence reports an absence that never crossed the gap`() =
+        runTest {
+            // longTtlProps puts the gap at PT1H, so 40 minutes produces no reappearance at all —
+            // and used to leave no trace of how close it came. This is the number an operator needs
+            // in order to decide whether lowering the gap would start catching real returns.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofMinutes(40)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(0, delta.reappearedTracksCount)
+            assertEquals(Duration.ofMinutes(40), delta.maxAbsence)
+        }
+
+    @Test
+    fun `maxAbsence takes the largest absence across every matched track`() =
+        runTest {
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            coEvery { repo.findActive(any(), any(), any()) } returns
+                listOf(
+                    track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofMinutes(40))),
+                    track("car", 0.6f, 0.6f, 0.9f, 0.9f, lastSeen = fixedNow.minus(Duration.ofMinutes(55))),
+                )
+
+            val delta =
+                svc.evaluate(
+                    rec(),
+                    listOf(
+                        det("person", 0.01f, 0.0f, 0.51f, 0.5f),
+                        det("car", 0.61f, 0.6f, 0.91f, 0.9f),
+                    ),
+                )
+
+            assertEquals(2, delta.matchedTracksCount)
+            assertEquals(Duration.ofMinutes(55), delta.maxAbsence)
+        }
+
+    @Test
+    fun `an out-of-order recording contributes no absence at all`() =
+        runTest {
+            // A later recording already advanced this track past the one being evaluated, so the
+            // distance is negative. Letting it win coerceAtLeast would render maxAbsence=PT-3H.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.plus(Duration.ofHours(3)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertNull(delta.maxAbsence)
+        }
 ```
 
 - [ ] **Step 6: Run the tracker's whole suite to verify nothing regressed**
@@ -394,7 +497,9 @@ Expected: PASS — the existing `ObjectTrackerServiceImplTest` cases still hold,
 ```bash
 git add modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummary.kt \
         modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummaryTest.kt \
-        modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt
+        modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt \
+        modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImplTest.kt \
+        modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/DetectionDelta.kt
 # Path-scoped, as Global Constraints require: the index carries unrelated staged docs, and a bare
 # `git commit -m` would sweep every one of them into this commit.
 git commit -m "feat(tracker): log actual absence durations in the tracker summary
@@ -405,8 +510,10 @@ return actually lies. The debug line now carries maxAbsence over all matched
 tracks and a per-class breakdown of the reappearances that fired." \
     -- modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummary.kt \
        modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummaryTest.kt \
-       modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt
-git show --stat HEAD   # must list exactly the three files above, nothing else
+       modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt \
+       modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImplTest.kt \
+       modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/DetectionDelta.kt
+git show --stat HEAD   # must list exactly the five files above, nothing else
 ```
 
 ---
@@ -1328,7 +1435,8 @@ Replace the `delta.reappearedTracksCount > 0` branch (lines 75-81) with:
 
 ```kotlin
                 delta.reappearedTracksCount > 0 -> {
-                    val sinceLast = reappearCooldownGap(recording)
+                    // Decides and arms in one atomic step; nothing to remember afterwards.
+                    val sinceLast = reappearSuppressedBy(recording)
                     if (sinceLast != null) {
                         logger.debug {
                             "Decision: suppress (cooldown): cam=${recording.camId} " +
@@ -1336,7 +1444,6 @@ Replace the `delta.reappearedTracksCount > 0` branch (lines 75-81) with:
                         }
                         NotificationDecision(false, NotificationDecisionReason.COOLDOWN, delta)
                     } else {
-                        rememberReappearNotified(recording)
                         logger.info {
                             "Decision: notify (reappeared): cam=${recording.camId} " +
                                 "reappearedClasses=${delta.reappearedClasses} recording=${recording.id}"
@@ -1346,36 +1453,55 @@ Replace the `delta.reappearedTracksCount > 0` branch (lines 75-81) with:
                 }
 ```
 
-Add both helpers below `evaluate`, above `isRecordingNotificationsGloballyEnabled`:
+Add the helper below `evaluate`, above `isRecordingNotificationsGloballyEnabled`:
 
 ```kotlin
     /**
      * Distance from this camera's last announced reappearance to [recording] while the cooldown
-     * still covers it; `null` when the notification may go out.
+     * still covers it; `null` when the notification may go out — in which case the window has
+     * already been re-armed on [recording] by the time this returns.
      *
      * Signed for the log line, compared by absolute value. A burst is drained in whichever
      * direction the queue hands it over — newest-first is the normal case — and both directions
      * describe the same 24 seconds of one person walking past. Distance is also what keeps a
      * backlog intact: a recording hours from the anchor is a separate event on either side of it,
      * which is precisely what a wall-clock cooldown could not express.
+     *
+     * Deciding and arming in one `compute` rather than a read followed by a `merge` is what makes
+     * it correct under concurrency. Several pipeline consumers evaluate recordings in parallel and
+     * two of them can hold the same camera — [ObjectTrackerServiceImpl]'s `Watch` is built around
+     * exactly that, and for exactly this reason keeps its own two halves inside a single `compute`.
+     * A read-then-write pair here would let both callers see the same stale anchor and both notify,
+     * and the burst that produces it — one pass matching a frame full of stale tracks — is the very
+     * case this gate exists to collapse.
+     *
+     * Suppressing leaves the anchor untouched: the window is a cooldown, not a debounce, so a
+     * continuous stream of reappearances cannot hold it shut. Arming takes the maximum rather than
+     * the latest value seen, so a stuck recording re-picked with an hours-old timestamp announces
+     * itself as its own event without dragging the window backwards over the live stream.
      */
-    private fun reappearCooldownGap(recording: RecordingDto): Duration? {
+    private fun reappearSuppressedBy(recording: RecordingDto): Duration? {
         if (!cooldown.reappearEnabled) return null
-        val last = lastReappearNotified[recording.camId] ?: return null
-        val sinceLast = Duration.between(last, recording.recordTimestamp)
-        return sinceLast.takeIf { it.abs() < cooldown.reappear }
-    }
-
-    /**
-     * Anchors the next window at the newest announced recording rather than the latest one seen: a
-     * stuck recording re-picked with an hours-old timestamp is far enough away to be its own event,
-     * but it must not drag the anchor backwards and let the live stream notify again immediately.
-     */
-    private fun rememberReappearNotified(recording: RecordingDto) {
-        if (!cooldown.reappearEnabled) return
-        lastReappearNotified.merge(recording.camId, recording.recordTimestamp) { old, new -> maxOf(old, new) }
+        val stamp = recording.recordTimestamp
+        var suppressedBy: Duration? = null
+        lastReappearNotified.compute(recording.camId) { _, last ->
+            val sinceLast = last?.let { Duration.between(it, stamp) }
+            if (sinceLast != null && sinceLast.abs() < cooldown.reappear) {
+                suppressedBy = sinceLast
+                last
+            } else if (last != null) {
+                maxOf(last, stamp)
+            } else {
+                stamp
+            }
+        }
+        return suppressedBy
     }
 ```
+
+The lambda assigns to a captured local instead of returning the verdict because `compute` must
+return the new mapping. Keep it arithmetic-only: it runs while the map holds the bin lock, so the
+logging and the `NotificationDecision` construction stay outside, in `evaluate`.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -1609,6 +1735,25 @@ logging:
 
 Keep it to those two loggers. `ru.zinin: DEBUG` across the board buries the tracker line under
 per-frame detection output, which is the opposite of what the tuning pass needs.
+
+**Raising or lowering the gap need different data, and DEBUG only carries one of them.** The line is
+emitted at DEBUG only when something happened — a new track, a reappearance, a class-filtered one, an
+unobserved absence. Deciding to *raise* the threshold works from those: every reappearance that fired
+carries its own duration. Deciding to *lower* it does not, because the absences that stayed below the
+gap live on ordinary recordings, and those are exactly the ones DEBUG leaves out — over the
+production night, 5156 of them without a single line.
+
+Switch the tracker to `TRACE` to get them:
+
+```yaml
+logging:
+  level:
+    ru.zinin.frigate.analyzer.service.impl.ObjectTrackerServiceImpl: TRACE
+```
+
+Every recording then emits the same line, `maxAbsence` included — on the order of a few thousand
+lines a night for three cameras. Leave it on for one night, take the distribution of `maxAbsence`
+over the quiet recordings, and turn it back down; there is no reason to run it continuously.
 
 Collect a night of these lines before choosing values, then set the two noise knobs from what they
 show:
