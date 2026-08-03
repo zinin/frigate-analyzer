@@ -206,10 +206,11 @@ restores notifications without shortening the TTL, by using absence rather than 
 It works because the two cases separate cleanly when recordings are continuous: a static object is
 re-detected at the recording cadence, while a person who left and came back has a gap of hours. Set
 it above the largest gap a *static* object shows (detector flakiness), below the smallest gap a real
-visitor shows. Measure both from `detections` before picking a value. The value must also exceed the
-camera's normal processing cadence: a wall-clock pause between evaluations longer than `REAPPEAR_GAP`
-reads as an interruption and restarts the watch window, so a gap smaller than the cadence would keep
-the feature permanently blind.
+visitor shows. Measure both from `detections` before picking a value — though the tracker's own
+`maxAbsence` supersedes that recipe, and `### Reading the tracker's debug line` below covers how to
+collect it. The value must also exceed the camera's normal processing cadence: a wall-clock pause
+between evaluations longer than `REAPPEAR_GAP` reads as an interruption and restarts the watch
+window, so a gap smaller than the cadence would keep the feature permanently blind.
 
 Gaps in *processing* are excluded automatically, and measuring `detections` would never reveal them.
 After a restart, a deploy, a stalled pipeline or a camera signal loss, the first recordings processed
@@ -272,16 +273,19 @@ ObjectTracker: cam=cam2 new=0 matched=3 reappeared=[person:PT3H12M] classFiltere
 ```
 
 The format changed in this release and **breaks existing greps**: `reappeared=` used to carry a count
-(`reappeared=1`), so a pattern like `reappeared=[1-9]` now matches nothing. `maxAbsence` is new.
+(`reappeared=1`), so a pattern like `reappeared=[1-9]` now matches nothing. `classFiltered=` and
+`maxAbsence=` are new fields, and `classFiltered=` sits *between* `reappeared=` and `unobserved=`, so
+anchored patterns like `reappeared=(\d+) unobserved=` break for that second, independent reason.
 
 - `maxAbsence` — the largest absence among **all** matched tracks, including those that stayed
   below `REAPPEAR_GAP`. This is the number to tune the gap against: it shows where the boundary
-  currently runs and what raising the threshold would start catching. `n/a` when nothing matched —
+  currently runs and what lowering the threshold would start catching. `n/a` when nothing matched —
   or when the only matches were out-of-order recordings, whose negative distances are not absences.
   It is accumulated *before* the watch-window guard, so it also absorbs the absences reported as
   `unobserved` — after a ten-hour processing interruption it reads `PT10H` next to genuinely
   sub-threshold minutes, and a non-zero `unobserved=N` on the same line is the sign to discard it.
-- `reappeared=[class:duration]` — the reappearances that fired, each with its own absence.
+- `reappeared=[class:duration]` — the reappearances the tracker recorded, each with its own absence.
+  A cooldown-suppressed one still appears here: the gate drops the announcement, not the bookkeeping.
 - `classFiltered=[class:duration]` — absences past the gap that `REAPPEAR_CLASSES` kept quiet. The
   line is emitted for these too, so a filtered deployment still shows what it is suppressing.
 - `unobserved=N` — absences discarded because the tracker was not watching when they began.
@@ -289,8 +293,8 @@ The format changed in this release and **breaks existing greps**: `reappeared=` 
 The line stays off ordinary recordings: it is emitted only when something new appeared, something
 reappeared, something was filtered, or something was unobserved.
 
-None of it is visible at the default level. `log4j2.yaml.example` ships `ru.zinin` at `info`, so a
-deployment built from the example configuration logs nothing of the above. Turn the two classes up
+None of it is visible at the default level. Both the bundled `log4j2.yaml` and `log4j2.yaml.example`
+ship `ru.zinin` at `info`, so a stock deployment logs nothing of the above. Turn the two classes up
 explicitly — `application-docker.yaml` is gitignored, so this has to be done per host and cannot be
 assumed to be in place:
 
@@ -319,9 +323,12 @@ logging:
     ru.zinin.frigate.analyzer.service.impl.ObjectTrackerServiceImpl: TRACE
 ```
 
-Every recording then emits the same line, `maxAbsence` included — on the order of a few thousand
-lines a night for three cameras. Leave it on for one night, take the distribution of `maxAbsence`
-over the quiet recordings, and turn it back down; there is no reason to run it continuously.
+Every recording with at least one detection above the confidence floor then emits the same line,
+`maxAbsence` included — on the order of a few thousand lines a night for three cameras. Recordings
+with no detections at all, or none surviving the floor, short-circuit before the summary and stay
+silent even at TRACE, so gaps in the sequence are not a misconfiguration. Leave it on for one night,
+take the distribution of `maxAbsence` over the quiet recordings, and turn it back down; there is no
+reason to run it continuously.
 
 Collect a night of these lines before choosing values, then set the two noise knobs from what they
 show:
@@ -330,3 +337,9 @@ show:
 NOTIFICATIONS_TRACK_REAPPEAR_CLASSES=person
 NOTIFICATIONS_COOLDOWN_REAPPEAR=PT5M
 ```
+
+The class list reads straight off `reappeared=[class:duration]`. The cooldown does not: it is sized
+against the *burst*, not the absence, and neither logger above prints a `recordTimestamp` to measure
+one from. A burst is a single pass through the frame, so it spans the handful of consecutive
+recordings the object stays visible for — start at a few minutes, then read the `sinceLast=` values
+off the `Decision: suppress (cooldown)` lines, which only appear once the cooldown is already on.
