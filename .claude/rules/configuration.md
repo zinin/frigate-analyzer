@@ -276,7 +276,8 @@ The format changed in this release and **breaks existing greps**: `reappeared=` 
 
 - `maxAbsence` — the largest absence among **all** matched tracks, including those that stayed
   below `REAPPEAR_GAP`. This is the number to tune the gap against: it shows where the boundary
-  currently runs and what raising the threshold would start catching. `n/a` when nothing matched.
+  currently runs and what raising the threshold would start catching. `n/a` when nothing matched —
+  or when the only matches were out-of-order recordings, whose negative distances are not absences.
   It is accumulated *before* the watch-window guard, so it also absorbs the absences reported as
   `unobserved` — after a ten-hour processing interruption it reads `PT10H` next to genuinely
   sub-threshold minutes, and a non-zero `unobserved=N` on the same line is the sign to discard it.
