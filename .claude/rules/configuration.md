@@ -182,6 +182,18 @@ Settings under `application.notifications` in `application.yaml`. Object tracker
 | `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | 1h | DELETE rows with `last_seen_at < now() - retention`. Larger than TTL. |
 | `NOTIFICATIONS_TRACK_REAPPEAR_GAP` | = TTL | Matched track absent longer than this → notify as `REAPPEARED`. Must be > 0 and <= TTL; defaulting to TTL makes it a no-op (the comparison is strict, and TTL also bounds `findActive`). |
 | `NOTIFICATIONS_TRACK_REAPPEAR_CLASSES` | (empty) | Comma-separated classes allowed to notify as `REAPPEARED`. Empty = all classes (no-op). Matching is case-insensitive and trims; blank entries are ignored, but a list of nothing but blanks fails at binding. Does **not** affect `NEW_OBJECTS` — a class left out still notifies the first time it is seen. Unrelated to `DETECTION_FILTER_CLASSES`. |
+| `NOTIFICATIONS_COOLDOWN_REAPPEAR` | PT0S | Minimum distance between two `REAPPEARED` notifications for one camera; extra ones are suppressed with reason `COOLDOWN`. `PT0S` (default) disables it. Measured on `recordTimestamp`, so a backlog drained newest-first is not collapsed. Does not gate `NEW_OBJECTS`, and never skips the tracker. |
+
+Two things about that row surprise operators the first time and are worth stating outright:
+
+- **`sinceLast` in the suppress line can be negative** (`sinceLast=PT-11S`). The distance is compared
+  by absolute value, and the queue drains newest-first, so the recording being judged is often *older*
+  than the one that anchored the window. A minus sign there is normal, not a bug.
+- **A recording far older than the anchor notifies again.** The anchor holds the newest announced
+  `recordTimestamp` per camera, and anything outside the window on either side counts as its own
+  event. While a large backlog is being drained this can produce two notifications in quick
+  succession — that is the deliberate trade-off which keeps a backlog from collapsing into a single
+  notification, which is what a wall-clock cooldown would do.
 
 ### Tuning REAPPEAR_GAP under a long TTL
 

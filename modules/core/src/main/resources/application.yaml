@@ -52,6 +52,11 @@ application:
     active-window: ${SIGNAL_LOSS_ACTIVE_WINDOW:24h}
     startup-grace: ${SIGNAL_LOSS_STARTUP_GRACE:5m}
   notifications:
+    cooldown:
+      # Minimum distance between two REAPPEARED notifications for one camera, measured on the
+      # recording timestamp rather than the wall clock — a backlog drained newest-first would
+      # otherwise collapse into a single notification. PT0S (the default) disables the gate.
+      reappear: ${NOTIFICATIONS_COOLDOWN_REAPPEAR:PT0S}
     tracker:
       ttl: ${NOTIFICATIONS_TRACK_TTL:PT30M}
       iou-threshold: ${NOTIFICATIONS_TRACK_IOU_THRESHOLD:0.3}
