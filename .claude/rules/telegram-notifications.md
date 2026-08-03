@@ -86,9 +86,9 @@ The flags are read before dispatching notifications:
   notification with reason `COOLDOWN` when the same camera announced one less than
   `NOTIFICATIONS_COOLDOWN_REAPPEAR` ago, measured on `recording.recordTimestamp` rather than the
   wall clock (a backlog drained newest-first would otherwise collapse into one notification). The
-  anchor is the newest announced recording per camera, held in memory only. `NEW_OBJECTS` is never
-  gated by it, and the tracker has already run by the time the gate is reached — suppression drops
-  the announcement, never the bookkeeping. Disabled by default.
+  anchor is the newest recording announced as `REAPPEARED` per camera, held in memory only.
+  `NEW_OBJECTS` is never gated by it, and the tracker has already run by the time the gate is
+  reached — suppression drops the announcement, never the bookkeeping. Disabled by default.
 
 A `FALSE` global flag short-circuits the whole class of notifications regardless of per-user
 state; a `FALSE` per-user flag only suppresses delivery to that user.

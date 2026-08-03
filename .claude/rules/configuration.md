@@ -96,7 +96,7 @@ Settings under `application.records-watcher` in `application.yaml`.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DETECTION_FILTER_ENABLED` | true | Enable/disable filtering |
-| `DETECTION_FILTER_CLASSES` | person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,umbrella | Allowed object classes |
+| `DETECTION_FILTER_CLASSES` | person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe | Allowed object classes |
 
 ## Pipeline
 
@@ -182,7 +182,7 @@ Settings under `application.notifications` in `application.yaml`. Object tracker
 | `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | 1h | DELETE rows with `last_seen_at < now() - retention`. Larger than TTL. |
 | `NOTIFICATIONS_TRACK_REAPPEAR_GAP` | = TTL | Matched track absent longer than this → notify as `REAPPEARED`. Must be > 0 and <= TTL; defaulting to TTL makes it a no-op (the comparison is strict, and TTL also bounds `findActive`). |
 | `NOTIFICATIONS_TRACK_REAPPEAR_CLASSES` | (empty) | Comma-separated classes allowed to notify as `REAPPEARED`. Empty = all classes (no-op). Matching is case-insensitive and trims; blank entries are ignored, but a list of nothing but blanks fails at binding. Does **not** affect `NEW_OBJECTS` — a class left out still notifies the first time it is seen. Unrelated to `DETECTION_FILTER_CLASSES`. |
-| `NOTIFICATIONS_COOLDOWN_REAPPEAR` | PT0S | Minimum distance between two `REAPPEARED` notifications for one camera; extra ones are suppressed with reason `COOLDOWN`. `PT0S` (default) disables it. Measured on `recordTimestamp`, so a backlog drained newest-first is not collapsed. Does not gate `NEW_OBJECTS`, and never skips the tracker. |
+| `NOTIFICATIONS_COOLDOWN_REAPPEAR` | PT0S | Minimum distance between two `REAPPEARED` notifications for one camera; extra ones are suppressed with reason `COOLDOWN`. `PT0S` (default) disables it. Measured on `recordTimestamp`, so a backlog spanning more than the cooldown is not collapsed into a single notification. Does not gate `NEW_OBJECTS`, and never skips the tracker. |
 
 Two things about that row surprise operators the first time and are worth stating outright:
 
@@ -191,9 +191,11 @@ Two things about that row surprise operators the first time and are worth statin
   than the one that anchored the window. A minus sign there is normal, not a bug.
 - **A recording far older than the anchor notifies again.** The anchor holds the newest announced
   `recordTimestamp` per camera, and anything outside the window on either side counts as its own
-  event. While a large backlog is being drained this can produce two notifications in quick
-  succession — that is the deliberate trade-off which keeps a backlog from collapsing into a single
-  notification, which is what a wall-clock cooldown would do.
+  event. Older recordings never move the anchor, so while a large backlog is being drained this can
+  produce a run of notifications in quick succession, one per recording beyond the window — an hour
+  of backlog at a one-minute cadence under `PT5M` collapses only its newest five minutes and sends
+  the remaining ~55 individually. That is the deliberate trade-off which keeps a backlog from
+  collapsing into a single notification, which is what a wall-clock cooldown would do.
 
 ### Tuning REAPPEAR_GAP under a long TTL
 
@@ -239,3 +241,91 @@ NOTIFICATIONS_TRACK_CLEANUP_RETENTION=PT48H
 ```
 
 Per-user toggles for recording detections and camera signal-loss alerts are stored in `telegram_users.notifications_recording_enabled` / `notifications_signal_enabled` (default `true`). Global toggles in `app_settings`: `notifications.recording.global_enabled`, `notifications.signal.global_enabled`. OWNER manages globals via `/notifications`.
+
+### When REAPPEAR_GAP alone cannot help
+
+A production run under `TTL=PT12H`, `REAPPEAR_GAP=PT1H` across three cameras produced 9
+reappearance notifications overnight against 5156 suppressions. Only one was worth sending. The
+other eight came from two mechanisms the gap cannot separate:
+
+- **Static objects flickering.** A bicycle, a parked car, a cow standing still. The detector loses
+  them at night and finds them again at dawn; the absence crosses any reasonable gap. Raising the
+  threshold far enough to cover a whole night (~`PT10H`) makes it meet `TTL`, at which point the
+  feature is off by construction. An 8-hour absence of a motionless bicycle is *the same duration*
+  as a person who left in the evening and came back in the morning — no single threshold splits
+  them. `NOTIFICATIONS_TRACK_REAPPEAR_CLASSES` splits them by class instead.
+- **Bursts from one pass.** Under a long TTL the frame accumulates stale tracks of the same class
+  along a walkway; a person crossing it matches them one after another, and each of those tracks
+  has been untouched for hours, so each produces its own reappearance. Every one of them clears any
+  threshold, so the gap has no effect at all. `NOTIFICATIONS_COOLDOWN_REAPPEAR` collapses them.
+
+Raising `NOTIFICATIONS_TRACK_CONFIDENCE_FLOOR` against the flicker makes things **worse**: the weak
+night-time detections it discards are what kept the static object's absences short, so dropping
+them lengthens every absence and produces more reappearances, not fewer.
+
+### Reading the tracker's debug line
+
+`ObjectTrackerServiceImpl` logs one line per interesting recording at DEBUG:
+
+```
+ObjectTracker: cam=cam2 new=0 matched=3 reappeared=[person:PT3H12M] classFiltered=[cow:PT8H2M] unobserved=0 stale=107 maxAbsence=PT8H2M (recording=<uuid>)
+```
+
+The format changed in this release and **breaks existing greps**: `reappeared=` used to carry a count
+(`reappeared=1`), so a pattern like `reappeared=[1-9]` now matches nothing. `maxAbsence` is new.
+
+- `maxAbsence` — the largest absence among **all** matched tracks, including those that stayed
+  below `REAPPEAR_GAP`. This is the number to tune the gap against: it shows where the boundary
+  currently runs and what raising the threshold would start catching. `n/a` when nothing matched.
+  It is accumulated *before* the watch-window guard, so it also absorbs the absences reported as
+  `unobserved` — after a ten-hour processing interruption it reads `PT10H` next to genuinely
+  sub-threshold minutes, and a non-zero `unobserved=N` on the same line is the sign to discard it.
+- `reappeared=[class:duration]` — the reappearances that fired, each with its own absence.
+- `classFiltered=[class:duration]` — absences past the gap that `REAPPEAR_CLASSES` kept quiet. The
+  line is emitted for these too, so a filtered deployment still shows what it is suppressing.
+- `unobserved=N` — absences discarded because the tracker was not watching when they began.
+
+The line stays off ordinary recordings: it is emitted only when something new appeared, something
+reappeared, something was filtered, or something was unobserved.
+
+None of it is visible at the default level. `log4j2.yaml.example` ships `ru.zinin` at `info`, so a
+deployment built from the example configuration logs nothing of the above. Turn the two classes up
+explicitly — `application-docker.yaml` is gitignored, so this has to be done per host and cannot be
+assumed to be in place:
+
+```yaml
+logging:
+  level:
+    ru.zinin.frigate.analyzer.service.impl.ObjectTrackerServiceImpl: DEBUG
+    ru.zinin.frigate.analyzer.service.impl.NotificationDecisionServiceImpl: DEBUG
+```
+
+Keep it to those two loggers. `ru.zinin: DEBUG` across the board buries the tracker line under
+per-frame detection output, which is the opposite of what the tuning pass needs.
+
+**Raising or lowering the gap need different data, and DEBUG only carries one of them.** The line is
+emitted at DEBUG only when something happened — a new track, a reappearance, a class-filtered one, an
+unobserved absence. Deciding to *raise* the threshold works from those: every reappearance that fired
+carries its own duration. Deciding to *lower* it does not, because the absences that stayed below the
+gap live on ordinary recordings, and those are exactly the ones DEBUG leaves out — over the
+production night, 5156 of them without a single line.
+
+Switch the tracker to `TRACE` to get them:
+
+```yaml
+logging:
+  level:
+    ru.zinin.frigate.analyzer.service.impl.ObjectTrackerServiceImpl: TRACE
+```
+
+Every recording then emits the same line, `maxAbsence` included — on the order of a few thousand
+lines a night for three cameras. Leave it on for one night, take the distribution of `maxAbsence`
+over the quiet recordings, and turn it back down; there is no reason to run it continuously.
+
+Collect a night of these lines before choosing values, then set the two noise knobs from what they
+show:
+
+```
+NOTIFICATIONS_TRACK_REAPPEAR_CLASSES=person
+NOTIFICATIONS_COOLDOWN_REAPPEAR=PT5M
+```
