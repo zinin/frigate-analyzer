@@ -66,6 +66,11 @@ class FirstTimeScanTask(
          * is unreachable unless something raises `CancellationException` by hand.
          */
         val failed: Int,
+        /**
+         * Date subtrees skipped by `isPrunableDate` only — an unreadable entry is not counted
+         * here. There is no `CAMERA_DEPTH` stop in this walk: the files below a camera are the
+         * point.
+         */
         val prunedSubtrees: Int,
         /** Every filesystem entry visited: directories + files (files are the point here, unlike registerAllDirs). */
         val visitedEntries: Int,

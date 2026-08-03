@@ -63,6 +63,10 @@ data class IterationResult(
  */
 data class RegistrationResult(
     val registered: Int,
+    /**
+     * Date subtrees skipped by `isPrunableDate` only. Neither the `CAMERA_DEPTH` stop nor an
+     * unreadable entry is counted here, so this is narrower than the name alone suggests.
+     */
     val prunedSubtrees: Int,
     val visitedEntries: Int,
     val visitedFiles: Int,

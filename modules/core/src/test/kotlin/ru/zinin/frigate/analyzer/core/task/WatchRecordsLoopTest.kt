@@ -314,7 +314,7 @@ class WatchRecordsLoopTest {
             val result = loopFor(root).registerAllDirs(root, watchService, dirs)
 
             assertFalse(dirs.containsKey(nested))
-            assertEquals(17, result.visitedEntries, "the camera directory must not be opened")
+            assertEquals(17, result.visitedEntries, "the camera directory's contents must not be enumerated")
             assertEquals(0, result.visitedFiles)
         } finally {
             watchService.close()
