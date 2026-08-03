@@ -28,6 +28,7 @@ import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ObjectTrackerServiceImplTest {
@@ -420,6 +421,91 @@ class ObjectTrackerServiceImplTest {
 
             assertEquals(1, delta.matchedTracksCount)
             assertEquals(0, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `maxAbsence reports an absence that never crossed the gap`() =
+        runTest {
+            // longTtlProps puts the gap at PT1H, so 40 minutes produces no reappearance at all —
+            // and used to leave no trace of how close it came. This is the number an operator needs
+            // in order to decide whether lowering the gap would start catching real returns.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofMinutes(40)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(0, delta.reappearedTracksCount)
+            assertEquals(Duration.ofMinutes(40), delta.maxAbsence)
+        }
+
+    @Test
+    fun `maxAbsence takes the largest absence across every matched track`() =
+        runTest {
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            coEvery { repo.findActive(any(), any(), any()) } returns
+                listOf(
+                    track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofMinutes(40))),
+                    track("car", 0.6f, 0.6f, 0.9f, 0.9f, lastSeen = fixedNow.minus(Duration.ofMinutes(55))),
+                )
+
+            val delta =
+                svc.evaluate(
+                    rec(),
+                    listOf(
+                        det("person", 0.01f, 0.0f, 0.51f, 0.5f),
+                        det("car", 0.61f, 0.6f, 0.91f, 0.9f),
+                    ),
+                )
+
+            assertEquals(2, delta.matchedTracksCount)
+            assertEquals(Duration.ofMinutes(55), delta.maxAbsence)
+        }
+
+    @Test
+    fun `the largest absence wins even when a shorter one is measured after it`() =
+        runTest {
+            // The test above cannot fail on the mistake it is named for: clustering preserves
+            // encounter order, so its longer absence is measured last and a plain assignment would
+            // land on the same value as a running maximum. Here the longest is measured first, so
+            // only a real maximum survives the shorter one that follows.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            coEvery { repo.findActive(any(), any(), any()) } returns
+                listOf(
+                    track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofMinutes(40))),
+                    track("car", 0.6f, 0.6f, 0.9f, 0.9f, lastSeen = fixedNow.minus(Duration.ofMinutes(55))),
+                )
+
+            val delta =
+                svc.evaluate(
+                    rec(),
+                    listOf(
+                        det("car", 0.61f, 0.6f, 0.91f, 0.9f),
+                        det("person", 0.01f, 0.0f, 0.51f, 0.5f),
+                    ),
+                )
+
+            assertEquals(2, delta.matchedTracksCount)
+            assertEquals(Duration.ofMinutes(55), delta.maxAbsence)
+        }
+
+    @Test
+    fun `an out-of-order recording contributes no absence at all`() =
+        runTest {
+            // A later recording already advanced this track past the one being evaluated, so the
+            // distance is negative. Letting it win coerceAtLeast would render maxAbsence=PT-3H.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.plus(Duration.ofHours(3)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertNull(delta.maxAbsence)
         }
 
     @Test

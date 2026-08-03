@@ -164,8 +164,11 @@ class ObjectTrackerServiceImpl(
 
         var matched = 0
         var unobservedAbsences = 0
+        // Tracked over every matched track, not just the ones past the gap: the sub-threshold
+        // absences are what shows where the gap could be moved to.
+        var maxAbsence: Duration? = null
         val newClasses = mutableListOf<String>()
-        val reappearedClasses = mutableListOf<String>()
+        val reappeared = mutableListOf<ClassAbsence>()
         for (bbox in representatives) {
             val match =
                 active
@@ -206,6 +209,16 @@ class ObjectTrackerServiceImpl(
                     )
                 check(updated == 1L) { "Object track $matchId disappeared before update" }
                 matched++
+                // Negative for an out-of-order (older) recording: a later one already advanced the
+                // track past this timestamp, which the comment on `absence` above spells out and
+                // `out-of-order older recording never counts as reappeared` already exercises. That
+                // is not an absence, and `?: absence` would take it unconditionally — a recording
+                // whose only match is out-of-order would print `maxAbsence=PT-3H` and corrupt the
+                // one number reappear-gap gets tuned against. Filtered here, not at render time, so
+                // `maxAbsence` stays null and renders `n/a`: nothing measurable happened.
+                if (absence != null && !absence.isNegative) {
+                    maxAbsence = maxAbsence?.coerceAtLeast(absence) ?: absence
+                }
                 // Strictly greater, not >=: findActive's lower bound is inclusive
                 // (last_seen_at >= recordingTimestamp - ttl), so the largest absence a matched track
                 // can show is exactly ttl. Demanding more than the gap is what keeps the default
@@ -218,7 +231,7 @@ class ObjectTrackerServiceImpl(
                     if (lastSeen.isBefore(watchedSince)) {
                         unobservedAbsences++
                     } else {
-                        reappearedClasses += bbox.className
+                        reappeared += ClassAbsence(bbox.className, absence)
                     }
                 }
             } else {
@@ -239,21 +252,37 @@ class ObjectTrackerServiceImpl(
                 newClasses += bbox.className
             }
         }
-        val newCount = newClasses.size
-        if (newCount > 0 || reappearedClasses.isNotEmpty() || unobservedAbsences > 0) {
-            logger.debug {
-                "ObjectTracker: cam=${recording.camId} new=$newCount matched=$matched " +
-                    "reappeared=${reappearedClasses.size} unobserved=$unobservedAbsences " +
-                    "stale=${active.size} (recording=${recording.id})"
-            }
+        val summary =
+            TrackerSummary(
+                camId = recording.camId,
+                recordingId = recording.id,
+                newCount = newClasses.size,
+                matched = matched,
+                reappeared = reappeared,
+                classFiltered = emptyList(),
+                unobserved = unobservedAbsences,
+                stale = active.size,
+                maxAbsence = maxAbsence,
+            )
+        if (summary.worthLogging) {
+            logger.debug { summary.render() }
+        } else {
+            // The recordings DEBUG deliberately keeps out — everything matched, every absence below
+            // the gap — are the only carrier of the sub-threshold distribution, and the spec asks
+            // both for that distribution and for the DEBUG line to stay rare. TRACE satisfies both:
+            // the line is no more frequent at DEBUG than before, and an operator tuning the gap
+            // downwards can switch TRACE on for one night and get the full picture. Costs nothing
+            // while off — kotlin-logging never evaluates the lambda for a disabled level.
+            logger.trace { summary.render() }
         }
         return DetectionDelta(
-            newTracksCount = newCount,
+            newTracksCount = newClasses.size,
             matchedTracksCount = matched,
             staleTracksCount = active.size,
             newClasses = newClasses,
-            reappearedTracksCount = reappearedClasses.size,
-            reappearedClasses = reappearedClasses,
+            reappearedTracksCount = reappeared.size,
+            reappearedClasses = reappeared.map { it.className },
+            maxAbsence = maxAbsence,
         )
     }
 
