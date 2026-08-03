@@ -28,6 +28,11 @@ data class NotificationCooldownProperties(
      * the burst length (tens of seconds) and below the shortest interval between two visits worth
      * telling apart.
      *
+     * Gates the `REAPPEARED` branch only, and that branch is reached only when the recording brought
+     * no new tracks: `NEW_OBJECTS` is decided first and neither reads nor arms this window. A burst
+     * whose recordings mix new objects with reappearances therefore still yields one notification per
+     * such recording — they go out as `NEW_OBJECTS`, which this gate deliberately never touches.
+     *
      * Keyed by camera id alone, deliberately class-agnostic: whichever class reaches `REAPPEARED`
      * first arms the window for every class on that camera, so a flickering bicycle can mute a
      * person's return for the length of the cooldown. Meant to be set together with

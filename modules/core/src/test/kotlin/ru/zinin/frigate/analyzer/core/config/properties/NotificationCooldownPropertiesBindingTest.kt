@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.core.config.properties
 
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.service.config.NotificationCooldownProperties
 import java.time.Duration
@@ -34,6 +35,19 @@ class NotificationCooldownPropertiesBindingTest {
         val props = bind(env = mapOf("APPLICATION_NOTIFICATIONS_COOLDOWN_REAPPEAR" to "PT5M"))
 
         assertThat(props.reappear).isEqualTo(Duration.ofMinutes(5))
+    }
+
+    @Test
+    fun `a negative cooldown is rejected rather than binding to a silently disabled gate`() {
+        assertThatThrownBy { bind(env = mapOf("NOTIFICATIONS_COOLDOWN_REAPPEAR" to "PT-5M")) }
+            .hasRootCauseInstanceOf(IllegalArgumentException::class.java)
+            // The `require` itself is already pinned by a direct-construction test. What this adds is
+            // the environment path: Spring's Duration converter accepts a negative ISO-8601 value and
+            // hands it to the constructor, so the fail-fast really does stop the container instead of
+            // being unreachable from a deployment — the same property the tracker's all-blank
+            // reappear-classes test establishes for its own list.
+            .rootCause()
+            .hasMessageContaining("must be >= PT0S")
     }
 
     private fun bind(env: Map<String, Any> = emptyMap()): NotificationCooldownProperties =

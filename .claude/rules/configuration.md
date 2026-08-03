@@ -284,6 +284,12 @@ anchored patterns like `reappeared=(\d+) unobserved=` break for that second, ind
   It is accumulated *before* the watch-window guard, so it also absorbs the absences reported as
   `unobserved` — after a ten-hour processing interruption it reads `PT10H` next to genuinely
   sub-threshold minutes, and a non-zero `unobserved=N` on the same line is the sign to discard it.
+  That sign only fires for interruptions **longer than `REAPPEAR_GAP`**: `unobserved` is counted
+  inside the same `absence > REAPPEAR_GAP` guard, so a stall shorter than the gap inflates
+  `maxAbsence` silently, with `unobserved=0`. Under `PT1H` a fifty-minute stall prints
+  `maxAbsence=PT50M unobserved=0` on an otherwise quiet recording — exactly the kind of line the
+  TRACE collection below is made of, and read at face value it argues *against* the lowering it
+  should be arguing for. Catch those by the gap between consecutive TRACE lines, not by `unobserved`.
 - `reappeared=[class:duration]` — the reappearances the tracker recorded, each with its own absence.
   A cooldown-suppressed one still appears here: the gate drops the announcement, not the bookkeeping.
 - `classFiltered=[class:duration]` — absences past the gap that `REAPPEAR_CLASSES` kept quiet. The

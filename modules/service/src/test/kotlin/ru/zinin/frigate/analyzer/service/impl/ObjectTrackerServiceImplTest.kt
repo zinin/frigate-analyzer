@@ -814,8 +814,12 @@ class ObjectTrackerServiceImplTest {
             // The watch-window guard is the more fundamental one and is checked first: an absence
             // nobody watched is not evidence of anything, filtered class or not. The class is
             // deliberately one personOnlyProps *allows*, so the class filter cannot be what
-            // suppresses this — only the missing watchFrom can. Swap the two guards and the
-            // reappearance registers.
+            // suppresses this — only the missing watchFrom can. Reordering the two into a plain
+            // `if / else if` swap does NOT break this: an allowed class falls straight through to
+            // the window check and stays unobserved. What does break it is subordinating the window
+            // check to the class filter — testing `reappearAllows` first and the window only inside
+            // the branch it rejects — which lets an allowed track past the window entirely and turns
+            // reappearedTracksCount into 1.
             val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
             val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(8)))
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)

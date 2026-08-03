@@ -137,7 +137,9 @@ class NotificationDecisionServiceImpl(
     /**
      * Distance from this camera's last announced reappearance to [recording] while the cooldown
      * still covers it; `null` when the notification may go out — in which case the window has
-     * already been re-armed on [recording] by the time this returns.
+     * already been re-armed by the time this returns, on whichever of [recording] and the previous
+     * anchor is the newer (an out-of-order recording old enough to clear the window announces itself
+     * without dragging the anchor back onto its own timestamp).
      *
      * Signed for the log line, compared by absolute value. A burst is drained in whichever
      * direction the queue hands it over — newest-first is the normal case — and both directions

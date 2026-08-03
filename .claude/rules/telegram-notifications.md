@@ -84,8 +84,10 @@ The flags are read before dispatching notifications:
   schedule.
 - **Reappearance cooldown** — `NotificationDecisionServiceImpl` suppresses a `REAPPEARED`
   notification with reason `COOLDOWN` when the same camera announced one less than
-  `NOTIFICATIONS_COOLDOWN_REAPPEAR` ago, measured on `recording.recordTimestamp` rather than the
-  wall clock (a backlog drained newest-first would otherwise collapse into one notification). The
+  `NOTIFICATIONS_COOLDOWN_REAPPEAR` away — in either direction, since the distance is compared by
+  absolute value and a newest-first drain usually judges a recording *older* than the anchor —
+  measured on `recording.recordTimestamp` rather than the wall clock (a backlog drained newest-first
+  would otherwise collapse into one notification). The
   anchor is the newest recording announced as `REAPPEARED` per camera, held in memory only.
   `NEW_OBJECTS` is never gated by it, and the tracker has already run by the time the gate is
   reached — suppression drops the announcement, never the bookkeeping. Disabled by default.
