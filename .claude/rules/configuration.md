@@ -181,6 +181,7 @@ Settings under `application.notifications` in `application.yaml`. Object tracker
 | `NOTIFICATIONS_TRACK_CLEANUP_INTERVAL_MS` | 3600000 | `@Scheduled` cleanup job period in milliseconds. |
 | `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | 1h | DELETE rows with `last_seen_at < now() - retention`. Larger than TTL. |
 | `NOTIFICATIONS_TRACK_REAPPEAR_GAP` | = TTL | Matched track absent longer than this → notify as `REAPPEARED`. Must be > 0 and <= TTL; defaulting to TTL makes it a no-op (the comparison is strict, and TTL also bounds `findActive`). |
+| `NOTIFICATIONS_TRACK_REAPPEAR_CLASSES` | (empty) | Comma-separated classes allowed to notify as `REAPPEARED`. Empty = all classes (no-op). Matching is case-insensitive and trims; blank entries are ignored, but a list of nothing but blanks fails at binding. Does **not** affect `NEW_OBJECTS` — a class left out still notifies the first time it is seen. Unrelated to `DETECTION_FILTER_CLASSES`. |
 
 ### Tuning REAPPEAR_GAP under a long TTL
 

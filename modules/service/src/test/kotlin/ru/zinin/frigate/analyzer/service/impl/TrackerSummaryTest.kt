@@ -81,4 +81,18 @@ class TrackerSummaryTest {
         // for exactly the recordings the operator needs to inspect.
         assertTrue(summary(classFiltered = listOf(ClassAbsence("cow", Duration.ofHours(8)))).worthLogging)
     }
+
+    @Test
+    fun `render lists class-filtered reappearances separately from the ones that fired`() {
+        val rendered =
+            summary(
+                matched = 2,
+                reappeared = listOf(ClassAbsence("person", Duration.ofHours(3))),
+                classFiltered = listOf(ClassAbsence("cow", Duration.ofHours(8))),
+                maxAbsence = Duration.ofHours(8),
+            ).render()
+
+        assertTrue(rendered.contains("reappeared=[person:PT3H]"), rendered)
+        assertTrue(rendered.contains("classFiltered=[cow:PT8H]"), rendered)
+    }
 }

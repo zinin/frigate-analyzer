@@ -699,4 +699,127 @@ class ObjectTrackerServiceImplTest {
             assertEquals(7L, deleted)
             coVerify { repo.deleteExpired(Instant.parse("2026-04-27T11:00:00Z")) }
         }
+
+    /** The tuned prod shape plus the allow-list: only a person's *return* is an event. */
+    private val personOnlyProps =
+        ObjectTrackerProperties(
+            ttl = Duration.ofHours(12),
+            reappearGap = Duration.ofHours(1),
+            cleanupRetention = Duration.ofHours(48),
+            reappearClasses = listOf("person"),
+        )
+
+    @Test
+    fun `a class outside reappear-classes does not produce a reappearance`() =
+        runTest {
+            // Group A of the production run: a cow standing in the same spot, lost by the detector
+            // at night and found again at dawn. The absence is real and observed — only the class
+            // says it is not an event.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            val existing = track("cow", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("cow", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            // Matched and updated as always — only the notification-worthy verdict changes, so the
+            // decision service falls through to ALL_REPEATED on its own.
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+            assertTrue(delta.reappearedClasses.isEmpty())
+            coVerify(exactly = 1) { repo.updateOnMatch(existing.id!!, any(), any(), any(), any(), any(), recId) }
+        }
+
+    @Test
+    fun `a class outside reappear-classes still notifies the first time it is seen`() =
+        runTest {
+            // The distinction the whole feature rests on: "a new cow" is an event, "the cow is
+            // back" is not. Nothing here touches DETECTION_FILTER_CLASSES.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
+            coEvery { repo.findActive(any(), any(), any()) } returns emptyList()
+            coEvery { uuid.generateV1() } returns UUID.randomUUID()
+
+            val delta = svc.evaluate(rec(), listOf(det("cow", 0f, 0f, 0.5f, 0.5f)))
+
+            assertEquals(1, delta.newTracksCount)
+            assertEquals(listOf("cow"), delta.newClasses)
+        }
+
+    @Test
+    fun `a class inside reappear-classes reappears as before`() =
+        runTest {
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.reappearedTracksCount)
+            assertEquals(listOf("person"), delta.reappearedClasses)
+        }
+
+    @Test
+    fun `an empty reappear-classes list lets every class reappear`() =
+        runTest {
+            // The documented default, pinned explicitly: longTtlProps leaves the list empty.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            val existing = track("cow", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("cow", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.reappearedTracksCount)
+            assertEquals(listOf("cow"), delta.reappearedClasses)
+        }
+
+    @Test
+    fun `reappear-classes matching ignores case, surrounding space and empty entries`() =
+        runTest {
+            // The value arrives from a comma-separated env variable, so all three are ordinary.
+            val props =
+                ObjectTrackerProperties(
+                    ttl = Duration.ofHours(12),
+                    reappearGap = Duration.ofHours(1),
+                    cleanupRetention = Duration.ofHours(48),
+                    reappearClasses = listOf("  PERSON  ", "", "   "),
+                )
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, props, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `a reappear-classes list of nothing but blanks is rejected at construction`() {
+        // Normalizing it away would silently mean "all classes" — the exact opposite of the intent
+        // behind setting the variable at all.
+        assertFailsWith<IllegalArgumentException> {
+            ObjectTrackerProperties(reappearClasses = listOf(" ", ""))
+        }
+    }
+
+    @Test
+    fun `an unobserved absence stays unobserved regardless of the class filter`() =
+        runTest {
+            // The watch-window guard is the more fundamental one and is checked first: an absence
+            // nobody watched is not evidence of anything, filtered class or not.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
+            val existing = track("cow", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(8)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("cow", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+        }
 }

@@ -34,7 +34,29 @@ data class ObjectTrackerProperties(
      * flakiness gap for static objects, otherwise they re-notify.
      */
     val reappearGap: Duration = ttl,
+    /**
+     * Classes allowed to produce a REAPPEARANCE notification. Empty — the default — means all of
+     * them, which is what keeps this a no-op out of the box.
+     *
+     * Gates *returns* only. A class left out still notifies the first time it is seen: "a new cow"
+     * is an event, "the cow is back" is not. Deliberately separate from
+     * `application.detection-filter.allowed-classes`, which decides what is detected at all and
+     * must not be narrowed to achieve this.
+     *
+     * Static objects are what it exists for. A bicycle the detector loses at dusk and finds again
+     * at dawn shows an absence that no [reappearGap] can tell apart from a person who left in the
+     * evening and came back in the morning — the durations are the same. The class can.
+     */
+    val reappearClasses: List<String> = emptyList(),
 ) {
+    /** [reappearClasses] prepared for lookup: trimmed, lower-cased, blanks dropped. */
+    val reappearClassesNormalized: Set<String> =
+        reappearClasses.mapNotNull { it.trim().lowercase().ifEmpty { null } }.toSet()
+
+    /** `true` when [className] may produce a reappearance. An empty list allows every class. */
+    fun reappearAllows(className: String): Boolean =
+        reappearClassesNormalized.isEmpty() || className.trim().lowercase() in reappearClassesNormalized
+
     init {
         require(!ttl.isZero && !ttl.isNegative) {
             "application.notifications.tracker.ttl must be > 0, got $ttl"
@@ -54,6 +76,10 @@ data class ObjectTrackerProperties(
         }
         require(cleanupIntervalMs > 0) {
             "application.notifications.tracker.cleanup-interval-ms must be > 0, got $cleanupIntervalMs"
+        }
+        require(reappearClasses.isEmpty() || reappearClassesNormalized.isNotEmpty()) {
+            "application.notifications.tracker.reappear-classes was set but holds no usable class " +
+                "name; an all-blank list would silently mean \"every class\", got $reappearClasses"
         }
     }
 }

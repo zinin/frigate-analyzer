@@ -169,6 +169,7 @@ class ObjectTrackerServiceImpl(
         var maxAbsence: Duration? = null
         val newClasses = mutableListOf<String>()
         val reappeared = mutableListOf<ClassAbsence>()
+        val classFiltered = mutableListOf<ClassAbsence>()
         for (bbox in representatives) {
             val match =
                 active
@@ -230,6 +231,11 @@ class ObjectTrackerServiceImpl(
                     // interruption would otherwise slip through on the next one.
                     if (lastSeen.isBefore(watchedSince)) {
                         unobservedAbsences++
+                    } else if (!properties.reappearAllows(bbox.className)) {
+                        // Dropped here rather than in the decision service so reappearedTracksCount
+                        // never grows and the decision falls through to ALL_REPEATED on its own.
+                        // The track itself is matched and advanced exactly as before.
+                        classFiltered += ClassAbsence(bbox.className, absence)
                     } else {
                         reappeared += ClassAbsence(bbox.className, absence)
                     }
@@ -259,7 +265,7 @@ class ObjectTrackerServiceImpl(
                 newCount = newClasses.size,
                 matched = matched,
                 reappeared = reappeared,
-                classFiltered = emptyList(),
+                classFiltered = classFiltered,
                 unobserved = unobservedAbsences,
                 stale = active.size,
                 maxAbsence = maxAbsence,
