@@ -4,7 +4,11 @@
 
 **Goal:** Cut the reappearance-notification noise found in the v0.9.1 production run by adding a per-camera cooldown, a class allow-list for reappearances, and the absence data needed to tune both — every one of them a no-op unless explicitly configured.
 
-**Architecture:** Three independent changes across two existing services. `ObjectTrackerServiceImpl` gains a class filter on the reappearance branch and a richer debug summary extracted into an internal `TrackerSummary` value type. `NotificationDecisionServiceImpl` gains an in-memory per-camera cooldown on the `REAPPEARED` branch only, keyed and measured on `recording.recordTimestamp` rather than the wall clock. No schema change, no new module, no change to the gate order in `evaluate`.
+**Architecture:** Three independently *configurable* changes across two existing services — but the
+tasks that build them are **sequential, not parallel**: Task 2 consumes `ClassAbsence` and
+`TrackerSummary` from Task 1, and Task 3 consumes `ProductionYamlBinder` from Task 2 (each task's
+`Interfaces` block names what it takes). Dispatch them one after another; a controller that fans them
+out concurrently will have two of the three fail to compile. `ObjectTrackerServiceImpl` gains a class filter on the reappearance branch and a richer debug summary extracted into an internal `TrackerSummary` value type. `NotificationDecisionServiceImpl` gains an in-memory per-camera cooldown on the `REAPPEARED` branch only, keyed and measured on `recording.recordTimestamp` rather than the wall clock. No schema change, no new module, no change to the gate order in `evaluate`.
 
 **Tech Stack:** Kotlin 2.4.10, Spring Boot 4.1.0 (`@ConfigurationProperties` constructor binding), Coroutines, JUnit 5 + MockK + `kotlin.test`, ktlint.
 
@@ -24,6 +28,14 @@
 - **Do not touch `WatchRecordsLoop.registerAllDirs`.**
 - **Do not "fix" the documented trade-offs** in `ObjectTrackerServiceImpl`'s KDoc (interruption threshold == gap; residual drain-order case in `markWatched`; one-off burst after a long tracker-only outage).
 - **Git:** `git add <file>` after creating or modifying any file.
+- **The index is dirty with unrelated work.** `docs/deep-research-review-report.md`,
+  `docs/telegram-rich-message-migration.md` and
+  `docs/superpowers/plans/2026-08-03-watch-records-registration-continuation-prompt.md` were already
+  staged before this branch started, and the tree carries a pile of untracked `docs/` files besides.
+  A bare `git commit -m` would sweep them into a task commit. Every commit step below therefore has
+  to be **path-scoped** — repeat the same paths after `git add`:
+  `git commit <path> <path> … -m "…"`. Verify with `git show --stat HEAD` after each commit that
+  nothing foreign got in.
 - **Never run `./gradlew build` directly** — use the `claude-forge:build-runner` agent or `/build`. On ktlint errors run `./gradlew ktlintFormat` and retry.
 
 ## File Structure
@@ -50,7 +62,7 @@
 
 ## Deviations from the spec — read before starting
 
-Two small additions, both deliberate; do not "simplify" them away during review.
+Three deliberate departures; do not "simplify" them away during review.
 
 1. **`classFiltered=[...]` in the tracker debug line, and `classFiltered.isNotEmpty()` added to the
    line's emit condition.** The spec asks to preserve the existing condition
@@ -67,6 +79,16 @@ Two small additions, both deliberate; do not "simplify" them away during review.
    distance also keeps the backlog case intact: a recording hours away from the anchor is a
    different event on either side and still notifies — which is the whole reason the spec forbids a
    wall-clock cooldown.
+
+3. **A `reappear-classes` list holding nothing but blanks fails at binding instead of being ignored.**
+   The spec (§2, "пустые элементы списка игнорировать") read literally makes `[" ", ""]` normalize to
+   nothing and therefore mean *every class* — a no-op. That is the opposite of what an operator who
+   set the variable wanted, and it fails silently: no error, no log, reappearances simply keep coming.
+   The `require` in `ObjectTrackerProperties.init` turns it into a startup failure instead, matching
+   how the class already treats every other broken invariant. Blank entries inside an otherwise usable
+   list are still ignored exactly as the spec asks — only the all-blank list is rejected. The no-op
+   default is untouched: an unconfigured variable resolves to an empty string, binds to an empty list,
+   and passes.
 
 **Not injecting `Clock` into `NotificationDecisionServiceImpl`.** The spec allows for it "where
 wall-clock is needed at all"; the finished logic needs none, so the constructor stays free of an
@@ -281,7 +303,14 @@ Then, in the `if (match != null)` branch, replace line 208 (`matched++`) with:
 
 ```kotlin
                 matched++
-                if (absence != null) {
+                // Negative for an out-of-order (older) recording: a later one already advanced the
+                // track past this timestamp, which the KDoc at lines 191-193 spells out and
+                // `out-of-order older recording never counts as reappeared` already exercises. That
+                // is not an absence, and `?: absence` would take it unconditionally — a recording
+                // whose only match is out-of-order would print `maxAbsence=PT-3H` and corrupt the
+                // one number reappear-gap gets tuned against. Filtered here, not at render time, so
+                // `maxAbsence` stays null and renders `n/a`: nothing measurable happened.
+                if (absence != null && !absence.isNegative) {
                     maxAbsence = maxAbsence?.coerceAtLeast(absence) ?: absence
                 }
 ```
@@ -366,12 +395,18 @@ Expected: PASS — the existing `ObjectTrackerServiceImplTest` cases still hold,
 git add modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummary.kt \
         modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummaryTest.kt \
         modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt
+# Path-scoped, as Global Constraints require: the index carries unrelated staged docs, and a bare
+# `git commit -m` would sweep every one of them into this commit.
 git commit -m "feat(tracker): log actual absence durations in the tracker summary
 
 reappear-gap was picked blind: absences below the threshold never surfaced,
 so nothing showed where the boundary between detector flakiness and a real
 return actually lies. The debug line now carries maxAbsence over all matched
-tracks and a per-class breakdown of the reappearances that fired."
+tracks and a per-class breakdown of the reappearances that fired." \
+    -- modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummary.kt \
+       modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummaryTest.kt \
+       modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt
+git show --stat HEAD   # must list exactly the three files above, nothing else
 ```
 
 ---
@@ -760,7 +795,45 @@ Add these tests to the class:
         assertThat(props.reappearAllows("PERSON")).isTrue()
         assertThat(props.reappearAllows("bicycle")).isFalse()
     }
+
+    @Test
+    fun `an explicitly empty variable binds the same as an unset one`() {
+        // A different path through the binder than the test above: docker compose and systemd both
+        // export `NOTIFICATIONS_TRACK_REAPPEAR_CLASSES=` as a present-but-empty variable, where the
+        // unset case never reaches the environment at all and resolves through the yaml default.
+        // Both have to end at an empty list — anything else means the container fails to start on a
+        // configuration that asked for nothing.
+        val props = bind(env = mapOf("NOTIFICATIONS_TRACK_REAPPEAR_CLASSES" to ""))
+
+        assertThat(props.reappearClasses).isEmpty()
+        assertThat(props.reappearAllows("cow")).isTrue()
+    }
 ```
+
+- [ ] **Step 8a: Pin what the delimited converter does with an all-blank variable**
+
+The `require` added in Step 3 rejects a list holding nothing usable, and
+`a reappear-classes list of nothing but blanks is rejected at construction` proves that at the
+**constructor** level. Whether an operator's typo can ever reach it is a different question, decided
+by the delimited-string converter: if it trims and drops blank elements, `" , "` arrives as an empty
+list, the `require` passes, and the deployment silently gets "every class" — the exact outcome the
+fail-fast was written to prevent.
+
+Add to `ObjectTrackerPropertiesBindingTest`:
+
+```kotlin
+    @Test
+    fun `an all-blank variable is rejected rather than silently meaning every class`() {
+        assertThatThrownBy { bind(env = mapOf("NOTIFICATIONS_TRACK_REAPPEAR_CLASSES" to " , ")) }
+            .hasRootCauseInstanceOf(IllegalArgumentException::class.java)
+    }
+```
+
+**Do not bend this test to match whatever the converter happens to do.** If it fails because the
+converter swallows the blanks, the fail-fast is unreachable from the environment path: leave the
+assertion as the statement of intent, report it to the user, and let them decide between moving the
+check (e.g. rejecting a non-blank-but-unusable raw string) and accepting that only a programmatic
+constructor call can trip it. Bending it would turn a real gap into a green test.
 
 - [ ] **Step 9: Run the binding tests**
 
@@ -797,13 +870,25 @@ git add modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/config
         modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/ObjectTrackerPropertiesBindingTest.kt \
         docker/deploy/.env.example \
         .claude/rules/configuration.md
+# Path-scoped, as Global Constraints require. Repeat the paths literally rather than via a shell
+# variable: each command may be run as its own Bash call, and shell state does not survive between them.
 git commit -m "feat(tracker): restrict reappearance notifications to chosen classes
 
 A static object lost at dusk and found at dawn is indistinguishable, by
 absence duration alone, from a visitor who left in the evening and returned
 in the morning — no reappear-gap separates them. NOTIFICATIONS_TRACK_REAPPEAR_CLASSES
 does, without touching what is detected or what notifies as new. Empty by
-default, so nothing changes until it is set."
+default, so nothing changes until it is set." \
+    -- modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/config/ObjectTrackerProperties.kt \
+       modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImpl.kt \
+       modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/ObjectTrackerServiceImplTest.kt \
+       modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/TrackerSummaryTest.kt \
+       modules/core/src/main/resources/application.yaml \
+       modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/ProductionYamlBinder.kt \
+       modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/ObjectTrackerPropertiesBindingTest.kt \
+       docker/deploy/.env.example \
+       .claude/rules/configuration.md
+git show --stat HEAD   # must list exactly the nine files above, nothing else
 ```
 
 ---
@@ -1057,12 +1142,73 @@ Then append these tests to the class:
         }
 
     @Test
+    fun `a detection-less recording leaves the cooldown untouched`() =
+        runTest {
+            // NO_DETECTIONS short-circuits above every gate, so the anchor is neither read nor
+            // written. Cheap insurance: were the cooldown ever hoisted above that branch, a camera's
+            // own quiet stretch would start eating its next reappearance.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+            svc.evaluate(rec(at = now), listOf(det()))
+
+            val quiet = rec(at = now.plusSeconds(2))
+            justRun { tracker.markObserved(quiet) }
+            val silent = svc.evaluate(quiet, emptyList())
+            val within = svc.evaluate(rec(at = now.plusSeconds(4)), listOf(det()))
+
+            assertEquals(NotificationDecisionReason.NO_DETECTIONS, silent.reason)
+            // The anchor still sits where the first notification put it — untouched, not refreshed.
+            assertEquals(NotificationDecisionReason.COOLDOWN, within.reason)
+        }
+
+    @Test
+    fun `a reappearance suppressed by the global toggle does not arm the cooldown`() =
+        runTest {
+            // GLOBAL_OFF sits above REAPPEARED, so the branch that writes the anchor is never
+            // reached. Once the toggle is back on, the next reappearance must go out at once —
+            // otherwise switching notifications off would silently swallow the first one after.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns false
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            val off = svc.evaluate(rec(at = now), listOf(det()))
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            val on = svc.evaluate(rec(at = now.plusSeconds(2)), listOf(det()))
+
+            assertEquals(NotificationDecisionReason.GLOBAL_OFF, off.reason)
+            assertTrue(on.shouldNotify)
+            assertEquals(NotificationDecisionReason.REAPPEARED, on.reason)
+        }
+
+    @Test
+    fun `a reappearance suppressed by the schedule does not arm the cooldown`() =
+        runTest {
+            // Same argument one gate down. Reuses the existing nightUtc / dayUtc fixtures.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            val closed = svc.evaluate(rec(at = now), listOf(det()))
+            coEvery { scheduleService.getRecordingSchedule() } returns dayUtc
+            val open = svc.evaluate(rec(at = now.plusSeconds(2)), listOf(det()))
+
+            assertEquals(NotificationDecisionReason.OUT_OF_SCHEDULE, closed.reason)
+            assertTrue(open.shouldNotify)
+        }
+
+    @Test
     fun `a negative cooldown is rejected at construction`() {
         assertFailsWith<IllegalArgumentException> {
             NotificationCooldownProperties(reappear = Duration.ofSeconds(-1))
         }
     }
 ```
+
+`justRun` and `verify` are what the existing `empty detections short-circuit to NO_DETECTIONS` test
+uses for `markObserved`, so it is not a suspend function — do not reach for `coJustRun` here.
+`nightUtc` and `dayUtc` are existing fixtures in the same class.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1159,9 +1305,21 @@ class NotificationDecisionServiceImpl(
      * Newest `recordTimestamp` a REAPPEARED notification has gone out for, per camera.
      *
      * In-memory on purpose: the horizon is minutes, the camera set is small, and losing the map on
-     * restart costs at most one extra notification. Written only when a notification is actually
-     * sent — updating it on suppression too would turn the cooldown into a debounce that a
+     * restart costs at most one extra notification. Written only when this service decides to
+     * notify — updating it on suppression too would turn the cooldown into a debounce that a
      * continuous stream of reappearances could hold shut forever.
+     *
+     * Never evicted. One entry per camera id ever seen, so a renamed or retired camera leaves a
+     * stale entry behind; with a camera set in the single digits that is a few hundred bytes for the
+     * process lifetime, and any eviction policy would cost more than it saves.
+     *
+     * "Decides to notify" is not "delivered": [ru.zinin.frigate.analyzer.core.facade.RecordingProcessingFacade]
+     * sends after `evaluate` returns and swallows a send failure with a log line, by which point the
+     * anchor is already advanced. A failed send therefore also mutes the camera's reappearances for
+     * the length of the cooldown — the one fail-closed spot in a subsystem that is otherwise
+     * uniformly fail-open. Accepted: sending is an enqueue onto the bot's own queue, so the window is
+     * both rare and short. Confirming delivery back into the decision would invert the dependency
+     * between the two layers, which is well outside what a cooldown is worth.
      */
     private val lastReappearNotified = ConcurrentHashMap<String, Instant>()
 ```
@@ -1313,6 +1471,17 @@ In `.claude/rules/configuration.md`, add a row at the end of the Notifications t
 
 ```markdown
 | `NOTIFICATIONS_COOLDOWN_REAPPEAR` | PT0S | Minimum distance between two `REAPPEARED` notifications for one camera; extra ones are suppressed with reason `COOLDOWN`. `PT0S` (default) disables it. Measured on `recordTimestamp`, so a backlog drained newest-first is not collapsed. Does not gate `NEW_OBJECTS`, and never skips the tracker. |
+
+Two things about that row surprise operators the first time and are worth stating outright:
+
+- **`sinceLast` in the suppress line can be negative** (`sinceLast=PT-11S`). The distance is compared
+  by absolute value, and the queue drains newest-first, so the recording being judged is often *older*
+  than the one that anchored the window. A minus sign there is normal, not a bug.
+- **A recording far older than the anchor notifies again.** The anchor holds the newest announced
+  `recordTimestamp` per camera, and anything outside the window on either side counts as its own
+  event. While a large backlog is being drained this can produce two notifications in quick
+  succession — that is the deliberate trade-off which keeps a backlog from collapsing into a single
+  notification, which is what a wall-clock cooldown would do.
 ```
 
 In `.claude/rules/telegram-notifications.md`, add to the "Consumers" list after the "Detection schedule" bullet:
@@ -1340,6 +1509,7 @@ git add modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/config
         docker/deploy/.env.example \
         .claude/rules/configuration.md \
         .claude/rules/telegram-notifications.md
+# Path-scoped, as Global Constraints require.
 git commit -m "feat(notifications): cool down repeated reappearance notifications per camera
 
 One person walking past a frame saturated with stale tracks matches them one
@@ -1347,7 +1517,18 @@ after another, and each of those tracks — untouched for hours — is its own
 reappearance: four notifications in 24 seconds during the production run.
 NOTIFICATIONS_COOLDOWN_REAPPEAR collapses the burst. Measured on
 recordTimestamp so a backlog drained newest-first is not collapsed with it,
-and applied to REAPPEARED only. PT0S by default."
+and applied to REAPPEARED only. PT0S by default." \
+    -- modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/config/NotificationCooldownProperties.kt \
+       modules/model/src/main/kotlin/ru/zinin/frigate/analyzer/model/dto/NotificationDecision.kt \
+       modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/impl/NotificationDecisionServiceImpl.kt \
+       modules/service/src/test/kotlin/ru/zinin/frigate/analyzer/service/impl/NotificationDecisionServiceImplTest.kt \
+       modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/FrigateAnalyzerApplication.kt \
+       modules/core/src/main/resources/application.yaml \
+       modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/NotificationCooldownPropertiesBindingTest.kt \
+       docker/deploy/.env.example \
+       .claude/rules/configuration.md \
+       .claude/rules/telegram-notifications.md
+git show --stat HEAD   # must list exactly the ten files above, nothing else
 ```
 
 ---
@@ -1361,7 +1542,14 @@ The three knobs are only useful together, and the narrative that ties them to th
 
 - [ ] **Step 1: Extend the tuning section**
 
-In `.claude/rules/configuration.md`, immediately after the existing `### Tuning REAPPEAR_GAP under a long TTL` section (which ends with the three-variable code block), add:
+In `.claude/rules/configuration.md`, after the existing `### Tuning REAPPEAR_GAP under a long TTL`
+section. Note that the section does **not** end at the three-variable code block: a paragraph about
+per-user and global notification toggles follows it and belongs to the enclosing `## Notifications`
+section, not to the tuning narrative. Insert **after that paragraph**, at the end of the file —
+inserting straight after the code block would file the toggles paragraph under the new
+`### Reading the tracker's debug line` heading, where it makes no sense.
+
+Add:
 
 ````markdown
 ### When REAPPEAR_GAP alone cannot help
@@ -1390,8 +1578,11 @@ them lengthens every absence and produces more reappearances, not fewer.
 `ObjectTrackerServiceImpl` logs one line per interesting recording at DEBUG:
 
 ```
-ObjectTracker: cam=cam2 new=0 matched=3 reappeared=[person:PT3H12M] classFiltered=[cow:PT8H2M] unobserved=0 stale=107 (recording=<uuid>)
+ObjectTracker: cam=cam2 new=0 matched=3 reappeared=[person:PT3H12M] classFiltered=[cow:PT8H2M] unobserved=0 stale=107 maxAbsence=PT8H2M (recording=<uuid>)
 ```
+
+The format changed in this release and **breaks existing greps**: `reappeared=` used to carry a count
+(`reappeared=1`), so a pattern like `reappeared=[1-9]` now matches nothing. `maxAbsence` is new.
 
 - `maxAbsence` — the largest absence among **all** matched tracks, including those that stayed
   below `REAPPEAR_GAP`. This is the number to tune the gap against: it shows where the boundary
@@ -1402,9 +1593,22 @@ ObjectTracker: cam=cam2 new=0 matched=3 reappeared=[person:PT3H12M] classFiltere
 - `unobserved=N` — absences discarded because the tracker was not watching when they began.
 
 The line stays off ordinary recordings: it is emitted only when something new appeared, something
-reappeared, something was filtered, or something was unobserved. On production, DEBUG for
-`ObjectTrackerServiceImpl` and `NotificationDecisionServiceImpl` is already enabled through
-`docker/deploy/application-docker.yaml`.
+reappeared, something was filtered, or something was unobserved.
+
+None of it is visible at the default level. `log4j2.yaml.example` ships `ru.zinin` at `info`, so a
+deployment built from the example configuration logs nothing of the above. Turn the two classes up
+explicitly — `application-docker.yaml` is gitignored, so this has to be done per host and cannot be
+assumed to be in place:
+
+```yaml
+logging:
+  level:
+    ru.zinin.frigate.analyzer.service.impl.ObjectTrackerServiceImpl: DEBUG
+    ru.zinin.frigate.analyzer.service.impl.NotificationDecisionServiceImpl: DEBUG
+```
+
+Keep it to those two loggers. `ru.zinin: DEBUG` across the board buries the tracker line under
+per-frame detection output, which is the opposite of what the tuning pass needs.
 
 Collect a night of these lines before choosing values, then set the two noise knobs from what they
 show:
@@ -1415,11 +1619,23 @@ NOTIFICATIONS_COOLDOWN_REAPPEAR=PT5M
 ```
 ````
 
+- [ ] **Step 1a: Fix the `DETECTION_FILTER_CLASSES` row while in the file**
+
+The Detection Filter table lists the default as
+`person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,umbrella`. `application.yaml:102` actually
+ships `person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe`
+— `umbrella` is not in it and the seven animal classes are missing from the docs. That row is
+load-bearing for this task: the whole reappearance-class argument rests on cows being detected and
+notified as new, and the documentation currently says they are not detected at all. Correct it to
+match the yaml.
+
 - [ ] **Step 2: Commit**
 
 ```bash
 git add .claude/rules/configuration.md
-git commit -m "docs: explain what REAPPEAR_GAP cannot fix and how to read the tracker line"
+git commit -m "docs: explain what REAPPEAR_GAP cannot fix and how to read the tracker line" \
+    -- .claude/rules/configuration.md
+git show --stat HEAD   # must list only .claude/rules/configuration.md
 ```
 
 ---
@@ -1448,12 +1664,27 @@ Walk the spec's section 5 explicitly and record the evidence for each:
 
 - [ ] **Step 4: Remove the plan documents before the PR**
 
-Per the global workflow rules, `docs/superpowers/` must not appear in the PR diff:
+Per the global workflow rules, `docs/superpowers/` must not appear in the PR diff. That covers the
+plan **and** the review artefacts this branch accumulated under `docs/superpowers/specs/`.
+
+One `git rm` per file, not two. `git rm --cached` followed by a plain `git rm` on the same path fails:
+the first leaves the file untracked, and the second then dies on `pathspec did not match any files`.
 
 ```bash
-git rm -r --cached docs/superpowers/plans/2026-08-03-notification-noise-reduction.md
-git rm docs/superpowers/plans/2026-08-03-notification-noise-reduction.md
-git commit -m "chore: drop the plan document from the branch"
+git rm docs/superpowers/plans/2026-08-03-notification-noise-reduction.md \
+       docs/superpowers/specs/2026-08-03-notification-noise-reduction-review-merged-iter-1.md \
+       docs/superpowers/specs/2026-08-03-notification-noise-reduction-review-iter-1.md
+git commit -m "chore: drop the plan and review documents from the branch" \
+    -- docs/superpowers/plans/2026-08-03-notification-noise-reduction.md \
+       docs/superpowers/specs/2026-08-03-notification-noise-reduction-review-merged-iter-1.md \
+       docs/superpowers/specs/2026-08-03-notification-noise-reduction-review-iter-1.md
+
+# The rule is now checked, not assumed: this must print nothing.
+# Three dots on purpose — a PR shows the net diff against the merge base, so a file added and then
+# removed inside the branch is absent from it. `git log --stat master..HEAD` would instead list the
+# commit that added the plan (f351ea4) and report a leak that is not there.
+git diff master...HEAD --name-only -- docs/superpowers/
 ```
 
-The document stays reachable in branch history.
+The documents stay reachable in branch history. Adjust the `specs/` paths to whatever iterations
+actually exist — a later review round adds `-iter-2` and so on.
