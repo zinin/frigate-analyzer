@@ -570,10 +570,34 @@ class NotificationDecisionServiceImplTest {
             justRun { tracker.markObserved(quiet) }
             val silent = svc.evaluate(quiet, emptyList())
             val within = svc.evaluate(rec(at = now.plusSeconds(4)), listOf(det()))
+            val past = svc.evaluate(rec(at = now.plus(Duration.ofMinutes(5)).plusSeconds(1)), listOf(det()))
 
             assertEquals(NotificationDecisionReason.NO_DETECTIONS, silent.reason)
-            // The anchor still sits where the first notification put it — untouched, not refreshed.
+            // Still inside the window wherever the anchor sits, so this one only rules out the
+            // cooldown being hoisted above the NO_DETECTIONS short-circuit and reading the gate first.
             assertEquals(NotificationDecisionReason.COOLDOWN, within.reason)
+            // This one is what pins the anchor itself: 5m01s past `now` — outside the window — but
+            // only 4m59s past the quiet recording. Were NO_DETECTIONS to refresh the anchor, it
+            // would come back COOLDOWN.
+            assertEquals(NotificationDecisionReason.REAPPEARED, past.reason)
+        }
+
+    @Test
+    fun `a recording exactly one cooldown from the anchor is announced`() =
+        runTest {
+            // The boundary is exclusive on purpose: the knob reads "minimum distance between two
+            // notifications", so a recording exactly that far away has met it. Nothing else in the
+            // suite distinguishes `<` from `<=` at NotificationDecisionServiceImpl.reappearSuppressedBy,
+            // so flipping the comparison would otherwise pass silently.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            svc.evaluate(rec(at = now), listOf(det()))
+            val onTheBoundary = svc.evaluate(rec(at = now.plus(Duration.ofMinutes(5))), listOf(det()))
+
+            assertTrue(onTheBoundary.shouldNotify)
+            assertEquals(NotificationDecisionReason.REAPPEARED, onTheBoundary.reason)
         }
 
     @Test

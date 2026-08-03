@@ -28,6 +28,11 @@ data class NotificationCooldownProperties(
      * the burst length (tens of seconds) and below the shortest interval between two visits worth
      * telling apart.
      *
+     * Keyed by camera id alone, deliberately class-agnostic: whichever class reaches `REAPPEARED`
+     * first arms the window for every class on that camera, so a flickering bicycle can mute a
+     * person's return for the length of the cooldown. Meant to be set together with
+     * `ObjectTrackerProperties.reappearClasses`, which narrows what can reach this gate at all.
+     *
      * Defaults to [Duration.ZERO], which disables the gate entirely.
      */
     val reappear: Duration = Duration.ZERO,

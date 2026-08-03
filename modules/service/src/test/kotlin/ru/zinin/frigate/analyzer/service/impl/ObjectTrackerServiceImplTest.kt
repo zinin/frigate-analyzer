@@ -812,12 +812,15 @@ class ObjectTrackerServiceImplTest {
     fun `an unobserved absence stays unobserved regardless of the class filter`() =
         runTest {
             // The watch-window guard is the more fundamental one and is checked first: an absence
-            // nobody watched is not evidence of anything, filtered class or not.
+            // nobody watched is not evidence of anything, filtered class or not. The class is
+            // deliberately one personOnlyProps *allows*, so the class filter cannot be what
+            // suppresses this — only the missing watchFrom can. Swap the two guards and the
+            // reappearance registers.
             val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
-            val existing = track("cow", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(8)))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(8)))
             coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
 
-            val delta = svc.evaluate(rec(), listOf(det("cow", 0.01f, 0.0f, 0.51f, 0.5f)))
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
 
             assertEquals(1, delta.matchedTracksCount)
             assertEquals(0, delta.reappearedTracksCount)

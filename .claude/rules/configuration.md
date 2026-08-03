@@ -182,7 +182,7 @@ Settings under `application.notifications` in `application.yaml`. Object tracker
 | `NOTIFICATIONS_TRACK_CLEANUP_RETENTION` | 1h | DELETE rows with `last_seen_at < now() - retention`. Larger than TTL. |
 | `NOTIFICATIONS_TRACK_REAPPEAR_GAP` | = TTL | Matched track absent longer than this → notify as `REAPPEARED`. Must be > 0 and <= TTL; defaulting to TTL makes it a no-op (the comparison is strict, and TTL also bounds `findActive`). |
 | `NOTIFICATIONS_TRACK_REAPPEAR_CLASSES` | (empty) | Comma-separated classes allowed to notify as `REAPPEARED`. Empty = all classes (no-op). Matching is case-insensitive and trims; blank entries are ignored, but a list of nothing but blanks fails at binding. Does **not** affect `NEW_OBJECTS` — a class left out still notifies the first time it is seen. Unrelated to `DETECTION_FILTER_CLASSES`. |
-| `NOTIFICATIONS_COOLDOWN_REAPPEAR` | PT0S | Minimum distance between two `REAPPEARED` notifications for one camera; extra ones are suppressed with reason `COOLDOWN`. `PT0S` (default) disables it. Measured on `recordTimestamp`, so a backlog spanning more than the cooldown is not collapsed into a single notification. Does not gate `NEW_OBJECTS`, and never skips the tracker. |
+| `NOTIFICATIONS_COOLDOWN_REAPPEAR` | PT0S | Minimum distance between two `REAPPEARED` notifications for one camera; extra ones are suppressed with reason `COOLDOWN`. `PT0S` (default) disables it. Measured on `recordTimestamp`, so a backlog spanning more than the cooldown is not collapsed into a single notification. Does not gate `NEW_OBJECTS`, and never skips the tracker. The window is keyed by camera alone and is class-agnostic — any class that reaches `REAPPEARED` arms it for every class on that camera, so pair this with `NOTIFICATIONS_TRACK_REAPPEAR_CLASSES` unless a flickering bicycle muting a person's return is acceptable. |
 
 Two things about that row surprise operators the first time and are worth stating outright:
 
@@ -290,8 +290,8 @@ anchored patterns like `reappeared=(\d+) unobserved=` break for that second, ind
   line is emitted for these too, so a filtered deployment still shows what it is suppressing.
 - `unobserved=N` — absences discarded because the tracker was not watching when they began.
 
-The line stays off ordinary recordings: it is emitted only when something new appeared, something
-reappeared, something was filtered, or something was unobserved.
+The line stays off ordinary recordings at DEBUG: it is emitted only when something new appeared,
+something reappeared, something was filtered, or something was unobserved.
 
 None of it is visible at the default level. Both the bundled `log4j2.yaml` and `log4j2.yaml.example`
 ship `ru.zinin` at `info`, so a stock deployment logs nothing of the above. Turn the two classes up
@@ -323,7 +323,7 @@ logging:
     ru.zinin.frigate.analyzer.service.impl.ObjectTrackerServiceImpl: TRACE
 ```
 
-Every recording with at least one detection above the confidence floor then emits the same line,
+Every recording with at least one detection at or above the confidence floor then emits the same line,
 `maxAbsence` included — on the order of a few thousand lines a night for three cameras. Recordings
 with no detections at all, or none surviving the floor, short-circuit before the summary and stay
 silent even at TRACE, so gaps in the sequence are not a misconfiguration. Leave it on for one night,
