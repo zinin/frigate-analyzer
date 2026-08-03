@@ -206,10 +206,12 @@ does, and the `NOTIFICATIONS_COOLDOWN_REAPPEAR` table row contradicted a bullet 
 
 ```bash
 git rm docs/superpowers/plans/2026-08-03-notification-noise-reduction.md \
+       docs/superpowers/plans/2026-08-03-notification-noise-reduction-continuation-prompt-v2.md \
        docs/superpowers/specs/2026-08-03-notification-noise-reduction-review-merged-iter-1.md \
        docs/superpowers/specs/2026-08-03-notification-noise-reduction-review-iter-1.md
 git commit -m "chore: drop the plan and review documents from the branch" \
     -- docs/superpowers/plans/2026-08-03-notification-noise-reduction.md \
+       docs/superpowers/plans/2026-08-03-notification-noise-reduction-continuation-prompt-v2.md \
        docs/superpowers/specs/2026-08-03-notification-noise-reduction-review-merged-iter-1.md \
        docs/superpowers/specs/2026-08-03-notification-noise-reduction-review-iter-1.md
 
