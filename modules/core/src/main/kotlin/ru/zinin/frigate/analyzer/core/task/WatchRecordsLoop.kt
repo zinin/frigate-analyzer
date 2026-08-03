@@ -54,8 +54,12 @@ data class IterationResult(
  *
  * [failed] counts unreadable entries the walk skipped ([java.nio.file.SimpleFileVisitor]'s
  * visitFileFailed). Non-zero means partial blindness until the next full re-registration —
- * an accepted, observable degradation (it is printed in the log line). A failure of the START
- * itself is not counted here: it is rethrown so the supervisor retries with backoff.
+ * an accepted, observable degradation (it is printed in the log line). Two things are deliberately
+ * outside it: a failure of the START itself is rethrown so the supervisor retries with backoff, and
+ * a directory that fails AFTER it opened (a stale NFS handle, a directory Frigate removed under the
+ * walk) is reported to `postVisitDirectory`, which logs it only — the same exclusion
+ * `FirstTimeScanTask.ScanResult.failed` names. So `failed == 0` does not by itself prove the walk
+ * saw everything; the WARNs do.
  */
 data class RegistrationResult(
     val registered: Int,

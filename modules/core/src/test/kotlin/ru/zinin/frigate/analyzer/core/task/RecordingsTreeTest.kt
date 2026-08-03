@@ -59,7 +59,8 @@ class RecordingsTreeTest {
     fun `isPrunableDate is the exact complement of isWithinWatchPeriod for dated paths`() {
         // Pins the identity itself, across the cutoff boundary and far from it. It does NOT catch a
         // refactor of isPrunableDate into `!isWithinWatchPeriod(...)`: the two forms are extensionally
-        // equal on every input, so no test can distinguish them. What keeps them separate is the
+        // equal on every input as long as the cutoff is watchCutoff(period, clock) — as it is here and
+        // in both production traversals — so no test can distinguish them. What keeps them separate is the
         // signature (see isPrunableDate's KDoc) and `isPrunableDate returns false for a path without a
         // date`, which fails any implementation that flips the prune direction to fail-open.
         val cutoff = watchCutoff(Duration.ofDays(1), CLOCK)

@@ -60,7 +60,7 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 | WatchRecordsTask | `core/task/` | Coroutine supervisor that drives WatchRecordsLoop; owns lifecycle, backoff, health state |
 | WatchRecordsLoop | `core/task/` | Stateless logic of a single iteration: poll + handle ENTRY_CREATE + periodic cleanup |
 | WatchRecordsTaskHealthIndicator | `core/task/` | HealthIndicator that exposes task state via `/actuator/health` |
-| FirstTimeScanTask | `core/task/` | One-off startup backfill of `.mp4` files already on disk, bounded by `FIRST_SCAN_PERIOD` (defaults to `WATCH_PERIOD` truncated to whole days; the window is whole days in UTC); disabled by default — run the backfill with `DISABLE_FIRST_SCAN=false`. Prunes out-of-window date subtrees the same way `registerAllDirs` does and reuses the walk's own file attributes (no per-file re-stat). Per-file failures are counted and skipped, not fatal — the previous `.catch {}` on the outer flow terminated the whole scan on the first bad file. `indexed` means create-or-find: a re-run over an already indexed window finishes but logs ~52k "Recording already exists" warnings. `failed` covers both phases (unreadable entries the walk skipped + files whose parse or create-or-find threw); per-entry WARNs collapse into one summary after `FAILURE_LOG_LIMIT = 100`. Before widening the window, note that the walk materializes the whole file list before processing: peak memory is proportional to the file count in the window — ~52k `ScanFile` records at the default (a few MB), but on the order of 1.5M for a `P30D` window on a 3.2M-file volume. Logic lives in `scan()`; `run()` is a detached fire-and-forget launch — TODO: the scope is not cancelled on shutdown (known, out of scope), which is exactly why tests drive `scan()` directly. |
+| FirstTimeScanTask | `core/task/` | One-off startup backfill of `.mp4` files already on disk, bounded by `FIRST_SCAN_PERIOD` (defaults to `WATCH_PERIOD` truncated to whole days; the window is whole days in UTC); disabled by default — run the backfill with `DISABLE_FIRST_SCAN=false`. Prunes out-of-window date subtrees the same way `registerAllDirs` does and reuses the walk's own file attributes (no per-file re-stat) — those attributes come from a walk without `FOLLOW_LINKS`, so a symlinked `.mp4` is no longer indexed, unlike the old `Files.walk(...).filter { isRegularFile }` which followed links (theoretical here: Frigate creates no symlinks). Per-file failures are counted and skipped, not fatal — the previous `.catch {}` on the outer flow terminated the whole scan on the first bad file. `indexed` means create-or-find: a re-run over an already indexed window finishes but logs ~52k "Recording already exists" warnings. `failed` covers both phases (unreadable entries the walk skipped + files whose parse or create-or-find threw); per-entry WARNs collapse into one summary after `FAILURE_LOG_LIMIT = 100`. Before widening the window, note that the walk materializes the whole file list before processing: peak memory is proportional to the file count in the window. Count UTC dates, not days of duration — `P1D` is today **and** yesterday, i.e. two dates × three cameras × 8 640 ten-second segments ≈ 52k `ScanFile` records at the default (a few MB), and on the order of 800k for a `P30D` window (31 dates) on a 3.2M-file volume. Logic lives in `scan()`; `run()` is a detached fire-and-forget launch — TODO: the scope is not cancelled on shutdown (known, out of scope), which is exactly why tests drive `scan()` directly. |
 | StartupTelegramNotifier | `core/application/` | Sends owner one Telegram message on ApplicationReadyEvent (indirect restart-frequency signal) |
 
 ### Selective watching
@@ -83,7 +83,7 @@ the fact. Three rules, all in `preVisitDirectory`:
   directory. Below it there are only `.mp4` files, and the watch key on the camera directory is
   what delivers ENTRY_CREATE. **`RegistrationResult.visitedFiles == 0` is the observable
   invariant: no recording file is ever enumerated during registration**, and the log line shows it
-  directly (`... visited 320 entries (0 files) in 41ms`).
+  directly (`... visited 320 entries (0 files, 0 failed) in 41ms`).
 
 The cutoff is computed once per traversal so a walk crossing midnight cannot apply two different
 windows. A date directory whose first path segment under the root is not the date itself triggers a
@@ -91,7 +91,8 @@ one-shot WARN (`isDateAtUnexpectedDepth`): the typical cause is `FRIGATE_RECORDS
 one level above the recordings root, which would otherwise silently stop camera registration.
 
 Operator notes: the registration log line changed from `Registered N directories, skipped 11638 old
-directories` to `Registered N dirs, pruned 122 date subtrees, visited 320 entries (0 files) in Xms`.
+directories` to `Registered N dirs, pruned 122 date subtrees, visited 320 entries (0 files, 0 failed)
+in Xms`.
 `pruned` counts whole date **subtrees**, not directories one by one — the number dropping by two
 orders of magnitude is expected, not a regression. Before relying on the old line, check no external
 log parsing is tied to its format. Symlinks inside the recordings tree are unsupported: the walk

@@ -235,9 +235,12 @@ class FirstTimeScanTask(
                 // when the exception is the one cancelling the flow (coroutines 1.11.0,
                 // Errors.kt:167 — isSameExceptionAs(fromDownstream) || isCancellationCause(ctx)),
                 // and its kdoc states it "does not catch exceptions that are thrown to cancel the
-                // flow", so a genuine cancellation never reaches this action at all. What it does
-                // cover is a STRAY CancellationException raised while the job is not cancelled,
-                // which would otherwise be swallowed here and mis-logged as a scan abort.
+                // flow", so a genuine cancellation never reaches this action at all. Nor does a
+                // stray CancellationException from the per-file handler: flatMapMerge runs each
+                // inner flow as a child, and JobSupport.childCancelled absorbs it without
+                // cancelling the producer (the mechanism ScanResult.failed describes). The
+                // re-throw stays as the standard defensive shape of a `.catch` action — it costs
+                // one line and can never turn a cancellation into "First scan aborted".
                 if (e is CancellationException) throw e
                 logger.error(e) { "First scan aborted unexpectedly" }
             }

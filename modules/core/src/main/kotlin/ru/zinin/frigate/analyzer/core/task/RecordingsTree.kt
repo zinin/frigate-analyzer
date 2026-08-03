@@ -72,8 +72,10 @@ internal fun isWithinWatchPeriod(
  * Fail-CLOSED mirror of [isWithinWatchPeriod]: a subtree may be pruned ONLY when its date was
  * successfully extracted AND falls strictly before [cutoff].
  *
- * Two reasons this is its own function rather than `!isWithinWatchPeriod(...)`, which is
- * extensionally equal to it on every input — no test can tell the two forms apart:
+ * Two reasons this is its own function rather than `!isWithinWatchPeriod(...)`. The two forms are
+ * extensionally equal on every input — no test can tell them apart — but only while [cutoff] equals
+ * `watchCutoff(watchPeriod, clock)`; with any other cutoff they differ, which is what the first
+ * reason below relies on:
  *  - It takes an already-computed [cutoff] rather than a clock, so one traversal evaluates the
  *    boundary once. A walk crossing midnight would otherwise apply two different windows to
  *    different branches of the same tree.
@@ -118,9 +120,9 @@ internal fun depthFromRoot(
  * would then stop at the hour level and never register camera directories, silently dropping
  * ENTRY_CREATE.
  *
- * The signal is advisory, not a proof: ANY date-like directory that is not the first segment under
- * the root trips it — `ROOT/misc/2026-02-15` under a correctly configured root does, and so does a
- * date-like camera ID. It belongs in a one-shot WARN and nothing louder.
+ * The signal is advisory, not a proof: any date-like directory under a root whose own first segment
+ * is not a date trips it — `ROOT/misc/2026-02-15` under a correctly configured root does. It belongs
+ * in a one-shot WARN and nothing louder.
  *
  * Implemented via [extractDateFromPath] rather than by matching DATE_PATTERN directly, so the
  * "is this segment a date" question has exactly one implementation.
