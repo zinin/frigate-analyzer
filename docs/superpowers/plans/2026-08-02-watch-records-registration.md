@@ -54,23 +54,17 @@
 
 Порядок «сначала ревью, потом сборка» задан в `CLAUDE.md`.
 
-- [ ] **Код-ревью**
+- [x] **Код-ревью**
 
-Через skill `superpowers:requesting-code-review` — на диффе ветки относительно `master`. Чинить критичные замечания до чистоты.
+✅ Done — see commit(s): `dff2485`, `bc65166`, `464bef4`, `b15a1dd`
 
-На что смотреть прицельно:
-- в `preVisitDirectory` порядок правил: guard `> CAMERA_DEPTH` → prune по дате → детектор → регистрация; prune идёт ДО регистрации, иначе каталог вне окна успеет получить watch key;
-- проверка `>= CAMERA_DEPTH` (остановка спуска) вызывается после `computeIfAbsent`, а не вместо проверки даты — глубина не должна влиять на отсев;
-- ни одна ветка не превратилась в `!isWithinWatchPeriod(...)`;
-- `visitFileFailed` возвращает `CONTINUE`, а не наследует пробрасывающую реализацию `SimpleFileVisitor`;
-- внешний `.catch` в `scan()` пробрасывает `CancellationException`;
-- в `scan()` нет второго `readAttributes` — атрибуты приходят из `visitFile`.
+Внутреннее сквозное ревью ветки (вердикт FIX FIRST → закрыт), затем внешнее mesh-ревью восемью
+ревьюерами. Полный разбор находок, рулингов и отклонённых претензий —
+в `.superpowers/sdd/2026-08-02-watch-records-registration/progress.md`.
 
-- [ ] **Полная сборка**
+- [x] **Полная сборка**
 
-Через `claude-forge:build-runner`: `./gradlew build`
-
-Ожидается: BUILD SUCCESSFUL. На ошибках ktlint — `./gradlew ktlintFormat`, затем повторить сборку.
+✅ Done — `BUILD SUCCESSFUL`, 766 тестов, 1 skipped, 0 падений (последний прогон на `b15a1dd`).
 
 - [ ] **Перед PR: убрать документы планирования из диффа**
 
