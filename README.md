@@ -114,8 +114,9 @@ All settings use environment variables with sensible defaults. Key variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FRIGATE_RECORDS_FOLDER` | `/mnt/data/frigate/recordings` | Path to Frigate recordings |
-| `DISABLE_FIRST_SCAN` | `false` | Skip initial directory scan on startup |
+| `DISABLE_FIRST_SCAN` | `true` | Startup scan is an opt-in backfill — set to `false` to run it once |
 | `WATCH_PERIOD` | `P1D` | ISO-8601 duration — how far back to watch for recordings |
+| `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD`, truncated to whole days | ISO-8601 duration — how far back the startup backfill indexes files (whole days, UTC; `P0D` = today only) |
 | `FFMPEG_PATH` | `/usr/bin/ffmpeg` | Path to ffmpeg binary |
 
 ### Database
