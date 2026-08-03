@@ -55,11 +55,18 @@ data class IterationResult(
  * [failed] counts unreadable entries the walk skipped ([java.nio.file.SimpleFileVisitor]'s
  * visitFileFailed). Non-zero means partial blindness until the next full re-registration —
  * an accepted, observable degradation (it is printed in the log line). Two things are deliberately
- * outside it: a failure of the START itself is rethrown so the supervisor retries with backoff, and
- * a directory that fails AFTER it opened (a stale NFS handle, a directory Frigate removed under the
- * walk) is reported to `postVisitDirectory`, which logs it only — the same exclusion
+ * outside it: a failure of the START itself is rethrown so the supervisor retries with backoff —
+ * from all three callbacks that can report one, `postVisitDirectory` included — and a SUBdirectory
+ * that fails AFTER it opened (a stale NFS handle, a directory Frigate removed under the walk) is
+ * reported to `postVisitDirectory`, which logs it only — the same exclusion
  * `FirstTimeScanTask.ScanResult.failed` names. So `failed == 0` does not by itself prove the walk
  * saw everything; the WARNs do.
+ *
+ * Both callers DISCARD this value: it reaches neither `/actuator/health` nor the backoff
+ * progression, so "observable" above means the log line and nothing else. That is deliberate — the
+ * operator-visible consequence of an unwatched camera directory is that its recordings stop being
+ * indexed, and the signal-loss monitor already alerts on exactly that, through a louder channel
+ * than a health endpoint nobody opens without a reason.
  */
 data class RegistrationResult(
     val registered: Int,
@@ -266,6 +273,15 @@ class WatchRecordsLoop(
                     exc: IOException?,
                 ): FileVisitResult {
                     if (exc != null) {
+                        // The THIRD way the start can fail, and the only one that does not reach
+                        // visitFileFailed or visitFile: the root opened, then its iteration broke
+                        // (stale NFS handle, volume pulled, directory removed under the walk).
+                        // Without this the walk would return normally and the supervisor would call
+                        // onRegistrationSuccess() over a half-built map — health UP while blind,
+                        // which is the misleading success this traversal exists to remove.
+                        // Directories registered before the break stay in registeredDirs; the
+                        // retry's computeIfAbsent skips them, so re-throwing costs nothing.
+                        if (dir == start) throw exc
                         logger.warn { "Registration: error after visiting $dir (${exc.message})" }
                         logger.debug(exc) { "Registration: failure details for $dir" }
                     }
@@ -282,7 +298,15 @@ class WatchRecordsLoop(
             "Registered $registered dirs, pruned $pruned date subtrees, " +
                 "visited $visited entries ($visitedFiles files, $failed failed) in ${elapsedMs}ms"
         }
-        return RegistrationResult(registered, pruned, visited, visitedFiles, failed)
+        // Named, not positional: five adjacent Ints in a row means a field swap would compile
+        // silently and only the count assertions would catch it.
+        return RegistrationResult(
+            registered = registered,
+            prunedSubtrees = pruned,
+            visitedEntries = visited,
+            visitedFiles = visitedFiles,
+            failed = failed,
+        )
     }
 
     // Single-writer invariant: cleanupExpiredDirs() and event processing run on the same

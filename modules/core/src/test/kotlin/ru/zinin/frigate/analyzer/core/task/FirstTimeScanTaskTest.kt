@@ -81,6 +81,37 @@ class FirstTimeScanTaskTest {
             }
         }
 
+    /**
+     * The ONLY deterministic exercise of the `visitFileFailed` counting path in either traversal.
+     * The other one — `WatchRecordsLoopTest`'s `chmod 000` case — sits behind an `assumeTrue` and
+     * skips silently for a process running as root, which is what a CI container normally is. That
+     * would leave the branch's central error-policy claim unverified exactly where it is checked.
+     *
+     * No permissions are involved here: `Files.walkFileTree` reads the start's attributes first, so
+     * a MISSING start is delivered to `visitFileFailed(start, …)` rather than thrown. `scan()`
+     * deliberately has no strict-start check (unlike `registerAllDirs`), so the walk finishes and
+     * the failure is counted. This also pins the operator signal the error-policy comment promises:
+     * a missing root yields `indexed=0` with `failed=1`, not a silent zero.
+     */
+    @Test
+    fun `scan counts a missing root as a failure instead of throwing`() =
+        runTest {
+            val parent = Files.createTempDirectory("fts-missing-root")
+            try {
+                val missing = parent.resolve("not-mounted")
+
+                val result = taskFor(missing).scan()
+
+                assertEquals(0, result.indexed)
+                assertEquals(1, result.failed)
+                assertEquals(0, result.prunedSubtrees)
+                // The start entry itself, reported through visitFileFailed — nothing else exists.
+                assertEquals(1, result.visitedEntries)
+            } finally {
+                parent.toFile().deleteRecursively()
+            }
+        }
+
     @Test
     fun `scan keeps going when one file fails`() =
         runTest {

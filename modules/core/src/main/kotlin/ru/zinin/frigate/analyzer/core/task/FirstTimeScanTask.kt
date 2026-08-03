@@ -37,6 +37,15 @@ private const val SCAN_CONCURRENCY = 8
 private const val FAILURE_LOG_LIMIT = 100
 
 /**
+ * Above this many days the window is a deliberate act, not the inherited default, and the operator
+ * is warned what it costs. The walk materializes the whole file list before processing, so peak
+ * memory scales with the file count in the window (~200 bytes per entry). There is deliberately no
+ * upper `require` on `firstScanPeriod`: recovering a long outage is a legitimate reason to set a
+ * wide window, and a hard cap would only swap one way of losing the gap for another.
+ */
+private const val WIDE_SCAN_WINDOW_DAYS = 7L
+
+/**
  * A file collected by the walk together with its creation time. The walk already stat-ed every
  * entry to produce [BasicFileAttributes]; re-reading attributes per file in the processing flow
  * would be the same double-stat defect this task removes from registerAllDirs.
@@ -121,14 +130,24 @@ class FirstTimeScanTask(
         var pruned = 0
         var visited = 0
 
+        val windowDays = recordsWatcherProperties.firstScanPeriod.toDays()
+        if (windowDays > WIDE_SCAN_WINDOW_DAYS) {
+            logger.warn {
+                "First scan window is FIRST_SCAN_PERIOD=P${windowDays}D (${windowDays + 1} UTC dates). " +
+                    "The whole file list is held in memory before processing, so peak memory grows " +
+                    "with the file count in that window — check the sizing note in .env.example"
+            }
+        }
+
         withContext(Dispatchers.IO) {
             // Error policy, deliberately laxer than registerAllDirs' strict root. There a failing
             // START is rethrown so the supervisor retries with backoff; scan() is a one-off with no
-            // supervisor, so every failure is soft and the walk always finishes. Two consequences
-            // an operator should know: a MISSING root produces one WARN and `indexed=0`, and a root
-            // that is a plain file or a symlink (no FOLLOW_LINKS, so it arrives at visitFile) is
-            // silently skipped as a non-`.mp4` with no WARN at all. Both still show up as
-            // `indexed=0` on the summary line, which is the signal to check FRIGATE_RECORDS_FOLDER.
+            // supervisor, so every failure is soft and the walk always finishes. A MISSING root
+            // produces one WARN and `indexed=0` here, in visitFileFailed. A root that is a plain
+            // file or a symlink (no FOLLOW_LINKS, so it arrives at visitFile) is dropped there as a
+            // non-`.mp4` and would leave no trace at all — it is caught after the walk instead, by
+            // the "found nothing" check, which also covers the shape neither callback can see: an
+            // empty directory where the recordings volume should have been mounted.
             Files.walkFileTree(
                 root,
                 object : SimpleFileVisitor<Path>() {
@@ -189,6 +208,23 @@ class FirstTimeScanTask(
                     }
                 },
             )
+        }
+
+        // The walk saw nothing but the start entry itself. Every silent-nothing shape collapses
+        // here: a root that is a plain file or a symlink (no FOLLOW_LINKS, so it reaches visitFile
+        // and is dropped as a non-.mp4), and — the one actually reachable on this deployment — a
+        // bind mount whose host path was missing, which Docker materializes as an EMPTY real
+        // directory. All three otherwise finish with `indexed=0, failed=0` and no warning at all,
+        // which is indistinguishable from "the window held no recordings". It matters because the
+        // scan is now the ONLY way to recover a downtime gap: an operator following the recovery
+        // procedure would revert the flags believing the backfill ran, and lose the window.
+        // `visited <= 1` cannot fire on a legitimately empty window — dates pruned by date leave
+        // `pruned > 0` and `visited > 1`.
+        if (visited <= 1 && files.isEmpty() && failed.get() == 0) {
+            logger.warn {
+                "First scan found nothing under $root — not even a date directory. " +
+                    "Check FRIGATE_RECORDS_FOLDER and that the recordings volume is mounted"
+            }
         }
 
         logger.info {
@@ -259,6 +295,12 @@ class FirstTimeScanTask(
             logger.warn { "First scan: ${failedTotal - FAILURE_LOG_LIMIT} more failures suppressed" }
         }
 
-        return ScanResult(indexed.get(), failedTotal, pruned, visited)
+        // Named for the same reason as RegistrationResult: adjacent Ints swap silently.
+        return ScanResult(
+            indexed = indexed.get(),
+            failed = failedTotal,
+            prunedSubtrees = pruned,
+            visitedEntries = visited,
+        )
     }
 }
