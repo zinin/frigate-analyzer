@@ -11,12 +11,12 @@ import java.io.File
 /**
  * Binds a `@ConfigurationProperties` type out of the production `src/main/resources/application.yaml`.
  *
- * Nothing outside these binding tests reads that file — [RecordsWatcherPropertiesBindingTest] does
- * it inline rather than through here. The test classpath carries its own `application.yaml`, which
- * shadows it — deliberately, since that is what keeps signal-loss inert in integration tests (see
- * the `SIGNAL_LOSS_ENABLED` note in `.claude/rules/configuration.md`) — so every placeholder in the
- * production file is otherwise evaluated for the first time when production starts. These tests are
- * where a defaulting mistake is caught instead.
+ * Nothing outside the binding tests in this package reads that file. The test classpath carries its
+ * own `application.yaml`, which shadows it — deliberately, since that is what keeps signal-loss
+ * inert in integration tests (see the `SIGNAL_LOSS_ENABLED` note in
+ * `.claude/rules/configuration.md`) — so every placeholder in the production file is otherwise
+ * evaluated for the first time when production starts. These tests are where a defaulting mistake
+ * is caught instead.
  *
  * [env] is exposed as a [SystemEnvironmentPropertySource] on purpose: that type is what makes
  * `APPLICATION_NOTIFICATIONS_TRACKER_TTL` answer a lookup for
@@ -30,7 +30,17 @@ internal object ProductionYamlBinder {
         type: Class<T>,
         env: Map<String, Any> = emptyMap(),
         properties: Map<String, Any> = emptyMap(),
-    ): T {
+    ): T = Binder.get(environment(env, properties)).bind(prefix, type).get()
+
+    /**
+     * The same environment [bind] resolves against, for the properties that are read rather than
+     * bound — `management.endpoint.health.show-details` belongs to Spring's own namespace and has no
+     * `@ConfigurationProperties` type of ours to bind into.
+     */
+    fun environment(
+        env: Map<String, Any> = emptyMap(),
+        properties: Map<String, Any> = emptyMap(),
+    ): StandardEnvironment {
         val environment = StandardEnvironment()
         // Hermetic: whatever this machine happens to export must not reach the assertions.
         environment.propertySources.remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME)
@@ -47,7 +57,7 @@ internal object ProductionYamlBinder {
             )
         }
         productionYaml().forEach { environment.propertySources.addLast(it) }
-        return Binder.get(environment).bind(prefix, type).get()
+        return environment
     }
 
     /** Gradle runs tests with the module directory as the working directory. */
