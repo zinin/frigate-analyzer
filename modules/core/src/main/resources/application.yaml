@@ -68,6 +68,11 @@ application:
     active-window: ${SIGNAL_LOSS_ACTIVE_WINDOW:24h}
     startup-grace: ${SIGNAL_LOSS_STARTUP_GRACE:5m}
   notifications:
+    cooldown:
+      # Minimum distance between two REAPPEARED notifications for one camera, measured on the
+      # recording timestamp rather than the wall clock — a backlog drained newest-first would
+      # otherwise collapse into a single notification. PT0S (the default) disables the gate.
+      reappear: ${NOTIFICATIONS_COOLDOWN_REAPPEAR:PT0S}
     tracker:
       ttl: ${NOTIFICATIONS_TRACK_TTL:PT30M}
       iou-threshold: ${NOTIFICATIONS_TRACK_IOU_THRESHOLD:0.3}
@@ -81,6 +86,10 @@ application:
       # Same form as claude.working-directory below; reading the variable instead would silently
       # fall back to PT30M whenever ttl is set by anything other than that one env var.
       reappear-gap: ${NOTIFICATIONS_TRACK_REAPPEAR_GAP:${application.notifications.tracker.ttl}}
+      # Classes allowed to notify when they come *back*. Empty (the default) means all of them,
+      # which keeps this a no-op. Narrowing it never affects first-time appearances, and it is
+      # unrelated to application.detection-filter.allowed-classes.
+      reappear-classes: ${NOTIFICATIONS_TRACK_REAPPEAR_CLASSES:}
   ai:
     description:
       enabled: ${APP_AI_DESCRIPTION_ENABLED:false}

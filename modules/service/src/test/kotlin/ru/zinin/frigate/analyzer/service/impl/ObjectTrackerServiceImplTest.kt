@@ -28,6 +28,7 @@ import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ObjectTrackerServiceImplTest {
@@ -423,6 +424,91 @@ class ObjectTrackerServiceImplTest {
         }
 
     @Test
+    fun `maxAbsence reports an absence that never crossed the gap`() =
+        runTest {
+            // longTtlProps puts the gap at PT1H, so 40 minutes produces no reappearance at all —
+            // and used to leave no trace of how close it came. This is the number an operator needs
+            // in order to decide whether lowering the gap would start catching real returns.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofMinutes(40)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(0, delta.reappearedTracksCount)
+            assertEquals(Duration.ofMinutes(40), delta.maxAbsence)
+        }
+
+    @Test
+    fun `maxAbsence takes the largest absence across every matched track`() =
+        runTest {
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            coEvery { repo.findActive(any(), any(), any()) } returns
+                listOf(
+                    track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofMinutes(40))),
+                    track("car", 0.6f, 0.6f, 0.9f, 0.9f, lastSeen = fixedNow.minus(Duration.ofMinutes(55))),
+                )
+
+            val delta =
+                svc.evaluate(
+                    rec(),
+                    listOf(
+                        det("person", 0.01f, 0.0f, 0.51f, 0.5f),
+                        det("car", 0.61f, 0.6f, 0.91f, 0.9f),
+                    ),
+                )
+
+            assertEquals(2, delta.matchedTracksCount)
+            assertEquals(Duration.ofMinutes(55), delta.maxAbsence)
+        }
+
+    @Test
+    fun `the largest absence wins even when a shorter one is measured after it`() =
+        runTest {
+            // The test above cannot fail on the mistake it is named for: clustering preserves
+            // encounter order, so its longer absence is measured last and a plain assignment would
+            // land on the same value as a running maximum. Here the longest is measured first, so
+            // only a real maximum survives the shorter one that follows.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            coEvery { repo.findActive(any(), any(), any()) } returns
+                listOf(
+                    track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofMinutes(40))),
+                    track("car", 0.6f, 0.6f, 0.9f, 0.9f, lastSeen = fixedNow.minus(Duration.ofMinutes(55))),
+                )
+
+            val delta =
+                svc.evaluate(
+                    rec(),
+                    listOf(
+                        det("car", 0.61f, 0.6f, 0.91f, 0.9f),
+                        det("person", 0.01f, 0.0f, 0.51f, 0.5f),
+                    ),
+                )
+
+            assertEquals(2, delta.matchedTracksCount)
+            assertEquals(Duration.ofMinutes(55), delta.maxAbsence)
+        }
+
+    @Test
+    fun `an out-of-order recording contributes no absence at all`() =
+        runTest {
+            // A later recording already advanced this track past the one being evaluated, so the
+            // distance is negative. Letting it win coerceAtLeast would render maxAbsence=PT-3H.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            svc.watchFrom(fixedNow.minus(Duration.ofHours(10)))
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.plus(Duration.ofHours(3)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertNull(delta.maxAbsence)
+        }
+
+    @Test
     fun `two tracks of one class reappearing stay inside matched and repeat the class`() =
         runTest {
             // Both contracts DetectionDelta documents but nothing pinned: reappeared is a subset of
@@ -612,5 +698,135 @@ class ObjectTrackerServiceImplTest {
 
             assertEquals(7L, deleted)
             coVerify { repo.deleteExpired(Instant.parse("2026-04-27T11:00:00Z")) }
+        }
+
+    /** The tuned prod shape plus the allow-list: only a person's *return* is an event. */
+    private val personOnlyProps =
+        ObjectTrackerProperties(
+            ttl = Duration.ofHours(12),
+            reappearGap = Duration.ofHours(1),
+            cleanupRetention = Duration.ofHours(48),
+            reappearClasses = listOf("person"),
+        )
+
+    @Test
+    fun `a class outside reappear-classes does not produce a reappearance`() =
+        runTest {
+            // Group A of the production run: a cow standing in the same spot, lost by the detector
+            // at night and found again at dawn. The absence is real and observed — only the class
+            // says it is not an event.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            val existing = track("cow", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("cow", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            // Matched and updated as always — only the notification-worthy verdict changes, so the
+            // decision service falls through to ALL_REPEATED on its own.
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
+            assertTrue(delta.reappearedClasses.isEmpty())
+            coVerify(exactly = 1) { repo.updateOnMatch(existing.id!!, any(), any(), any(), any(), any(), recId) }
+        }
+
+    @Test
+    fun `a class outside reappear-classes still notifies the first time it is seen`() =
+        runTest {
+            // The distinction the whole feature rests on: "a new cow" is an event, "the cow is
+            // back" is not. Nothing here touches DETECTION_FILTER_CLASSES.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
+            coEvery { repo.findActive(any(), any(), any()) } returns emptyList()
+            coEvery { uuid.generateV1() } returns UUID.randomUUID()
+
+            val delta = svc.evaluate(rec(), listOf(det("cow", 0f, 0f, 0.5f, 0.5f)))
+
+            assertEquals(1, delta.newTracksCount)
+            assertEquals(listOf("cow"), delta.newClasses)
+        }
+
+    @Test
+    fun `a class inside reappear-classes reappears as before`() =
+        runTest {
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.reappearedTracksCount)
+            assertEquals(listOf("person"), delta.reappearedClasses)
+        }
+
+    @Test
+    fun `an empty reappear-classes list lets every class reappear`() =
+        runTest {
+            // The documented default, pinned explicitly: longTtlProps leaves the list empty.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, longTtlProps, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            val existing = track("cow", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("cow", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.reappearedTracksCount)
+            assertEquals(listOf("cow"), delta.reappearedClasses)
+        }
+
+    @Test
+    fun `reappear-classes matching ignores case, surrounding space and empty entries`() =
+        runTest {
+            // The value arrives from a comma-separated env variable, so all three are ordinary.
+            val props =
+                ObjectTrackerProperties(
+                    ttl = Duration.ofHours(12),
+                    reappearGap = Duration.ofHours(1),
+                    cleanupRetention = Duration.ofHours(48),
+                    reappearClasses = listOf("  PERSON  ", "", "   "),
+                )
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, props, transactionalOperator)
+            val absentSince = fixedNow.minus(Duration.ofHours(8))
+            svc.watchFrom(absentSince)
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = absentSince)
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.reappearedTracksCount)
+        }
+
+    @Test
+    fun `a reappear-classes list of nothing but blanks is rejected at construction`() {
+        // Normalizing it away would silently mean "all classes" — the exact opposite of the intent
+        // behind setting the variable at all.
+        assertFailsWith<IllegalArgumentException> {
+            ObjectTrackerProperties(reappearClasses = listOf(" ", ""))
+        }
+    }
+
+    @Test
+    fun `an unobserved absence stays unobserved regardless of the class filter`() =
+        runTest {
+            // The watch-window guard is the more fundamental one and is checked first: an absence
+            // nobody watched is not evidence of anything, filtered class or not. The class is
+            // deliberately one personOnlyProps *allows*, so the class filter cannot be what
+            // suppresses this — only the missing watchFrom can. Reordering the two into a plain
+            // `if / else if` swap does NOT break this: an allowed class falls straight through to
+            // the window check and stays unobserved. What does break it is subordinating the window
+            // check to the class filter — testing `reappearAllows` first and the window only inside
+            // the branch it rejects — which lets an allowed track past the window entirely and turns
+            // reappearedTracksCount into 1.
+            val svc = ObjectTrackerServiceImpl(repo, uuid, clock, personOnlyProps, transactionalOperator)
+            val existing = track("person", 0f, 0f, 0.5f, 0.5f, lastSeen = fixedNow.minus(Duration.ofHours(8)))
+            coEvery { repo.findActive(any(), any(), any()) } returns listOf(existing)
+
+            val delta = svc.evaluate(rec(), listOf(det("person", 0.01f, 0.0f, 0.51f, 0.5f)))
+
+            assertEquals(1, delta.matchedTracksCount)
+            assertEquals(0, delta.reappearedTracksCount)
         }
 }

@@ -24,7 +24,8 @@ interface NotificationDecisionService {
      *   6. compose decision — reason = first tripped gate (normative precedence, see spec):
      *      GLOBAL_OFF if !globalEnabled, OUT_OF_SCHEDULE if the recording's recordTimestamp
      *      is outside the configured notification window, otherwise NEW_OBJECTS, then REAPPEARED
-     *      (a track returning after `reappearGap` of absence), then ALL_REPEATED.
+     *      (a track returning after `reappearGap` of absence) — which the per-camera cooldown may
+     *      turn into shouldNotify = false with COOLDOWN — then ALL_REPEATED.
      *
      * On tracker exceptions: returns shouldNotify = globalEnabled && scheduleAllows with
      * TRACKER_ERROR — fail-open on the tracker itself, but the global toggle and the schedule

@@ -17,6 +17,8 @@ import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.service.NotificationScheduleService
 import ru.zinin.frigate.analyzer.service.ObjectTrackerService
+import ru.zinin.frigate.analyzer.service.config.NotificationCooldownProperties
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -35,7 +37,8 @@ class NotificationDecisionServiceImplTest {
         mockk<NotificationScheduleService> {
             coEvery { getRecordingSchedule() } returns null
         }
-    private val service = NotificationDecisionServiceImpl(tracker, settings, scheduleService)
+    private val service =
+        NotificationDecisionServiceImpl(tracker, settings, scheduleService, NotificationCooldownProperties())
 
     private val now = Instant.parse("2026-04-27T12:00:00Z")
     private val recording: RecordingDto =
@@ -56,6 +59,22 @@ class NotificationDecisionServiceImplTest {
             analyzedFramesCount = 1,
             errorMessage = null,
         )
+
+    /** A second recording knob: the cooldown is keyed by camera and measured on recordTimestamp. */
+    private fun rec(
+        camId: String = "cam",
+        at: Instant = now,
+    ): RecordingDto = recording.copy(id = UUID.randomUUID(), camId = camId, recordTimestamp = at)
+
+    private fun serviceWith(cooldown: Duration) =
+        NotificationDecisionServiceImpl(
+            tracker,
+            settings,
+            scheduleService,
+            NotificationCooldownProperties(reappear = cooldown),
+        )
+
+    private fun reappearance() = DetectionDelta(0, 1, 0, emptyList(), reappearedTracksCount = 1, reappearedClasses = listOf("person"))
 
     private fun det() =
         DetectionEntity(
@@ -339,4 +358,288 @@ class NotificationDecisionServiceImplTest {
             assertTrue(decision.shouldNotify)
             assertEquals(NotificationDecisionReason.TRACKER_ERROR, decision.reason)
         }
+
+    @Test
+    fun `with the cooldown at its default every reappearance still notifies`() =
+        runTest {
+            // Acceptance criterion: unconfigured behaviour must be byte-identical to v0.9.1.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+
+            val first = service.evaluate(rec(at = now), listOf(det()))
+            val second = service.evaluate(rec(at = now.plusSeconds(2)), listOf(det()))
+
+            assertEquals(NotificationDecisionReason.REAPPEARED, first.reason)
+            assertEquals(NotificationDecisionReason.REAPPEARED, second.reason)
+            assertTrue(second.shouldNotify)
+        }
+
+    @Test
+    fun `the cooldown collapses a burst of reappearances on one camera`() =
+        runTest {
+            // Group B of the production run: one person walking past ~107 stale person tracks,
+            // matching them one after another, four notifications in 24 seconds.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            val first = svc.evaluate(rec(at = now), listOf(det()))
+            val burst =
+                listOf(2L, 13L, 24L).map { svc.evaluate(rec(at = now.plusSeconds(it)), listOf(det())) }
+
+            assertTrue(first.shouldNotify)
+            assertTrue(burst.all { !it.shouldNotify })
+            assertTrue(burst.all { it.reason == NotificationDecisionReason.COOLDOWN })
+        }
+
+    @Test
+    fun `a suppressed reappearance keeps the delta so the log line stays diagnosable`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            svc.evaluate(rec(at = now), listOf(det()))
+            val suppressed = svc.evaluate(rec(at = now.plusSeconds(2)), listOf(det()))
+
+            assertEquals(listOf("person"), suppressed.delta?.reappearedClasses)
+        }
+
+    @Test
+    fun `the cooldown expires and the next reappearance notifies again`() =
+        runTest {
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            svc.evaluate(rec(at = now), listOf(det()))
+            val later = svc.evaluate(rec(at = now.plus(Duration.ofMinutes(6))), listOf(det()))
+
+            assertTrue(later.shouldNotify)
+            assertEquals(NotificationDecisionReason.REAPPEARED, later.reason)
+        }
+
+    @Test
+    fun `the cooldown window is measured from the last notification, not slid by suppressed ones`() =
+        runTest {
+            // A cooldown, not a debounce: a continuous stream of reappearances must not hold the
+            // gate shut forever.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            svc.evaluate(rec(at = now), listOf(det()))
+            svc.evaluate(rec(at = now.plus(Duration.ofMinutes(4))), listOf(det()))
+            val later = svc.evaluate(rec(at = now.plus(Duration.ofMinutes(6))), listOf(det()))
+
+            assertTrue(later.shouldNotify)
+        }
+
+    @Test
+    fun `the cooldown is per camera`() =
+        runTest {
+            // Group B spanned cam2 and cam3 within two seconds; both must still be announced.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            val cam3 = svc.evaluate(rec(camId = "cam3", at = now), listOf(det()))
+            val cam2 = svc.evaluate(rec(camId = "cam2", at = now.plusSeconds(2)), listOf(det()))
+
+            assertTrue(cam3.shouldNotify)
+            assertTrue(cam2.shouldNotify)
+        }
+
+    @Test
+    fun `the cooldown never gates NEW_OBJECTS`() =
+        runTest {
+            // A genuinely new object must not be lost because something reappeared a moment ago.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            val svc = serviceWith(Duration.ofMinutes(5))
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            svc.evaluate(rec(at = now), listOf(det()))
+
+            coEvery { tracker.evaluate(any(), any()) } returns DetectionDelta(1, 0, 0, listOf("car"))
+            val fresh = svc.evaluate(rec(at = now.plusSeconds(2)), listOf(det()))
+
+            assertTrue(fresh.shouldNotify)
+            assertEquals(NotificationDecisionReason.NEW_OBJECTS, fresh.reason)
+        }
+
+    @Test
+    fun `a NEW_OBJECTS notification does not open or close the reappear cooldown`() =
+        runTest {
+            // The gate order puts NEW_OBJECTS first, so that branch never touches the anchor.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            val svc = serviceWith(Duration.ofMinutes(5))
+            coEvery { tracker.evaluate(any(), any()) } returns DetectionDelta(1, 0, 0, listOf("car"))
+            svc.evaluate(rec(at = now), listOf(det()))
+
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val reappeared = svc.evaluate(rec(at = now.plusSeconds(2)), listOf(det()))
+
+            assertTrue(reappeared.shouldNotify)
+            assertEquals(NotificationDecisionReason.REAPPEARED, reappeared.reason)
+        }
+
+    @Test
+    fun `a backlog drained in seconds is not collapsed, because the clock never enters the decision`() =
+        runTest {
+            // The reason the cooldown is measured on recordTimestamp. After a restart the queue is
+            // drained newest-first with no floor on age: an hour of recordings is evaluated within
+            // seconds, and a wall-clock cooldown would announce one of them and swallow the rest.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            val newest = svc.evaluate(rec(at = now), listOf(det()))
+            val anHourBack = svc.evaluate(rec(at = now.minus(Duration.ofHours(1))), listOf(det()))
+            val twoHoursBack = svc.evaluate(rec(at = now.minus(Duration.ofHours(2))), listOf(det()))
+
+            assertTrue(newest.shouldNotify)
+            assertTrue(anHourBack.shouldNotify)
+            assertTrue(twoHoursBack.shouldNotify)
+        }
+
+    @Test
+    fun `a burst drained newest-first collapses just as one drained oldest-first does`() =
+        runTest {
+            // Same 24-second burst, arriving in the other direction — which is the direction the
+            // newest-first drain actually produces. Distance is what matters, not its sign.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            val newest = svc.evaluate(rec(at = now.plusSeconds(24)), listOf(det()))
+            val middle = svc.evaluate(rec(at = now.plusSeconds(13)), listOf(det()))
+            val oldest = svc.evaluate(rec(at = now), listOf(det()))
+
+            assertTrue(newest.shouldNotify)
+            assertEquals(NotificationDecisionReason.COOLDOWN, middle.reason)
+            assertEquals(NotificationDecisionReason.COOLDOWN, oldest.reason)
+        }
+
+    @Test
+    fun `an out-of-order old recording cannot reopen the window for the live stream`() =
+        runTest {
+            // A stuck recording re-picked after its cooldown arrives with an hours-old timestamp.
+            // It is far enough away to be its own event, but the anchor must stay at the newest
+            // notified recording — otherwise the live stream's next match would notify again.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            svc.evaluate(rec(at = now), listOf(det()))
+            val stuck = svc.evaluate(rec(at = now.minus(Duration.ofHours(6))), listOf(det()))
+            val live = svc.evaluate(rec(at = now.plusSeconds(30)), listOf(det()))
+
+            assertTrue(stuck.shouldNotify)
+            assertEquals(NotificationDecisionReason.COOLDOWN, live.reason)
+        }
+
+    @Test
+    fun `a suppressed reappearance still ran the tracker, so the watch window kept advancing`() =
+        runTest {
+            // The tracker is called before every gate on purpose. Were the cooldown to skip it,
+            // the window would stop being stamped and the suppressed notification would come back
+            // later as a false reappearance.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+            val second = rec(at = now.plusSeconds(2))
+
+            svc.evaluate(rec(at = now), listOf(det()))
+            val suppressed = svc.evaluate(second, listOf(det()))
+
+            assertEquals(NotificationDecisionReason.COOLDOWN, suppressed.reason)
+            coVerify(exactly = 1) { tracker.evaluate(second, any()) }
+        }
+
+    @Test
+    fun `a detection-less recording leaves the cooldown untouched`() =
+        runTest {
+            // NO_DETECTIONS short-circuits above every gate, so the anchor is neither read nor
+            // written. Cheap insurance: were the cooldown ever hoisted above that branch, a camera's
+            // own quiet stretch would start eating its next reappearance.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+            svc.evaluate(rec(at = now), listOf(det()))
+
+            val quiet = rec(at = now.plusSeconds(2))
+            justRun { tracker.markObserved(quiet) }
+            val silent = svc.evaluate(quiet, emptyList())
+            val within = svc.evaluate(rec(at = now.plusSeconds(4)), listOf(det()))
+            val past = svc.evaluate(rec(at = now.plus(Duration.ofMinutes(5)).plusSeconds(1)), listOf(det()))
+
+            assertEquals(NotificationDecisionReason.NO_DETECTIONS, silent.reason)
+            // Still inside the window wherever the anchor sits, so this one only rules out the
+            // cooldown being hoisted above the NO_DETECTIONS short-circuit and reading the gate first.
+            assertEquals(NotificationDecisionReason.COOLDOWN, within.reason)
+            // This one is what pins the anchor itself: 5m01s past `now` — outside the window — but
+            // only 4m59s past the quiet recording. Were NO_DETECTIONS to refresh the anchor, it
+            // would come back COOLDOWN.
+            assertEquals(NotificationDecisionReason.REAPPEARED, past.reason)
+        }
+
+    @Test
+    fun `a recording exactly one cooldown from the anchor is announced`() =
+        runTest {
+            // The boundary is exclusive on purpose: the knob reads "minimum distance between two
+            // notifications", so a recording exactly that far away has met it. Nothing else in the
+            // suite distinguishes `<` from `<=` at NotificationDecisionServiceImpl.reappearSuppressedBy,
+            // so flipping the comparison would otherwise pass silently.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            svc.evaluate(rec(at = now), listOf(det()))
+            val onTheBoundary = svc.evaluate(rec(at = now.plus(Duration.ofMinutes(5))), listOf(det()))
+
+            assertTrue(onTheBoundary.shouldNotify)
+            assertEquals(NotificationDecisionReason.REAPPEARED, onTheBoundary.reason)
+        }
+
+    @Test
+    fun `a reappearance suppressed by the global toggle does not arm the cooldown`() =
+        runTest {
+            // GLOBAL_OFF sits above REAPPEARED, so the branch that writes the anchor is never
+            // reached. Once the toggle is back on, the next reappearance must go out at once —
+            // otherwise switching notifications off would silently swallow the first one after.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns false
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            val off = svc.evaluate(rec(at = now), listOf(det()))
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            val on = svc.evaluate(rec(at = now.plusSeconds(2)), listOf(det()))
+
+            assertEquals(NotificationDecisionReason.GLOBAL_OFF, off.reason)
+            assertTrue(on.shouldNotify)
+            assertEquals(NotificationDecisionReason.REAPPEARED, on.reason)
+        }
+
+    @Test
+    fun `a reappearance suppressed by the schedule does not arm the cooldown`() =
+        runTest {
+            // Same argument one gate down. Reuses the existing nightUtc / dayUtc fixtures.
+            coEvery { settings.getBoolean(AppSettingKeys.NOTIFICATIONS_RECORDING_GLOBAL_ENABLED, true) } returns true
+            coEvery { tracker.evaluate(any(), any()) } returns reappearance()
+            val svc = serviceWith(Duration.ofMinutes(5))
+
+            coEvery { scheduleService.getRecordingSchedule() } returns nightUtc
+            val closed = svc.evaluate(rec(at = now), listOf(det()))
+            coEvery { scheduleService.getRecordingSchedule() } returns dayUtc
+            val open = svc.evaluate(rec(at = now.plusSeconds(2)), listOf(det()))
+
+            assertEquals(NotificationDecisionReason.OUT_OF_SCHEDULE, closed.reason)
+            assertTrue(open.shouldNotify)
+        }
+
+    @Test
+    fun `a negative cooldown is rejected at construction`() {
+        assertFailsWith<IllegalArgumentException> {
+            NotificationCooldownProperties(reappear = Duration.ofSeconds(-1))
+        }
+    }
 }

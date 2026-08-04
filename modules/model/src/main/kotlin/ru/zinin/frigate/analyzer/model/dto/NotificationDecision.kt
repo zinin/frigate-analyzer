@@ -14,6 +14,14 @@ enum class NotificationDecisionReason {
      * `ObjectTrackerProperties.reappearGap` — an object that had left the scene returned.
      */
     REAPPEARED,
+
+    /**
+     * A reappearance, suppressed because this camera announced one less than
+     * `NotificationCooldownProperties.reappear` ago in *recording* time. Collapses the burst one
+     * pass produces when it matches several long-untouched tracks in a row. `NEW_OBJECTS` is never
+     * gated by it, and the tracker has already run — only the announcement is dropped.
+     */
+    COOLDOWN,
     ALL_REPEATED,
     NO_DETECTIONS,
 
