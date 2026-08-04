@@ -26,9 +26,25 @@ spring:
         max-size: 10
 application:
   records-watcher:
-    disable-first-scan: ${DISABLE_FIRST_SCAN:false}
+    # Disabled by default: the startup scan is an opt-in backfill (first install, index recovery).
+    # A fixed scan that actually finishes would otherwise run a never-observed ~52k backfill on a
+    # fresh deployment with default settings.
+    disable-first-scan: ${DISABLE_FIRST_SCAN:true}
     folder: ${FRIGATE_RECORDS_FOLDER:/mnt/data/frigate/recordings}
     watch-period: ${WATCH_PERIOD:P1D}
+    # Defaults to watch-period: the startup backfill covers exactly the window the watcher watches.
+    # Empty default on purpose: an empty value binds to null, so the Kotlin default
+    # `Duration.ofDays(watchPeriod.toDays())` in RecordsWatcherProperties takes over and sees the
+    # already-resolved watch-period — from env, a profile yaml, a CLI argument or a relaxed name
+    # alike. It is truncated because watchCutoff truncates too, so a PT36H watch-period yields P1D
+    # here instead of failing the whole-days check on a variable nobody set. The line still has to
+    # exist so the short FIRST_SCAN_PERIOD variable binds at all.
+    # Not `${FIRST_SCAN_PERIOD:${application.records-watcher.watch-period}}`: relaxed name mapping is
+    # guaranteed for @ConfigurationProperties binding but not for placeholder resolution, and
+    # RecordsWatcherPropertiesBindingTest showed that reference resolving to the yaml's own P1D
+    # instead of an APPLICATION_RECORDSWATCHER_WATCHPERIOD override. The reappear-gap line below uses
+    # the reference form safely only because its target property contains no hyphen to strip.
+    first-scan-period: ${FIRST_SCAN_PERIOD:}
     cleanup-interval: ${WATCH_CLEANUP_INTERVAL:PT1H}
   temp-folder: ${TEMP_FOLDER:/tmp/frigate-analyzer/}
   ffmpeg-path: ${FFMPEG_PATH:/usr/bin/ffmpeg}
@@ -160,3 +176,12 @@ application:
     base-font-size: ${LOCAL_VIZ_BASE_FONT_SIZE:16}
     label-padding: ${LOCAL_VIZ_LABEL_PADDING:4}
     max-frames: ${LOCAL_VIZ_MAX_FRAMES:10}
+
+management:
+  endpoint:
+    health:
+      # Default `always`: this is a single-deployment project, and computeHealth already builds a
+      # `reason` plus registeredDirs / lastSuccessfulRegistrationAt that Spring otherwise discards.
+      # A bare {"status":"DOWN"} is what forced the 9-minute registration stall to be diagnosed
+      # from logs instead of from the endpoint.
+      show-details: ${HEALTH_SHOW_DETAILS:always}

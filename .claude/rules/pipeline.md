@@ -60,7 +60,7 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 | WatchRecordsTask | `core/task/` | Coroutine supervisor that drives WatchRecordsLoop; owns lifecycle, backoff, health state |
 | WatchRecordsLoop | `core/task/` | Stateless logic of a single iteration: poll + handle ENTRY_CREATE + periodic cleanup |
 | WatchRecordsTaskHealthIndicator | `core/task/` | HealthIndicator that exposes task state via `/actuator/health` |
-| FirstTimeScanTask | `core/task/` | Initial scan on startup (disable: `DISABLE_FIRST_SCAN=true`) |
+| FirstTimeScanTask | `core/task/` | One-off startup backfill of `.mp4` files already on disk, bounded by `FIRST_SCAN_PERIOD` (defaults to `WATCH_PERIOD` truncated to whole days; the window is whole days in UTC); disabled by default — run the backfill with `DISABLE_FIRST_SCAN=false`. Prunes out-of-window date subtrees the same way `registerAllDirs` does and reuses the walk's own file attributes (no per-file re-stat) — those attributes come from a walk without `FOLLOW_LINKS`, so a symlinked `.mp4` is no longer indexed, unlike the old `Files.walk(...).filter { isRegularFile }` which followed links (theoretical here: Frigate creates no symlinks). Per-file failures are counted and skipped, not fatal — the previous `.catch {}` on the outer flow terminated the whole scan on the first bad file. `indexed` means create-or-find: a re-run over an already indexed window finishes but logs ~52k "Recording already exists" warnings. `failed` covers both phases (unreadable entries the walk skipped + files whose parse or create-or-find threw); per-entry WARNs collapse into one summary after `FAILURE_LOG_LIMIT = 100`. Before widening the window, note that the walk materializes the whole file list before processing: peak memory is proportional to the file count in the window. Count UTC dates, not days of duration — `P1D` is today **and** yesterday, i.e. two dates × three cameras × 8 640 ten-second segments ≈ 52k `ScanFile` records at the default (~10 MB at roughly 200 bytes per record), and on the order of 800k for a `P30D` window (31 dates) — about 150 MB — on a 3.2M-file volume, whose ~124 dates are the real ceiling at roughly 600 MB. `FIRST_SCAN_PERIOD` deliberately has NO upper bound (recovering a long outage is a legitimate reason to widen it, and a hard cap would only swap one way of losing the gap for another); a window wider than `WIDE_SCAN_WINDOW_DAYS = 7` logs a WARN naming it when the scan starts. Logic lives in `scan()`; `run()` is a detached fire-and-forget launch — TODO: the scope is not cancelled on shutdown (known, out of scope), which is exactly why tests drive `scan()` directly. |
 | StartupTelegramNotifier | `core/application/` | Sends owner one Telegram message on ApplicationReadyEvent (indirect restart-frequency signal) |
 
 ### Selective watching
@@ -69,6 +69,51 @@ WatchRecordsLoop uses selective watching to limit monitored directories:
 - Only directories within `WATCH_PERIOD` are monitored (date extracted from Frigate's `YYYY-MM-DD` structure)
 - The root recordings directory is always watched to catch new date directories
 - A periodic cleanup removes expired watch keys based on `WATCH_CLEANUP_INTERVAL`
+
+`registerAllDirs` walks with `Files.walkFileTree` and prunes as it goes, rather than filtering after
+the fact. Three rules, all in `preVisitDirectory`:
+- `depthFromRoot(dir) > CAMERA_DEPTH` (reachable only when `runIteration` passes a deep `start`)
+  returns `SKIP_SUBTREE` **without registering**: nothing below a camera directory ever holds a
+  watch key, from either call path — such a key would silently vanish after the WatchService is
+  recreated.
+- `isPrunableDate` (fail-CLOSED, `RecordingsTree.kt`) returns `SKIP_SUBTREE` for a date outside the
+  window. It is deliberately not `!isWithinWatchPeriod` (fail-OPEN) — the root's date never
+  extracts, and pruning the root would blind the watcher to new date directories.
+- `depthFromRoot(dir) >= CAMERA_DEPTH` returns `SKIP_SUBTREE` after registering the camera
+  directory. Below it there are only `.mp4` files, and the watch key on the camera directory is
+  what delivers ENTRY_CREATE. **`RegistrationResult.visitedFiles == 0` is the observable
+  invariant: no recording file is ever enumerated during registration**, and the log line shows it
+  directly (`... visited 320 entries (0 files, 0 failed) in 41ms`).
+
+The cutoff is computed once per traversal so a walk crossing midnight cannot apply two different
+windows. A date directory whose first path segment under the root is not the date itself triggers a
+WARN (`isDateAtUnexpectedDepth`) — once per TRAVERSAL, not once per process: the flag is a local of
+`registerAllDirs`, so a misconfigured root warns again on every startup walk and on every
+`runIteration` sub-walk. The typical cause is `FRIGATE_RECORDS_FOLDER` pointing
+one level above the recordings root, which would otherwise silently stop camera registration.
+
+Operator notes: the registration log line changed from `Registered N directories, skipped 11638 old
+directories` to `Registered N dirs, pruned 122 date subtrees, visited 320 entries (0 files, 0 failed)
+in Xms`.
+`pruned` counts whole date **subtrees**, not directories one by one — the number dropping by two
+orders of magnitude is expected, not a regression. Before relying on the old line, check no external
+log parsing is tied to its format. Symlinks inside the recordings tree are unsupported: the walk
+does not follow them and they no longer acquire watch keys.
+
+Error policy — strict root, soft-but-visible subtrees. A failure of the START itself (missing or
+unreadable root: `visitFileFailed` rethrows; root that is a plain file or symlink:
+`NotDirectoryException` from `visitFile`; root that opened and then broke mid-iteration — a stale
+NFS handle, a volume pulled under the walk: `postVisitDirectory` rethrows) stays fatal and lands in the supervisor's
+backoff-and-retry, exactly like `Files.walk` before — an empty "successful" registration can never
+leave health stuck DOWN. An unreadable SUBDIRECTORY reaches `visitFileFailed` (the walk opens a
+directory before `preVisitDirectory` runs) and is counted in `RegistrationResult.failed`, logged
+(per-entry WARNs collapse into one summary after `FAILURE_LOG_LIMIT = 100`) and skipped — accepted
+observable degradation instead of a permanent retry loop over one broken directory. Both callers
+discard `RegistrationResult.failed`, so it reaches neither health nor the backoff progression —
+"observable" means the log line only. The downstream consequence, a camera whose recordings stop
+being indexed, is what the signal-loss monitor alerts on. A failure of
+`dir.register(...)` itself (inotify ENOSPC/EACCES) still aborts the walk and lands in the
+supervisor's backoff-and-retry, as before.
 
 WatchRecordsLoop parses `.mp4` filenames to extract camera ID, date, time, timestamp.
 

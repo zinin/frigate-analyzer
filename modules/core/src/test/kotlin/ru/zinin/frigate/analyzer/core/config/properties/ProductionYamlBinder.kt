@@ -11,9 +11,10 @@ import java.io.File
 /**
  * Binds a `@ConfigurationProperties` type out of the production `src/main/resources/application.yaml`.
  *
- * Nothing else reads that file. The test classpath carries its own `application.yaml`, which shadows
- * it — deliberately, since that is what keeps signal-loss inert in integration tests (see the
- * `SIGNAL_LOSS_ENABLED` note in `.claude/rules/configuration.md`) — so every placeholder in the
+ * Nothing outside these binding tests reads that file — [RecordsWatcherPropertiesBindingTest] does
+ * it inline rather than through here. The test classpath carries its own `application.yaml`, which
+ * shadows it — deliberately, since that is what keeps signal-loss inert in integration tests (see
+ * the `SIGNAL_LOSS_ENABLED` note in `.claude/rules/configuration.md`) — so every placeholder in the
  * production file is otherwise evaluated for the first time when production starts. These tests are
  * where a defaulting mistake is caught instead.
  *
