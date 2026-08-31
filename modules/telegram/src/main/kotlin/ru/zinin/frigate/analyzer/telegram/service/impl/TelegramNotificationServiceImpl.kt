@@ -14,7 +14,6 @@ import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
-import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.SharedFrameIds
@@ -38,7 +37,6 @@ class TelegramNotificationServiceImpl(
     private val userService: TelegramUserService,
     private val notificationQueue: TelegramNotificationQueue,
     private val uuidGeneratorHelper: UUIDGeneratorHelper,
-    private val msg: MessageResolver,
     private val signalLossFormatter: SignalLossMessageFormatter,
     private val rateLimiterProvider: ObjectProvider<DescriptionRateLimiter>,
     private val appSettings: AppSettingsService,

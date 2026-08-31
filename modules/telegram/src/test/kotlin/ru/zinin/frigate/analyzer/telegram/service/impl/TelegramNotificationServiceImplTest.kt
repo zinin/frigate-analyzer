@@ -10,7 +10,6 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
-import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
@@ -20,7 +19,6 @@ import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
-import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
@@ -31,7 +29,6 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
-import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
@@ -40,15 +37,6 @@ class TelegramNotificationServiceImplTest {
     private val userService = mockk<TelegramUserService>()
     private val notificationQueue = mockk<TelegramNotificationQueue>()
     private val uuidGeneratorHelper = mockk<UUIDGeneratorHelper>()
-    private val msg =
-        MessageResolver(
-            ReloadableResourceBundleMessageSource().apply {
-                setBasename("classpath:messages")
-                setDefaultEncoding("UTF-8")
-                setFallbackToSystemLocale(false)
-                setDefaultLocale(Locale.forLanguageTag("en"))
-            },
-        )
     private val signalLossFormatter = mockk<SignalLossMessageFormatter>(relaxed = true)
     private val rateLimiterProvider = mockk<ObjectProvider<DescriptionRateLimiter>>(relaxed = true)
     private val appSettings = mockk<AppSettingsService>()
@@ -58,7 +46,6 @@ class TelegramNotificationServiceImplTest {
             userService,
             notificationQueue,
             uuidGeneratorHelper,
-            msg,
             signalLossFormatter,
             rateLimiterProvider,
             appSettings,
