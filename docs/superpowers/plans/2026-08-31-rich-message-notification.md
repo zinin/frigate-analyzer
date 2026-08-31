@@ -226,6 +226,7 @@ class RichNotificationRendererTest {
     fun `pending description renders placeholders`() {
         val html = renderer.render(data(), DescriptionState.Pending, frameCount = 2, language = "ru")
 
+        // Плейсхолдеры бандла несут собственную разметку (<i>…</i>) и обязаны дойти неэкранированными.
         assertContains(html, msg.get("ai.description.placeholder.short", "ru"))
         assertContains(html, "<details><summary>Подробное описание</summary>")
         assertContains(html, msg.get("ai.description.placeholder.detailed", "ru"))
@@ -275,8 +276,11 @@ class RichNotificationRendererTest {
             language = "ru",
         )
 
-        val detailed = html.substringAfter("</summary>").substringBefore("</details>")
-        assertFalse(detailed.contains(Regex("&[a-z]{0,4}$")), "a trailing half-entity would break Telegram HTML")
+        val detailed = html.substringAfter("</summary>").substringBefore("</details>").removeSuffix("…")
+        assertFalse(
+            Regex("&[a-z]{1,4}$").containsMatchIn(detailed),
+            "a trailing half-entity would break Telegram HTML, got tail: ${detailed.takeLast(8)}",
+        )
     }
 
     @Test
@@ -359,6 +363,11 @@ import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationDat
  * и первичная отправка, и правка после ответа модели зовут один и тот же [render].
  *
  * Безусловный компонент — сообщение строится всегда, а AI-описание лишь одно из его состояний.
+ *
+ * **Граница доверия.** Строки из бандла сообщений (заголовок, подписи ячеек, плейсхолдеры, fallback,
+ * заголовок раскрывашки) — наша собственная разметка и вставляются как есть: `ai.description.placeholder.short`
+ * это `⏳ <i>AI анализирует кадры…</i>`, и экранирование превратило бы курсив в литеральные `&lt;i&gt;`.
+ * Всё, что пришло извне — поля [RecordingNotificationData] и оба текста модели, — экранируется.
  */
 @Component
 class RichNotificationRenderer(
@@ -372,7 +381,7 @@ class RichNotificationRenderer(
     ): String {
         val head =
             buildString {
-                append("<h2>").append(escape(msg.get(KEY_TITLE, language))).append("</h2>")
+                append("<h2>").append(msg.get(KEY_TITLE, language)).append("</h2>")
                 append("<table bordered striped compact>")
                 row(KEY_LABEL_CAMERA, data.camId, language)
                 row(KEY_LABEL_FILE, data.fileName, language)
@@ -386,10 +395,19 @@ class RichNotificationRenderer(
                 append(framesHtml(frameCount))
             }
 
-        val detailed = detailedText(description, language) ?: return head
-        val open = "<details><summary>${escape(msg.get(KEY_DETAILS_SUMMARY, language))}</summary>"
+        if (description == DescriptionState.Absent) return head
+        val open = "<details><summary>${msg.get(KEY_DETAILS_SUMMARY, language)}</summary>"
         val budget = MAX_LENGTH - head.length - open.length - DETAILS_CLOSE.length
-        return head + open + escapeAndTrim(detailed, budget) + DETAILS_CLOSE
+        val detailed =
+            when (description) {
+                // Тексты бандла — наша собственная разметка, они уходят как есть и заведомо коротки.
+                DescriptionState.Pending -> msg.get(KEY_PLACEHOLDER_DETAILED, language)
+                DescriptionState.Failed -> msg.get(KEY_FALLBACK, language)
+                // Текст модели — чужой ввод: экранируется и режется по бюджету.
+                is DescriptionState.Ready -> escapeAndTrim(description.result.detailed, budget)
+                DescriptionState.Absent -> return head
+            }
+        return head + open + detailed + DETAILS_CLOSE
     }
 
     private fun StringBuilder.row(
@@ -398,7 +416,7 @@ class RichNotificationRenderer(
         language: String,
     ) {
         append("<tr><td>")
-            .append(escape(msg.get(labelKey, language)))
+            .append(msg.get(labelKey, language))
             .append("</td><td>")
             .append(escape(value))
             .append("</td></tr>")
@@ -411,23 +429,12 @@ class RichNotificationRenderer(
         when (description) {
             DescriptionState.Absent -> ""
             DescriptionState.Pending -> paragraph(msg.get(KEY_PLACEHOLDER_SHORT, language))
-            is DescriptionState.Ready -> paragraph(description.result.short)
             DescriptionState.Failed -> paragraph(msg.get(KEY_FALLBACK, language))
+            is DescriptionState.Ready -> paragraph(escape(description.result.short))
         }
 
-    private fun paragraph(text: String): String = "<p>${escape(text)}</p>"
-
-    /** Сырой (неэкранированный) текст для блока подробностей; null — блока быть не должно. */
-    private fun detailedText(
-        description: DescriptionState,
-        language: String,
-    ): String? =
-        when (description) {
-            DescriptionState.Absent -> null
-            DescriptionState.Pending -> msg.get(KEY_PLACEHOLDER_DETAILED, language)
-            is DescriptionState.Ready -> description.result.detailed
-            DescriptionState.Failed -> msg.get(KEY_FALLBACK, language)
-        }
+    /** Принимает УЖЕ подготовленный HTML: экранирование — забота вызывающего, см. границу доверия. */
+    private fun paragraph(inner: String): String = "<p>$inner</p>"
 
     private fun framesHtml(frameCount: Int): String {
         val count = frameCount.coerceAtMost(MAX_MEDIA)
