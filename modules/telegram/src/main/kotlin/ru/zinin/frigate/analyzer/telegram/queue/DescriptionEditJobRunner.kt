@@ -3,12 +3,14 @@ package ru.zinin.frigate.analyzer.telegram.queue
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.bot.exceptions.MessageIsNotModifiedException
 import dev.inmo.tgbotapi.bot.exceptions.MessageToEditNotFoundException
-import dev.inmo.tgbotapi.extensions.api.edit.caption.editMessageCaption
-import dev.inmo.tgbotapi.extensions.api.edit.text.editMessageText
+import dev.inmo.tgbotapi.requests.abstracts.FileId
+import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageRichText
 import dev.inmo.tgbotapi.types.ChatIdentifier
 import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
-import dev.inmo.tgbotapi.types.message.HTMLParseMode
+import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
+import dev.inmo.tgbotapi.types.rich.InputRichMessageHTML
+import dev.inmo.tgbotapi.types.rich.InputRichMessageMedia
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -18,27 +20,26 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.DependsOn
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
-import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
+import ru.zinin.frigate.analyzer.telegram.service.impl.RichNotificationRenderer
+import ru.zinin.frigate.analyzer.telegram.service.model.DescriptionState
+import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationData
 import java.util.concurrent.atomic.AtomicReference
 
 private val logger = KotlinLogging.logger {}
 
 /**
- * Target of a description edit — holds the message IDs that were sent with placeholder
- * text and must be rewritten once the AI call resolves.
+ * Цель правки: сообщение, ушедшее с плейсхолдерами, и всё, что нужно, чтобы собрать его заново.
  *
- * `captionMessageId` is null for the media-group case (no photo caption was written;
- * the whole short+detailed text lives in the `detailsMessageId` reply instead).
+ * `fileIds` обязательны: rich-сообщение при правке переобъявляет медиа целиком, иначе Telegram
+ * отвечает `RICH_MESSAGE_PHOTO_INVALID`.
  */
 data class EditTarget(
     val chatId: ChatIdentifier,
-    val captionMessageId: MessageId?,
-    val detailsMessageId: MessageId,
-    /** Raw (un-escaped) base text. The formatter handles HTML escape + truncation. */
-    val baseText: String,
+    val messageId: MessageId,
+    val data: RecordingNotificationData,
+    val fileIds: List<FileId>,
     val exportKeyboard: InlineKeyboardMarkup,
     val language: String,
-    val isMediaGroup: Boolean,
 )
 
 /**
@@ -59,7 +60,7 @@ data class EditTarget(
 @DependsOn("aiDescriptionTelegramGuard")
 class DescriptionEditJobRunner(
     private val bot: TelegramBot,
-    private val formatter: DescriptionMessageFormatter,
+    private val renderer: RichNotificationRenderer,
     private val scope: DescriptionEditScope,
 ) {
     // Tests observe the most-recently launched job via [lastLaunchedJobForTests]. Production code
@@ -85,66 +86,24 @@ class DescriptionEditJobRunner(
         target: EditTarget,
         outcome: Result<DescriptionResult>,
     ) {
-        if (target.isMediaGroup) {
-            editMediaGroup(target, outcome)
-        } else {
-            editSinglePhotoCaption(target, outcome)
-            editSinglePhotoDetails(target, outcome)
-        }
-    }
-
-    private suspend fun editMediaGroup(
-        target: EditTarget,
-        outcome: Result<DescriptionResult>,
-    ) {
-        // Formatter owns the 4096-char editMessageText limit internally (trims `detailed` to fit).
-        val newText = formatter.mediaGroupText(target.baseText, outcome, target.language)
-        runEdit("media group details", target) {
-            bot.editMessageText(
-                chatId = target.chatId,
-                messageId = target.detailsMessageId,
-                text = newText,
-                parseMode = HTMLParseMode,
-                replyMarkup = target.exportKeyboard,
-            )
-        }
-    }
-
-    private suspend fun editSinglePhotoCaption(
-        target: EditTarget,
-        outcome: Result<DescriptionResult>,
-    ) {
-        val captionText =
+        val state =
             outcome.fold(
-                onSuccess = { formatter.captionSuccess(target.baseText, it, target.language) },
-                onFailure = { formatter.captionFallback(target.baseText, target.language) },
+                onSuccess = { DescriptionState.Ready(it) },
+                onFailure = { DescriptionState.Failed },
             )
-        runEdit("single-photo caption", target) {
-            bot.editMessageCaption(
-                chatId = target.chatId,
-                messageId = target.captionMessageId!!,
-                text = captionText,
-                parseMode = HTMLParseMode,
-                replyMarkup = target.exportKeyboard,
-            )
-        }
-    }
-
-    private suspend fun editSinglePhotoDetails(
-        target: EditTarget,
-        outcome: Result<DescriptionResult>,
-    ) {
-        val detailsText =
-            outcome.fold(
-                onSuccess = { formatter.expandableBlockquoteSuccess(it, target.language) },
-                onFailure = { formatter.expandableBlockquoteFallback(target.language) },
-            )
-        runEdit("single-photo details", target) {
-            bot.editMessageText(
-                chatId = target.chatId,
-                messageId = target.detailsMessageId,
-                text = detailsText,
-                parseMode = HTMLParseMode,
+        val html = renderer.render(target.data, state, target.fileIds.size, target.language)
+        val media =
+            target.fileIds.mapIndexed { i, id ->
+                InputRichMessageMedia(RichNotificationRenderer.mediaId(i), TelegramMediaPhoto(id))
+            }
+        runEdit("rich notification", target) {
+            bot.execute(
+                EditChatMessageRichText(
+                    target.chatId,
+                    target.messageId,
+                    InputRichMessageHTML(html, media = media.ifEmpty { null }),
+                    replyMarkup = target.exportKeyboard,
+                ),
             )
         }
     }

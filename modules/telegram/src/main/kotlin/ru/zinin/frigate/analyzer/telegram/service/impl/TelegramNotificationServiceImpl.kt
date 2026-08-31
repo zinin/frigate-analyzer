@@ -17,10 +17,12 @@ import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
+import ru.zinin.frigate.analyzer.telegram.queue.SharedFrameIds
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
+import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationData
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -102,16 +104,19 @@ class TelegramNotificationServiceImpl(
                 }
             }
 
+        // Один держатель на запись: первый получатель грузит кадры байтами, остальные ссылаются
+        // на его file_id.
+        val frameIds = SharedFrameIds()
         recipients.forEach { userZone ->
             val lang = userZone.language ?: "en"
-            val message = formatRecordingMessage(recording, userZone.zone, lang)
             val task =
                 RecordingNotificationTask(
                     id = uuidGeneratorHelper.generateV1(),
                     chatId = userZone.chatId,
-                    message = message,
+                    data = buildNotificationData(recording, userZone.zone, lang),
                     visualizedFrames = visualizedFrames,
                     recordingId = recording.id,
+                    frameIds = frameIds,
                     language = userZone.language,
                     descriptionHandle = descriptionHandle,
                 )
@@ -121,44 +126,29 @@ class TelegramNotificationServiceImpl(
         logger.debug { "Enqueued notification for ${recipients.size} subscribers" }
     }
 
-    private fun formatRecordingMessage(
+    /**
+     * Метаданные записи для рендерера. Даты форматируются здесь — только этот класс знает
+     * про зону и язык получателя.
+     */
+    private fun buildNotificationData(
         recording: RecordingDto,
         zone: ZoneId,
         language: String,
-    ): String {
-        val fileName = recording.filePath.substringAfterLast("/")
-        val camId = recording.camId
-        val detectionsCount = recording.detectionsCount
-        val analyzedFrames = recording.analyzedFramesCount
-        val analyzeTime = recording.analyzeTime
-
+    ): RecordingNotificationData {
         val formatter =
             DateTimeFormatter
                 .ofLocalizedDateTime(FormatStyle.LONG)
                 .withLocale(Locale.forLanguageTag(language))
 
-        val timestampFormatted =
-            recording.processTimestamp
-                ?.atZone(zone)
-                ?.format(formatter)
-                ?: "N/A"
-
-        val recordTimestampFormatted =
-            recording.recordTimestamp
-                .atZone(zone)
-                .format(formatter)
-
-        return buildString {
-            appendLine(msg.get("notification.recording.title", language))
-            appendLine()
-            appendLine(msg.get("notification.recording.camera", language, camId))
-            appendLine(msg.get("notification.recording.file", language, fileName))
-            appendLine(msg.get("notification.recording.detections", language, detectionsCount))
-            appendLine(msg.get("notification.recording.frames", language, analyzedFrames))
-            appendLine(msg.get("notification.recording.processing.time", language, analyzeTime))
-            appendLine(msg.get("notification.recording.timestamp", language, recordTimestampFormatted))
-            appendLine(msg.get("notification.recording.processed", language, timestampFormatted))
-        }
+        return RecordingNotificationData(
+            camId = recording.camId,
+            fileName = recording.filePath.substringAfterLast("/"),
+            detectionsCount = recording.detectionsCount,
+            analyzedFramesCount = recording.analyzedFramesCount,
+            analyzeTimeSeconds = recording.analyzeTime,
+            recordTimestamp = recording.recordTimestamp.atZone(zone).format(formatter),
+            processTimestamp = recording.processTimestamp?.atZone(zone)?.format(formatter) ?: "N/A",
+        )
     }
 
     override suspend fun sendCameraSignalLost(
