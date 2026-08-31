@@ -1,7 +1,7 @@
 # Collapse detection notifications into a single Rich Message
 
-**Status:** unblocked — the upstream dependency shipped and the whole flow was
-verified end-to-end against a live bot on **2026-08-31**.
+**Статус:** реализовано в `feature/rich-message-notification`; документ сохранён как история
+исследования API и живой проверки.
 **Upstream:** `dev.inmo:tgbotapi` **36.0.0** (2026-08-21 10:20 UTC) covers Bot API
 10.2; **36.1.0** (2026-08-21 19:35 UTC) is dependency bumps only and is the
 latest on Maven Central. We are still pinned to `35.1.0`.
