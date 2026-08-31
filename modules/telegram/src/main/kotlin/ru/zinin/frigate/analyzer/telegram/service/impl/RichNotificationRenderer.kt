@@ -20,6 +20,12 @@ import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationDat
 class RichNotificationRenderer(
     private val msg: MessageResolver,
 ) {
+    /**
+     * **Контракт с вызывающим.** [frameCount] молча клампится до [MAX_MEDIA], поэтому отправитель
+     * обязан приложить к сообщению ровно `min(frameCount, MAX_MEDIA)` элементов `media` с
+     * идентификаторами [mediaId] от `0`. Разъедутся html и массив `media` — Telegram отвергнет
+     * сообщение, а на пути первичной отправки это ещё и вечный ретрай.
+     */
     fun render(
         data: RecordingNotificationData,
         description: DescriptionState,

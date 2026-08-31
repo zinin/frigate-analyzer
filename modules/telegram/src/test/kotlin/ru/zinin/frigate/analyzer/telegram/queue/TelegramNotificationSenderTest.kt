@@ -15,6 +15,8 @@ import dev.inmo.tgbotapi.types.files.PhotoSize
 import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.RichMessageContent
+import dev.inmo.tgbotapi.types.rich.RichBlock
+import dev.inmo.tgbotapi.types.rich.RichBlockCollage
 import dev.inmo.tgbotapi.types.rich.RichBlockPhoto
 import dev.inmo.tgbotapi.types.rich.RichTextInfo
 import io.mockk.coEvery
@@ -124,20 +126,18 @@ class TelegramNotificationSenderTest {
         descriptionHandle = descriptionHandle,
     )
 
-    /** Ответ Telegram: rich-сообщение с [count] фото-блоками, из которых берутся file_id. */
-    private fun richResult(
-        count: Int,
+    // photo — это value-класс PhotoFile поверх List<PhotoSize>, голый список не подходит.
+    private fun photoBlock(index: Int) =
+        RichBlockPhoto(
+            photo = PhotoFile(listOf(mockk<PhotoSize> { every { fileId } returns FileId("file-$index") })),
+            hasSpoiler = null,
+            caption = null,
+        )
+
+    private fun richMessage(
+        blocks: List<RichBlock>,
         messageId: Long = 1L,
     ): ChatContentMessage<RichMessageContent> {
-        val blocks =
-            (0 until count).map { i ->
-                // photo — это value-класс PhotoFile поверх List<PhotoSize>, голый список не подходит.
-                RichBlockPhoto(
-                    photo = PhotoFile(listOf(mockk<PhotoSize> { every { fileId } returns FileId("file-$i") })),
-                    hasSpoiler = null,
-                    caption = null,
-                )
-            }
         val info = mockk<RichTextInfo> { every { this@mockk.blocks } returns blocks }
         val content = mockk<RichMessageContent> { every { richMessage } returns info }
         // ChatContentMessage — sealed, MockK его не проксирует; PrivateContentMessage это его подтип.
@@ -146,6 +146,33 @@ class TelegramNotificationSenderTest {
             every { this@mockk.messageId } returns MessageId(messageId)
         }
     }
+
+    /**
+     * Ответ Telegram на разметку, которую строит рендерер: форма ответа повторяет форму запроса.
+     * Один кадр уходит одиночным `<img>` и возвращается фото-блоком верхнего уровня, а два и больше
+     * рендерер заворачивает в `<tg-collage>` — он приходит контейнером [RichBlockCollage], и фото
+     * лежат внутри него, а не в `blocks` сообщения.
+     *
+     * Плоский список фото-блоков — это ответ на стопку одиночных `<img>`, которой рендерер больше
+     * не строит. Не «упрощайте» форму обратно к нему: именно плоский мок скрыл потерю всех `file_id`
+     * при коллаже, потому что отправитель искал фото только на верхнем уровне.
+     */
+    private fun richResult(
+        count: Int,
+        messageId: Long = 1L,
+    ): ChatContentMessage<RichMessageContent> {
+        val photos = (0 until count).map(::photoBlock)
+        val blocks: List<RichBlock> =
+            when {
+                count <= 1 -> photos
+                else -> listOf(RichBlockCollage(blocks = photos, caption = null))
+            }
+        return richMessage(blocks, messageId)
+    }
+
+    /** Коллаж ровно из [photoCount] фото — форма ответа, в котором сервер вернул не все кадры. */
+    private fun collageResult(photoCount: Int): ChatContentMessage<RichMessageContent> =
+        richMessage(listOf(RichBlockCollage(blocks = (0 until photoCount).map(::photoBlock), caption = null)))
 
     @Test
     fun `sends exactly one rich message carrying the export keyboard`() =
@@ -210,21 +237,46 @@ class TelegramNotificationSenderTest {
         }
 
     @Test
+    fun `photos nested in a collage still yield their file ids`() =
+        runTest {
+            enableDescriptionBeans()
+            val shared = SharedFrameIds()
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } returns richResult(count = 2)
+
+            sender.send(createTask(frameCount = 2, frameIds = shared, descriptionHandle = handle))
+            handle.complete(Result.success(DescriptionResult(short = "Человек у ворот", detailed = "Подробности")))
+            runner.lastLaunchedJobForTests()?.join()
+
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                shared.get(),
+                "file_id live inside <tg-collage>, one level below the message blocks",
+            )
+            val edit = assertIs<EditChatMessageText>(requests.last())
+            assertEquals(listOf("f0", "f1"), edit.richMessage!!.media!!.map { it.id }, "the edit re-declares the frames")
+        }
+
+    @Test
     fun `a partial answer neither poisons the id cache nor schedules an edit`() =
         runTest {
             enableDescriptionBeans()
             val shared = SharedFrameIds()
             val handle = CompletableDeferred<Result<DescriptionResult>>()
             val requests = mutableListOf<Request<*>>()
-            // Ответ вернул один фото-блок на два отправленных кадра.
-            coEvery { bot.execute(capture(requests)) } returns richResult(count = 1)
+            // Коллаж вернулся с одним фото на два отправленных кадра.
+            coEvery { bot.execute(capture(requests)) } returns collageResult(photoCount = 1)
 
             sender.send(createTask(frameCount = 2, frameIds = shared, descriptionHandle = handle))
 
             assertEquals(1, requests.size, "the message itself is delivered, only the follow-up is skipped")
             assertNull(shared.get(), "a short id list must never reach the cache")
             assertNull(runner.lastLaunchedJobForTests(), "an edit would strip the frames off the sent message")
-            assertTrue(handle.isCancelled, "nothing will consume the model answer")
+            assertFalse(
+                handle.isCancelled,
+                "the handle is shared by every recipient of the recording — one bad answer must not disown the rest",
+            )
         }
 
     @Test

@@ -96,9 +96,15 @@ reference them instead of uploading again.
   otherwise be retried forever and the upload path would never be reached. On failure the holder is
   invalidated and the frames go out as bytes, with the usual infinite retry.
 - If the photo-id count in the response does not match the number of frames sent — any mismatch,
-  not only an undercount — the sender warns, cancels `descriptionHandle` and returns without
-  caching. Such a list is unusable both ways: an edit re-declares the media wholesale, so a short
-  array would strip frames off a message that was already delivered.
+  not only an undercount — the sender warns and returns without caching, skipping its own edit.
+  Such a list is unusable both ways: an edit re-declares the media wholesale, so a short array
+  would strip frames off a message that was already delivered. `descriptionHandle` is **not**
+  cancelled here — it is shared by every recipient of the recording, and a bad answer to one of
+  them must not disown the rest.
+
+Photos are collected recursively (`RichBlock.subBlocks`), not by filtering the top-level blocks:
+two or more frames go out inside `<tg-collage>`, which comes back as a `RichBlockCollage` container
+with the photos one level below.
 
 ### Do not emit Bot API 10.3 constructs
 

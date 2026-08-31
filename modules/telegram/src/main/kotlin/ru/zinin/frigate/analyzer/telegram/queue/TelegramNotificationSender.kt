@@ -12,7 +12,9 @@ import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.content.RichMessageContent
 import dev.inmo.tgbotapi.types.rich.InputRichMessageHTML
 import dev.inmo.tgbotapi.types.rich.InputRichMessageMedia
+import dev.inmo.tgbotapi.types.rich.RichBlock
 import dev.inmo.tgbotapi.types.rich.RichBlockPhoto
+import dev.inmo.tgbotapi.types.rich.subBlocks
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import org.springframework.beans.factory.ObjectProvider
@@ -76,17 +78,18 @@ class TelegramNotificationSender(
         val sent = sendRich(chatIdObj, task, frames, html, exportKeyboard)
         val fileIds =
             sent.content.richMessage.blocks
-                .filterIsInstance<RichBlockPhoto>()
+                .flatMap { it.photosInOrder() }
                 .mapNotNull { it.photo.lastOrNull()?.fileId }
         if (fileIds.size != frames.size) {
             // Такой список нельзя ни кэшировать (он навсегда разошёлся бы с числом кадров и остальные
             // получатели грузили бы байты), ни править по нему: правка переобъявляет медиа целиком,
-            // и неполный массив стёр бы кадры из уже доставленного сообщения.
+            // и неполный массив стёр бы кадры из уже доставленного сообщения. Ручку описания при этом
+            // НЕ отменяем: она одна на всю запись, а испорченный ответ пришёл лично этому получателю —
+            // отмена лишила бы описания и тех, чьи сообщения ушли нормально.
             logger.warn {
                 "Telegram returned ${fileIds.size} photo ids for ${frames.size} frames (chat=${task.chatId}); " +
-                    "skipping the file_id cache and the description edit"
+                    "skipping the file_id cache and the description edit for this recipient"
             }
-            task.descriptionHandle?.cancel()
             return
         }
         task.frameIds.putIfAbsent(fileIds)
@@ -160,4 +163,14 @@ class TelegramNotificationSender(
             InputRichMessageHTML(html, media = media.ifEmpty { null }),
             replyMarkup = exportKeyboard,
         )
+
+    /**
+     * Фото в порядке документа: и `<img>` верхнего уровня, и вложенные — рендерер заворачивает
+     * несколько кадров в `<tg-collage>`, а он приходит контейнером [dev.inmo.tgbotapi.types.rich.RichBlockCollage],
+     * чьи фото лежат уровнем ниже. Обход рекурсивный, а не спецкейс на коллаж: [subBlocks] закрывает
+     * и одиночное фото (рекурсия вырождается), и любую будущую обёртку. Порядок обхода документный,
+     * то есть тот же, в котором рендерер раздал `mediaId(0..n)`.
+     */
+    private fun RichBlock.photosInOrder(): List<RichBlockPhoto> =
+        if (this is RichBlockPhoto) listOf(this) else subBlocks.flatMap { it.photosInOrder() }
 }
