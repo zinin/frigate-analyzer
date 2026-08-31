@@ -95,17 +95,23 @@ reference them instead of uploading again.
 - The cached attempt is made **once and without `retryIndefinitely`**: a stale or unusable id would
   otherwise be retried forever and the upload path would never be reached. On failure the holder is
   invalidated and the frames go out as bytes, with the usual infinite retry.
-- If the response carries fewer photo ids than frames were sent, the sender warns, cancels
-  `descriptionHandle` and returns without caching. Such a list is unusable both ways: an edit
-  re-declares the media wholesale, so a short array would strip frames off a delivered message.
+- If the photo-id count in the response does not match the number of frames sent — any mismatch,
+  not only an undercount — the sender warns, cancels `descriptionHandle` and returns without
+  caching. Such a list is unusable both ways: an edit re-declares the media wholesale, so a short
+  array would strip frames off a message that was already delivered.
 
 ### Do not emit Bot API 10.3 constructs
 
-`<tg-button>`, `<tg-document>`, `<blockquote expandable>`. Telegram accepts them and the message
-arrives, but ktgbotapi 36.1.0 throws while deserializing the response — `RawMessage$$serializer`
-does not know the new entities. The bot then sees a failed send for a message already in the chat,
-and `RetryHelper.retryIndefinitely` sends it a second time. Keep buttons in `reply_markup` until the
-library ships 10.3.
+**Verified live: `<tg-button>`.** Telegram accepts it and the message arrives, but ktgbotapi 36.1.0
+throws while deserializing the response — `RawMessage$$serializer` does not know the entity. The bot
+then sees a failed send for a message already in the chat, and `RetryHelper.retryIndefinitely` sends
+it a second time. Keep buttons in `reply_markup` until the library ships 10.3.
+
+**Untested, banned out of caution: `<tg-document>`, `<blockquote expandable>` and the rest of 10.3.**
+Neither was tried inside a rich message — the expandable blockquote did work in plain messages before
+this branch, so the tag itself is not the problem. Any entity the library's `RawMessage` serializer
+does not know fails the same way, and that failure mode — a duplicate notification — is not worth
+probing in production.
 
 ## User Management
 
