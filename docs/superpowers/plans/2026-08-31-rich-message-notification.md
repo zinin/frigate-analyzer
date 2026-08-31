@@ -1358,6 +1358,7 @@ git commit -m "refactor(telegram): drop the caption formatter and its dead i18n 
 - Modify: `.claude/rules/telegram.md`
 - Modify: `.claude/rules/ai-description.md`
 - Modify: `docs/telegram-rich-message-migration.md`
+- Modify: `CLAUDE.md:5`
 
 **Interfaces:**
 - Consumes: поведение, зафиксированное задачами 1–5.
@@ -1378,7 +1379,22 @@ ktgbotapi 36.1.0 падает на разборе ответа, при том ч
 В `.claude/rules/ai-description.md`: правка одна вместо двух, цель правки несёт `file_id` кадров,
 медиа переобъявляются при каждой правке, состояние описания передаётся типом `DescriptionState`.
 
-- [ ] **Step 3: Пометить исследование реализованным**
+- [ ] **Step 3: Обновить версию библиотеки в двух местах документации**
+
+После Task 1 обе строки утверждают неверное:
+
+- `CLAUDE.md:5` — в строке `**Stack:**` заменить `ktgbotapi 35.1.0` на `ktgbotapi 36.1.0`.
+- `.claude/rules/telegram.md:140` — заголовок `## ktgbotapi Waiter API (v35.1.0)` → `(v36.1.0)`.
+
+Проверить, что других упоминаний не осталось:
+
+```bash
+grep -rn "35\.1\.0" --include="*.md" . | grep -v docs/superpowers | grep -v telegram-rich-message-migration
+```
+
+Ожидание: пусто (историческое упоминание в `gradle/libs.versions.toml:18` — намеренное, его не трогаем).
+
+- [ ] **Step 4: Пометить исследование реализованным**
 
 В шапке `docs/telegram-rich-message-migration.md` заменить строку статуса на:
 
@@ -1387,10 +1403,10 @@ ktgbotapi 36.1.0 падает на разборе ответа, при том ч
 исследования API и живой проверки.
 ```
 
-- [ ] **Step 4: Коммит**
+- [ ] **Step 5: Коммит**
 
 ```bash
-git add .claude/rules/telegram.md .claude/rules/ai-description.md docs/telegram-rich-message-migration.md
+git add .claude/rules/telegram.md .claude/rules/ai-description.md docs/telegram-rich-message-migration.md CLAUDE.md
 git commit -m "docs: describe the single rich message notification flow"
 ```
 
