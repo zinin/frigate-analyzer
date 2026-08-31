@@ -137,6 +137,24 @@ class RichNotificationRendererTest {
     }
 
     @Test
+    fun `oversized short description does not swallow the detailed block`() {
+        val html =
+            renderer.render(
+                data(),
+                DescriptionState.Ready(DescriptionResult(short = "к".repeat(40_000), detailed = "подробности модели")),
+                frameCount = 2,
+                language = "ru",
+            )
+
+        assertTrue(html.length <= 32_768, "rendered message must fit the rich message limit, was ${html.length}")
+        assertContains(
+            html,
+            "подробности модели",
+            message = "an oversized short must not eat the budget of the details block",
+        )
+    }
+
+    @Test
     fun `entity is never split by trimming`() {
         val html =
             renderer.render(

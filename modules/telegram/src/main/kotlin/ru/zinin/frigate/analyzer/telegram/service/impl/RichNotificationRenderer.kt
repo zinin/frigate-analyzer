@@ -80,7 +80,7 @@ class RichNotificationRenderer(
             DescriptionState.Absent -> ""
             DescriptionState.Pending -> paragraph(msg.get(KEY_PLACEHOLDER_SHORT, language))
             DescriptionState.Failed -> paragraph(msg.get(KEY_FALLBACK, language))
-            is DescriptionState.Ready -> paragraph(escape(description.result.short))
+            is DescriptionState.Ready -> paragraph(escapeAndTrim(description.result.short, MAX_SHORT_LENGTH))
         }
 
     /** Принимает УЖЕ подготовленный HTML: экранирование — забота вызывающего, см. границу доверия. */
@@ -138,6 +138,13 @@ class RichNotificationRenderer(
 
         /** Потолок медиа в rich-сообщении. Наш собственный максимум кадров — 10. */
         const val MAX_MEDIA = 50
+
+        /**
+         * Потолок короткого описания. Настройка `APP_AI_DESCRIPTION_SHORT_MAX` по умолчанию 200 и
+         * ограничена сверху `@Max(500)`, так что реальные описания эта граница не трогает — она
+         * существует, чтобы `short` не мог съесть бюджет всего сообщения и оставить `<details>` пустым.
+         */
+        const val MAX_SHORT_LENGTH = 2_000
 
         /**
          * Идентификатор кадра. Одна и та же строка обязана попасть и в `<img src="tg://photo?id=…">`,
