@@ -5,6 +5,8 @@ import dev.inmo.tgbotapi.requests.abstracts.FileId
 import dev.inmo.tgbotapi.requests.abstracts.Request
 import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
 import dev.inmo.tgbotapi.requests.send.SendRichMessage
+import dev.inmo.tgbotapi.requests.send.SendTextMessage
+import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
@@ -40,8 +42,10 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -206,6 +210,42 @@ class TelegramNotificationSenderTest {
         }
 
     @Test
+    fun `a partial answer neither poisons the id cache nor schedules an edit`() =
+        runTest {
+            enableDescriptionBeans()
+            val shared = SharedFrameIds()
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val requests = mutableListOf<Request<*>>()
+            // Ответ вернул один фото-блок на два отправленных кадра.
+            coEvery { bot.execute(capture(requests)) } returns richResult(count = 1)
+
+            sender.send(createTask(frameCount = 2, frameIds = shared, descriptionHandle = handle))
+
+            assertEquals(1, requests.size, "the message itself is delivered, only the follow-up is skipped")
+            assertNull(shared.get(), "a short id list must never reach the cache")
+            assertNull(runner.lastLaunchedJobForTests(), "an edit would strip the frames off the sent message")
+            assertTrue(handle.isCancelled, "nothing will consume the model answer")
+        }
+
+    @Test
+    fun `without the edit runner the placeholder is not rendered at all`() =
+        runTest {
+            // runnerProvider отдаёт null по умолчанию — бина правки в контексте нет.
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val slot = slot<Request<*>>()
+            coEvery { bot.execute(capture(slot)) } returns richResult(count = 2)
+
+            sender.send(createTask(frameCount = 2, descriptionHandle = handle))
+
+            val request = assertIs<SendRichMessage>(slot.captured)
+            assertFalse(
+                request.richMessage.html!!.contains(msg.get("ai.description.placeholder.short", "ru")),
+                "a placeholder nobody can rewrite would hang forever",
+            )
+            assertTrue(handle.isCancelled, "no one would apply the model answer")
+        }
+
+    @Test
     fun `no frames still produces one message without media`() =
         runTest {
             val slot = slot<Request<*>>()
@@ -273,6 +313,24 @@ class TelegramNotificationSenderTest {
         }
 
     @Test
+    fun `frames beyond the media limit are dropped from html and media alike`() =
+        runTest {
+            val slot = slot<Request<*>>()
+            coEvery { bot.execute(capture(slot)) } returns richResult(count = RichNotificationRenderer.MAX_MEDIA)
+
+            sender.send(createTask(frameCount = RichNotificationRenderer.MAX_MEDIA + 1))
+
+            val request = assertIs<SendRichMessage>(slot.captured)
+            assertEquals(RichNotificationRenderer.MAX_MEDIA, request.richMessage.media!!.size, "media is capped")
+            assertEquals(RichNotificationRenderer.MAX_MEDIA, request.mediaMap.size, "a dropped frame is not uploaded")
+            val overflowId = RichNotificationRenderer.mediaId(RichNotificationRenderer.MAX_MEDIA)
+            assertFalse(
+                request.richMessage.html!!.contains("""tg://photo?id=$overflowId"""),
+                "html must not reference a frame the media array does not declare",
+            )
+        }
+
+    @Test
     fun `simple text task still goes out as a plain message`() =
         runTest {
             val slot = slot<Request<*>>()
@@ -282,6 +340,9 @@ class TelegramNotificationSenderTest {
                 SimpleTextNotificationTask(id = UUID.randomUUID(), chatId = 12345L, text = "signal lost"),
             )
 
-            assertTrue(slot.captured !is SendRichMessage, "signal-loss alerts stay plain text")
+            val request = assertIs<SendTextMessage>(slot.captured)
+            assertEquals("signal lost", request.text)
+            val chatId = assertIs<ChatId>(request.chatId)
+            assertEquals(12345L, chatId.chatId.long)
         }
 }

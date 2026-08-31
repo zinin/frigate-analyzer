@@ -66,8 +66,10 @@ class TelegramNotificationSender(
         val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
         val frames = task.visualizedFrames.take(RichNotificationRenderer.MAX_MEDIA)
 
-        // Описание существует только когда есть что описывать и включена сама фича.
-        val describing = task.descriptionHandle != null && frames.isNotEmpty()
+        // Описание существует только когда есть что описывать, включена сама фича и есть кому
+        // править: без бина правки плейсхолдер остался бы висеть навсегда.
+        val editRunner = editJobRunner.getIfAvailable()
+        val describing = task.descriptionHandle != null && frames.isNotEmpty() && editRunner != null
         val state = if (describing) DescriptionState.Pending else DescriptionState.Absent
         val html = renderer.render(task.data, state, frames.size, lang)
 
@@ -76,6 +78,17 @@ class TelegramNotificationSender(
             sent.content.richMessage.blocks
                 .filterIsInstance<RichBlockPhoto>()
                 .mapNotNull { it.photo.lastOrNull()?.fileId }
+        if (fileIds.size != frames.size) {
+            // Такой список нельзя ни кэшировать (он навсегда разошёлся бы с числом кадров и остальные
+            // получатели грузили бы байты), ни править по нему: правка переобъявляет медиа целиком,
+            // и неполный массив стёр бы кадры из уже доставленного сообщения.
+            logger.warn {
+                "Telegram returned ${fileIds.size} photo ids for ${frames.size} frames (chat=${task.chatId}); " +
+                    "skipping the file_id cache and the description edit"
+            }
+            task.descriptionHandle?.cancel()
+            return
+        }
         task.frameIds.putIfAbsent(fileIds)
 
         if (!describing) {
@@ -83,7 +96,7 @@ class TelegramNotificationSender(
             task.descriptionHandle?.cancel()
             return
         }
-        val runner = editJobRunner.getIfAvailable() ?: return
+        val runner = requireNotNull(editRunner) { "describing == true implies the edit runner bean is present" }
         val handle = requireNotNull(task.descriptionHandle) { "describing == true implies descriptionHandle != null" }
         val target =
             EditTarget(
