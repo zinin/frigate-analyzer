@@ -97,7 +97,7 @@ recovery alerts are not rich: they stay plain `SimpleTextNotificationTask` text.
 | `<h2>` heading + `<table bordered striped compact>` | `RecordingNotificationData`, i18n keys `notification.recording.*` |
 | `<p>` short description | `DescriptionState` — placeholder, model text or fallback; omitted when `Absent` |
 | frames | one frame → a bare `<img>`, two or more → `<tg-collage>`; capped at `MAX_MEDIA = 50`, far above `LOCAL_VIZ_MAX_FRAMES` |
-| `<details>` detailed description | omitted when `Absent`; the model text is trimmed to whatever is left of `MAX_LENGTH = 32768` |
+| `<details>` detailed description | omitted when `Absent` **and when `Failed`** (the `<p>` already carries the reason); the model text is trimmed to whatever is left of `MAX_LENGTH = 32768` |
 | Quick Export keyboard | `QuickExportHandler.createExportKeyboard`, passed as `reply_markup` — never as HTML buttons |
 
 `<img src="tg://photo?id=fN"/>` and `InputRichMessageMedia.id` must carry the same string

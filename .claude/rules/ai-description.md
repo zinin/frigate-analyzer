@@ -43,7 +43,9 @@ When a notification is enqueued and AI description is enabled:
    `EditTarget` per recipient.
 3. **One** edit closes the flow per recipient: `EditChatMessageRichText` with the HTML re-rendered
    for `DescriptionState.Ready` (model text) or `DescriptionState.Failed` (the
-   `ai.description.fallback.unavailable` line in both blocks — no error text is exposed).
+   `ai.description.fallback.unavailable` line in the `<p>`, and **no** `<details>` at all — a
+   spoiler labelled "detailed description" holding the same one-line apology promises detail and
+   delivers none; no error text is exposed either way).
 
 The render state is an explicit type, `DescriptionState` (`Absent` / `Pending` / `Ready` / `Failed`
 in `telegram/service/model/`), instead of the former "no formatter means the feature is off" flag.

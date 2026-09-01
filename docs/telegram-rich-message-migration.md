@@ -48,6 +48,14 @@ messages 708–715 in that chat. Every row below was executed, not inferred.
 Documented limits (unchanged): 32768 UTF-8 characters, ≤ 500 blocks, ≤ 16 nesting
 levels, ≤ 50 media, ≤ 20 table columns.
 
+### Not verified
+
+| Question | Why it matters |
+|---|---|
+| Does `editMessageReplyMarkup` (markup-only, no text) work on a rich message? | The export keyboard now lives on the rich notification, and five call sites edit only its markup — `QuickExportHandler` (start, two progress updates, `restoreButton`) and `CancelExportHandler`. All five swallow a failure at `warn`, so if Bot API 10.2 rejects a markup-only edit here, the whole Quick Export UX degrades silently: no progress, no Cancel, no restore. One tap on a live notification settles it. |
+| Does a `file_id` obtained in one chat work in another? | The design's only unverified assumption. Fallback if wrong: the next recipient re-uploads the bytes. |
+| Ten frames in one `<tg-collage>` | Only ever rendered live with three. |
+
 ## Constraints found during verification
 
 1. **Media must be re-declared on every edit.** Leaving `<img src="tg://photo?id=frame1"/>`

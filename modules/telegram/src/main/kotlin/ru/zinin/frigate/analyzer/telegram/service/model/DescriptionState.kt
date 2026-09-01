@@ -17,6 +17,6 @@ sealed interface DescriptionState {
         val result: DescriptionResult,
     ) : DescriptionState
 
-    /** Модель не ответила — в оба блока идёт текст fallback. */
+    /** Модель не ответила — текст fallback идёт в `<p>`, а `<details>` не рендерится вовсе. */
     data object Failed : DescriptionState
 }
