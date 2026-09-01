@@ -289,6 +289,35 @@ class TelegramNotificationSenderTest {
         }
 
     @Test
+    fun `a partial answer falls back to the shared ids for the edit`() =
+        runTest {
+            enableDescriptionBeans()
+            val shared = SharedFrameIds()
+            // Ответ предыдущего получателя пришёл целым, идентификаторы записи уже известны.
+            shared.putIfAbsent(listOf(FileId("file-0"), FileId("file-1")))
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val requests = mutableListOf<Request<*>>()
+            // А этому получателю коллаж вернулся с одним фото на два отправленных кадра.
+            coEvery { bot.execute(capture(requests)) } returns collageResult(photoCount = 1)
+
+            sender.send(createTask(frameCount = 2, frameIds = shared, descriptionHandle = handle))
+            handle.complete(Result.success(DescriptionResult(short = "Человек у ворот", detailed = "Подробности")))
+            runner.lastLaunchedJobForTests()?.join()
+
+            val edit = assertIs<EditChatMessageText>(requests.last())
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                edit.richMessage!!.media!!.map { (it.media as TelegramMediaPhoto).file },
+                "a complete shared list re-declares the very same frames, so editing by it is safe",
+            )
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                shared.get(),
+                "the short answer must not overwrite the cache it was rescued by",
+            )
+        }
+
+    @Test
     fun `without the edit runner the placeholder is not rendered at all`() =
         runTest {
             // runnerProvider отдаёт null по умолчанию — бина правки в контексте нет.

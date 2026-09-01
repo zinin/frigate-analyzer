@@ -77,23 +77,36 @@ class TelegramNotificationSender(
         val html = renderer.render(task.data, state, frames.size, lang)
 
         val sent = sendRich(chatIdObj, task, frames, html, exportKeyboard)
-        val fileIds =
+        val extracted =
             sent.content.richMessage.blocks
                 .flatMap { it.photosInOrder() }
                 .mapNotNull { it.photo.lastOrNull()?.fileId }
-        if (fileIds.size != frames.size) {
-            // Такой список нельзя ни кэшировать (он навсегда разошёлся бы с числом кадров и остальные
-            // получатели грузили бы байты), ни править по нему: правка переобъявляет медиа целиком,
-            // и неполный массив стёр бы кадры из уже доставленного сообщения. Ручку описания при этом
-            // НЕ отменяем: она одна на всю запись, а испорченный ответ пришёл лично этому получателю —
-            // отмена лишила бы описания и тех, чьи сообщения ушли нормально.
-            logger.warn {
-                "Telegram returned ${fileIds.size} photo ids for ${frames.size} frames (chat=${task.chatId}); " +
-                    "skipping the file_id cache and the description edit for this recipient"
+        val editIds =
+            if (extracted.size == frames.size) {
+                task.frameIds.putIfAbsent(extracted)
+                extracted
+            } else {
+                // Короткий список нельзя ни кэшировать (он навсегда разошёлся бы с числом кадров и
+                // остальные получатели грузили бы байты), ни править по нему: правка переобъявляет
+                // медиа целиком, и неполный массив стёр бы кадры из доставленного сообщения.
+                // Но идентификаторы этой записи могут быть уже известны от получателя, чей ответ
+                // пришёл целым: ПОЛНЫЙ массив переобъявляет ровно те же кадры, поэтому по нему
+                // править безопасно — запрет касается неполного списка, а не чужого источника.
+                logger.warn {
+                    "Telegram returned ${extracted.size} photo ids for ${frames.size} frames " +
+                        "(chat=${task.chatId}, recording=${task.recordingId}); not caching this answer"
+                }
+                task.frameIds.get()?.takeIf { it.size == frames.size }
+            }
+        if (editIds == null) {
+            // Ручку описания НЕ отменяем: она одна на всю запись, а испорченный ответ пришёл лично
+            // этому получателю — отмена лишила бы описания и тех, чьи сообщения ушли нормально.
+            logger.error {
+                "No usable frame ids for chat=${task.chatId}, recording=${task.recordingId}: " +
+                    "the placeholder in the delivered message will never be replaced"
             }
             return
         }
-        task.frameIds.putIfAbsent(fileIds)
 
         if (!describing) {
             // Плейсхолдера в сообщении нет, редактировать нечего — не жжём токены модели.
@@ -107,7 +120,7 @@ class TelegramNotificationSender(
                 chatId = chatIdObj,
                 messageId = sent.messageId,
                 data = task.data,
-                fileIds = fileIds,
+                fileIds = editIds,
                 exportKeyboard = exportKeyboard,
                 language = lang,
             )
