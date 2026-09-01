@@ -48,20 +48,21 @@ class RichNotificationRenderer(
                 append(framesHtml(frameCount))
             }
 
-        if (description == DescriptionState.Absent) return head
+        // Absent — подробностей нет вовсе. Failed — они не появятся, и причина уже сказана в <p>:
+        // спойлер «Подробное описание» с той же строкой внутри обещает подробность и не отдаёт ничего.
+        if (description == DescriptionState.Absent || description == DescriptionState.Failed) return head
         val open = "<details><summary>${msg.get(KEY_DETAILS_SUMMARY, language)}</summary>"
         val budget = MAX_LENGTH - head.length - open.length - DETAILS_CLOSE.length
         val detailed =
             when (description) {
-                // Тексты бандла — наша собственная разметка, они уходят как есть и заведомо коротки.
+                // Текст бандла — наша собственная разметка, он уходит как есть и заведомо короток.
                 DescriptionState.Pending -> msg.get(KEY_PLACEHOLDER_DETAILED, language)
-
-                DescriptionState.Failed -> msg.get(KEY_FALLBACK, language)
 
                 // Текст модели — чужой ввод: экранируется и режется по бюджету.
                 is DescriptionState.Ready -> escapeAndTrim(description.result.detailed, budget)
 
-                DescriptionState.Absent -> return head
+                // Сюда не доходят — оба вернули head выше; ветка нужна для исчерпывающего when.
+                DescriptionState.Absent, DescriptionState.Failed -> return head
             }
         return head + open + detailed + DETAILS_CLOSE
     }

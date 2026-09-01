@@ -145,12 +145,15 @@ class RichNotificationRendererTest {
     }
 
     @Test
-    fun `failed description renders fallback in both slots`() {
+    fun `failed description renders the fallback once and no details block`() {
         val fallback = msg.get("ai.description.fallback.unavailable", "ru")
 
         val html = renderer.render(data(), DescriptionState.Failed, frameCount = 2, language = "ru")
 
-        assertEquals(2, html.split(fallback).size - 1, "fallback goes into both the paragraph and the details")
+        assertEquals(1, html.split(fallback).size - 1, "the fallback belongs in the paragraph, once")
+        // Спойлер «Подробное описание» с тем же текстом внутри обещал подробность и не отдавал
+        // ничего. Absent ведёт себя так же — блок не строится, когда показывать нечего.
+        assertFalse(html.contains("<details>"), "no details block when there is nothing to put in it")
     }
 
     @Test
