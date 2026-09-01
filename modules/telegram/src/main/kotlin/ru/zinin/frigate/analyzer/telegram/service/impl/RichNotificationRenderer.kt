@@ -36,8 +36,8 @@ class RichNotificationRenderer(
             buildString {
                 append("<h2>").append(msg.get(KEY_TITLE, language)).append("</h2>")
                 append("<table bordered striped compact>")
-                row(KEY_LABEL_CAMERA, data.camId, language)
-                row(KEY_LABEL_FILE, data.fileName, language)
+                row(KEY_LABEL_CAMERA, trimRaw(data.camId, MAX_HEAD_FIELD_LENGTH), language)
+                row(KEY_LABEL_FILE, trimRaw(data.fileName, MAX_HEAD_FIELD_LENGTH), language)
                 row(KEY_LABEL_DETECTIONS, data.detectionsCount.toString(), language)
                 row(KEY_LABEL_FRAMES, data.analyzedFramesCount.toString(), language)
                 row(KEY_LABEL_ANALYZE_TIME, data.analyzeTimeSeconds.toString(), language)
@@ -88,6 +88,21 @@ class RichNotificationRenderer(
             DescriptionState.Pending -> paragraph(msg.get(KEY_PLACEHOLDER_SHORT, language))
             DescriptionState.Failed -> paragraph(msg.get(KEY_FALLBACK, language))
             is DescriptionState.Ready -> paragraph(escapeAndTrim(description.result.short, MAX_SHORT_LENGTH))
+        }
+
+    /**
+     * Обрезка СЫРОГО текста до экранирования — тем и отличается от [escapeAndTrim], что сущностей
+     * тут ещё нет и рвать нечего. Суррогатную пару не раскалывает: половина пары даёт невалидный
+     * UTF-8 на проводе.
+     */
+    private fun trimRaw(
+        s: String,
+        max: Int,
+    ): String =
+        when {
+            s.length <= max -> s
+            s[max - 1].isHighSurrogate() -> s.substring(0, max - 1)
+            else -> s.substring(0, max)
         }
 
     /** Принимает УЖЕ подготовленный HTML: экранирование — забота вызывающего, см. границу доверия. */
@@ -145,6 +160,22 @@ class RichNotificationRenderer(
 
         /** Потолок медиа в rich-сообщении. Наш собственный максимум кадров — 10. */
         const val MAX_MEDIA = 50
+
+        /**
+         * Потолок текстового поля шапки. Ограничены оба свободных поля — `camId` и `fileName`, —
+         * чтобы «шапка ограничена» было верно по построению, а не по арифметике, которую пришлось
+         * бы пересчитывать при каждой правке таблицы.
+         *
+         * Повод конкретный: `fileName` — это `filePath.substringAfterLast("/")`, а
+         * `substringAfterLast` БЕЗ разделителя возвращает строку целиком; колонка `file_path`
+         * объявлена `varchar(16384)`, так что путь без слэша прошёл бы в шапку полностью и с
+         * раскрытием `&` → `&amp;` увёл бы `budget` в минус, опустошив `<details>`.
+         *
+         * 256 — это `NAME_MAX` типичных Linux-ФС: любое настоящее имя файла проходит нетронутым,
+         * обрезается только то, что именем файла быть не может. Оба поля идут исключительно в
+         * ячейки таблицы; действия завязаны на `recordingId`, поэтому обрезка ничего не ломает.
+         */
+        const val MAX_HEAD_FIELD_LENGTH = 256
 
         /**
          * Потолок короткого описания. Настройка `APP_AI_DESCRIPTION_SHORT_MAX` по умолчанию 200 и

@@ -206,6 +206,21 @@ class RichNotificationRendererTest {
     }
 
     @Test
+    fun `an unbounded file name cannot blow the message budget`() {
+        // filePath.substringAfterLast("/") БЕЗ слэша отдаёт путь целиком, а колонка держит 16384.
+        val html =
+            renderer.render(
+                data(camId = "c".repeat(16_384), fileName = "&".repeat(16_384)),
+                DescriptionState.Ready(DescriptionResult(short = "коротко", detailed = "подробно")),
+                frameCount = 2,
+                language = "ru",
+            )
+
+        assertTrue(html.length <= RichNotificationRenderer.MAX_LENGTH, "the whole message stays within the limit")
+        assertContains(html, "подробно", message = "a bounded head leaves the details block its budget")
+    }
+
+    @Test
     fun `media id is stable and zero based`() {
         assertEquals("f0", RichNotificationRenderer.mediaId(0))
         assertEquals("f9", RichNotificationRenderer.mediaId(9))
