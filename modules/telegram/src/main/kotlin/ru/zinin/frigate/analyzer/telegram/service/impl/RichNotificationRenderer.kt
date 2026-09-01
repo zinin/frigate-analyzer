@@ -1,5 +1,8 @@
 package ru.zinin.frigate.analyzer.telegram.service.impl
 
+import dev.inmo.tgbotapi.requests.abstracts.FileId
+import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
+import dev.inmo.tgbotapi.types.rich.InputRichMessageMedia
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.model.DescriptionState
@@ -11,10 +14,13 @@ import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationDat
  *
  * Безусловный компонент — сообщение строится всегда, а AI-описание лишь одно из его состояний.
  *
- * **Граница доверия.** Строки из бандла сообщений (заголовок, подписи ячеек, плейсхолдеры, fallback,
- * заголовок раскрывашки) — наша собственная разметка и вставляются как есть: `ai.description.placeholder.short`
- * это `⏳ <i>AI анализирует кадры…</i>`, и экранирование превратило бы курсив в литеральные `&lt;i&gt;`.
- * Всё, что пришло извне — поля [RecordingNotificationData] и оба текста модели, — экранируется.
+ * **Граница доверия.** Экранируется всё, кроме трёх строк бандла, которые обязаны быть разметкой:
+ * `ai.description.placeholder.short`, `…placeholder.detailed` и `ai.description.fallback.unavailable`
+ * — это `⏳ <i>…</i>`, и экранирование показало бы литеральные `&lt;i&gt;`. Заголовок, подписи ячеек
+ * и заголовок раскрывашки разметкой не являются никогда, поэтому идут через [msgText] и правка
+ * `.properties` (`R&D camera`, `Кадров < 10`) не может отправить в Telegram битый HTML: отказ был бы
+ * детерминированным, а первичная отправка ретраится бесконечно и держит единственного потребителя
+ * очереди. Поля [RecordingNotificationData] и оба текста модели — чужой ввод, экранируются всегда.
  */
 @Component
 class RichNotificationRenderer(
@@ -34,7 +40,7 @@ class RichNotificationRenderer(
     ): String {
         val head =
             buildString {
-                append("<h2>").append(msg.get(KEY_TITLE, language)).append("</h2>")
+                append("<h2>").append(msgText(KEY_TITLE, language)).append("</h2>")
                 append("<table bordered striped compact>")
                 row(KEY_LABEL_CAMERA, trimRaw(data.camId, MAX_HEAD_FIELD_LENGTH), language)
                 row(KEY_LABEL_FILE, trimRaw(data.fileName, MAX_HEAD_FIELD_LENGTH), language)
@@ -51,7 +57,7 @@ class RichNotificationRenderer(
         // Absent — подробностей нет вовсе. Failed — они не появятся, и причина уже сказана в <p>:
         // спойлер «Подробное описание» с той же строкой внутри обещает подробность и не отдаёт ничего.
         if (description == DescriptionState.Absent || description == DescriptionState.Failed) return head
-        val open = "<details><summary>${msg.get(KEY_DETAILS_SUMMARY, language)}</summary>"
+        val open = "<details><summary>${msgText(KEY_DETAILS_SUMMARY, language)}</summary>"
         val budget = MAX_LENGTH - head.length - open.length - DETAILS_CLOSE.length
         val detailed =
             when (description) {
@@ -73,9 +79,9 @@ class RichNotificationRenderer(
         language: String,
     ) {
         append("<tr><td>")
-            .append(msg.get(labelKey, language))
+            .append(msgText(labelKey, language))
             .append("</td><td>")
-            .append(escape(value))
+            .append(escapeTelegramHtml(value))
             .append("</td></tr>")
     }
 
@@ -89,6 +95,15 @@ class RichNotificationRenderer(
             DescriptionState.Failed -> paragraph(msg.get(KEY_FALLBACK, language))
             is DescriptionState.Ready -> paragraph(escapeAndTrim(description.result.short, MAX_SHORT_LENGTH))
         }
+
+    /**
+     * Строка бандла, которая по построению не разметка: заголовок, подписи ячеек, заголовок
+     * раскрывашки. Три строки с `<i>` через неё НЕ идут — см. границу доверия в KDoc класса.
+     */
+    private fun msgText(
+        key: String,
+        language: String,
+    ): String = escapeTelegramHtml(msg.get(key, language))
 
     /**
      * Обрезка СЫРОГО текста до экранирования — тем и отличается от [escapeAndTrim], что сущностей
@@ -120,16 +135,6 @@ class RichNotificationRenderer(
     private fun img(index: Int): String = """<img src="tg://photo?id=${mediaId(index)}"/>"""
 
     /**
-     * Экранирование для Telegram HTML. Кавычки не экранируются: значения никогда не попадают
-     * в атрибуты — единственные атрибуты, которые мы строим, это наши же `tg://photo?id=fN`.
-     */
-    private fun escape(s: String): String =
-        s
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-
-    /**
      * Экранирует и, если не влезает в бюджет, обрезает так, чтобы не разорвать HTML-сущность
      * и не расколоть суррогатную пару.
      */
@@ -138,7 +143,7 @@ class RichNotificationRenderer(
         budget: Int,
     ): String {
         if (budget <= 0) return ""
-        val escaped = escape(text)
+        val escaped = escapeTelegramHtml(text)
         if (escaped.length <= budget) return escaped
         var cutoff = budget - 1 // место под многоточие
         val lastAmp = escaped.lastIndexOf('&', startIndex = (cutoff - 1).coerceAtLeast(0))
@@ -189,6 +194,19 @@ class RichNotificationRenderer(
          * и в `InputRichMessageMedia.id`, иначе Telegram отвергнет сообщение.
          */
         fun mediaId(index: Int): String = "f$index"
+
+        /**
+         * Массив `media` по готовым идентификаторам кадров. Живёт рядом с [mediaId] намеренно:
+         * html и `media` обязаны объявлять одни и те же слоты, а выражение это было выписано
+         * дважды — в отправителе и в раннере правок, — то есть инвариант держался на том, что обе
+         * копии одинаковы. Здесь же берётся и кламп до [MAX_MEDIA]: [render] молча ограничивает
+         * число `<img>`, и без клампа список из 51 идентификатора дал бы html с `f0..f49` против
+         * media с `f0..f50` — Telegram такое отвергает.
+         */
+        fun mediaFrom(ids: List<FileId>): List<InputRichMessageMedia> =
+            ids.take(MAX_MEDIA).mapIndexed { index, id ->
+                InputRichMessageMedia(mediaId(index), TelegramMediaPhoto(id))
+            }
 
         private const val DETAILS_CLOSE = "</details>"
 

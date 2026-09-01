@@ -81,6 +81,12 @@ class TelegramNotificationSenderTest {
                 keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("📹 Оригинал", "qe:${firstArg<UUID>()}"))),
             )
         }
+        // Правка спрашивает клавиатуру заново в момент выполнения — экспорт мог начаться.
+        every { quickExportHandler.currentKeyboard(any(), any()) } answers {
+            InlineKeyboardMarkup(
+                keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("📹 Оригинал", "qe:${firstArg<UUID>()}"))),
+            )
+        }
         every { runnerProvider.getIfAvailable() } returns null
     }
 

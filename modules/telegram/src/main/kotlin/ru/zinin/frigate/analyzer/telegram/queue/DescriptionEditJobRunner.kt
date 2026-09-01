@@ -8,13 +8,12 @@ import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageRichText
 import dev.inmo.tgbotapi.types.ChatIdentifier
 import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
-import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
 import dev.inmo.tgbotapi.types.rich.InputRichMessageHTML
-import dev.inmo.tgbotapi.types.rich.InputRichMessageMedia
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.DependsOn
@@ -32,13 +31,20 @@ private val logger = KotlinLogging.logger {}
  *
  * `fileIds` обязательны: rich-сообщение при правке переобъявляет медиа целиком, иначе Telegram
  * отвечает `RICH_MESSAGE_PHOTO_INVALID`.
+ *
+ * `keyboard` — функция, а не готовая разметка, и это не стилистика. Между отправкой и правкой
+ * проходят десятки секунд, за которые пользователь успевает запустить экспорт: на сообщении в этот
+ * момент висят «прогресс» и «Отмена». Клавиатура при правке переобъявляется целиком (опустить её
+ * нельзя — Telegram снимет её совсем), поэтому запомненная при отправке разметка вернула бы кнопки
+ * выбора поверх идущего экспорта и отняла бы единственную кнопку отмены. Функция спрашивает
+ * актуальное состояние в момент правки.
  */
 data class EditTarget(
     val chatId: ChatIdentifier,
     val messageId: MessageId,
     val data: RecordingNotificationData,
     val fileIds: List<FileId>,
-    val exportKeyboard: InlineKeyboardMarkup,
+    val keyboard: () -> InlineKeyboardMarkup,
     val language: String,
 )
 
@@ -70,17 +76,30 @@ class DescriptionEditJobRunner(
     /** Test-only hook. Returns the most recently launched edit job (may be null if none yet). */
     internal fun lastLaunchedJobForTests(): Job? = lastJob.get()
 
+    /**
+     * Одна цель на вызов. Раньше принимался список — фан-аут, которого никогда не было: каждый
+     * получатель зовёт метод сам, и `forEach` внутри обходил ровно один элемент, обещая при этом
+     * последовательность, которой не существовало.
+     */
     fun launchEditJob(
-        targets: List<EditTarget>,
+        target: EditTarget,
         handleOutcome: suspend () -> Result<DescriptionResult>,
-    ): Job =
-        scope
+    ): Job {
+        if (!scope.isActive) {
+            // launch на отменённом scope возвращает мёртвый Job молча: тело не начнётся, исключения
+            // не будет, и сообщение навсегда останется с плейсхолдером. Гонка реальная — очередь
+            // останавливается без join, а порядок уничтожения бинов между ней и этим scope Spring
+            // не задаёт, потому что связь идёт через ObjectProvider.
+            logger.warn {
+                "Description edit scope is already closed; the placeholder in chat=${target.chatId} " +
+                    "message=${target.messageId} will not be rewritten"
+            }
+        }
+        return scope
             .launch {
-                val outcome = handleOutcome()
-                targets.forEach { target ->
-                    editOne(target, outcome)
-                }
+                editOne(target, handleOutcome())
             }.also { lastJob.set(it) }
+    }
 
     private suspend fun editOne(
         target: EditTarget,
@@ -92,17 +111,14 @@ class DescriptionEditJobRunner(
                 onFailure = { DescriptionState.Failed },
             )
         val html = renderer.render(target.data, state, target.fileIds.size, target.language)
-        val media =
-            target.fileIds.mapIndexed { i, id ->
-                InputRichMessageMedia(RichNotificationRenderer.mediaId(i), TelegramMediaPhoto(id))
-            }
+        val media = RichNotificationRenderer.mediaFrom(target.fileIds)
         runEdit("rich notification", target) {
             bot.execute(
                 EditChatMessageRichText(
                     target.chatId,
                     target.messageId,
                     InputRichMessageHTML(html, media = media.ifEmpty { null }),
-                    replyMarkup = target.exportKeyboard,
+                    replyMarkup = target.keyboard(),
                 ),
             )
         }

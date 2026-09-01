@@ -24,6 +24,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ExportCoroutineScope
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
@@ -227,6 +229,32 @@ class QuickExportHandlerTest {
                 registry = registry,
                 exportScope = scope,
             )
+
+        @Test
+        fun `currentKeyboard gives the export choice when nothing is running`() {
+            val recordingId = UUID.randomUUID()
+
+            val keyboard = handler.currentKeyboard(recordingId, "ru")
+
+            assertEquals(1, keyboard.keyboard.size, "the idle notification carries the two-button choice")
+        }
+
+        @Test
+        fun `currentKeyboard keeps the Cancel button while an export is running`() {
+            // Правка после ответа модели переобъявляет reply_markup целиком. Вернула бы она кнопки
+            // выбора — у идущего аннотированного экспорта (таймаут 50 минут) не осталось бы способа
+            // отмены: xc:{exportId} живёт только во второй строке клавиатуры прогресса.
+            val recordingId = UUID.randomUUID()
+            val exportId = UUID.randomUUID()
+            registry.tryStartQuickExport(exportId, 42L, ExportMode.ANNOTATED, recordingId, Job())
+
+            val keyboard = handler.currentKeyboard(recordingId, "ru")
+
+            assertEquals(2, keyboard.keyboard.size, "progress keyboard is two rows: progress + Cancel")
+            val cancel = keyboard.keyboard[1][0]
+            assertIs<CallbackDataInlineKeyboardButton>(cancel)
+            assertEquals("${CancelExportHandler.CANCEL_PREFIX}$exportId", cancel.callbackData)
+        }
 
         @Test
         fun `creates keyboard with single row and two buttons`() {

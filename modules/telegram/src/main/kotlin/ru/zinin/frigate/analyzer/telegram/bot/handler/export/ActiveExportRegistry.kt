@@ -202,6 +202,15 @@ class ActiveExportRegistry(
     fun get(exportId: UUID): Entry? = byExportId[exportId]
 
     /**
+     * Идентификатор экспорта, выполняющегося прямо сейчас для этой записи, если он есть.
+     *
+     * Нужен тем, кто правит сообщение уведомления по своему поводу: клавиатуру там переобъявляют
+     * целиком, и без этой справки правка вернула бы кнопки выбора поверх идущего экспорта, забрав
+     * единственную кнопку отмены.
+     */
+    fun activeExportIdFor(recordingId: UUID): UUID? = byRecordingId[recordingId]
+
+    /**
      * Idempotent. Order of operations matters:
      *  1. `byExportId.remove(exportId)` — takes the CHM bucket lock briefly. Returns null on
      *     double-call (idempotent).

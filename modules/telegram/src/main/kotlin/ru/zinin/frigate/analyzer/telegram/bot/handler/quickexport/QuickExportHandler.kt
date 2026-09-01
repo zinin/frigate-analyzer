@@ -400,6 +400,32 @@ class QuickExportHandler(
                 },
         )
 
+    /**
+     * Клавиатура, которую сообщение уведомления обязано нести ПРЯМО СЕЙЧАС.
+     *
+     * Правка rich-сообщения переобъявляет `reply_markup` целиком — опустить его нельзя, Telegram
+     * тогда снимет клавиатуру совсем. Поэтому всякий, кто правит уведомление по своему поводу
+     * (правка после ответа модели), обязан спросить здесь, а не помнить клавиатуру с момента
+     * отправки: пока идёт экспорт, на сообщении висят «прогресс» и «Отмена», и возврат кнопок
+     * выбора убрал бы единственный способ отменить аннотированный экспорт с его 50-минутным
+     * таймаутом.
+     *
+     * Текст прогресса при этом откатывается к обобщённому «обрабатывается» — конкретную стадию
+     * знает только сам экспорт, и ближайшее его обновление снова её проставит. Кнопка отмены
+     * важнее точности подписи.
+     */
+    fun currentKeyboard(
+        recordingId: UUID,
+        lang: String,
+    ): InlineKeyboardMarkup {
+        val exportId = registry.activeExportIdFor(recordingId) ?: return createExportKeyboard(recordingId, lang)
+        return createProgressKeyboard(
+            exportId,
+            msg.get("quickexport.button.processing", lang),
+            msg.get("quickexport.button.cancel", lang),
+        )
+    }
+
     private suspend fun restoreButton(
         message: ContentMessage<*>?,
         recordingId: UUID,

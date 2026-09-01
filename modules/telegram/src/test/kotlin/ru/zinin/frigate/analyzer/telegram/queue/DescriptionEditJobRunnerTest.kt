@@ -4,13 +4,17 @@ import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.bot.exceptions.MessageIsNotModifiedException
 import dev.inmo.tgbotapi.bot.exceptions.MessageToEditNotFoundException
 import dev.inmo.tgbotapi.requests.abstracts.FileId
+import dev.inmo.tgbotapi.requests.abstracts.Request
+import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.RawChatId
+import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import io.mockk.slot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -25,6 +29,8 @@ import ru.zinin.frigate.analyzer.telegram.service.impl.RichNotificationRenderer
 import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationData
 import java.util.Locale
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
 
 /**
  * Покрывает [DescriptionEditJobRunner.runEdit] — путь, который до сих пор не выполнялся ни одним
@@ -53,24 +59,26 @@ class DescriptionEditJobRunnerTest {
             scope = DescriptionEditScope.forTest(CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob())),
         )
 
-    private fun target() =
-        EditTarget(
-            chatId = ChatId(RawChatId(42)),
-            messageId = MessageId(7),
-            data =
-                RecordingNotificationData(
-                    camId = "driveway",
-                    fileName = "clip.mp4",
-                    detectionsCount = 3,
-                    analyzedFramesCount = 12,
-                    analyzeTimeSeconds = 4,
-                    recordTimestamp = "31 августа 2026 г., 21:15",
-                    processTimestamp = "31 августа 2026 г., 21:20",
-                ),
-            fileIds = listOf(FileId("f-0"), FileId("f-1")),
-            exportKeyboard = InlineKeyboardMarkup(keyboard = emptyList()),
-            language = "ru",
-        )
+    private fun target(
+        fileIds: List<FileId> = listOf(FileId("f-0"), FileId("f-1")),
+        keyboard: () -> InlineKeyboardMarkup = { InlineKeyboardMarkup(keyboard = emptyList()) },
+    ) = EditTarget(
+        chatId = ChatId(RawChatId(42)),
+        messageId = MessageId(7),
+        data =
+            RecordingNotificationData(
+                camId = "driveway",
+                fileName = "clip.mp4",
+                detectionsCount = 3,
+                analyzedFramesCount = 12,
+                analyzeTimeSeconds = 4,
+                recordTimestamp = "31 августа 2026 г., 21:15",
+                processTimestamp = "31 августа 2026 г., 21:20",
+            ),
+        fileIds = fileIds,
+        keyboard = keyboard,
+        language = "ru",
+    )
 
     private val ready = Result.success(DescriptionResult(short = "Человек у ворот", detailed = "Подробности"))
 
@@ -79,7 +87,7 @@ class DescriptionEditJobRunnerTest {
         runTest {
             coEvery { bot.execute<Any>(any()) } throws mockk<MessageIsNotModifiedException>(relaxed = true)
 
-            runner().launchEditJob(listOf(target())) { ready }.join()
+            runner().launchEditJob(target()) { ready }.join()
 
             // Сообщение уже несёт этот текст — повтор ничего не изменит.
             coVerify(exactly = 1) { bot.execute<Any>(any()) }
@@ -90,7 +98,7 @@ class DescriptionEditJobRunnerTest {
         runTest {
             coEvery { bot.execute<Any>(any()) } throws mockk<MessageToEditNotFoundException>(relaxed = true)
 
-            runner().launchEditJob(listOf(target())) { ready }.join()
+            runner().launchEditJob(target()) { ready }.join()
 
             // Пользователь удалил сообщение — править нечего.
             coVerify(exactly = 1) { bot.execute<Any>(any()) }
@@ -103,10 +111,54 @@ class DescriptionEditJobRunnerTest {
 
             // Завершение здесь важно не меньше числа попыток: неограниченный ретрай удержал бы scope
             // и сорвал бы остановку по @PreDestroy.
-            runner().launchEditJob(listOf(target())) { ready }.join()
+            runner().launchEditJob(target()) { ready }.join()
 
             // EDIT_MAX_ATTEMPTS — best-effort правка сдаётся, а не крутится вечно.
             coVerify(exactly = 5) { bot.execute<Any>(any()) }
+        }
+
+    @Test
+    fun `the keyboard is resolved when the edit runs, not when the job is launched`() =
+        runTest {
+            val choice =
+                InlineKeyboardMarkup(keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("📹", "qe:1"))))
+            val progress =
+                InlineKeyboardMarkup(keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("Отмена", "xc:1"))))
+            var now = choice
+            val captured = slot<Request<Any>>()
+            coEvery { bot.execute<Any>(capture(captured)) } returns mockk<Any>(relaxed = true)
+
+            // Пока модель думает, пользователь успевает нажать экспорт — на сообщении уже «Отмена».
+            runner()
+                .launchEditJob(target(keyboard = { now })) {
+                    now = progress
+                    ready
+                }.join()
+
+            val edit = assertIs<EditChatMessageText>(captured.captured)
+            assertEquals(
+                progress,
+                edit.replyMarkup,
+                "a keyboard remembered at send time would put the export choice back and take the only Cancel button away",
+            )
+        }
+
+    @Test
+    fun `an oversized id list is clamped so html and media keep declaring the same slots`() =
+        runTest {
+            val ids = (0..RichNotificationRenderer.MAX_MEDIA).map { FileId("f-$it") }
+            val captured = slot<Request<Any>>()
+            coEvery { bot.execute<Any>(capture(captured)) } returns mockk<Any>(relaxed = true)
+
+            runner().launchEditJob(target(fileIds = ids)) { ready }.join()
+
+            val rich = assertIs<EditChatMessageText>(captured.captured).richMessage!!
+            assertEquals(RichNotificationRenderer.MAX_MEDIA, rich.media!!.size, "media is capped")
+            val overflow = RichNotificationRenderer.mediaId(RichNotificationRenderer.MAX_MEDIA)
+            assertFalse(
+                rich.html!!.contains("""tg://photo?id=$overflow"""),
+                "html must not declare a slot the media array does not carry — Telegram rejects the edit outright",
+            )
         }
 
     @Test

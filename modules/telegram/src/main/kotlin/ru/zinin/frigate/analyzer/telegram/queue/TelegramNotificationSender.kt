@@ -133,16 +133,21 @@ class TelegramNotificationSender(
         }
         val runner = requireNotNull(editRunner) { "describing == true implies the edit runner bean is present" }
         val handle = requireNotNull(task.descriptionHandle) { "describing == true implies descriptionHandle != null" }
+        // Локальная копия, а не `task.recordingId` внутри лямбды: замыкание на задачу удержало бы и
+        // `visualizedFrames` — байты всех кадров — на все десятки секунд ожидания ответа модели.
+        val recordingId = task.recordingId
         val target =
             EditTarget(
                 chatId = chatIdObj,
                 messageId = sent.messageId,
                 data = task.data,
                 fileIds = editIds,
-                exportKeyboard = exportKeyboard,
+                // Не запомненная клавиатура, а запрос актуальной в момент правки: к тому времени
+                // пользователь мог запустить экспорт, и на сообщении висит «Отмена».
+                keyboard = { quickExportHandler.currentKeyboard(recordingId, lang) },
                 language = lang,
             )
-        runner.launchEditJob(listOf(target)) { handle.await() }
+        runner.launchEditJob(target) { handle.await() }
     }
 
     /**
@@ -165,8 +170,7 @@ class TelegramNotificationSender(
     ): ChatContentMessage<RichMessageContent> {
         val cached = task.frameIds.get()
         if (cached != null && cached.size == frames.size && frames.isNotEmpty()) {
-            val media =
-                cached.mapIndexed { i, id -> InputRichMessageMedia(RichNotificationRenderer.mediaId(i), TelegramMediaPhoto(id)) }
+            val media = RichNotificationRenderer.mediaFrom(cached)
             try {
                 return deliver(chatIdObj, html, media, exportKeyboard)
             } catch (e: CancellationException) {
@@ -217,9 +221,11 @@ class TelegramNotificationSender(
      * и одиночное фото (рекурсия вырождается), и остальные контейнеры. Порядок обхода документный,
      * то есть тот же, в котором рендерер раздал `mediaId(0..n)`.
      *
-     * **Граница рекурсии конечна.** [subBlocks] в 36.1.0 перечисляет ровно шесть типов —
-     * `RichBlockList`, `RichBlockListItem`, `RichBlockBlockQuotation`, `RichBlockCollage`,
-     * `RichBlockSlideshow`, `RichBlockDetails`, — а для всего прочего отдаёт пустой список.
+     * **Граница рекурсии конечна.** [subBlocks] в 36.1.0 разбирает ровно пять типов —
+     * `RichBlockList` (разворачивая `items` своих `RichBlockListItem`), `RichBlockBlockQuotation`,
+     * `RichBlockCollage`, `RichBlockSlideshow`, `RichBlockDetails`, — а для всего прочего отдаёт
+     * пустой список. `RichBlockListItem` собственным случаем НЕ является: встреченный на верхнем
+     * уровне, он отдаст пустой список, а не свои блоки (проверено дизассемблером `getSubBlocks`).
      * `RichBlockTable` и `RichBlockFooter` в него НЕ входят. Сегодня рендерер фото туда не кладёт,
      * но если положит, обход их не увидит: `fileIds` недосчитается, сработает guard в [sendRecording],
      * и получатель навсегда останется с плейсхолдером. Новую обёртку с фото обязан сопровождать тест.

@@ -239,10 +239,6 @@ class StatusMessageFormatter(
         appendLine("</pre>")
     }
 
-    private fun escape(s: String): String =
-        s
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
+    /** Тонкий алиас: реализация одна на модуль, см. [escapeTelegramHtml]. */
+    private fun escape(s: String): String = escapeTelegramHtml(s)
 }

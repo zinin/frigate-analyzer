@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.telegram.service.impl
 
 import org.junit.jupiter.api.Test
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import org.springframework.context.support.StaticMessageSource
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.model.DescriptionState
@@ -60,6 +61,35 @@ class RichNotificationRendererTest {
 
         assertContains(html, "cam&lt;1&gt;&amp;2")
         assertFalse(html.contains("cam<1>"), "raw angle brackets must not survive escaping")
+    }
+
+    @Test
+    fun `a bundle label is escaped and cannot smuggle markup into the message`() {
+        // Подписи ячеек, заголовок и заголовок раскрывашки разметкой не бывают, а вот сломать
+        // HTML правкой .properties легко: отказ Telegram был бы детерминированным, а первичная
+        // отправка ретраится бесконечно и держит единственного потребителя очереди.
+        val poisoned =
+            StaticMessageSource().apply {
+                addMessage("notification.recording.label.camera", Locale.forLanguageTag("ru"), "R&D <камера>")
+            }
+        val html =
+            RichNotificationRenderer(MessageResolver(poisoned))
+                .render(data(), DescriptionState.Absent, frameCount = 0, language = "ru")
+
+        assertContains(html, "R&amp;D &lt;камера&gt;")
+        assertFalse(html.contains("<камера>"), "a label must never reach Telegram as markup")
+    }
+
+    @Test
+    fun `the three markup-carrying bundle strings still go in raw`() {
+        // Обратная сторона: у этих трёх ключей курсив — часть значения, экранирование показало бы
+        // пользователю литеральные &lt;i&gt;.
+        val pending = renderer.render(data(), DescriptionState.Pending, frameCount = 1, language = "ru")
+        assertContains(pending, msg.get("ai.description.placeholder.short", "ru"))
+        assertContains(pending, msg.get("ai.description.placeholder.detailed", "ru"))
+
+        val failed = renderer.render(data(), DescriptionState.Failed, frameCount = 1, language = "ru")
+        assertContains(failed, msg.get("ai.description.fallback.unavailable", "ru"))
     }
 
     @Test
