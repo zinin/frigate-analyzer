@@ -60,6 +60,31 @@ Export/QuickExport/cancellation components are documented in `telegram-export.md
 - Graceful shutdown via `@PreDestroy`
 - `@ConditionalOnProperty` — only active when telegram enabled
 
+### Known exposure: a permanently rejected message stalls every notification
+
+`RetryHelper.retryIndefinitely` catches every `Exception` except `CancellationException` and loops
+forever (backoff 30s → 5min). The send path is wrapped in it, so on a **deterministic** failure —
+a permanent `400`, a `403` from a user who blocked the bot, a deleted chat — `send()` never returns
+and never throws. `consumeNotifications()` is a single sequential consumer, so it stays blocked on
+that one task: notifications stop for every camera and every user until the application restarts,
+and once `TELEGRAM_QUEUE_CAPACITY` tasks pile up `enqueue` suspends and pushes back-pressure into
+`RecordingProcessingFacade`.
+
+Note what this defeats: the consumer's own `try/catch` around `sender.send(task)` already logs and
+moves to the next task. It is written for exactly this case and never fires, because the infinite
+retry leaves nothing to throw. The duplicate-send behaviour documented under "Do not emit Bot API
+10.3 constructs" has the same root.
+
+Pre-existing (master behaves identically), but the rich-message rewrite widened it: the non-AI path
+used to send plain text with no parse mode, so there was little to reject; every notification is now
+an HTML document against an API with four undeclared limits (500 blocks, 16 nesting levels, 50
+media, 20 table columns) and `SendRichMessage` performs no client-side validation at all.
+
+Not fixed deliberately. The fix — bounding the attempts, then letting the existing catch drain the
+queue — needs a number this repository does not contain: how long the system must keep trying before
+it silently drops a motion alert. That is a product decision. `LocalVisualizationProperties.maxFrames`
+is capped at `@Max(10)` so a config drift cannot make the collage itself the trigger.
+
 ## Recording Notification
 
 One recording produces **one** rich message per recipient (`sendRichMessage`, Bot API 10.2).
