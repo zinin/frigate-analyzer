@@ -235,6 +235,16 @@ class TelegramNotificationSenderTest {
 
             assertEquals(2, requests.size, "one rejected attempt, then one upload")
             assertTrue((requests.last() as SendRichMessage).mediaMap.isNotEmpty(), "fallback must upload bytes")
+            // invalidate() несущий, и вот почему: putIfAbsent — это compareAndSet(null, ids), он НЕ
+            // заменяет непустую ячейку. Без сброса запись навсегда осталась бы с негодными ids, и
+            // каждый следующий получатель платил бы обречённую попытку плюс загрузку. Сброс же стоит
+            // ровно одной лишней загрузки — у того получателя, у которого сбой и случился: кэш тут же
+            // заполняется свежими идентификаторами из его же ответа, и остальные идут по file_id.
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                shared.get(),
+                "the upload repopulates the cache, so the rejection costs one extra upload, not N",
+            )
         }
 
     @Test
