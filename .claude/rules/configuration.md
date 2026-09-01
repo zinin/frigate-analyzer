@@ -136,7 +136,7 @@ The reference form (`${FIRST_SCAN_PERIOD:${application.records-watcher.watch-per
 | `LOCAL_VIZ_BASE_FONT_SCALE` | 2.0 | Base font scale factor |
 | `LOCAL_VIZ_BASE_FONT_SIZE` | 16 | Base font size (px) |
 | `LOCAL_VIZ_LABEL_PADDING` | 4 | Label padding (px) |
-| `LOCAL_VIZ_MAX_FRAMES` | 10 | Max frames to visualize |
+| `LOCAL_VIZ_MAX_FRAMES` | 10 | Max frames to visualize. Validated `1..50` — 50 is Telegram's media cap for one rich message, above which frames cannot be delivered at all. Also caps `APP_AI_DESCRIPTION_MAX_FRAMES` via `minOf` in `RecordingProcessingFacade`. |
 
 ## AI Description
 
@@ -149,7 +149,7 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 | `APP_AI_DESCRIPTION_LANGUAGE` | en | Reply language. `ru` or `en`. |
 | `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (the `<p>` above the frames). |
 | `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (the `<details>` body). |
-| `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. |
+| `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. Validated `1..50`, but the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. |
 | `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | 30s | Max wait for a free concurrency slot. |
 | `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous Claude requests. |
