@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.telegram.queue
 
 import dev.inmo.tgbotapi.bot.TelegramBot
+import dev.inmo.tgbotapi.bot.exceptions.WrongFileIdentifierException
 import dev.inmo.tgbotapi.requests.abstracts.FileId
 import dev.inmo.tgbotapi.requests.abstracts.Request
 import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
@@ -8,6 +9,7 @@ import dev.inmo.tgbotapi.requests.send.SendRichMessage
 import dev.inmo.tgbotapi.requests.send.SendTextMessage
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.MessageId
+import dev.inmo.tgbotapi.types.Response
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.files.PhotoFile
@@ -127,10 +129,45 @@ class TelegramNotificationSenderTest {
         descriptionHandle = descriptionHandle,
     )
 
+    /** Ровно то, во что библиотека превращает ответ «Bad Request: wrong file identifier». */
+    private fun wrongFileIdentifier() =
+        WrongFileIdentifierException(
+            mockk<Response>(relaxed = true),
+            "Bad Request: wrong file identifier/HTTP URL specified",
+            null,
+            null,
+        )
+
+    private fun photoSize(
+        id: String,
+        resolution: Long,
+    ) = mockk<PhotoSize> {
+        every { fileId } returns FileId(id)
+        every { this@mockk.resolution } returns resolution
+    }
+
     // photo — это value-класс PhotoFile поверх List<PhotoSize>, голый список не подходит.
     private fun photoBlock(index: Int) =
         RichBlockPhoto(
-            photo = PhotoFile(listOf(mockk<PhotoSize> { every { fileId } returns FileId("file-$index") })),
+            photo = PhotoFile(listOf(photoSize("file-$index", resolution = 1920L * 1080))),
+            hasSpoiler = null,
+            caption = null,
+        )
+
+    /**
+     * Лестница размеров, в которой самый крупный кадр НЕ последний. Telegram нигде не обещает
+     * порядка `photo`, а `file_id` превьюшки, попав в кэш и в правку, подменил бы уже доставленный
+     * коллаж миниатюрами.
+     */
+    private fun ladderBlock(index: Int) =
+        RichBlockPhoto(
+            photo =
+                PhotoFile(
+                    listOf(
+                        photoSize("full-$index", resolution = 1920L * 1080),
+                        photoSize("thumb-$index", resolution = 90L * 90),
+                    ),
+                ),
             hasSpoiler = null,
             caption = null,
         )
@@ -228,7 +265,7 @@ class TelegramNotificationSenderTest {
             val requests = mutableListOf<Request<*>>()
             coEvery { bot.execute(capture(requests)) } answers {
                 val request = requests.last() as SendRichMessage
-                if (request.mediaMap.isEmpty()) error("Bad Request: wrong file identifier") else richResult(count = 2)
+                if (request.mediaMap.isEmpty()) throw wrongFileIdentifier() else richResult(count = 2)
             }
 
             sender.send(createTask(frameCount = 2, frameIds = shared))
@@ -244,6 +281,46 @@ class TelegramNotificationSenderTest {
                 listOf(FileId("file-0"), FileId("file-1")),
                 shared.get(),
                 "the upload repopulates the cache, so the rejection costs one extra upload, not N",
+            )
+        }
+
+    @Test
+    fun `frame id is taken from the biggest photo size, not the last of the ladder`() =
+        runTest {
+            val shared = SharedFrameIds()
+            coEvery { bot.execute(any<Request<*>>()) } returns
+                richMessage(listOf(RichBlockCollage(blocks = listOf(ladderBlock(0), ladderBlock(1)), caption = null)))
+
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            assertEquals(
+                listOf(FileId("full-0"), FileId("full-1")),
+                shared.get(),
+                "the ladder is not ordered by contract; picking by position can cache a 90x90 thumbnail",
+            )
+        }
+
+    @Test
+    fun `a transient failure on the cached ids keeps them for the other recipients`() =
+        runTest {
+            val shared = SharedFrameIds()
+            shared.putIfAbsent(listOf(FileId("shared-0"), FileId("shared-1")))
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } answers {
+                val request = requests.last() as SendRichMessage
+                // 429 приходит на что угодно и об идентификаторах не говорит ничего.
+                if (request.mediaMap.isEmpty()) throw IllegalStateException("Too Many Requests: retry after 5")
+                richResult(count = 2)
+            }
+
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            assertEquals(2, requests.size, "this recipient still gets the message, through an upload")
+            assertEquals(
+                listOf(FileId("shared-0"), FileId("shared-1")),
+                shared.get(),
+                "only Telegram saying the identifier is wrong may drop the cache — a flood-wait would " +
+                    "otherwise force every remaining recipient to re-upload the frames",
             )
         }
 
@@ -343,6 +420,21 @@ class TelegramNotificationSenderTest {
                 "a placeholder nobody can rewrite would hang forever",
             )
             assertTrue(handle.isCancelled, "no one would apply the model answer")
+        }
+
+    @Test
+    fun `without the edit runner a partial answer still releases the description handle`() =
+        runTest {
+            // Бина правки нет, значит плейсхолдер не рендерился и ждать ответа модели незачем.
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            coEvery { bot.execute(any<Request<*>>()) } returns collageResult(photoCount = 1)
+
+            sender.send(createTask(frameCount = 2, descriptionHandle = handle))
+
+            assertTrue(
+                handle.isCancelled,
+                "a broken answer must not smuggle the run past the release — nobody would apply its result",
+            )
         }
 
     @Test

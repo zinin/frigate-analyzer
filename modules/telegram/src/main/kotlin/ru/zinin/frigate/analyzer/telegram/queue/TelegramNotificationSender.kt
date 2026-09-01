@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.telegram.queue
 
 import dev.inmo.tgbotapi.bot.TelegramBot
+import dev.inmo.tgbotapi.bot.exceptions.WrongFileIdentifierException
 import dev.inmo.tgbotapi.extensions.api.send.sendRichMessage
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.requests.abstracts.asMultipartFile
@@ -89,7 +90,11 @@ class TelegramNotificationSender(
         val extracted =
             sent.content.richMessage.blocks
                 .flatMap { it.photosInOrder() }
-                .mapNotNull { it.photo.lastOrNull()?.fileId }
+                // Самый крупный размер, а не последний: порядок лестницы `photo` Telegram нигде не
+                // обещает, а библиотека своим `PhotoFile.fileId` берёт именно `biggest`. Взяли бы
+                // последний — в кэш и в правку мог бы уехать `file_id` превьюшки, и правка описания
+                // подменила бы уже доставленный полноразмерный коллаж миниатюрами.
+                .mapNotNull { block -> block.photo.maxByOrNull { it.resolution }?.fileId }
         val editIds =
             if (extracted.size == frames.size) {
                 task.frameIds.putIfAbsent(extracted)
@@ -107,6 +112,16 @@ class TelegramNotificationSender(
                 }
                 task.frameIds.get()?.takeIf { it.size == frames.size }
             }
+        // Порядок проверок значим. Сначала «описание вообще не запрашивалось»: у этого получателя
+        // плейсхолдера в сообщении нет, и ручку надо отпустить независимо от того, разобрался ли
+        // ответ Telegram. Стояла бы эта ветка ниже, испорченный ответ уводил бы выполнение в return
+        // мимо отмены — и задача модели висела бы, хотя применять её результат некому.
+        if (!describing) {
+            // Плейсхолдера в сообщении нет, редактировать нечего — не жжём токены модели.
+            task.descriptionHandle?.cancel()
+            return
+        }
+
         if (editIds == null) {
             // Ручку описания НЕ отменяем: она одна на всю запись, а испорченный ответ пришёл лично
             // этому получателю — отмена лишила бы описания и тех, чьи сообщения ушли нормально.
@@ -114,12 +129,6 @@ class TelegramNotificationSender(
                 "No usable frame ids for chat=${task.chatId}, recording=${task.recordingId}: " +
                     "the placeholder in the delivered message will never be replaced"
             }
-            return
-        }
-
-        if (!describing) {
-            // Плейсхолдера в сообщении нет, редактировать нечего — не жжём токены модели.
-            task.descriptionHandle?.cancel()
             return
         }
         val runner = requireNotNull(editRunner) { "describing == true implies the edit runner bean is present" }
@@ -142,6 +151,10 @@ class TelegramNotificationSender(
      * Попытка по `file_id` делается ровно одна и БЕЗ бесконечного ретрая: иначе отказ
      * (устаревший или неприменимый идентификатор) крутился бы вечно и до загрузки байтов
      * дело бы не дошло. Загрузка байтами — уже с обычным `retryIndefinitely`.
+     *
+     * Отказ и сбой различаются: общий кэш сбрасывает только [WrongFileIdentifierException] —
+     * единственный ответ, который действительно означает негодный идентификатор. Остальные ошибки
+     * стоят этому получателю одной загрузки, но идентификаторы записи остаются в силе для прочих.
      */
     private suspend fun sendRich(
         chatIdObj: ChatId,
@@ -158,9 +171,19 @@ class TelegramNotificationSender(
                 return deliver(chatIdObj, html, media, exportKeyboard)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: WrongFileIdentifierException) {
+                // Telegram прямо сказал, что идентификатор негоден. Сброс обязателен: putIfAbsent —
+                // это compareAndSet(null, ids), непустую ячейку он не заменит, и без сброса запись
+                // навсегда осталась бы с негодными ids.
                 logger.warn(e) { "Cached frame file_id rejected for chat=${task.chatId}; falling back to upload" }
                 task.frameIds.invalidate()
+            } catch (e: Exception) {
+                // Всё остальное — 429, сеть, таймаут — об идентификаторах не говорит ничего, поэтому
+                // общий кэш НЕ трогаем: иначе один флуд-контроль заставил бы каждого оставшегося
+                // получателя грузить байты заново, ровно когда Telegram нас и душит. Этот получатель
+                // всё равно уходит на загрузку: бесконечно ретраить те же идентификаторы нельзя —
+                // вечно негодный id остановил бы единственного потребителя очереди.
+                logger.warn(e) { "Cached-id send failed for chat=${task.chatId}; falling back to upload, cache kept" }
             }
         }
         val media =
