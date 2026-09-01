@@ -26,5 +26,6 @@ data class LocalVisualizationProperties(
     @field:Min(0)
     val labelPadding: Int = 4,
     @field:Min(1)
+    @field:Max(10)
     val maxFrames: Int = 10,
 )

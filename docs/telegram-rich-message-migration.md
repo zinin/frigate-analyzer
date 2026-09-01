@@ -71,6 +71,12 @@ levels, ≤ 50 media, ≤ 20 table columns.
 
 ## Presentation decisions (taken from the live render)
 
+> **These are the research recommendations, and the design revised two of them.** The shipped
+> renderer uses `<tg-collage>` for every count from two frames up — the slideshow was rejected
+> deliberately ("it hides nine frames out of ten"). The live render below was done with **three**
+> frames on desktop; behaviour at the full ten is still unverified. Read this section as the
+> record of what the research suggested, not as a description of current behaviour.
+
 - **Frames: `<tg-collage>` for ≤ 4, `<tg-slideshow>` above that.** Plain stacked
   `<img>` renders each frame full-width — three of them already make a wall of
   photos, and `LOCAL_VIZ_MAX_FRAMES` is 10. The collage reproduces the familiar
@@ -137,7 +143,7 @@ storage-channel workaround that earlier research kept as plan B.
 |---|---|
 | `telegram/queue/TelegramNotificationSender.kt` | Three send branches collapse into one rich-message send; frames wrapped as `InputRichMessageMedia` + `TelegramMediaPhoto(bytes.asMultipartFile(...))` |
 | `telegram/queue/DescriptionEditJobRunner.kt` | `EditTarget` loses `captionMessageId` / `isMediaGroup`, gains the frame `file_id`s; one edit instead of two |
-| `telegram/service/impl/DescriptionMessageFormatter.kt` | HTML builder for rich content; 1024/4096 budget arithmetic largely obsolete |
+| `telegram/service/impl/DescriptionMessageFormatter.kt` | **Deleted.** Replaced by `RichNotificationRenderer`; the 1024/4096 budget arithmetic went with it |
 | `.claude/rules/telegram.md`, `.claude/rules/ai-description.md` | Document the new single-message flow |
 
 ## Sources

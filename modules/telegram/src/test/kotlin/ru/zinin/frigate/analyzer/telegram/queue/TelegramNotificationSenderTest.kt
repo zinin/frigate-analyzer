@@ -12,6 +12,7 @@ import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineK
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.files.PhotoFile
 import dev.inmo.tgbotapi.types.files.PhotoSize
+import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
 import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.RichMessageContent
@@ -255,7 +256,15 @@ class TelegramNotificationSenderTest {
                 "file_id live inside <tg-collage>, one level below the message blocks",
             )
             val edit = assertIs<EditChatMessageText>(requests.last())
-            assertEquals(listOf("f0", "f1"), edit.richMessage!!.media!!.map { it.id }, "the edit re-declares the frames")
+            val editMedia = edit.richMessage!!.media!!
+            assertEquals(listOf("f0", "f1"), editMedia.map { it.id }, "the edit re-declares the frames")
+            // Слоты f0/f1 совпадут и при перепутанных file_id — сверяем сами идентификаторы,
+            // иначе правка с чужими кадрами прошла бы тест.
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                editMedia.map { (it.media as TelegramMediaPhoto).file },
+                "the edit must carry the extracted file_id, in the order the renderer handed out mediaId",
+            )
         }
 
     @Test

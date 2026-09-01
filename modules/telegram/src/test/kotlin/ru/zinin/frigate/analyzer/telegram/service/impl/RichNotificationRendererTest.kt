@@ -114,6 +114,37 @@ class RichNotificationRendererTest {
     }
 
     @Test
+    fun `model text is escaped in both slots`() {
+        // Тексты модели — единственный вход, который никто не валидирует: их сочиняет LLM.
+        // Экранирование обеих веток рендерер выполняет, но до сих пор это не было закреплено
+        // тестом — проверялись только camId и fileName.
+        val html =
+            renderer.render(
+                data(),
+                DescriptionState.Ready(
+                    DescriptionResult(
+                        short = "<b>человек</b> & пёс",
+                        detailed = "</details><tg-button>жми</tg-button>",
+                    ),
+                ),
+                frameCount = 2,
+                language = "ru",
+            )
+
+        val short = html.substringAfter("</table><p>").substringBefore("</p>")
+        assertEquals("&lt;b&gt;человек&lt;/b&gt; &amp; пёс", short, "short must be escaped")
+
+        val detailed = html.substringAfter("</summary>").substringBefore("</details>")
+        assertEquals("&lt;/details&gt;&lt;tg-button&gt;жми&lt;/tg-button&gt;", detailed, "detailed must be escaped")
+
+        // Ни один тег модели не должен уцелеть как разметка — иначе она может закрыть наш
+        // <details> или подсунуть конструкцию Bot API 10.3, которую сервер отвергнет.
+        assertFalse(html.contains("<b>"), "raw <b> from the model must not survive")
+        assertFalse(html.contains("<tg-button>"), "raw <tg-button> from the model must not survive")
+        assertEquals(1, html.split("</details>").size - 1, "the model must not be able to close our details block")
+    }
+
+    @Test
     fun `failed description renders fallback in both slots`() {
         val fallback = msg.get("ai.description.fallback.unavailable", "ru")
 

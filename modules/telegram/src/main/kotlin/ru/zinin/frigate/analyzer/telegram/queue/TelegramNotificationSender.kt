@@ -44,8 +44,9 @@ class TelegramNotificationSender(
      * - [SimpleTextNotificationTask]: plain localized text message (used by signal-loss / recovery
      *   alerts). No video, no inline export buttons.
      *
-     * Both branches use [RetryHelper.retryIndefinitely] for per-recipient infinite retry on
-     * transient failures. Note: If the calling coroutine is cancelled, this method will propagate
+     * Оба пути используют [RetryHelper.retryIndefinitely] для бесконечного ретрая по получателю,
+     * КРОМЕ попытки по кэшированным `file_id`: она делается ровно один раз и без ретрая, см. [sendRich].
+     * Note: If the calling coroutine is cancelled, this method will propagate
      * CancellationException and the task may not be delivered.
      */
     suspend fun send(task: NotificationTask) {
@@ -168,8 +169,15 @@ class TelegramNotificationSender(
      * Фото в порядке документа: и `<img>` верхнего уровня, и вложенные — рендерер заворачивает
      * несколько кадров в `<tg-collage>`, а он приходит контейнером [dev.inmo.tgbotapi.types.rich.RichBlockCollage],
      * чьи фото лежат уровнем ниже. Обход рекурсивный, а не спецкейс на коллаж: [subBlocks] закрывает
-     * и одиночное фото (рекурсия вырождается), и любую будущую обёртку. Порядок обхода документный,
+     * и одиночное фото (рекурсия вырождается), и остальные контейнеры. Порядок обхода документный,
      * то есть тот же, в котором рендерер раздал `mediaId(0..n)`.
+     *
+     * **Граница рекурсии конечна.** [subBlocks] в 36.1.0 перечисляет ровно шесть типов —
+     * `RichBlockList`, `RichBlockListItem`, `RichBlockBlockQuotation`, `RichBlockCollage`,
+     * `RichBlockSlideshow`, `RichBlockDetails`, — а для всего прочего отдаёт пустой список.
+     * `RichBlockTable` и `RichBlockFooter` в него НЕ входят. Сегодня рендерер фото туда не кладёт,
+     * но если положит, обход их не увидит: `fileIds` недосчитается, сработает guard в [sendRecording],
+     * и получатель навсегда останется с плейсхолдером. Новую обёртку с фото обязан сопровождать тест.
      */
     private fun RichBlock.photosInOrder(): List<RichBlockPhoto> =
         if (this is RichBlockPhoto) listOf(this) else subBlocks.flatMap { it.photosInOrder() }
