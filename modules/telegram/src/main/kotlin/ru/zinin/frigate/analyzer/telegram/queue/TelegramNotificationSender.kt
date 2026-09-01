@@ -68,6 +68,15 @@ class TelegramNotificationSender(
         val lang = task.language ?: "en"
         val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
         val frames = task.visualizedFrames.take(RichNotificationRenderer.MAX_MEDIA)
+        if (frames.size < task.visualizedFrames.size) {
+            // Сегодня недостижимо: LocalVisualizationProperties.maxFrames ограничен @Max(10), а
+            // MAX_MEDIA — потолок платформы. Но эта гарантия живёт в другом модуле и отправителю
+            // не видна, поэтому молчаливая потеря кадров должна быть хотя бы находимой.
+            logger.warn {
+                "Dropping ${task.visualizedFrames.size - frames.size} frame(s) over the " +
+                    "${RichNotificationRenderer.MAX_MEDIA} media cap (chat=${task.chatId}, recording=${task.recordingId})"
+            }
+        }
 
         // Описание существует только когда есть что описывать, включена сама фича и есть кому
         // править: без бина правки плейсхолдер остался бы висеть навсегда.
