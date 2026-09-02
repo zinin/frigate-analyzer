@@ -158,6 +158,19 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 | `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
 
+## Video Export
+
+Settings under `application.export.compress` in `application.yaml`. They tune the re-encode that
+`TelegramVideoFitter` (core, `video/`) runs when a merged export exceeds 45 MiB — see
+`telegram-export.md`, "Size limit". The 45 MiB budget and the 50 MB acceptance limit are constants
+(`FitLimits.TELEGRAM`), not settings.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EXPORT_COMPRESS_PRESET` | fast | libx264 preset: speed versus compression on the host CPU |
+| `EXPORT_COMPRESS_CRF` | 23 | libx264 quality target (0–51); the bitrate cap from the budget still applies |
+| `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` | 0.1 | Smallest bits-per-pixel a candidate height (1080/720/540, never above the source) may have before the next smaller one is tried |
+
 ## Telegram
 
 | Variable | Default | Purpose |

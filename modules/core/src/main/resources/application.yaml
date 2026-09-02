@@ -48,6 +48,11 @@ application:
     cleanup-interval: ${WATCH_CLEANUP_INTERVAL:PT1H}
   temp-folder: ${TEMP_FOLDER:/tmp/frigate-analyzer/}
   ffmpeg-path: ${FFMPEG_PATH:/usr/bin/ffmpeg}
+  export:
+    compress:
+      preset: ${EXPORT_COMPRESS_PRESET:fast}
+      crf: ${EXPORT_COMPRESS_CRF:23}
+      min-bits-per-pixel: ${EXPORT_COMPRESS_MIN_BITS_PER_PIXEL:0.1}
   connection-timeout: ${CONNECTION_TIMEOUT:10s}
   read-timeout: ${READ_TIMEOUT:30s}
   write-timeout: ${WRITE_TIMEOUT:30s}
