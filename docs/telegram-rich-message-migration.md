@@ -45,6 +45,7 @@ messages 708–715 in that chat. Every row below was executed, not inferred.
 | `editMessageText(rich_message = …)` on an already-sent rich message | **Yes**, formatting survives the edit |
 | Can ktgbotapi 36.1.0 parse the response? | **Yes** for 10.2 content: `SectionHeading, Table, Paragraph, Photo×3, Details, Footer` |
 | `<table bordered striped compact>` — `compact` (`is_compact`) is a Bot API **10.3** attribute | **Yes**, rendered and echoed back; 36.1.0 ignores the unknown field (lenient JSON format). Only unknown block/entity *types* break deserialization — see constraint 2 |
+| `editMessageReplyMarkup` (markup-only, no text) on a rich message | **Yes** — checked 2026-09-02 on the production bot: a Quick Export tap replaced the choice row with progress + Cancel, progress updated, and the choice row came back on completion. All five markup-only call sites (`QuickExportHandler` ×4, `CancelExportHandler` ×1) swallow failure at `warn`, so this is the only evidence they work |
 
 Documented limits (unchanged): 32768 UTF-8 characters, ≤ 500 blocks, ≤ 16 nesting
 levels, ≤ 50 media, ≤ 20 table columns.
@@ -53,7 +54,6 @@ levels, ≤ 50 media, ≤ 20 table columns.
 
 | Question | Why it matters |
 |---|---|
-| Does `editMessageReplyMarkup` (markup-only, no text) work on a rich message? | The export keyboard now lives on the rich notification, and five call sites edit only its markup — `QuickExportHandler` (start, two progress updates, `restoreButton`) and `CancelExportHandler`. All five swallow a failure at `warn`, so if Bot API 10.2 rejects a markup-only edit here, the whole Quick Export UX degrades silently: no progress, no Cancel, no restore. One tap on a live notification settles it. |
 | Does a `file_id` obtained in one chat work in another? | The design's only unverified assumption. Fallback if wrong: the next recipient re-uploads the bytes. |
 | Ten frames in one `<tg-collage>` | Only ever rendered live with three. |
 

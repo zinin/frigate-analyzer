@@ -5,6 +5,7 @@ import dev.inmo.tgbotapi.bot.exceptions.MessageIsNotModifiedException
 import dev.inmo.tgbotapi.bot.exceptions.MessageToEditNotFoundException
 import dev.inmo.tgbotapi.requests.abstracts.FileId
 import dev.inmo.tgbotapi.requests.abstracts.Request
+import dev.inmo.tgbotapi.requests.edit.reply_markup.EditChatMessageReplyMarkup
 import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.MessageId
@@ -141,6 +142,42 @@ class DescriptionEditJobRunnerTest {
                 edit.replyMarkup,
                 "a keyboard remembered at send time would put the export choice back and take the only Cancel button away",
             )
+        }
+
+    @Test
+    fun `a keyboard that changed while the edit was in flight is re-applied after it lands`() =
+        runTest {
+            val progress =
+                InlineKeyboardMarkup(keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("Отмена", "xc:1"))))
+            val choice =
+                InlineKeyboardMarkup(keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("📹", "qe:1"))))
+            // Первый запрос клавиатуры — при сборке правки: экспорт ещё идёт. Второй — когда правка
+            // уже легла: экспорт успел закончиться, и restoreButton вернул кнопки выбора. Правка с
+            // «прогрессом» стала последним писателем, и мёртвую «Отмену» больше некому убрать.
+            val answers = ArrayDeque(listOf(progress, choice))
+            val requests = mutableListOf<Request<Any>>()
+            coEvery { bot.execute<Any>(capture(requests)) } returns mockk<Any>(relaxed = true)
+
+            runner().launchEditJob(target(keyboard = { answers.removeFirst() })) { ready }.join()
+
+            assertEquals(2, requests.size, "the rich edit, then one markup-only edit that repairs the keyboard")
+            assertEquals(progress, assertIs<EditChatMessageText>(requests[0]).replyMarkup)
+            assertEquals(
+                choice,
+                assertIs<EditChatMessageReplyMarkup>(requests[1]).replyMarkup,
+                "the export finished while the rich edit was in flight; the keyboard it re-declared must not stay",
+            )
+        }
+
+    @Test
+    fun `no markup edit follows when the keyboard is unchanged`() =
+        runTest {
+            val requests = mutableListOf<Request<Any>>()
+            coEvery { bot.execute<Any>(capture(requests)) } returns mockk<Any>(relaxed = true)
+
+            runner().launchEditJob(target()) { ready }.join()
+
+            assertEquals(1, requests.size, "an unchanged keyboard costs no second request")
         }
 
     @Test

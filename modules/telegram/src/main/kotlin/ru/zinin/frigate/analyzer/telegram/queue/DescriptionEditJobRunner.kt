@@ -4,6 +4,7 @@ import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.bot.exceptions.MessageIsNotModifiedException
 import dev.inmo.tgbotapi.bot.exceptions.MessageToEditNotFoundException
 import dev.inmo.tgbotapi.requests.abstracts.FileId
+import dev.inmo.tgbotapi.requests.edit.reply_markup.EditChatMessageReplyMarkup
 import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageRichText
 import dev.inmo.tgbotapi.types.ChatIdentifier
 import dev.inmo.tgbotapi.types.MessageId
@@ -112,15 +113,32 @@ class DescriptionEditJobRunner(
             )
         val html = renderer.render(target.data, state, target.fileIds.size, target.language)
         val media = RichNotificationRenderer.mediaFrom(target.fileIds)
-        runEdit("rich notification", target) {
-            bot.execute(
-                EditChatMessageRichText(
-                    target.chatId,
-                    target.messageId,
-                    InputRichMessageHTML(html, media = media.ifEmpty { null }),
-                    replyMarkup = target.keyboard(),
-                ),
-            )
+        var sentKeyboard: InlineKeyboardMarkup? = null
+        val landed =
+            runEdit("rich notification", target) {
+                // Клавиатура спрашивается на каждой попытке, но внутри попытки она заморожена на весь
+                // сетевой вызов — включая повторы лимитера на 429, то есть на секунды.
+                val keyboard = target.keyboard()
+                sentKeyboard = keyboard
+                bot.execute(
+                    EditChatMessageRichText(
+                        target.chatId,
+                        target.messageId,
+                        InputRichMessageHTML(html, media = media.ifEmpty { null }),
+                        replyMarkup = keyboard,
+                    ),
+                )
+            }
+        if (!landed) return
+        // Правка переобъявляет reply_markup целиком, а пока она летела, экспорт мог закончиться —
+        // restoreButton уже вернул кнопки выбора — или начаться. Тогда наша клавиатура легла последней,
+        // и исправить её некому: runExport завершился, а описание больше не правится. Поэтому состояние
+        // перечитывается после того, как правка легла, и при расхождении актуальная клавиатура ставится
+        // отдельной markup-правкой. Остаточное окно — один вызов API вместо всего полёта rich-правки.
+        val current = target.keyboard()
+        if (current == sentKeyboard) return
+        runEdit("keyboard re-apply", target) {
+            bot.execute(EditChatMessageReplyMarkup(target.chatId, target.messageId, replyMarkup = current))
         }
     }
 
@@ -136,30 +154,33 @@ class DescriptionEditJobRunner(
      *   Bounded (not indefinite) because edit is best-effort: after ~3.75 minutes of retries
      *   (see [editBackoffMs]) the job gives up so scope shutdown completes and the placeholder
      *   stays as fallback.
+     *
+     * @return `true` when [block] completed, i.e. the edit landed; `false` when it was skipped as
+     *   terminal or given up — nothing of ours reached the message, so there is nothing to follow up.
      */
     private suspend fun runEdit(
         label: String,
         target: EditTarget,
         block: suspend () -> Unit,
-    ) {
+    ): Boolean {
         var attempt = 0
         while (true) {
             try {
                 block()
-                return
+                return true
             } catch (e: CancellationException) {
                 throw e
             } catch (e: MessageIsNotModifiedException) {
                 logger.debug { "Edit skipped for $label (chat=${target.chatId}): message is not modified — ${e.message}" }
-                return
+                return false
             } catch (e: MessageToEditNotFoundException) {
                 logger.debug { "Edit skipped for $label (chat=${target.chatId}): message not found — ${e.message}" }
-                return
+                return false
             } catch (e: Exception) {
                 attempt++
                 if (attempt >= EDIT_MAX_ATTEMPTS) {
                     logger.warn(e) { "Failed to edit $label for chat=${target.chatId} after $attempt attempts; giving up" }
-                    return
+                    return false
                 }
                 val delayMs = editBackoffMs(attempt)
                 logger.warn(e) { "Edit $label failed for chat=${target.chatId} (attempt $attempt); retrying in ${delayMs / 1000}s" }

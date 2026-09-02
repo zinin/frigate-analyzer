@@ -100,7 +100,7 @@ recovery alerts are not rich: they stay plain `SimpleTextNotificationTask` text.
 | `<p>` short description | `DescriptionState` — placeholder, model text or fallback; omitted when `Absent` |
 | frames | one frame → a bare `<img>`, two or more → `<tg-collage>`; capped at `MAX_MEDIA = 50`, which is also the `@Max` of `LOCAL_VIZ_MAX_FRAMES` (default 10; only up to ten frames were ever rendered live) |
 | `<details>` detailed description | omitted when `Absent` **and when `Failed`** (the `<p>` already carries the reason); the model text is trimmed to whatever is left of `MAX_LENGTH = 32768` |
-| Quick Export keyboard | `QuickExportHandler.createExportKeyboard`, passed as `reply_markup` — never as HTML buttons |
+| Quick Export keyboard | `QuickExportHandler.createExportKeyboard` on the initial send, passed as `reply_markup` — never as HTML buttons. The description edit re-declares `reply_markup` wholesale, so it asks `QuickExportHandler.currentKeyboard(recordingId, chatId, lang)` at edit time: the choice row when nothing runs *in this chat* (the registry is one index for every chat), progress + Cancel for this chat's ACTIVE export, the single "cancelling…" row while it is CANCELLING. After the edit lands the runner asks again and, if the export state moved while the edit was in flight, follows up with one markup-only `editMessageReplyMarkup` — otherwise a progress keyboard for an already-finished export would stay as the last writer with nobody left to repair it |
 
 `<img src="tg://photo?id=fN"/>` and `InputRichMessageMedia.id` must carry the same string
 (`RichNotificationRenderer.mediaId`), or Telegram rejects the message.
