@@ -37,10 +37,11 @@ loaded alongside this file whenever you touch `modules/telegram/**`.
    - A merged file above 45 MiB is re-encoded by `TelegramVideoFitter` (core, `video/`) to fit
      Telegram's upload limit; in ANNOTATED mode the annotated result goes through the fitter
      again (`COMPRESSING_RESULT` stage). See "Size limit" below.
-   - Timeouts: outer 12 min (original: ffprobe 30 s + two ffmpeg runs of 300 s + merge), outer
-     75 min (annotated: the same fitting budget twice, around the 45 min annotation, plus the
-     merge); inner annotation timeout `DETECT_VIDEO_VISUALIZE_TIMEOUT` defaults to 45 min.
-     `/export` uses the same two outer values (`ExportModels.kt`).
+   - Timeouts: outer 18 min (original: the merge and two ffmpeg runs capped at 300 s each,
+     plus ffprobe 30 s), outer 75 min (annotated: the same fitting budget twice, around the
+     45 min annotation, plus the merge); inner annotation timeout
+     `DETECT_VIDEO_VISUALIZE_TIMEOUT` defaults to 45 min. `/export` uses the same two outer
+     values (`ExportModels.kt`).
    - On inner annotation timeout a dedicated message `quickexport.error.annotation.timeout` is
      shown (not the generic one).
    - Video is sent to the chat.

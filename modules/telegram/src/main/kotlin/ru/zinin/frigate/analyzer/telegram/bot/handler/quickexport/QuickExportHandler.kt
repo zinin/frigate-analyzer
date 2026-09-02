@@ -471,9 +471,10 @@ class QuickExportHandler(
         const val CALLBACK_PREFIX = "qe:"
         const val CALLBACK_PREFIX_ANNOTATED = "qea:"
 
-        // 12 minutes: ffprobe (30 s) + two ffmpeg encodes of VideoMergeHelper.FFMPEG_TIMEOUT_SECONDS
-        // (300 s) when the merged file has to be fitted into the Telegram limit, plus the merge.
-        private const val QUICK_EXPORT_ORIGINAL_TIMEOUT_MS = 720_000L
+        // 18 minutes: the merge and the two libx264 encodes that fit the file into the Telegram
+        // limit are each capped at VideoMergeHelper.FFMPEG_TIMEOUT_SECONDS (300 s) and ffprobe at
+        // 30 s, so 930 s of external processes, plus room for the progress edits.
+        private const val QUICK_EXPORT_ORIGINAL_TIMEOUT_MS = 1_080_000L
 
         // 75 minutes. Must exceed application.detect.video-visualize.timeout (default 45m) plus
         // everything the export does around the annotation, so the inner annotation timeout
