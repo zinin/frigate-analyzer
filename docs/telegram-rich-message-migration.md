@@ -44,6 +44,7 @@ messages 708–715 in that chat. Every row below was executed, not inferred.
 | Inline keyboard on a rich message | **Yes**, `reply_markup` is accepted and echoed back |
 | `editMessageText(rich_message = …)` on an already-sent rich message | **Yes**, formatting survives the edit |
 | Can ktgbotapi 36.1.0 parse the response? | **Yes** for 10.2 content: `SectionHeading, Table, Paragraph, Photo×3, Details, Footer` |
+| `<table bordered striped compact>` — `compact` (`is_compact`) is a Bot API **10.3** attribute | **Yes**, rendered and echoed back; 36.1.0 ignores the unknown field (lenient JSON format). Only unknown block/entity *types* break deserialization — see constraint 2 |
 
 Documented limits (unchanged): 32768 UTF-8 characters, ≤ 500 blocks, ≤ 16 nesting
 levels, ≤ 50 media, ≤ 20 table columns.
@@ -104,7 +105,7 @@ A single rich message per recording, carrying what today needs two:
 - heading + a metadata `<table>` (camera / file / detections / frames / processing
   time / timestamps — currently built by
   `TelegramNotificationServiceImpl.formatRecordingMessage`, i18n keys `notification.recording.*`),
-- all visualized frames as a collage or slideshow (≤ 10, well under the 50-media cap),
+- all visualized frames as a collage or slideshow (`LOCAL_VIZ_MAX_FRAMES`, default 10, capped at the 50-media limit),
 - the AI short description,
 - the AI detailed description inside `<details>`,
 - the Quick Export inline keyboard from `QuickExportHandler.createExportKeyboard`.

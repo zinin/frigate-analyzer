@@ -1,7 +1,8 @@
 package ru.zinin.frigate.analyzer.telegram.queue
 
 import dev.inmo.tgbotapi.bot.TelegramBot
-import dev.inmo.tgbotapi.bot.exceptions.WrongFileIdentifierException
+import dev.inmo.tgbotapi.bot.exceptions.RequestException
+import dev.inmo.tgbotapi.bot.exceptions.TooMuchRequestsException
 import dev.inmo.tgbotapi.extensions.api.send.sendRichMessage
 import dev.inmo.tgbotapi.extensions.api.send.sendTextMessage
 import dev.inmo.tgbotapi.requests.abstracts.asMultipartFile
@@ -70,9 +71,9 @@ class TelegramNotificationSender(
         val exportKeyboard = quickExportHandler.createExportKeyboard(task.recordingId, lang)
         val frames = task.visualizedFrames.take(RichNotificationRenderer.MAX_MEDIA)
         if (frames.size < task.visualizedFrames.size) {
-            // Сегодня недостижимо: LocalVisualizationProperties.maxFrames ограничен @Max(10), а
-            // MAX_MEDIA — потолок платформы. Но эта гарантия живёт в другом модуле и отправителю
-            // не видна, поэтому молчаливая потеря кадров должна быть хотя бы находимой.
+            // Сегодня недостижимо: LocalVisualizationProperties.maxFrames ограничен @Max(50), ровно
+            // MAX_MEDIA. Но это равенство живёт в другом модуле и отправителю не видно, поэтому
+            // молчаливая потеря кадров должна быть хотя бы находимой.
             logger.warn {
                 "Dropping ${task.visualizedFrames.size - frames.size} frame(s) over the " +
                     "${RichNotificationRenderer.MAX_MEDIA} media cap (chat=${task.chatId}, recording=${task.recordingId})"
@@ -90,11 +91,11 @@ class TelegramNotificationSender(
         val extracted =
             sent.content.richMessage.blocks
                 .flatMap { it.photosInOrder() }
-                // Самый крупный размер, а не последний: порядок лестницы `photo` Telegram нигде не
-                // обещает, а библиотека своим `PhotoFile.fileId` берёт именно `biggest`. Взяли бы
-                // последний — в кэш и в правку мог бы уехать `file_id` превьюшки, и правка описания
-                // подменила бы уже доставленный полноразмерный коллаж миниатюрами.
-                .mapNotNull { block -> block.photo.maxByOrNull { it.resolution }?.fileId }
+                // `PhotoFile.fileId` — это самый крупный размер, а не последний в лестнице `photo`:
+                // её порядок Telegram нигде не обещает. Взяли бы последний — в кэш и в правку мог бы
+                // уехать `file_id` превьюшки, и правка описания подменила бы уже доставленный
+                // полноразмерный коллаж миниатюрами.
+                .map { block -> block.photo.fileId }
         val editIds =
             if (extracted.size == frames.size) {
                 task.frameIds.putIfAbsent(extracted)
@@ -133,9 +134,11 @@ class TelegramNotificationSender(
         }
         val runner = requireNotNull(editRunner) { "describing == true implies the edit runner bean is present" }
         val handle = requireNotNull(task.descriptionHandle) { "describing == true implies descriptionHandle != null" }
-        // Локальная копия, а не `task.recordingId` внутри лямбды: замыкание на задачу удержало бы и
-        // `visualizedFrames` — байты всех кадров — на все десятки секунд ожидания ответа модели.
+        // Локальные копии, а не `task.recordingId` / `task.chatId` внутри лямбды: замыкание на задачу
+        // удержало бы и `visualizedFrames` — байты всех кадров — на все десятки секунд ожидания
+        // ответа модели.
         val recordingId = task.recordingId
+        val chatId = task.chatId
         val target =
             EditTarget(
                 chatId = chatIdObj,
@@ -144,7 +147,7 @@ class TelegramNotificationSender(
                 fileIds = editIds,
                 // Не запомненная клавиатура, а запрос актуальной в момент правки: к тому времени
                 // пользователь мог запустить экспорт, и на сообщении висит «Отмена».
-                keyboard = { quickExportHandler.currentKeyboard(recordingId, lang) },
+                keyboard = { quickExportHandler.currentKeyboard(recordingId, chatId, lang) },
                 language = lang,
             )
         runner.launchEditJob(target) { handle.await() }
@@ -157,9 +160,12 @@ class TelegramNotificationSender(
      * (устаревший или неприменимый идентификатор) крутился бы вечно и до загрузки байтов
      * дело бы не дошло. Загрузка байтами — уже с обычным `retryIndefinitely`.
      *
-     * Отказ и сбой различаются: общий кэш сбрасывает только [WrongFileIdentifierException] —
-     * единственный ответ, который действительно означает негодный идентификатор. Остальные ошибки
-     * стоят этому получателю одной загрузки, но идентификаторы записи остаются в силе для прочих.
+     * Отказ и сбой различаются по тому, ответил ли Telegram. Любой ответ с ошибкой
+     * ([RequestException], кроме флуд-контроля) сбрасывает общий кэш: библиотека узнаёт «wrong file
+     * identifier» по буквальному тексту, а отказ по rich-медиа приходит с другим
+     * (RICH_MESSAGE_PHOTO_INVALID), так что различать ответы по классу нельзя. Сбой без ответа —
+     * сеть, таймаут, разбор — об идентификаторах не говорит ничего: он стоит этому получателю одной
+     * загрузки, а идентификаторы записи остаются в силе для прочих.
      */
     private suspend fun sendRich(
         chatIdObj: ChatId,
@@ -175,18 +181,24 @@ class TelegramNotificationSender(
                 return deliver(chatIdObj, html, media, exportKeyboard)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: WrongFileIdentifierException) {
-                // Telegram прямо сказал, что идентификатор негоден. Сброс обязателен: putIfAbsent —
-                // это compareAndSet(null, ids), непустую ячейку он не заменит, и без сброса запись
-                // навсегда осталась бы с негодными ids.
+            } catch (e: TooMuchRequestsException) {
+                // Флуд-контроль об идентификаторах не говорит ничего. Штатно сюда не доходит —
+                // лимитер ktgbotapi по умолчанию (ExceptionsOnlyLimiter) повторяет запрос сам, —
+                // но если всплывёт, кэш трогать нельзя: иначе один 429 заставил бы каждого
+                // оставшегося получателя грузить байты заново, ровно когда Telegram нас и душит.
+                logger.warn(e) { "Cached-id send hit flood control for chat=${task.chatId}; falling back to upload, cache kept" }
+            } catch (e: RequestException) {
+                // Telegram ответил на отправку по кэшированным id ошибкой: идентификаторы под
+                // подозрением. Сброс обязателен: putIfAbsent — это compareAndSet(null, ids), непустую
+                // ячейку он не заменит, и без сброса запись навсегда осталась бы с негодными ids, а
+                // каждый следующий получатель платил бы обречённую попытку плюс загрузку.
                 logger.warn(e) { "Cached frame file_id rejected for chat=${task.chatId}; falling back to upload" }
                 task.frameIds.invalidate()
             } catch (e: Exception) {
-                // Всё остальное — 429, сеть, таймаут — об идентификаторах не говорит ничего, поэтому
-                // общий кэш НЕ трогаем: иначе один флуд-контроль заставил бы каждого оставшегося
-                // получателя грузить байты заново, ровно когда Telegram нас и душит. Этот получатель
-                // всё равно уходит на загрузку: бесконечно ретраить те же идентификаторы нельзя —
-                // вечно негодный id остановил бы единственного потребителя очереди.
+                // Ответа не было — сеть, таймаут, разбор ответа, — и об идентификаторах это не говорит
+                // ничего, поэтому общий кэш остаётся. Этот получатель всё равно уходит на загрузку:
+                // бесконечно ретраить те же идентификаторы нельзя — вечно негодный id остановил бы
+                // единственного потребителя очереди.
                 logger.warn(e) { "Cached-id send failed for chat=${task.chatId}; falling back to upload, cache kept" }
             }
         }

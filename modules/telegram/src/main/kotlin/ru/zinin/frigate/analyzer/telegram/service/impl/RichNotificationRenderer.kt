@@ -163,7 +163,7 @@ class RichNotificationRenderer(
         /** Лимит текста rich-сообщения по документации Bot API. */
         const val MAX_LENGTH = 32_768
 
-        /** Потолок медиа в rich-сообщении. Наш собственный максимум кадров — 10. */
+        /** Потолок медиа в rich-сообщении; тот же предел стоит на LOCAL_VIZ_MAX_FRAMES (дефолт 10). */
         const val MAX_MEDIA = 50
 
         /**

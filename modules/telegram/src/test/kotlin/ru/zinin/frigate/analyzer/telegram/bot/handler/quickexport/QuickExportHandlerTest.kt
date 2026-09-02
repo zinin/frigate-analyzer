@@ -234,7 +234,7 @@ class QuickExportHandlerTest {
         fun `currentKeyboard gives the export choice when nothing is running`() {
             val recordingId = UUID.randomUUID()
 
-            val keyboard = handler.currentKeyboard(recordingId, "ru")
+            val keyboard = handler.currentKeyboard(recordingId, 42L, "ru")
 
             assertEquals(1, keyboard.keyboard.size, "the idle notification carries the two-button choice")
         }
@@ -248,12 +248,51 @@ class QuickExportHandlerTest {
             val exportId = UUID.randomUUID()
             registry.tryStartQuickExport(exportId, 42L, ExportMode.ANNOTATED, recordingId, Job())
 
-            val keyboard = handler.currentKeyboard(recordingId, "ru")
+            val keyboard = handler.currentKeyboard(recordingId, 42L, "ru")
 
             assertEquals(2, keyboard.keyboard.size, "progress keyboard is two rows: progress + Cancel")
             val cancel = keyboard.keyboard[1][0]
             assertIs<CallbackDataInlineKeyboardButton>(cancel)
             assertEquals("${CancelExportHandler.CANCEL_PREFIX}$exportId", cancel.callbackData)
+        }
+
+        @Test
+        fun `currentKeyboard does not leak another chat's export into this chat`() {
+            // Реестр индексирует экспорт по записи, а не по чату. Одна запись уходит всем
+            // подписчикам, и экспорт из чата A не должен ставить в чате B «Отмену» чужого экспорта:
+            // B её нажать не сможет (entry.chatId != chatId), а кнопки выбора уже потеряны.
+            val recordingId = UUID.randomUUID()
+            val exportId = UUID.randomUUID()
+            registry.tryStartQuickExport(exportId, 42L, ExportMode.ANNOTATED, recordingId, Job())
+
+            val keyboard = handler.currentKeyboard(recordingId, 7L, "ru")
+
+            assertEquals(1, keyboard.keyboard.size, "another recipient keeps the two-button choice")
+            val first = keyboard.keyboard[0][0]
+            assertIs<CallbackDataInlineKeyboardButton>(first)
+            assertTrue(
+                first.callbackData.startsWith(QuickExportHandler.CALLBACK_PREFIX) ||
+                    first.callbackData.startsWith(QuickExportHandler.CALLBACK_PREFIX_ANNOTATED),
+                "the choice row carries the export callbacks, not a foreign export's cancel",
+            )
+        }
+
+        @Test
+        fun `currentKeyboard shows the cancelling row while an export is being cancelled`() {
+            // markCancelling меняет только состояние записи, индекс по recordingId остаётся, поэтому
+            // «активный экспорт» здесь ещё виден. Клавиатура прогресса вернула бы живую «Отмену»
+            // поверх строки «Отменяется…», которую CancelExportHandler только что поставил.
+            val recordingId = UUID.randomUUID()
+            val exportId = UUID.randomUUID()
+            registry.tryStartQuickExport(exportId, 42L, ExportMode.ANNOTATED, recordingId, Job())
+            registry.markCancelling(exportId)
+
+            val keyboard = handler.currentKeyboard(recordingId, 42L, "ru")
+
+            assertEquals(1, keyboard.keyboard.size, "cancelling keyboard is the single noop row")
+            val only = keyboard.keyboard[0][0]
+            assertIs<CallbackDataInlineKeyboardButton>(only)
+            assertEquals("${CancelExportHandler.NOOP_PREFIX}$exportId", only.callbackData)
         }
 
         @Test

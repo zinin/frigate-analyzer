@@ -256,7 +256,7 @@ When objects are detected in a recording, the bot sends a notification with:
 - Top frames annotated with bounding boxes and confidence scores
 - Inline "Original" / "Annotated" buttons for instant quick-export (±1 min around the recording)
 
-If AI description is enabled, a short caption suffix and an expandable blockquote with a detailed description are edited into the message asynchronously after Claude responds.
+If AI description is enabled, the message first carries placeholders; once Claude responds, the short description paragraph and a collapsible detailed description (`<details>`) are edited into the same message.
 
 ### Signal-loss alerts
 

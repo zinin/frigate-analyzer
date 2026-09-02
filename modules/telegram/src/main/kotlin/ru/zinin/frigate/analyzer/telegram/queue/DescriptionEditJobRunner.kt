@@ -133,8 +133,9 @@ class DescriptionEditJobRunner(
      * - Any other failure retries with backoff up to [EDIT_MAX_ATTEMPTS]. This symmetrises the
      *   initial-send path (which uses `RetryHelper.retryIndefinitely`) so a transient 429 or
      *   network blip on the edit call does not leave the user stuck with the hourglass.
-     *   Bounded (not indefinite) because edit is best-effort: after ~5 minutes of retries the
-     *   job gives up so scope shutdown completes and the placeholder stays as fallback.
+     *   Bounded (not indefinite) because edit is best-effort: after ~3.75 minutes of retries
+     *   (see [editBackoffMs]) the job gives up so scope shutdown completes and the placeholder
+     *   stays as fallback.
      */
     private suspend fun runEdit(
         label: String,

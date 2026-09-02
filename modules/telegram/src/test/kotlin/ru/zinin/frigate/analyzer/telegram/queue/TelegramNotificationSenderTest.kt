@@ -1,6 +1,8 @@
 package ru.zinin.frigate.analyzer.telegram.queue
 
 import dev.inmo.tgbotapi.bot.TelegramBot
+import dev.inmo.tgbotapi.bot.exceptions.CommonRequestException
+import dev.inmo.tgbotapi.bot.exceptions.TooMuchRequestsException
 import dev.inmo.tgbotapi.bot.exceptions.WrongFileIdentifierException
 import dev.inmo.tgbotapi.requests.abstracts.FileId
 import dev.inmo.tgbotapi.requests.abstracts.Request
@@ -10,6 +12,7 @@ import dev.inmo.tgbotapi.requests.send.SendTextMessage
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.Response
+import dev.inmo.tgbotapi.types.RetryAfterError
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.files.PhotoFile
@@ -43,6 +46,7 @@ import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHan
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.impl.RichNotificationRenderer
 import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationData
+import java.io.IOException
 import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertContains
@@ -82,7 +86,7 @@ class TelegramNotificationSenderTest {
             )
         }
         // Правка спрашивает клавиатуру заново в момент выполнения — экспорт мог начаться.
-        every { quickExportHandler.currentKeyboard(any(), any()) } answers {
+        every { quickExportHandler.currentKeyboard(any(), any(), any()) } answers {
             InlineKeyboardMarkup(
                 keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("📹 Оригинал", "qe:${firstArg<UUID>()}"))),
             )
@@ -140,6 +144,21 @@ class TelegramNotificationSenderTest {
         WrongFileIdentifierException(
             mockk<Response>(relaxed = true),
             "Bad Request: wrong file identifier/HTTP URL specified",
+            null,
+            null,
+        )
+
+    /**
+     * Любой другой ответ Telegram с ошибкой: библиотека узнаёт по тексту лишь несколько ответов,
+     * а «wrong file identifier» ищет буквально, поэтому RICH_MESSAGE_PHOTO_INVALID приходит вот так.
+     */
+    private fun apiError(description: String) = CommonRequestException(mockk<Response>(relaxed = true), description, null, null)
+
+    private fun floodWait() =
+        TooMuchRequestsException(
+            mockk<RetryAfterError>(relaxed = true),
+            mockk<Response>(relaxed = true),
+            "Too Many Requests: retry after 5",
             null,
             null,
         )
@@ -314,8 +333,8 @@ class TelegramNotificationSenderTest {
             val requests = mutableListOf<Request<*>>()
             coEvery { bot.execute(capture(requests)) } answers {
                 val request = requests.last() as SendRichMessage
-                // 429 приходит на что угодно и об идентификаторах не говорит ничего.
-                if (request.mediaMap.isEmpty()) throw IllegalStateException("Too Many Requests: retry after 5")
+                // Транспорт: Telegram не ответил вовсе, об идентификаторах это не говорит ничего.
+                if (request.mediaMap.isEmpty()) throw IOException("connection reset")
                 richResult(count = 2)
             }
 
@@ -325,9 +344,55 @@ class TelegramNotificationSenderTest {
             assertEquals(
                 listOf(FileId("shared-0"), FileId("shared-1")),
                 shared.get(),
-                "only Telegram saying the identifier is wrong may drop the cache — a flood-wait would " +
-                    "otherwise force every remaining recipient to re-upload the frames",
+                "a failure without an answer from Telegram must not drop the cache — every remaining " +
+                    "recipient would otherwise re-upload the frames over one network blip",
             )
+        }
+
+    @Test
+    fun `any error answer from Telegram on the cached ids drops them, not only the literal wrong-file-identifier`() =
+        runTest {
+            // Библиотека распознаёт «wrong file identifier» по буквальному тексту ответа. Отказ
+            // по rich-медиа приходит с другим текстом (RICH_MESSAGE_PHOTO_INVALID) и был бы
+            // «прочей ошибкой»: кэш остался бы с негодными ids, а putIfAbsent непустую ячейку не
+            // заменяет — каждый следующий получатель платил бы обречённую попытку плюс загрузку.
+            val shared = SharedFrameIds()
+            shared.putIfAbsent(listOf(FileId("stale-0"), FileId("stale-1")))
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } answers {
+                val request = requests.last() as SendRichMessage
+                if (request.mediaMap.isEmpty()) throw apiError("Bad Request: RICH_MESSAGE_PHOTO_INVALID")
+                richResult(count = 2)
+            }
+
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            assertEquals(2, requests.size, "one rejected attempt, then one upload")
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                shared.get(),
+                "Telegram answered the cached send with an error: the ids are suspect and the upload must repopulate the cache",
+            )
+        }
+
+    @Test
+    fun `a flood-wait answer on the cached ids keeps them for the other recipients`() =
+        runTest {
+            // Штатно 429 сюда не доходит: лимитер ktgbotapi повторяет запрос сам. Но если он
+            // всё же всплывёт, об идентификаторах он не говорит ничего.
+            val shared = SharedFrameIds()
+            shared.putIfAbsent(listOf(FileId("shared-0"), FileId("shared-1")))
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } answers {
+                val request = requests.last() as SendRichMessage
+                if (request.mediaMap.isEmpty()) throw floodWait()
+                richResult(count = 2)
+            }
+
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            assertEquals(2, requests.size, "this recipient still gets the message, through an upload")
+            assertEquals(listOf(FileId("shared-0"), FileId("shared-1")), shared.get(), "a flood-wait says nothing about the ids")
         }
 
     @Test

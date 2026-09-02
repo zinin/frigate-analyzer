@@ -83,7 +83,9 @@ media, 20 table columns) and `SendRichMessage` performs no client-side validatio
 Not fixed deliberately. The fix — bounding the attempts, then letting the existing catch drain the
 queue — needs a number this repository does not contain: how long the system must keep trying before
 it silently drops a motion alert. That is a product decision. `LocalVisualizationProperties.maxFrames`
-is capped at `@Max(10)` so a config drift cannot make the collage itself the trigger.
+is capped at `@Max(50)` — the same number as `MAX_MEDIA` — so a config drift cannot exceed Telegram's
+media ceiling, but a collage above ten frames has never been rendered live: a large
+`LOCAL_VIZ_MAX_FRAMES` is a live-verification item, not something the code guarantees.
 
 ## Recording Notification
 
@@ -96,16 +98,20 @@ recovery alerts are not rich: they stay plain `SimpleTextNotificationTask` text.
 |---|---|
 | `<h2>` heading + `<table bordered striped compact>` | `RecordingNotificationData`, i18n keys `notification.recording.*` |
 | `<p>` short description | `DescriptionState` — placeholder, model text or fallback; omitted when `Absent` |
-| frames | one frame → a bare `<img>`, two or more → `<tg-collage>`; capped at `MAX_MEDIA = 50`, far above `LOCAL_VIZ_MAX_FRAMES` |
+| frames | one frame → a bare `<img>`, two or more → `<tg-collage>`; capped at `MAX_MEDIA = 50`, which is also the `@Max` of `LOCAL_VIZ_MAX_FRAMES` (default 10; only up to ten frames were ever rendered live) |
 | `<details>` detailed description | omitted when `Absent` **and when `Failed`** (the `<p>` already carries the reason); the model text is trimmed to whatever is left of `MAX_LENGTH = 32768` |
 | Quick Export keyboard | `QuickExportHandler.createExportKeyboard`, passed as `reply_markup` — never as HTML buttons |
 
 `<img src="tg://photo?id=fN"/>` and `InputRichMessageMedia.id` must carry the same string
 (`RichNotificationRenderer.mediaId`), or Telegram rejects the message.
 
-Trust boundary: bundle strings are our own markup and go in raw —
-`ai.description.placeholder.short` *is* `<i>…</i>`, and escaping would show the tags. Everything
-that came from outside — `RecordingNotificationData` fields and both model texts — is escaped.
+Trust boundary: only the three bundle values that *are* markup go in raw — the two
+`ai.description.placeholder.*` keys and `ai.description.fallback.unavailable` carry `<i>…</i>`, and
+escaping would show the tags. The other nine i18n values (title, the seven table labels, the
+`<details>` summary) go through `msgText` and are escaped, as is everything that came from outside —
+`RecordingNotificationData` fields and both model texts. The three raw values are guarded by nothing
+but this paragraph: a malformed one is a deterministic 400 on the initial send, i.e. the queue stall
+above.
 
 Placeholders are rendered only when all three hold: `descriptionHandle != null`, a non-empty frame
 list, and a `DescriptionEditJobRunner` bean. If any is missing, `descriptionHandle` is cancelled
@@ -118,11 +124,18 @@ The first recipient uploads the bytes and stores the `file_id`s from the send re
 reference them instead of uploading again.
 
 - The cached attempt is made **once and without `retryIndefinitely`**: a stale or unusable id would
-  otherwise be retried forever and the upload path would never be reached. On failure the holder is
-  invalidated and the frames go out as bytes, with the usual infinite retry.
+  otherwise be retried forever and the upload path would never be reached. If Telegram *answers* the
+  cached send with an error — any `RequestException` except a flood-wait; the library recognises
+  `wrong file identifier` by its literal text, and a rich-media rejection comes back as
+  `RICH_MESSAGE_PHOTO_INVALID` — the holder is invalidated and the frames go out as bytes, with the
+  usual infinite retry. A transport failure (no answer at all) keeps the ids for the other recipients;
+  this recipient still uploads. A 429 never reaches this code — ktgbotapi's default
+  `ExceptionsOnlyLimiter` retries it inside `execute` — and would keep the cache if it did.
 - If the photo-id count in the response does not match the number of frames sent — any mismatch,
-  not only an undercount — the sender warns and returns without caching, skipping its own edit.
-  Such a list is unusable both ways: an edit re-declares the media wholesale, so a short array
+  not only an undercount — the sender warns and does not cache that answer. It still edits when the
+  holder already carries a full list from another recipient (a full list re-declares exactly the
+  frames that were sent); only with nothing cached does it return and skip its own edit.
+  A short list is unusable both ways: an edit re-declares the media wholesale, so a short array
   would strip frames off a message that was already delivered. `descriptionHandle` is **not**
   cancelled here — it is shared by every recipient of the recording, and a bad answer to one of
   them must not disown the rest.
@@ -138,11 +151,16 @@ throws while deserializing the response — `RawMessage$$serializer` does not kn
 then sees a failed send for a message already in the chat, and `RetryHelper.retryIndefinitely` sends
 it a second time. Keep buttons in `reply_markup` until the library ships 10.3.
 
-**Untested, banned out of caution: `<tg-document>`, `<blockquote expandable>` and the rest of 10.3.**
-Neither was tried inside a rich message — the expandable blockquote did work in plain messages before
-this branch, so the tag itself is not the problem. Any entity the library's `RawMessage` serializer
-does not know fails the same way, and that failure mode — a duplicate notification — is not worth
-probing in production.
+**What fails is a block or entity *type* the library does not model.** `RichBlockSerializer`
+dispatches on `type` and errors on an unknown one, so every 10.3 block or entity type
+(`<tg-document>`, `<tg-button>`) fails as above. Unknown *fields* on a known type are ignored — the
+executor's JSON format is lenient — which is why `<table bordered striped compact>` is fine:
+`compact` (`is_compact`) is a 10.3 addition, and the 2026-08-31 live check rendered and echoed it
+correctly (recorded in the plan at `d2b8f4f:docs/superpowers/plans/2026-08-31-rich-message-notification.md`,
+git history only). `<blockquote expandable>` inside a rich message is untested — the expandable
+blockquote did work in plain messages before this branch, so the tag itself is not the problem — but a
+new entity type would fail the same way, and that failure mode — a duplicate notification — is not
+worth probing in production.
 
 ## User Management
 

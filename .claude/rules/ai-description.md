@@ -53,8 +53,9 @@ in `telegram/service/model/`), instead of the former "no formatter means the fea
 **Media are re-declared on every edit.** Omitting the `media` array while the HTML still references
 `tg://photo?id=…` fails with `400 RICH_MESSAGE_PHOTO_INVALID`, even though the ids are unchanged.
 That is why `EditTarget` carries the frame `file_id`s and not just a message id — and why the sender
-skips the edit job altogether when Telegram's photo-id count does not match the number of frames
-sent: a short array would strip frames off the delivered message.
+never edits by a photo-id list whose length differs from the number of frames sent: a short array
+would strip frames off the delivered message. On such an answer it falls back to the full list another
+recipient cached, and skips its own edit only when there is none.
 
 `AiDescriptionTelegramGuard` (in telegram module) fails fast at startup when
 `ai.description.enabled=true` is paired with `telegram.enabled=false` — the feature only makes
