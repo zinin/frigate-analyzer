@@ -47,6 +47,29 @@ loaded alongside this file whenever you touch `modules/telegram/**`.
 Only the owner and active users can use Quick Export — enforced by the bot router's
 `AuthorizationFilter` (see `telegram.md`).
 
+## Size limit
+
+Telegram bots may upload at most 50 MB per video. `VideoExportServiceImpl` (core) runs every
+export through `TelegramVideoFitter` (`core/video/`) after the merge and, in ANNOTATED mode, again
+after the annotation (the vision server returns H.264, so a 30 MiB HEVC merge can come back at
+70 MiB):
+
+- up to 45 MiB the file is sent as it is, HEVC originals included;
+- above that, `VideoProbe` (ffprobe) reads duration, frame size, fps and audio; `CompressionPlanner`
+  turns the 45 MiB budget into a bitrate cap and picks the largest height of 1080/720/540 (never
+  above the source) whose bits-per-pixel stays at or above `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL`;
+  `VideoMergeHelper.compressVideo` runs libx264 with CRF plus `-maxrate`/`-bufsize`; the result is
+  checked against 50 000 000 bytes (`FitLimits.TELEGRAM`), one overshoot is retried from the first
+  result with a 10 % smaller cap;
+- a second overshoot throws `VideoTooLargeException` (model), shown as
+  `quickexport.error.too.large` / `export.error.too.large`. `IllegalStateException` keeps meaning
+  "recording files unavailable".
+
+Progress stages: `COMPRESSING` before annotation, `COMPRESSING_RESULT` after it; both appear only
+when a re-encode actually happened. The fitter logs the chosen plan and the result sizes at INFO.
+Tunables: `FFPROBE_PATH`, `EXPORT_COMPRESS_PRESET`, `EXPORT_COMPRESS_CRF`,
+`EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` — see `configuration.md`, "Video Export".
+
 ## Cancellation
 
 Both QuickExport and `/export` support user-initiated cancellation.

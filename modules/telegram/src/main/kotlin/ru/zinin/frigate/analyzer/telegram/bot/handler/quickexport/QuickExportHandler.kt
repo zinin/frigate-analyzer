@@ -25,6 +25,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.exception.VideoTooLargeException
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
@@ -320,6 +321,7 @@ class QuickExportHandler(
                     is IllegalArgumentException -> msg.get("quickexport.error.not.found", lang)
                     is IllegalStateException -> msg.get("quickexport.error.unavailable", lang)
                     is DetectTimeoutException -> msg.get("quickexport.error.annotation.timeout", lang)
+                    is VideoTooLargeException -> msg.get("quickexport.error.too.large", lang)
                     else -> msg.get("quickexport.error.generic", lang)
                 }
             try {

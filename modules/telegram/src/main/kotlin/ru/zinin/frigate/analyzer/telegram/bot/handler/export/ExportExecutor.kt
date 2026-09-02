@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.model.exception.VideoTooLargeException
 import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
@@ -310,10 +311,10 @@ class ExportExecutor(
         } catch (e: Exception) {
             logger.error(e) { "Video export failed" }
             val errorText =
-                if (mode == ExportMode.ANNOTATED) {
-                    msg.get("export.error.annotated", lang)
-                } else {
-                    msg.get("export.error.original", lang)
+                when {
+                    e is VideoTooLargeException -> msg.get("export.error.too.large", lang)
+                    mode == ExportMode.ANNOTATED -> msg.get("export.error.annotated", lang)
+                    else -> msg.get("export.error.original", lang)
                 }
             try {
                 bot.editMessageText(statusMessage, errorText, replyMarkup = null)
