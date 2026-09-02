@@ -3,12 +3,9 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler.cancel
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.extensions.api.answers.answer
 import dev.inmo.tgbotapi.extensions.api.edit.reply_markup.editMessageReplyMarkup
-import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
 import dev.inmo.tgbotapi.types.queries.callback.DataCallbackQuery
 import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
-import dev.inmo.tgbotapi.utils.matrix
-import dev.inmo.tgbotapi.utils.row
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -17,6 +14,7 @@ import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ExportCoroutineScope
+import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.filter.AuthResult
 import ru.zinin.frigate.analyzer.telegram.filter.AuthorizationFilter
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
@@ -156,14 +154,7 @@ class CancelExportHandler(
             } else {
                 msg.get("export.progress.cancelling", lang)
             }
-        return InlineKeyboardMarkup(
-            keyboard =
-                matrix {
-                    row {
-                        +CallbackDataInlineKeyboardButton(label, "$NOOP_PREFIX$exportId")
-                    }
-                },
-        )
+        return QuickExportHandler.createCancellingKeyboard(exportId, label)
     }
 
     private suspend fun resolveLang(

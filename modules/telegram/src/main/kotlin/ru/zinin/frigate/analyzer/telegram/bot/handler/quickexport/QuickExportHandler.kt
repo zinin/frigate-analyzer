@@ -400,6 +400,49 @@ class QuickExportHandler(
                 },
         )
 
+    /**
+     * Клавиатура, которую сообщение уведомления обязано нести ПРЯМО СЕЙЧАС.
+     *
+     * Правка rich-сообщения переобъявляет `reply_markup` целиком — опустить его нельзя, Telegram
+     * тогда снимет клавиатуру совсем. Поэтому всякий, кто правит уведомление по своему поводу
+     * (правка после ответа модели), обязан спросить здесь, а не помнить клавиатуру с момента
+     * отправки: пока идёт экспорт, на сообщении висят «прогресс» и «Отмена», и возврат кнопок
+     * выбора убрал бы единственный способ отменить аннотированный экспорт с его 50-минутным
+     * таймаутом.
+     *
+     * Текст прогресса при этом откатывается к обобщённому «обрабатывается» — конкретную стадию
+     * знает только сам экспорт, и ближайшее его обновление снова её проставит. Кнопка отмены
+     * важнее точности подписи.
+     *
+     * Экспорт ищется по записи, но реестр общий для всех чатов, а одна запись уходит каждому
+     * подписчику: экспорт из чужого чата этому получателю не принадлежит — его «Отмену» отклонил бы
+     * `CancelExportHandler`, — поэтому ему остаются кнопки выбора. Пока экспорт отменяется,
+     * возвращается та же одиночная строка «Отменяется…», что ставит `CancelExportHandler`:
+     * клавиатура прогресса вернула бы поверх неё живую «Отмену».
+     */
+    fun currentKeyboard(
+        recordingId: UUID,
+        chatId: Long,
+        lang: String,
+    ): InlineKeyboardMarkup {
+        val exportId = registry.activeExportIdFor(recordingId) ?: return createExportKeyboard(recordingId, lang)
+        val entry = registry.get(exportId)
+        if (entry == null || entry.chatId != chatId) return createExportKeyboard(recordingId, lang)
+        return when (entry.state) {
+            ActiveExportRegistry.State.CANCELLING -> {
+                createCancellingKeyboard(exportId, msg.get("quickexport.progress.cancelling", lang))
+            }
+
+            ActiveExportRegistry.State.ACTIVE -> {
+                createProgressKeyboard(
+                    exportId,
+                    msg.get("quickexport.button.processing", lang),
+                    msg.get("quickexport.button.cancel", lang),
+                )
+            }
+        }
+    }
+
     private suspend fun restoreButton(
         message: ContentMessage<*>?,
         recordingId: UUID,
@@ -450,6 +493,24 @@ class QuickExportHandler(
                 null
             }
         }
+
+        /**
+         * Single-row "cancelling…" keyboard (`np:` noop only). The same shape `CancelExportHandler`
+         * sets when the user taps Cancel, shared so a description edit landing in the cancel window
+         * re-declares this row rather than a live Cancel button.
+         */
+        fun createCancellingKeyboard(
+            exportId: UUID,
+            text: String,
+        ): InlineKeyboardMarkup =
+            InlineKeyboardMarkup(
+                keyboard =
+                    matrix {
+                        row {
+                            +CallbackDataInlineKeyboardButton(text, "${CancelExportHandler.NOOP_PREFIX}$exportId")
+                        }
+                    },
+            )
 
         /**
          * Two-row keyboard: progress-button (row 1, `np:` noop callback) + cancel-button (row 2, `xc:` cancel).

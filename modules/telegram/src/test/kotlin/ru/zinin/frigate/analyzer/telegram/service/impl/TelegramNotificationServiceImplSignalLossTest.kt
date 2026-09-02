@@ -14,7 +14,6 @@ import ru.zinin.frigate.analyzer.service.AppSettingKeys
 import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
-import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.TelegramNotificationQueue
 import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
@@ -33,7 +32,6 @@ class TelegramNotificationServiceImplSignalLossTest {
         mockk<UUIDGeneratorHelper>().apply {
             every { generateV1() } returns UUID.randomUUID()
         }
-    private val msg = mockk<MessageResolver>(relaxed = true)
     private val formatter =
         mockk<SignalLossMessageFormatter>().apply {
             every { buildLossMessage(any(), any(), any(), any(), any()) } returns "loss-msg"
@@ -47,7 +45,6 @@ class TelegramNotificationServiceImplSignalLossTest {
             userService = userService,
             notificationQueue = queue,
             uuidGeneratorHelper = uuid,
-            msg = msg,
             signalLossFormatter = formatter,
             rateLimiterProvider = rateLimiterProvider,
             appSettings = appSettings,

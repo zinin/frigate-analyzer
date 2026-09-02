@@ -1,5 +1,5 @@
 ---
-paths: "modules/ai-description/**,**/DescriptionEditJobRunner*,**/AiDescription*,**/DescriptionMessageFormatter*"
+paths: "modules/ai-description/**,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*"
 ---
 
 # AI Description Module
@@ -7,7 +7,8 @@ paths: "modules/ai-description/**,**/DescriptionEditJobRunner*,**/AiDescription*
 Optional module that generates short and detailed natural-language descriptions of detections by
 invoking the Claude Code CLI via `org.springaicommunity:claude-code-sdk`. Gated by
 `application.ai.description.enabled` — when `false`, no bean is created, no Claude binary is
-required, and the notification flow runs unchanged (no caption suffix, no edit job).
+required, and the notification goes out with `DescriptionState.Absent`: no description blocks,
+no edit job.
 
 The `claude` CLI binary is installed into the runtime container by `docker/deploy/Dockerfile`
 (`curl -fsSL https://claude.ai/install.sh | bash`); local development must have `claude` on `PATH`.
@@ -35,14 +36,28 @@ The `claude` CLI binary is installed into the runtime container by `docker/deplo
 
 When a notification is enqueued and AI description is enabled:
 
-1. `TelegramNotificationSender` sends notification with placeholder caption + placeholder reply
-   message (only if `DescriptionRateLimiter.tryAcquire()` succeeded).
+1. `TelegramNotificationSender` sends the rich message rendered with `DescriptionState.Pending` —
+   the short and detailed placeholders (only if `DescriptionRateLimiter.tryAcquire()` succeeded).
 2. `DescriptionEditJobRunner` (in `telegram/queue/`) launches a coroutine on `DescriptionEditScope`
-   that awaits `DescriptionAgent.describe(...)`.
-3. On success: `editMessageCaption` + `editMessageText` (HTMLParseMode) replace placeholders with
-   formatted text built by `DescriptionMessageFormatter`.
-4. On failure: caught and logged; placeholders are best-effort rewritten back to the base text
-   (no error message exposed to the user).
+   that awaits `DescriptionAgent.describe(...)`. One Claude call per recording fans out to one
+   `EditTarget` per recipient.
+3. **One** edit closes the flow per recipient: `EditChatMessageRichText` with the HTML re-rendered
+   for `DescriptionState.Ready` (model text) or `DescriptionState.Failed` (the
+   `ai.description.fallback.unavailable` line in the `<p>`, and **no** `<details>` at all — a
+   spoiler labelled "detailed description" holding the same one-line apology promises detail and
+   delivers none; no error text is exposed either way). The edit re-declares `reply_markup` too,
+   from `QuickExportHandler.currentKeyboard` (per chat and per export state), and re-checks it once
+   the edit has landed — see the Quick Export keyboard row in `telegram.md`.
+
+The render state is an explicit type, `DescriptionState` (`Absent` / `Pending` / `Ready` / `Failed`
+in `telegram/service/model/`), instead of the former "no formatter means the feature is off" flag.
+
+**Media are re-declared on every edit.** Omitting the `media` array while the HTML still references
+`tg://photo?id=…` fails with `400 RICH_MESSAGE_PHOTO_INVALID`, even though the ids are unchanged.
+That is why `EditTarget` carries the frame `file_id`s and not just a message id — and why the sender
+never edits by a photo-id list whose length differs from the number of frames sent: a short array
+would strip frames off the delivered message. On such an answer it falls back to the full list another
+recipient cached, and skips its own edit only when there is none.
 
 `AiDescriptionTelegramGuard` (in telegram module) fails fast at startup when
 `ai.description.enabled=true` is paired with `telegram.enabled=false` — the feature only makes
@@ -53,8 +68,8 @@ sense when there's a chat to edit.
 - `DescriptionRateLimiter` enforces a sliding window (`max` requests per `window`).
 - Counter increments **when a slot is granted**; failed Claude calls do NOT refund the slot —
   this is intentional to keep cost predictable when the binary is misbehaving.
-- When the limit is exceeded, the recording is sent to Telegram as a plain notification — no
-  placeholder caption, no reply message, no edit job, no Claude call.
+- When the limit is exceeded, the recording is sent with `DescriptionState.Absent` — no
+  placeholders, no edit job, no Claude call.
 - Disable with `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED=false`.
 
 ## Concurrency
@@ -73,6 +88,9 @@ All variables documented in `.claude/rules/configuration.md` under "AI Descripti
 - `APP_AI_DESCRIPTION_ENABLED` — master gate
 - `APP_AI_DESCRIPTION_PROVIDER` — currently only `claude`
 - `APP_AI_DESCRIPTION_LANGUAGE` — `ru` or `en`
-- `APP_AI_DESCRIPTION_SHORT_MAX` / `APP_AI_DESCRIPTION_DETAILED_MAX` — caption / blockquote
-  character caps
+- `APP_AI_DESCRIPTION_SHORT_MAX` / `APP_AI_DESCRIPTION_DETAILED_MAX` — character caps for the
+  short paragraph and the `<details>` body
 - `APP_AI_DESCRIPTION_MAX_FRAMES` — frames forwarded to the model per recording
+- `CLAUDE_MAX_BUFFER_SIZE` — max size of one JSON message from the CLI (default 16MB). The CLI
+  echoes every frame the model reads back as base64, so the SDK's 1 MiB default overflowed on
+  ~800 KB frames; an oversized line is dropped with `Failed to process message (continuing)`

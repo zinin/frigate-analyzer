@@ -112,7 +112,7 @@ class RecordingProcessingFacade(
 
         val common = descriptionProperties.common
         // Mirror FrameVisualizationService ranking (confidence, then detection count) so Claude
-        // sees the exact subset the user receives in the media group. Capped by the visualization
+        // sees the exact subset the user receives in the notification's collage. Capped by the visualization
         // limit so the AI set is always contained in the user-visible set — see `selectTopFrames`.
         val cap = minOf(common.maxFrames, frameVisualizationService.maxFrames)
         val trimmedFrames =

@@ -25,7 +25,7 @@ class FrameVisualizationService(
      * Filters and ranks frames by detection quality for visualization/description use.
      * Ranking: max confidence across the frame's detections, then detection count.
      * Cap is `min(maxFrames, visualizationProperties.maxFrames)` — this guarantees the returned
-     * subset is always contained in the user-visible media group, so downstream consumers
+     * subset is always contained in the frames the user sees in the notification, so downstream consumers
      * (e.g. Claude description) never reference frames the user did not receive.
      */
     fun selectTopFrames(

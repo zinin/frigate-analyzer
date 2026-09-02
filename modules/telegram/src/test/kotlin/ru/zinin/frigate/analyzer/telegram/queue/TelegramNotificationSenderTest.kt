@@ -1,20 +1,30 @@
 package ru.zinin.frigate.analyzer.telegram.queue
 
 import dev.inmo.tgbotapi.bot.TelegramBot
+import dev.inmo.tgbotapi.bot.exceptions.CommonRequestException
+import dev.inmo.tgbotapi.bot.exceptions.TooMuchRequestsException
+import dev.inmo.tgbotapi.bot.exceptions.WrongFileIdentifierException
+import dev.inmo.tgbotapi.requests.abstracts.FileId
 import dev.inmo.tgbotapi.requests.abstracts.Request
-import dev.inmo.tgbotapi.requests.edit.caption.EditChatMessageCaption
 import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageText
+import dev.inmo.tgbotapi.requests.send.SendRichMessage
 import dev.inmo.tgbotapi.requests.send.SendTextMessage
 import dev.inmo.tgbotapi.types.ChatId
 import dev.inmo.tgbotapi.types.MessageId
+import dev.inmo.tgbotapi.types.Response
+import dev.inmo.tgbotapi.types.RetryAfterError
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardButtons.CallbackDataInlineKeyboardButton
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
-import dev.inmo.tgbotapi.types.buttons.KeyboardMarkup
+import dev.inmo.tgbotapi.types.files.PhotoFile
+import dev.inmo.tgbotapi.types.files.PhotoSize
+import dev.inmo.tgbotapi.types.media.TelegramMediaPhoto
+import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
-import dev.inmo.tgbotapi.types.message.content.MediaGroupContent
-import dev.inmo.tgbotapi.types.message.content.MediaGroupPartContent
-import dev.inmo.tgbotapi.types.message.content.PhotoContent
-import dev.inmo.tgbotapi.types.message.content.TextContent
+import dev.inmo.tgbotapi.types.message.content.RichMessageContent
+import dev.inmo.tgbotapi.types.rich.RichBlock
+import dev.inmo.tgbotapi.types.rich.RichBlockCollage
+import dev.inmo.tgbotapi.types.rich.RichBlockPhoto
+import dev.inmo.tgbotapi.types.rich.RichTextInfo
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -34,10 +44,14 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.model.dto.VisualizedFrameData
 import ru.zinin.frigate.analyzer.telegram.bot.handler.quickexport.QuickExportHandler
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
-import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
+import ru.zinin.frigate.analyzer.telegram.service.impl.RichNotificationRenderer
+import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationData
+import java.io.IOException
 import java.util.Locale
 import java.util.UUID
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -55,476 +69,543 @@ class TelegramNotificationSenderTest {
                 setDefaultLocale(Locale.forLanguageTag("en"))
             },
         )
+    private val renderer = RichNotificationRenderer(msg)
     private val quickExportHandler = mockk<QuickExportHandler>()
-    private val formatterProvider = mockk<ObjectProvider<DescriptionMessageFormatter>>()
     private val runnerProvider = mockk<ObjectProvider<DescriptionEditJobRunner>>()
-    private val formatter = DescriptionMessageFormatter(msg)
+    private val sender = TelegramNotificationSender(bot, quickExportHandler, renderer, runnerProvider)
 
-    // runner is built per-test from the runTest scope so its dispatcher shares the
-    // TestCoroutineScheduler — required if any test ever introduces `delay(...)` in the edit job.
+    // Раннер строится внутри runTest, чтобы его диспетчер делил планировщик с тестом.
     private lateinit var runner: DescriptionEditJobRunner
-    private val sender =
-        TelegramNotificationSender(
-            bot,
-            quickExportHandler,
-            msg,
-            formatterProvider,
-            runnerProvider,
-        )
 
     private val recordingId = UUID.randomUUID()
 
     init {
-        // Default mock for createExportKeyboard — returns a Russian-localized keyboard
         every { quickExportHandler.createExportKeyboard(any(), any()) } answers {
-            val rid = firstArg<UUID>()
             InlineKeyboardMarkup(
-                keyboard =
-                    listOf(
-                        listOf(
-                            CallbackDataInlineKeyboardButton(
-                                "📹 Оригинал",
-                                "${QuickExportHandler.CALLBACK_PREFIX}$rid",
-                            ),
-                            CallbackDataInlineKeyboardButton(
-                                "📹 С объектами",
-                                "${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$rid",
-                            ),
-                        ),
-                    ),
+                keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("📹 Оригинал", "qe:${firstArg<UUID>()}"))),
             )
         }
-        // By default, neither the formatter nor the runner is available — this mimics
-        // application.ai.description.enabled=false (old plain-text path).
-        every { formatterProvider.getIfAvailable() } returns null
+        // Правка спрашивает клавиатуру заново в момент выполнения — экспорт мог начаться.
+        every { quickExportHandler.currentKeyboard(any(), any(), any()) } answers {
+            InlineKeyboardMarkup(
+                keyboard = listOf(listOf(CallbackDataInlineKeyboardButton("📹 Оригинал", "qe:${firstArg<UUID>()}"))),
+            )
+        }
         every { runnerProvider.getIfAvailable() } returns null
     }
 
-    /**
-     * Builds the runner backed by runTest's scheduler and flips the providers to "available".
-     * Must be called inside a `runTest { ... }` block before [sender.send] for the description
-     * path to be active.
-     */
+    /** Включает путь с AI-описанием — по умолчанию бин раннера отсутствует. */
     private fun TestScope.enableDescriptionBeans() {
         runner =
             DescriptionEditJobRunner(
                 bot = bot,
-                formatter = formatter,
+                renderer = renderer,
                 scope =
                     DescriptionEditScope.forTest(
                         CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob()),
                     ),
             )
-        every { formatterProvider.getIfAvailable() } returns formatter
         every { runnerProvider.getIfAvailable() } returns runner
     }
 
+    private fun data() =
+        RecordingNotificationData(
+            camId = "driveway",
+            fileName = "clip.mp4",
+            detectionsCount = 3,
+            analyzedFramesCount = 12,
+            analyzeTimeSeconds = 4,
+            recordTimestamp = "31 августа 2026 г., 21:15",
+            processTimestamp = "31 августа 2026 г., 21:20",
+        )
+
+    private fun frames(count: Int) =
+        (0 until count).map {
+            VisualizedFrameData(frameIndex = it, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1)
+        }
+
     private fun createTask(
-        frames: List<VisualizedFrameData> = emptyList(),
+        frameCount: Int = 2,
+        frameIds: SharedFrameIds = SharedFrameIds(),
         descriptionHandle: Deferred<Result<DescriptionResult>>? = null,
     ) = RecordingNotificationTask(
         id = UUID.randomUUID(),
         chatId = 12345L,
-        message = "Test notification",
-        visualizedFrames = frames,
+        data = data(),
+        visualizedFrames = frames(frameCount),
         recordingId = recordingId,
+        frameIds = frameIds,
         language = "ru",
         descriptionHandle = descriptionHandle,
     )
 
-    private fun assertExportKeyboard(keyboard: InlineKeyboardMarkup) {
-        assertEquals(1, keyboard.keyboard.size, "Should have one row")
-        assertEquals(2, keyboard.keyboard[0].size, "Row should have two buttons")
-        val originalButton = keyboard.keyboard[0][0]
-        assertIs<CallbackDataInlineKeyboardButton>(originalButton)
-        assertEquals("📹 Оригинал", originalButton.text)
-        assertEquals("${QuickExportHandler.CALLBACK_PREFIX}$recordingId", originalButton.callbackData)
-        val annotatedButton = keyboard.keyboard[0][1]
-        assertIs<CallbackDataInlineKeyboardButton>(annotatedButton)
-        assertEquals("📹 С объектами", annotatedButton.text)
-        assertEquals("${QuickExportHandler.CALLBACK_PREFIX_ANNOTATED}$recordingId", annotatedButton.callbackData)
+    /** Ровно то, во что библиотека превращает ответ «Bad Request: wrong file identifier». */
+    private fun wrongFileIdentifier() =
+        WrongFileIdentifierException(
+            mockk<Response>(relaxed = true),
+            "Bad Request: wrong file identifier/HTTP URL specified",
+            null,
+            null,
+        )
+
+    /**
+     * Любой другой ответ Telegram с ошибкой: библиотека узнаёт по тексту лишь несколько ответов,
+     * а «wrong file identifier» ищет буквально, поэтому RICH_MESSAGE_PHOTO_INVALID приходит вот так.
+     */
+    private fun apiError(description: String) = CommonRequestException(mockk<Response>(relaxed = true), description, null, null)
+
+    private fun floodWait() =
+        TooMuchRequestsException(
+            mockk<RetryAfterError>(relaxed = true),
+            mockk<Response>(relaxed = true),
+            "Too Many Requests: retry after 5",
+            null,
+            null,
+        )
+
+    private fun photoSize(
+        id: String,
+        resolution: Long,
+    ) = mockk<PhotoSize> {
+        every { fileId } returns FileId(id)
+        every { this@mockk.resolution } returns resolution
+    }
+
+    // photo — это value-класс PhotoFile поверх List<PhotoSize>, голый список не подходит.
+    private fun photoBlock(index: Int) =
+        RichBlockPhoto(
+            photo = PhotoFile(listOf(photoSize("file-$index", resolution = 1920L * 1080))),
+            hasSpoiler = null,
+            caption = null,
+        )
+
+    /**
+     * Лестница размеров, в которой самый крупный кадр НЕ последний. Telegram нигде не обещает
+     * порядка `photo`, а `file_id` превьюшки, попав в кэш и в правку, подменил бы уже доставленный
+     * коллаж миниатюрами.
+     */
+    private fun ladderBlock(index: Int) =
+        RichBlockPhoto(
+            photo =
+                PhotoFile(
+                    listOf(
+                        photoSize("full-$index", resolution = 1920L * 1080),
+                        photoSize("thumb-$index", resolution = 90L * 90),
+                    ),
+                ),
+            hasSpoiler = null,
+            caption = null,
+        )
+
+    private fun richMessage(
+        blocks: List<RichBlock>,
+        messageId: Long = 1L,
+    ): ChatContentMessage<RichMessageContent> {
+        val info = mockk<RichTextInfo> { every { this@mockk.blocks } returns blocks }
+        val content = mockk<RichMessageContent> { every { richMessage } returns info }
+        // ChatContentMessage — sealed, MockK его не проксирует; PrivateContentMessage это его подтип.
+        return mockk<PrivateContentMessage<RichMessageContent>> {
+            every { this@mockk.content } returns content
+            every { this@mockk.messageId } returns MessageId(messageId)
+        }
     }
 
     /**
-     * Extracts replyMarkup from a captured request using reflection.
-     * Needed because the photo request is wrapped in an internal CommonMultipartFileRequest,
-     * so we first extract the inner `data` (SendPhotoData) then read its replyMarkup.
+     * Ответ Telegram на разметку, которую строит рендерер: форма ответа повторяет форму запроса.
+     * Один кадр уходит одиночным `<img>` и возвращается фото-блоком верхнего уровня, а два и больше
+     * рендерер заворачивает в `<tg-collage>` — он приходит контейнером [RichBlockCollage], и фото
+     * лежат внутри него, а не в `blocks` сообщения.
      *
-     * Coupled to tgbotapi internals (re-verified against 35.1.0) — if the library changes its wrapping
-     * mechanism, this method will fail at runtime. Review after version upgrades.
+     * Плоский список фото-блоков — это ответ на стопку одиночных `<img>`, которой рендерер больше
+     * не строит. Не «упрощайте» форму обратно к нему: именно плоский мок скрыл потерю всех `file_id`
+     * при коллаже, потому что отправитель искал фото только на верхнем уровне.
      */
-    private fun extractReplyMarkup(request: Request<*>): KeyboardMarkup? {
-        // For SendTextMessage, replyMarkup is directly accessible
-        if (request is SendTextMessage) {
-            return request.replyMarkup
-        }
-        // For multipart wrappers (e.g. CommonMultipartFileRequest), extract inner data via reflection
-        try {
-            val dataMethod =
-                request::class.java.methods.find { it.name == "getData" }
-                    ?: error("Request ${request::class} does not have getData() method")
-            val innerData =
-                dataMethod.invoke(request)
-                    ?: error("getData() returned null for ${request::class}")
-            val replyMarkupMethod =
-                innerData::class.java.methods.find { it.name == "getReplyMarkup" }
-                    ?: error("Inner data ${innerData::class} does not have getReplyMarkup() method")
-            return replyMarkupMethod.invoke(innerData) as? KeyboardMarkup
-        } catch (e: Exception) {
-            throw AssertionError(
-                "Failed to extract replyMarkup via reflection from ${request::class}. " +
-                    "This is likely caused by a tgbotapi version change — review extractReplyMarkup().",
-                e,
-            )
-        }
+    private fun richResult(
+        count: Int,
+        messageId: Long = 1L,
+    ): ChatContentMessage<RichMessageContent> {
+        val photos = (0 until count).map(::photoBlock)
+        val blocks: List<RichBlock> =
+            when {
+                count <= 1 -> photos
+                else -> listOf(RichBlockCollage(blocks = photos, caption = null))
+            }
+        return richMessage(blocks, messageId)
     }
 
+    /** Коллаж ровно из [photoCount] фото — форма ответа, в котором сервер вернул не все кадры. */
+    private fun collageResult(photoCount: Int): ChatContentMessage<RichMessageContent> =
+        richMessage(listOf(RichBlockCollage(blocks = (0 until photoCount).map(::photoBlock), caption = null)))
+
     @Test
-    fun `send with empty frames includes inline export keyboard in text message`() =
+    fun `sends exactly one rich message carrying the export keyboard`() =
         runTest {
-            val task = createTask(frames = emptyList())
-            val textMessageResult = mockk<PrivateContentMessage<TextContent>>()
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } returns richResult(count = 2)
 
-            val requestSlot = slot<Request<*>>()
-            coEvery { bot.execute(capture(requestSlot)) } returns textMessageResult
+            sender.send(createTask(frameCount = 2))
 
-            sender.send(task)
-
-            val request = requestSlot.captured
-            assertIs<SendTextMessage>(request)
-            val replyMarkup = request.replyMarkup
-            assertNotNull(replyMarkup, "Text message should have replyMarkup")
-            assertIs<InlineKeyboardMarkup>(replyMarkup)
-            assertExportKeyboard(replyMarkup)
+            assertEquals(1, requests.size, "one recording must produce exactly one message")
+            val request = requests.single()
+            assertIs<SendRichMessage>(request)
+            val keyboard = request.replyMarkup
+            assertNotNull(keyboard, "rich message must carry the export keyboard")
+            assertIs<InlineKeyboardMarkup>(keyboard)
         }
 
     @Test
-    fun `send with single frame includes inline export keyboard in photo message`() =
+    fun `first recipient uploads frame bytes`() =
         runTest {
-            val frame = VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1)
-            val task = createTask(frames = listOf(frame))
-            val photoMessageResult = mockk<PrivateContentMessage<PhotoContent>>()
+            val slot = slot<Request<*>>()
+            coEvery { bot.execute(capture(slot)) } returns richResult(count = 2)
 
-            val requestSlot = slot<Request<*>>()
-            coEvery { bot.execute(capture(requestSlot)) } returns photoMessageResult
+            sender.send(createTask(frameCount = 2))
 
-            sender.send(task)
-
-            val replyMarkup = extractReplyMarkup(requestSlot.captured)
-            assertNotNull(replyMarkup, "SendPhoto should have replyMarkup")
-            assertIs<InlineKeyboardMarkup>(replyMarkup)
-            assertExportKeyboard(replyMarkup)
+            val request = assertIs<SendRichMessage>(slot.captured)
+            assertEquals(2, request.mediaMap.size, "fresh frames go out as multipart uploads")
+            assertContains(request.richMessage.html!!, """<img src="tg://photo?id=f0"/>""")
+            assertEquals(listOf("f0", "f1"), request.richMessage.media!!.map { it.id })
         }
 
     @Test
-    fun `send with multiple frames sends export button after media group`() =
+    fun `second recipient reuses file ids and uploads nothing`() =
         runTest {
-            val frames =
-                listOf(
-                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1, 2, 3), detectionsCount = 1),
-                    VisualizedFrameData(frameIndex = 1, visualizedBytes = byteArrayOf(4, 5, 6), detectionsCount = 2),
-                )
-            val task = createTask(frames = frames)
+            val shared = SharedFrameIds()
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } returns richResult(count = 2)
 
-            // Media-group path: sender now reads `group.messageId` off the sendMediaGroup result,
-            // so the return value must be a typed PrivateContentMessage<MediaGroupContent<...>> rather than
-            // a generic relaxed mock (which would fail a checkcast at runtime).
-            val groupMsg =
-                mockk<PrivateContentMessage<MediaGroupContent<MediaGroupPartContent>>>(relaxed = true) {
-                    every { messageId } returns MessageId(1L)
-                }
-            val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
-                val req = firstArg<Request<*>>()
-                when {
-                    req is SendTextMessage -> mockk<PrivateContentMessage<TextContent>>(relaxed = true)
-                    inner(req)?.contains("MediaGroup") == true -> groupMsg
-                    else -> mockk(relaxed = true)
-                }
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            val second = assertIs<SendRichMessage>(requests.last())
+            assertTrue(second.mediaMap.isEmpty(), "the second recipient must not re-upload bytes")
+            assertEquals(listOf("f0", "f1"), second.richMessage.media!!.map { it.id })
+        }
+
+    @Test
+    fun `rejected file id falls back to uploading the bytes once`() =
+        runTest {
+            val shared = SharedFrameIds()
+            shared.putIfAbsent(listOf(FileId("stale-0"), FileId("stale-1")))
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } answers {
+                val request = requests.last() as SendRichMessage
+                if (request.mediaMap.isEmpty()) throw wrongFileIdentifier() else richResult(count = 2)
             }
 
-            sender.send(task)
+            sender.send(createTask(frameCount = 2, frameIds = shared))
 
-            // At least 2 execute calls: media group dispatch(es) + export button text message
-            assertTrue(capturedRequests.size >= 2, "Expected at least 2 execute() calls, got ${capturedRequests.size}")
-
-            // The last request should be SendTextMessage with export keyboard
-            val exportRequest = capturedRequests.last()
-            assertIs<SendTextMessage>(exportRequest)
-            assertEquals("👆 Нажмите для быстрого экспорта видео", exportRequest.text, "Export prompt text mismatch")
-            val replyMarkup = exportRequest.replyMarkup
-            assertNotNull(replyMarkup, "Export button message should have replyMarkup")
-            assertIs<InlineKeyboardMarkup>(replyMarkup)
-            assertExportKeyboard(replyMarkup)
-        }
-
-    @Test
-    fun `send with frames exceeding MAX_MEDIA_GROUP_SIZE sends export button after all chunks`() =
-        runTest {
-            // 20 frames = 2 full chunks of 10, ensuring multiple sendMediaGroup calls
-            val frames =
-                (0..19).map { i ->
-                    VisualizedFrameData(frameIndex = i, visualizedBytes = byteArrayOf(i.toByte()), detectionsCount = 1)
-                }
-            assertEquals(20, frames.size, "Test requires 20 frames to trigger 2-chunk sending")
-            val task = createTask(frames = frames)
-
-            // See companion test above — sender reads `group.messageId` and needs a typed mock.
-            val groupMsg =
-                mockk<PrivateContentMessage<MediaGroupContent<MediaGroupPartContent>>>(relaxed = true) {
-                    every { messageId } returns MessageId(1L)
-                }
-            val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
-                val req = firstArg<Request<*>>()
-                when {
-                    req is SendTextMessage -> mockk<PrivateContentMessage<TextContent>>(relaxed = true)
-                    inner(req)?.contains("MediaGroup") == true -> groupMsg
-                    else -> mockk(relaxed = true)
-                }
-            }
-
-            sender.send(task)
-
-            // Should have at least 3 calls: 2 media group chunks + 1 export button
-            assertTrue(capturedRequests.size >= 3, "Expected at least 3 execute() calls, got ${capturedRequests.size}")
-
-            // The last request should be the export button message
-            val exportRequest = capturedRequests.last()
-            assertIs<SendTextMessage>(exportRequest)
-            val replyMarkup = exportRequest.replyMarkup
-            assertNotNull(replyMarkup, "Export button message should have replyMarkup")
-            assertIs<InlineKeyboardMarkup>(replyMarkup)
-            assertExportKeyboard(replyMarkup)
-        }
-
-    /**
-     * Returns the simple name of the inner `SendXxxData` / `EditXxxData` class, unwrapping the
-     * `CommonMultipartFileRequest` shell used by photo + media-group requests. Returns the
-     * request's own simple name for unwrapped requests (SendTextMessage, EditChatMessageText,
-     * EditChatMessageCaption).
-     */
-    private fun inner(request: Request<*>): String? {
-        if (request is SendTextMessage || request is EditChatMessageText || request is EditChatMessageCaption) {
-            return request::class.simpleName
-        }
-        return runCatching {
-            val data =
-                request::class.java.methods
-                    .find { it.name == "getData" }
-                    ?.invoke(request)
-            data?.let { it::class.simpleName }
-        }.getOrNull()
-    }
-
-    // --- NEW TESTS (Task 16): placeholder + edit flow ---
-
-    @Test
-    fun `disabled path with null descriptionHandle preserves current single-photo behavior`() =
-        runTest {
-            // Description beans absent (default setup) AND task.descriptionHandle = null.
-            // Sender must emit only the photo — no edit call, no runner invocation.
-            val frames =
-                listOf(
-                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1), detectionsCount = 1),
-                )
-            val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } returns mockk<PrivateContentMessage<PhotoContent>>(relaxed = true)
-
-            sender.send(createTask(frames = frames))
-
-            // Exactly one request: the photo send. No edit messages dispatched.
-            assertEquals(1, capturedRequests.size, "Expected only the photo send, got ${capturedRequests.size}")
-            assertTrue(
-                capturedRequests.none { it is EditChatMessageCaption || it is EditChatMessageText },
-                "No edit calls should happen when description is disabled",
-            )
-        }
-
-    @Test
-    fun `single photo with description handle sends placeholder then edits on success`() =
-        runTest {
-            enableDescriptionBeans()
-            val frames =
-                listOf(
-                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1), detectionsCount = 1),
-                )
-            val handle = CompletableDeferred<Result<DescriptionResult>>()
-            handle.complete(Result.success(DescriptionResult("two cars", "two cars approaching gate")))
-
-            val photoMsg =
-                mockk<PrivateContentMessage<PhotoContent>> {
-                    every { messageId } returns MessageId(42L)
-                }
-            val textMsg =
-                mockk<PrivateContentMessage<TextContent>> {
-                    every { messageId } returns MessageId(43L)
-                }
-
-            val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
-                val req = firstArg<Request<*>>()
-                when {
-                    req is SendTextMessage -> textMsg
-                    req is EditChatMessageCaption || req is EditChatMessageText -> mockk(relaxed = true)
-                    inner(req)?.contains("Photo") == true -> photoMsg
-                    else -> mockk(relaxed = true)
-                }
-            }
-
-            sender.send(createTask(frames = frames, descriptionHandle = handle))
-            runner.lastLaunchedJobForTests()?.join()
-
-            // Post-edit: both caption (photo) and text (reply) must be rewritten.
-            assertTrue(
-                capturedRequests.any { it is EditChatMessageCaption },
-                "Expected EditChatMessageCaption for photo caption rewrite, " +
-                    "got: ${capturedRequests.map { it::class.simpleName }}",
-            )
-            assertTrue(
-                capturedRequests.any { it is EditChatMessageText },
-                "Expected EditChatMessageText for details rewrite, " +
-                    "got: ${capturedRequests.map { it::class.simpleName }}",
-            )
-        }
-
-    @Test
-    fun `single photo with description handle uses fallback on failure`() =
-        runTest {
-            enableDescriptionBeans()
-            val frames = listOf(VisualizedFrameData(0, byteArrayOf(1), 1))
-            val handle = CompletableDeferred<Result<DescriptionResult>>()
-            handle.complete(Result.failure(RuntimeException("boom")))
-
-            val photoMsg =
-                mockk<PrivateContentMessage<PhotoContent>> {
-                    every { messageId } returns MessageId(42L)
-                }
-            val textMsg =
-                mockk<PrivateContentMessage<TextContent>> {
-                    every { messageId } returns MessageId(43L)
-                }
-
-            val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
-                val req = firstArg<Request<*>>()
-                when {
-                    req is SendTextMessage -> textMsg
-                    req is EditChatMessageCaption || req is EditChatMessageText -> mockk(relaxed = true)
-                    inner(req)?.contains("Photo") == true -> photoMsg
-                    else -> mockk(relaxed = true)
-                }
-            }
-
-            sender.send(createTask(frames = frames, descriptionHandle = handle))
-            runner.lastLaunchedJobForTests()?.join()
-
-            val captionEdit = capturedRequests.filterIsInstance<EditChatMessageCaption>().lastOrNull()
-            val detailsEdit = capturedRequests.filterIsInstance<EditChatMessageText>().lastOrNull()
-            assertNotNull(captionEdit, "Expected EditChatMessageCaption for fallback caption")
-            assertNotNull(detailsEdit, "Expected EditChatMessageText for fallback details")
-            // The task's language = "ru" — only the Russian fallback ("Описание недоступно") is valid.
-            assertTrue(
-                captionEdit.text.contains("недоступно"),
-                "Expected Russian fallback in caption, got: ${captionEdit.text}",
-            )
-            assertTrue(
-                // EditChatMessageText.text is nullable since ktgbotapi 35.1.0; orEmpty() keeps a
-                // null failing this assertion with its message rather than throwing an NPE.
-                detailsEdit.text.orEmpty().contains("недоступно"),
-                "Expected Russian fallback in details, got: ${detailsEdit.text}",
-            )
-        }
-
-    @Test
-    fun `media group with description handle sends albums and single edit on success`() =
-        runTest {
-            enableDescriptionBeans()
-            val frames = (0..2).map { VisualizedFrameData(it, byteArrayOf(1), 1) }
-            val handle = CompletableDeferred<Result<DescriptionResult>>()
-            handle.complete(Result.success(DescriptionResult("two cars", "two cars approaching gate")))
-
-            val groupMsg =
-                mockk<PrivateContentMessage<MediaGroupContent<MediaGroupPartContent>>> {
-                    every { messageId } returns MessageId(50L)
-                }
-            val textMsg =
-                mockk<PrivateContentMessage<TextContent>> {
-                    every { messageId } returns MessageId(51L)
-                }
-
-            val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } coAnswers {
-                val req = firstArg<Request<*>>()
-                when {
-                    req is SendTextMessage -> textMsg
-                    req is EditChatMessageCaption || req is EditChatMessageText -> mockk(relaxed = true)
-                    inner(req)?.contains("MediaGroup") == true -> groupMsg
-                    else -> mockk(relaxed = true)
-                }
-            }
-
-            sender.send(createTask(frames = frames, descriptionHandle = handle))
-            runner.lastLaunchedJobForTests()?.join()
-
-            // Media group path: exactly one edit-text for the reply message, no caption edits.
-            val captionEdits = capturedRequests.filterIsInstance<EditChatMessageCaption>()
-            val textEdits = capturedRequests.filterIsInstance<EditChatMessageText>()
+            assertEquals(2, requests.size, "one rejected attempt, then one upload")
+            assertTrue((requests.last() as SendRichMessage).mediaMap.isNotEmpty(), "fallback must upload bytes")
+            // invalidate() несущий, и вот почему: putIfAbsent — это compareAndSet(null, ids), он НЕ
+            // заменяет непустую ячейку. Без сброса запись навсегда осталась бы с негодными ids, и
+            // каждый следующий получатель платил бы обречённую попытку плюс загрузку. Сброс же стоит
+            // ровно одной лишней загрузки — у того получателя, у которого сбой и случился: кэш тут же
+            // заполняется свежими идентификаторами из его же ответа, и остальные идут по file_id.
             assertEquals(
-                0,
-                captionEdits.size,
-                "Media group path must not edit photo captions, got: ${captionEdits.size}",
+                listOf(FileId("file-0"), FileId("file-1")),
+                shared.get(),
+                "the upload repopulates the cache, so the rejection costs one extra upload, not N",
+            )
+        }
+
+    @Test
+    fun `frame id is taken from the biggest photo size, not the last of the ladder`() =
+        runTest {
+            val shared = SharedFrameIds()
+            coEvery { bot.execute(any<Request<*>>()) } returns
+                richMessage(listOf(RichBlockCollage(blocks = listOf(ladderBlock(0), ladderBlock(1)), caption = null)))
+
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            assertEquals(
+                listOf(FileId("full-0"), FileId("full-1")),
+                shared.get(),
+                "the ladder is not ordered by contract; picking by position can cache a 90x90 thumbnail",
+            )
+        }
+
+    @Test
+    fun `a transient failure on the cached ids keeps them for the other recipients`() =
+        runTest {
+            val shared = SharedFrameIds()
+            shared.putIfAbsent(listOf(FileId("shared-0"), FileId("shared-1")))
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } answers {
+                val request = requests.last() as SendRichMessage
+                // Транспорт: Telegram не ответил вовсе, об идентификаторах это не говорит ничего.
+                if (request.mediaMap.isEmpty()) throw IOException("connection reset")
+                richResult(count = 2)
+            }
+
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            assertEquals(2, requests.size, "this recipient still gets the message, through an upload")
+            assertEquals(
+                listOf(FileId("shared-0"), FileId("shared-1")),
+                shared.get(),
+                "a failure without an answer from Telegram must not drop the cache — every remaining " +
+                    "recipient would otherwise re-upload the frames over one network blip",
+            )
+        }
+
+    @Test
+    fun `any error answer from Telegram on the cached ids drops them, not only the literal wrong-file-identifier`() =
+        runTest {
+            // Библиотека распознаёт «wrong file identifier» по буквальному тексту ответа. Отказ
+            // по rich-медиа приходит с другим текстом (RICH_MESSAGE_PHOTO_INVALID) и был бы
+            // «прочей ошибкой»: кэш остался бы с негодными ids, а putIfAbsent непустую ячейку не
+            // заменяет — каждый следующий получатель платил бы обречённую попытку плюс загрузку.
+            val shared = SharedFrameIds()
+            shared.putIfAbsent(listOf(FileId("stale-0"), FileId("stale-1")))
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } answers {
+                val request = requests.last() as SendRichMessage
+                if (request.mediaMap.isEmpty()) throw apiError("Bad Request: RICH_MESSAGE_PHOTO_INVALID")
+                richResult(count = 2)
+            }
+
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            assertEquals(2, requests.size, "one rejected attempt, then one upload")
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                shared.get(),
+                "Telegram answered the cached send with an error: the ids are suspect and the upload must repopulate the cache",
+            )
+        }
+
+    @Test
+    fun `a flood-wait answer on the cached ids keeps them for the other recipients`() =
+        runTest {
+            // Штатно 429 сюда не доходит: лимитер ktgbotapi повторяет запрос сам. Но если он
+            // всё же всплывёт, об идентификаторах он не говорит ничего.
+            val shared = SharedFrameIds()
+            shared.putIfAbsent(listOf(FileId("shared-0"), FileId("shared-1")))
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } answers {
+                val request = requests.last() as SendRichMessage
+                if (request.mediaMap.isEmpty()) throw floodWait()
+                richResult(count = 2)
+            }
+
+            sender.send(createTask(frameCount = 2, frameIds = shared))
+
+            assertEquals(2, requests.size, "this recipient still gets the message, through an upload")
+            assertEquals(listOf(FileId("shared-0"), FileId("shared-1")), shared.get(), "a flood-wait says nothing about the ids")
+        }
+
+    @Test
+    fun `photos nested in a collage still yield their file ids`() =
+        runTest {
+            enableDescriptionBeans()
+            val shared = SharedFrameIds()
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } returns richResult(count = 2)
+
+            sender.send(createTask(frameCount = 2, frameIds = shared, descriptionHandle = handle))
+            handle.complete(Result.success(DescriptionResult(short = "Человек у ворот", detailed = "Подробности")))
+            runner.lastLaunchedJobForTests()?.join()
+
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                shared.get(),
+                "file_id live inside <tg-collage>, one level below the message blocks",
+            )
+            val edit = assertIs<EditChatMessageText>(requests.last())
+            val editMedia = edit.richMessage!!.media!!
+            assertEquals(listOf("f0", "f1"), editMedia.map { it.id }, "the edit re-declares the frames")
+            // Слоты f0/f1 совпадут и при перепутанных file_id — сверяем сами идентификаторы,
+            // иначе правка с чужими кадрами прошла бы тест.
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                editMedia.map { (it.media as TelegramMediaPhoto).file },
+                "the edit must carry the extracted file_id, in the order the renderer handed out mediaId",
+            )
+        }
+
+    @Test
+    fun `a partial answer neither poisons the id cache nor schedules an edit`() =
+        runTest {
+            enableDescriptionBeans()
+            val shared = SharedFrameIds()
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val requests = mutableListOf<Request<*>>()
+            // Коллаж вернулся с одним фото на два отправленных кадра.
+            coEvery { bot.execute(capture(requests)) } returns collageResult(photoCount = 1)
+
+            sender.send(createTask(frameCount = 2, frameIds = shared, descriptionHandle = handle))
+
+            assertEquals(1, requests.size, "the message itself is delivered, only the follow-up is skipped")
+            assertNull(shared.get(), "a short id list must never reach the cache")
+            assertNull(runner.lastLaunchedJobForTests(), "an edit would strip the frames off the sent message")
+            assertFalse(
+                handle.isCancelled,
+                "the handle is shared by every recipient of the recording — one bad answer must not disown the rest",
+            )
+        }
+
+    @Test
+    fun `a partial answer falls back to the shared ids for the edit`() =
+        runTest {
+            enableDescriptionBeans()
+            val shared = SharedFrameIds()
+            // Ответ предыдущего получателя пришёл целым, идентификаторы записи уже известны.
+            shared.putIfAbsent(listOf(FileId("file-0"), FileId("file-1")))
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val requests = mutableListOf<Request<*>>()
+            // А этому получателю коллаж вернулся с одним фото на два отправленных кадра.
+            coEvery { bot.execute(capture(requests)) } returns collageResult(photoCount = 1)
+
+            sender.send(createTask(frameCount = 2, frameIds = shared, descriptionHandle = handle))
+            handle.complete(Result.success(DescriptionResult(short = "Человек у ворот", detailed = "Подробности")))
+            runner.lastLaunchedJobForTests()?.join()
+
+            val edit = assertIs<EditChatMessageText>(requests.last())
+            assertEquals(
+                listOf(FileId("file-0"), FileId("file-1")),
+                edit.richMessage!!.media!!.map { (it.media as TelegramMediaPhoto).file },
+                "a complete shared list re-declares the very same frames, so editing by it is safe",
             )
             assertEquals(
-                1,
-                textEdits.size,
-                "Media group path must edit exactly one details message, got: ${textEdits.size}",
+                listOf(FileId("file-0"), FileId("file-1")),
+                shared.get(),
+                "the short answer must not overwrite the cache it was rescued by",
             )
         }
 
     @Test
-    fun `empty frames with description handle skips edit job — no photo target to edit`() =
+    fun `without the edit runner the placeholder is not rendered at all`() =
+        runTest {
+            // runnerProvider отдаёт null по умолчанию — бина правки в контексте нет.
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val slot = slot<Request<*>>()
+            coEvery { bot.execute(capture(slot)) } returns richResult(count = 2)
+
+            sender.send(createTask(frameCount = 2, descriptionHandle = handle))
+
+            val request = assertIs<SendRichMessage>(slot.captured)
+            assertFalse(
+                request.richMessage.html!!.contains(msg.get("ai.description.placeholder.short", "ru")),
+                "a placeholder nobody can rewrite would hang forever",
+            )
+            assertTrue(handle.isCancelled, "no one would apply the model answer")
+        }
+
+    @Test
+    fun `without the edit runner a partial answer still releases the description handle`() =
+        runTest {
+            // Бина правки нет, значит плейсхолдер не рендерился и ждать ответа модели незачем.
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            coEvery { bot.execute(any<Request<*>>()) } returns collageResult(photoCount = 1)
+
+            sender.send(createTask(frameCount = 2, descriptionHandle = handle))
+
+            assertTrue(
+                handle.isCancelled,
+                "a broken answer must not smuggle the run past the release — nobody would apply its result",
+            )
+        }
+
+    @Test
+    fun `no frames still produces one message without media`() =
+        runTest {
+            val slot = slot<Request<*>>()
+            coEvery { bot.execute(capture(slot)) } returns richResult(count = 0)
+
+            sender.send(createTask(frameCount = 0))
+
+            val request = assertIs<SendRichMessage>(slot.captured)
+            assertTrue(request.mediaMap.isEmpty(), "no frames means no uploads")
+            assertTrue(request.richMessage.media.isNullOrEmpty(), "no frames means no media declarations")
+        }
+
+    @Test
+    fun `description handle is cancelled when there are no frames`() =
+        runTest {
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            coEvery { bot.execute(any<Request<*>>()) } returns richResult(count = 0)
+
+            sender.send(createTask(frameCount = 0, descriptionHandle = handle))
+
+            assertTrue(handle.isCancelled, "nothing to describe without frames, and nothing to edit later")
+        }
+
+    @Test
+    fun `placeholder goes out first and the edit replaces it with the model text`() =
         runTest {
             enableDescriptionBeans()
             val handle = CompletableDeferred<Result<DescriptionResult>>()
-            handle.complete(Result.success(DescriptionResult("s", "d")))
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } returns richResult(count = 2)
 
-            val textMsg = mockk<PrivateContentMessage<TextContent>>(relaxed = true)
-            coEvery { bot.execute(any<Request<*>>()) } returns textMsg
+            sender.send(createTask(frameCount = 2, descriptionHandle = handle))
+            handle.complete(Result.success(DescriptionResult(short = "Человек у ворот", detailed = "Подробности")))
+            runner.lastLaunchedJobForTests()?.join()
 
-            sender.send(createTask(frames = emptyList(), descriptionHandle = handle))
+            val sent = assertIs<SendRichMessage>(requests.first())
+            assertContains(sent.richMessage.html!!, msg.get("ai.description.placeholder.short", "ru"))
 
-            // No edit job should have been launched — there's no photo/album to edit.
-            assertNull(
-                runner.lastLaunchedJobForTests(),
-                "Empty-frames path must not launch an edit job even with description enabled",
+            val edit = assertIs<EditChatMessageText>(requests.last())
+            val rich = assertNotNull(edit.richMessage, "edit must carry a rich message")
+            assertContains(rich.html!!, "Человек у ворот")
+            assertContains(rich.html!!, "Подробности")
+            assertEquals(
+                listOf("f0", "f1"),
+                rich.media!!.map { it.id },
+                "media must be re-declared on every edit or Telegram answers RICH_MESSAGE_PHOTO_INVALID",
             )
         }
 
     @Test
-    fun `send dispatches SimpleTextNotificationTask to bot sendTextMessage`() =
+    fun `failed description is replaced by the fallback text`() =
         runTest {
-            // sendTextMessage is a top-level extension that ultimately calls bot.execute(SendTextMessage(...)),
-            // so we capture the request through bot.execute (matching the existing test convention) and assert
-            // on the resulting SendTextMessage's chatId + text. This also implicitly verifies that no
-            // SendPhoto / sendMediaGroup variant is dispatched (only one execute call, of type SendTextMessage).
-            val task =
-                SimpleTextNotificationTask(
-                    id = UUID.randomUUID(),
-                    chatId = 12345L,
-                    text = "Camera \"front_door\" lost signal",
-                )
-            val capturedRequests = mutableListOf<Request<*>>()
-            coEvery { bot.execute(capture(capturedRequests)) } returns mockk<PrivateContentMessage<TextContent>>(relaxed = true)
+            enableDescriptionBeans()
+            val handle = CompletableDeferred<Result<DescriptionResult>>()
+            val requests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(capture(requests)) } returns richResult(count = 2)
 
-            sender.send(task)
+            sender.send(createTask(frameCount = 2, descriptionHandle = handle))
+            handle.complete(Result.failure(IllegalStateException("model unavailable")))
+            runner.lastLaunchedJobForTests()?.join()
 
-            assertEquals(1, capturedRequests.size, "Expected exactly one execute() call, got ${capturedRequests.size}")
-            val request = capturedRequests.single()
-            assertIs<SendTextMessage>(request)
-            assertEquals("Camera \"front_door\" lost signal", request.text)
-            val chatId = request.chatId
-            assertIs<ChatId>(chatId)
+            val edit = assertIs<EditChatMessageText>(requests.last())
+            val rich = assertNotNull(edit.richMessage, "edit must carry a rich message")
+            assertContains(rich.html!!, msg.get("ai.description.fallback.unavailable", "ru"))
+        }
+
+    @Test
+    fun `frames beyond the media limit are dropped from html and media alike`() =
+        runTest {
+            val slot = slot<Request<*>>()
+            coEvery { bot.execute(capture(slot)) } returns richResult(count = RichNotificationRenderer.MAX_MEDIA)
+
+            sender.send(createTask(frameCount = RichNotificationRenderer.MAX_MEDIA + 1))
+
+            val request = assertIs<SendRichMessage>(slot.captured)
+            assertEquals(RichNotificationRenderer.MAX_MEDIA, request.richMessage.media!!.size, "media is capped")
+            assertEquals(RichNotificationRenderer.MAX_MEDIA, request.mediaMap.size, "a dropped frame is not uploaded")
+            val overflowId = RichNotificationRenderer.mediaId(RichNotificationRenderer.MAX_MEDIA)
+            assertFalse(
+                request.richMessage.html!!.contains("""tg://photo?id=$overflowId"""),
+                "html must not reference a frame the media array does not declare",
+            )
+        }
+
+    @Test
+    fun `simple text task still goes out as a plain message`() =
+        runTest {
+            val slot = slot<Request<*>>()
+            coEvery { bot.execute(capture(slot)) } returns mockk<PrivateContentMessage<*>>(relaxed = true)
+
+            sender.send(
+                SimpleTextNotificationTask(id = UUID.randomUUID(), chatId = 12345L, text = "signal lost"),
+            )
+
+            val request = assertIs<SendTextMessage>(slot.captured)
+            assertEquals("signal lost", request.text)
+            val chatId = assertIs<ChatId>(request.chatId)
             assertEquals(12345L, chatId.chatId.long)
         }
 }

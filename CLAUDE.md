@@ -2,7 +2,7 @@
 
 Video recording analysis system for Frigate security cameras using YOLO-based object detection.
 
-**Stack:** Kotlin 2.4.10, Spring Boot 4.1.0, WebFlux, R2DBC/PostgreSQL, Coroutines, Java 25, ktgbotapi 35.1.0, Jackson 3
+**Stack:** Kotlin 2.4.10, Spring Boot 4.1.0, WebFlux, R2DBC/PostgreSQL, Coroutines, Java 25, ktgbotapi 36.1.0, Jackson 3
 
 ## Critical Rules
 
@@ -22,7 +22,7 @@ Video recording analysis system for Frigate security cameras using YOLO-based ob
 | `./gradlew build` | Full build with tests |
 | `./gradlew build -x test` | Skip tests |
 | `./gradlew test` | All tests |
-| `./gradlew :module-name:test` | Single module tests |
+| `./gradlew :frigate-analyzer-telegram:test` | Single module tests — every module is `:frigate-analyzer-<name>` (see `settings.gradle.kts`) |
 | `./gradlew ktlintCheck` | Lint check |
 | `./gradlew ktlintFormat` | Auto-format |
 

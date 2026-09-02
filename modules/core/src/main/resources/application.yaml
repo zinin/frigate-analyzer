@@ -111,6 +111,10 @@ application:
         model: ${CLAUDE_MODEL:opus}
         cli-path: ${CLAUDE_CLI_PATH:}
         working-directory: ${CLAUDE_WORKING_DIR:${application.temp-folder}}
+        # Потолок одного JSON-сообщения от CLI (Spring DataSize). В stream-json CLI эхом возвращает
+        # tool_result с base64-картинкой каждого прочитанного кадра; дефолт SDK в 1 MiB не вмещает
+        # кадр уже от ~750 KB.
+        max-buffer-size: ${CLAUDE_MAX_BUFFER_SIZE:16MB}
         anthropic:
           auth-token: ${ANTHROPIC_AUTH_TOKEN:}
           base-url: ${ANTHROPIC_BASE_URL:}

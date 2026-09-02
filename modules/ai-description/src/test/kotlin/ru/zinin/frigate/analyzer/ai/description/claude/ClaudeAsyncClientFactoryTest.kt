@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.ai.description.claude
 
+import org.springframework.util.unit.DataSize
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import java.time.Duration
 import kotlin.test.Test
@@ -23,22 +24,27 @@ class ClaudeAsyncClientFactoryTest {
         defaultOpusModel: String = "",
         defaultSonnetModel: String = "",
         defaultHaikuModel: String = "",
-    ) = ClaudeProperties(
-        oauthToken = token,
-        model = model,
-        cliPath = "",
-        workingDirectory = "/tmp/frigate-analyzer",
-        proxy = ClaudeProperties.ProxySection(http, https, noProxy),
-        anthropic =
-            ClaudeProperties.AnthropicSection(
-                authToken = authToken,
-                baseUrl = baseUrl,
-                modelOverride = modelOverride,
-                defaultOpusModel = defaultOpusModel,
-                defaultSonnetModel = defaultSonnetModel,
-                defaultHaikuModel = defaultHaikuModel,
-            ),
-    )
+        maxBufferSize: DataSize? = null,
+    ): ClaudeProperties {
+        val base =
+            ClaudeProperties(
+                oauthToken = token,
+                model = model,
+                cliPath = "",
+                workingDirectory = "/tmp/frigate-analyzer",
+                proxy = ClaudeProperties.ProxySection(http, https, noProxy),
+                anthropic =
+                    ClaudeProperties.AnthropicSection(
+                        authToken = authToken,
+                        baseUrl = baseUrl,
+                        modelOverride = modelOverride,
+                        defaultOpusModel = defaultOpusModel,
+                        defaultSonnetModel = defaultSonnetModel,
+                        defaultHaikuModel = defaultHaikuModel,
+                    ),
+            )
+        return if (maxBufferSize == null) base else base.copy(maxBufferSize = maxBufferSize)
+    }
 
     @Test
     fun `env map contains OAuth token`() {
@@ -124,5 +130,19 @@ class ClaudeAsyncClientFactoryTest {
     @Test
     fun `create passes validation with only anthropic auth token`() {
         factory(props(token = "", authToken = "sk-sp-xxx")).create(Duration.ofMinutes(2))
+    }
+
+    @Test
+    fun `options carry the 16 MiB message buffer by default`() {
+        val options = factory(props()).buildOptions(Duration.ofMinutes(2))
+        assertEquals(16 * 1024 * 1024, options.effectiveMaxBufferSize)
+    }
+
+    @Test
+    fun `options carry the configured message buffer`() {
+        val options =
+            factory(props(maxBufferSize = DataSize.ofMegabytes(32)))
+                .buildOptions(Duration.ofMinutes(2))
+        assertEquals(32 * 1024 * 1024, options.effectiveMaxBufferSize)
     }
 }

@@ -25,6 +25,13 @@ data class LocalVisualizationProperties(
     val baseFontSize: Int = 16,
     @field:Min(0)
     val labelPadding: Int = 4,
+    /**
+     * Потолок — предел медиа в одном rich-сообщении Telegram (50), а не наш дефолт: кадры
+     * сверх него в уведомление физически не попадут. Планка стояла на 10 и делала стартовой ошибкой
+     * значение, легальное в предыдущей версии, а заодно через `minOf` в `RecordingProcessingFacade`
+     * молча обнуляла верхнюю половину независимой настройки `APP_AI_DESCRIPTION_MAX_FRAMES`.
+     */
     @field:Min(1)
+    @field:Max(50)
     val maxFrames: Int = 10,
 )

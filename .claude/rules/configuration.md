@@ -136,7 +136,7 @@ The reference form (`${FIRST_SCAN_PERIOD:${application.records-watcher.watch-per
 | `LOCAL_VIZ_BASE_FONT_SCALE` | 2.0 | Base font scale factor |
 | `LOCAL_VIZ_BASE_FONT_SIZE` | 16 | Base font size (px) |
 | `LOCAL_VIZ_LABEL_PADDING` | 4 | Label padding (px) |
-| `LOCAL_VIZ_MAX_FRAMES` | 10 | Max frames to visualize |
+| `LOCAL_VIZ_MAX_FRAMES` | 10 | Max frames to visualize. Validated `1..50` — 50 is Telegram's media cap for one rich message, above which frames cannot be delivered at all. Also caps `APP_AI_DESCRIPTION_MAX_FRAMES` via `minOf` in `RecordingProcessingFacade`. |
 
 ## AI Description
 
@@ -147,15 +147,16 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 | `APP_AI_DESCRIPTION_ENABLED` | false | Master flag for AI description. When `false`, no Claude calls, no placeholders, no edit jobs. |
 | `APP_AI_DESCRIPTION_PROVIDER` | claude | Provider implementation. Currently only `claude` is supported. |
 | `APP_AI_DESCRIPTION_LANGUAGE` | en | Reply language. `ru` or `en`. |
-| `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (caption suffix). |
-| `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (expandable blockquote). |
-| `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. |
+| `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (the `<p>` above the frames). |
+| `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (the `<details>` body). |
+| `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. Validated `1..50`, but the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. |
 | `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | 30s | Max wait for a free concurrency slot. |
 | `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous Claude requests. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED` | true | Enable sliding-window throttle on AI description invocations. When `false`, every recording with AI enabled gets a description request. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 10 | Max invocations within the sliding window. Counter increments when a slot is granted; failed Claude calls (transport errors, retries) do not refund the slot. |
-| `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram as a plain notification — no caption placeholder, no second reply message, no edit-job, no Claude call. |
+| `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
 
 ## Telegram
 

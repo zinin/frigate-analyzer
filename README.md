@@ -183,6 +183,7 @@ token (`claude setup-token`).
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
 | `CLAUDE_CODE_OAUTH_TOKEN` | *(required if enabled)* | Token from `claude setup-token` |
 | `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku` |
+| `CLAUDE_MAX_BUFFER_SIZE` | `16MB` | Max size of one JSON message from the CLI. Frames the model reads are echoed back as base64, so raise it for cameras with frames above ~12 MB |
 
 Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
 [`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.
@@ -255,7 +256,7 @@ When objects are detected in a recording, the bot sends a notification with:
 - Top frames annotated with bounding boxes and confidence scores
 - Inline "Original" / "Annotated" buttons for instant quick-export (±1 min around the recording)
 
-If AI description is enabled, a short caption suffix and an expandable blockquote with a detailed description are edited into the message asynchronously after Claude responds.
+If AI description is enabled, the message first carries placeholders; once Claude responds, the short description paragraph and a collapsible detailed description (`<details>`) are edited into the same message.
 
 ### Signal-loss alerts
 

@@ -40,13 +40,14 @@ Sub-domain rules (loaded conditionally — see `paths:` in each file):
 | TelegramNotificationQueue | `telegram/queue/` | Coroutine Channel-based notification queue |
 | TelegramNotificationSender | `telegram/queue/` | Actual sending logic from queue |
 | NotificationTask | `telegram/queue/` | Notification task data class |
+| SharedFrameIds | `telegram/queue/` | Frame `file_id`s of one recording, shared by all its recipients — the first upload feeds the rest |
 | DescriptionEditJobRunner | `telegram/queue/` | Launches background "wait for AI → edit placeholders" job (gated by `application.ai.description.enabled=true`) |
 | DescriptionEditScope | `telegram/queue/` | Structured coroutine scope for description-edit jobs; `@PreDestroy` cancels in-flight edits |
 | AiDescriptionTelegramGuard | `telegram/queue/` | Startup guard — fails fast when `ai.description.enabled=true` but `telegram.enabled=false` |
-| DescriptionMessageFormatter | `telegram/service/impl/` | HTML escape + truncation, builds caption suffix + expandable blockquote |
+| RichNotificationRenderer | `telegram/service/impl/` | Builds the rich-message HTML — heading, metadata table, frames, `<details>`; escaping and trimming live here |
 | SignalLossTelegramGuard | `telegram/config/` | Startup guard — fails fast when `signal-loss.enabled=true` but `telegram.enabled=false` |
 | AuthorizationFilter | `telegram/filter/` | Role-based auth (OWNER, USER) |
-| RetryHelper | `telegram/helper/` | Retry logic for Telegram API calls |
+| RetryHelper | `telegram/helper/` | `retryBounded` — send retry with backoff 30s → 5min and two bounds: 3 attempts when Telegram answered with an error (or the failure will repeat), 20 when there was no answer; see "Bounded retry" below |
 | TelegramProperties | `telegram/config/` | Spring Boot config |
 
 Export/QuickExport/cancellation components are documented in `telegram-export.md`;
@@ -58,6 +59,123 @@ Export/QuickExport/cancellation components are documented in `telegram-export.md
 - Coroutine-based: producer enqueues, consumer sends via `TelegramNotificationSender`
 - Graceful shutdown via `@PreDestroy`
 - `@ConditionalOnProperty` — only active when telegram enabled
+
+### Bounded retry: a rejected message costs one recipient, not the queue
+
+`RetryHelper.retryBounded` wraps every send. It retries with backoff 30s → 60s → 2min → 4min, then
+5min, and gives up on one of two bounds:
+
+| Failure | Bound | Wall clock |
+|---|---|---|
+| Telegram **answered** with an error — any `RequestException` except `TooMuchRequestsException` (a 400 on malformed markup, a 403 from a user who blocked the bot, a deleted chat) — or the failure will repeat anyway: an answer the library could not deserialize (`CommonBotException` without an `IOException` cause), a bug in our own send code | 3 attempts | ≈ 1.5 min |
+| **No answer**: a 429 that somehow surfaced, an HTTP error without a Bot API envelope (`ApiException`, e.g. a gateway's 502 page), or anything with an `IOException` in its cause chain — network, timeout, proxy, wrapped by the executor as `CommonBotException` | 20 attempts | ≈ 83 min |
+
+A 429 never reaches the helper — ktgbotapi's default `ExceptionsOnlyLimiter` retries it inside
+`execute` — and counts as "no answer" if it ever does. When a bound is hit the exception propagates
+to `TelegramNotificationQueue.consumeNotifications()`, whose `catch` logs an ERROR with the task, chat
+and recording and moves to the next task: the alert for *that* recipient is dropped, every other
+recipient and camera continues.
+
+Why two numbers: an error answer is deterministic — the same request gets the same answer — so
+retrying it only delays everyone queued behind it, and three attempts merely hedge against a stray
+5xx delivered as an answer. A missing answer is an outage that usually passes, and a motion alert
+delivered late is worth more than none, up to the point where it is stale anyway. Both numbers are
+constants in `RetryHelper` by intent, the same policy as `TelegramBotSupervisor`'s thresholds.
+
+Known residuals:
+
+- A user who blocked the bot no longer stalls the queue, but each of their notifications still
+  holds it for ≈ 1.5 min. Deactivating the subscription on a 403 is a separate follow-up.
+- When the send gives up for the last recipient of a recording, the shared `descriptionHandle` is
+  not cancelled — the sender cannot know it was the last one (see the photo-count note below) — so
+  the Claude call runs to completion for nobody.
+- Rejections are more likely than on `master`: every notification is now an HTML document against
+  four undeclared limits (500 blocks, 16 nesting levels, 50 media, 20 table columns), and
+  `SendRichMessage` validates nothing client-side. `LocalVisualizationProperties.maxFrames` is capped
+  at `@Max(50)` — the same number as `MAX_MEDIA` — so a config drift cannot exceed Telegram's media
+  ceiling, but a collage above ten frames has never been rendered live: a large
+  `LOCAL_VIZ_MAX_FRAMES` is a live-verification item, not something the code guarantees.
+
+Until `eed95b5` the retry was infinite (as on `master`): a deterministic failure blocked the single
+sequential consumer forever, notifications stopped for every camera and every user until restart, and
+once `TELEGRAM_QUEUE_CAPACITY` tasks piled up `enqueue` pushed back-pressure into
+`RecordingProcessingFacade`.
+
+## Recording Notification
+
+One recording produces **one** rich message per recipient (`sendRichMessage`, Bot API 10.2).
+`RichNotificationRenderer.render(data, DescriptionState, frameCount, language)` builds the whole
+HTML — the same call serves the initial send and the later description edit. Signal-loss and
+recovery alerts are not rich: they stay plain `SimpleTextNotificationTask` text.
+
+| Block | Built from |
+|---|---|
+| `<h2>` heading + `<table bordered striped compact>` | `RecordingNotificationData`, i18n keys `notification.recording.*` |
+| `<p>` short description | `DescriptionState` — placeholder, model text or fallback; omitted when `Absent` |
+| frames | one frame → a bare `<img>`, two or more → `<tg-collage>`; capped at `MAX_MEDIA = 50`, which is also the `@Max` of `LOCAL_VIZ_MAX_FRAMES` (default 10; only up to ten frames were ever rendered live) |
+| `<details>` detailed description | omitted when `Absent` **and when `Failed`** (the `<p>` already carries the reason); the model text is trimmed to whatever is left of `MAX_LENGTH = 32768` |
+| Quick Export keyboard | `QuickExportHandler.createExportKeyboard` on the initial send, passed as `reply_markup` — never as HTML buttons. The description edit re-declares `reply_markup` wholesale, so it asks `QuickExportHandler.currentKeyboard(recordingId, chatId, lang)` at edit time: the choice row when nothing runs *in this chat* (the registry is one index for every chat), progress + Cancel for this chat's ACTIVE export, the single "cancelling…" row while it is CANCELLING. After the edit lands the runner asks again and, if the export state moved while the edit was in flight, follows up with one markup-only `editMessageReplyMarkup` — otherwise a progress keyboard for an already-finished export would stay as the last writer with nobody left to repair it |
+
+`<img src="tg://photo?id=fN"/>` and `InputRichMessageMedia.id` must carry the same string
+(`RichNotificationRenderer.mediaId`), or Telegram rejects the message.
+
+Trust boundary: only the three bundle values that *are* markup go in raw — the two
+`ai.description.placeholder.*` keys and `ai.description.fallback.unavailable` carry `<i>…</i>`, and
+escaping would show the tags. The other nine i18n values (title, the seven table labels, the
+`<details>` summary) go through `msgText` and are escaped, as is everything that came from outside —
+`RecordingNotificationData` fields and both model texts. The three raw values are guarded by nothing
+but this paragraph: a malformed one is a deterministic 400 on the initial send, i.e. the queue stall
+above.
+
+Placeholders are rendered only when all three hold: `descriptionHandle != null`, a non-empty frame
+list, and a `DescriptionEditJobRunner` bean. If any is missing, `descriptionHandle` is cancelled
+rather than leaving an hourglass nobody will rewrite.
+
+### file_id reuse across recipients
+
+All tasks of one recording share one `SharedFrameIds`, created in `TelegramNotificationServiceImpl`.
+The first recipient uploads the bytes and stores the `file_id`s from the send response; the rest
+reference them instead of uploading again.
+
+- The cached attempt is made **once and without `retryBounded`**: a stale or unusable id would
+  otherwise be retried forever and the upload path would never be reached. If Telegram *answers* the
+  cached send with an error — any `RequestException` except a flood-wait; the library recognises
+  `wrong file identifier` by its literal text, and a rich-media rejection comes back as
+  `RICH_MESSAGE_PHOTO_INVALID` — the holder is invalidated and the frames go out as bytes, with the
+  usual bounded retry. A transport failure (no answer at all) keeps the ids for the other recipients;
+  this recipient still uploads. A 429 never reaches this code — ktgbotapi's default
+  `ExceptionsOnlyLimiter` retries it inside `execute` — and would keep the cache if it did.
+- If the photo-id count in the response does not match the number of frames sent — any mismatch,
+  not only an undercount — the sender warns and does not cache that answer. It still edits when the
+  holder already carries a full list from another recipient (a full list re-declares exactly the
+  frames that were sent); only with nothing cached does it return and skip its own edit.
+  A short list is unusable both ways: an edit re-declares the media wholesale, so a short array
+  would strip frames off a message that was already delivered. `descriptionHandle` is **not**
+  cancelled here — it is shared by every recipient of the recording, and a bad answer to one of
+  them must not disown the rest.
+
+Photos are collected recursively (`RichBlock.subBlocks`), not by filtering the top-level blocks:
+two or more frames go out inside `<tg-collage>`, which comes back as a `RichBlockCollage` container
+with the photos one level below.
+
+### Do not emit Bot API 10.3 constructs
+
+**Verified live: `<tg-button>`.** Telegram accepts it and the message arrives, but ktgbotapi 36.1.0
+throws while deserializing the response — `RawMessage$$serializer` does not know the entity. The bot
+then sees a failed send for a message already in the chat, and `RetryHelper.retryBounded` sends it
+again — a deserialization failure counts as an error answer, so up to three copies, not an endless
+stream. Keep buttons in `reply_markup` until the library ships 10.3.
+
+**What fails is a block or entity *type* the library does not model.** `RichBlockSerializer`
+dispatches on `type` and errors on an unknown one, so every 10.3 block or entity type
+(`<tg-document>`, `<tg-button>`) fails as above. Unknown *fields* on a known type are ignored — the
+executor's JSON format is lenient — which is why `<table bordered striped compact>` is fine:
+`compact` (`is_compact`) is a 10.3 addition, and the 2026-08-31 live check rendered and echoed it
+correctly (recorded in the plan at `d2b8f4f:docs/superpowers/plans/2026-08-31-rich-message-notification.md`,
+git history only). `<blockquote expandable>` inside a rich message is untested — the expandable
+blockquote did work in plain messages before this branch, so the tag itself is not the problem — but a
+new entity type would fail the same way, and that failure mode — a duplicate notification — is not
+worth probing in production.
 
 ## User Management
 
@@ -137,7 +255,7 @@ The router (`FrigateAnalyzerBot.registerRoutes()`) does an exhaustive `when` ove
 
 Disable for development: `java -Dapplication.telegram.enabled=false ...`
 
-## ktgbotapi Waiter API (v35.1.0)
+## ktgbotapi Waiter API (v36.1.0)
 
 Source: https://github.com/InsanusMokrassar/ktgbotapi
 

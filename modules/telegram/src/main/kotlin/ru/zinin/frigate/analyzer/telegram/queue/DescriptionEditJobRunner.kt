@@ -3,42 +3,50 @@ package ru.zinin.frigate.analyzer.telegram.queue
 import dev.inmo.tgbotapi.bot.TelegramBot
 import dev.inmo.tgbotapi.bot.exceptions.MessageIsNotModifiedException
 import dev.inmo.tgbotapi.bot.exceptions.MessageToEditNotFoundException
-import dev.inmo.tgbotapi.extensions.api.edit.caption.editMessageCaption
-import dev.inmo.tgbotapi.extensions.api.edit.text.editMessageText
+import dev.inmo.tgbotapi.requests.abstracts.FileId
+import dev.inmo.tgbotapi.requests.edit.reply_markup.EditChatMessageReplyMarkup
+import dev.inmo.tgbotapi.requests.edit.text.EditChatMessageRichText
 import dev.inmo.tgbotapi.types.ChatIdentifier
 import dev.inmo.tgbotapi.types.MessageId
 import dev.inmo.tgbotapi.types.buttons.InlineKeyboardMarkup
-import dev.inmo.tgbotapi.types.message.HTMLParseMode
+import dev.inmo.tgbotapi.types.rich.InputRichMessageHTML
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.DependsOn
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
-import ru.zinin.frigate.analyzer.telegram.service.impl.DescriptionMessageFormatter
+import ru.zinin.frigate.analyzer.telegram.service.impl.RichNotificationRenderer
+import ru.zinin.frigate.analyzer.telegram.service.model.DescriptionState
+import ru.zinin.frigate.analyzer.telegram.service.model.RecordingNotificationData
 import java.util.concurrent.atomic.AtomicReference
 
 private val logger = KotlinLogging.logger {}
 
 /**
- * Target of a description edit — holds the message IDs that were sent with placeholder
- * text and must be rewritten once the AI call resolves.
+ * Цель правки: сообщение, ушедшее с плейсхолдерами, и всё, что нужно, чтобы собрать его заново.
  *
- * `captionMessageId` is null for the media-group case (no photo caption was written;
- * the whole short+detailed text lives in the `detailsMessageId` reply instead).
+ * `fileIds` обязательны: rich-сообщение при правке переобъявляет медиа целиком, иначе Telegram
+ * отвечает `RICH_MESSAGE_PHOTO_INVALID`.
+ *
+ * `keyboard` — функция, а не готовая разметка, и это не стилистика. Между отправкой и правкой
+ * проходят десятки секунд, за которые пользователь успевает запустить экспорт: на сообщении в этот
+ * момент висят «прогресс» и «Отмена». Клавиатура при правке переобъявляется целиком (опустить её
+ * нельзя — Telegram снимет её совсем), поэтому запомненная при отправке разметка вернула бы кнопки
+ * выбора поверх идущего экспорта и отняла бы единственную кнопку отмены. Функция спрашивает
+ * актуальное состояние в момент правки.
  */
 data class EditTarget(
     val chatId: ChatIdentifier,
-    val captionMessageId: MessageId?,
-    val detailsMessageId: MessageId,
-    /** Raw (un-escaped) base text. The formatter handles HTML escape + truncation. */
-    val baseText: String,
-    val exportKeyboard: InlineKeyboardMarkup,
+    val messageId: MessageId,
+    val data: RecordingNotificationData,
+    val fileIds: List<FileId>,
+    val keyboard: () -> InlineKeyboardMarkup,
     val language: String,
-    val isMediaGroup: Boolean,
 )
 
 /**
@@ -59,7 +67,7 @@ data class EditTarget(
 @DependsOn("aiDescriptionTelegramGuard")
 class DescriptionEditJobRunner(
     private val bot: TelegramBot,
-    private val formatter: DescriptionMessageFormatter,
+    private val renderer: RichNotificationRenderer,
     private val scope: DescriptionEditScope,
 ) {
     // Tests observe the most-recently launched job via [lastLaunchedJobForTests]. Production code
@@ -69,83 +77,68 @@ class DescriptionEditJobRunner(
     /** Test-only hook. Returns the most recently launched edit job (may be null if none yet). */
     internal fun lastLaunchedJobForTests(): Job? = lastJob.get()
 
+    /**
+     * Одна цель на вызов. Раньше принимался список — фан-аут, которого никогда не было: каждый
+     * получатель зовёт метод сам, и `forEach` внутри обходил ровно один элемент, обещая при этом
+     * последовательность, которой не существовало.
+     */
     fun launchEditJob(
-        targets: List<EditTarget>,
+        target: EditTarget,
         handleOutcome: suspend () -> Result<DescriptionResult>,
-    ): Job =
-        scope
+    ): Job {
+        if (!scope.isActive) {
+            // launch на отменённом scope возвращает мёртвый Job молча: тело не начнётся, исключения
+            // не будет, и сообщение навсегда останется с плейсхолдером. Гонка реальная — очередь
+            // останавливается без join, а порядок уничтожения бинов между ней и этим scope Spring
+            // не задаёт, потому что связь идёт через ObjectProvider.
+            logger.warn {
+                "Description edit scope is already closed; the placeholder in chat=${target.chatId} " +
+                    "message=${target.messageId} will not be rewritten"
+            }
+        }
+        return scope
             .launch {
-                val outcome = handleOutcome()
-                targets.forEach { target ->
-                    editOne(target, outcome)
-                }
+                editOne(target, handleOutcome())
             }.also { lastJob.set(it) }
+    }
 
     private suspend fun editOne(
         target: EditTarget,
         outcome: Result<DescriptionResult>,
     ) {
-        if (target.isMediaGroup) {
-            editMediaGroup(target, outcome)
-        } else {
-            editSinglePhotoCaption(target, outcome)
-            editSinglePhotoDetails(target, outcome)
-        }
-    }
-
-    private suspend fun editMediaGroup(
-        target: EditTarget,
-        outcome: Result<DescriptionResult>,
-    ) {
-        // Formatter owns the 4096-char editMessageText limit internally (trims `detailed` to fit).
-        val newText = formatter.mediaGroupText(target.baseText, outcome, target.language)
-        runEdit("media group details", target) {
-            bot.editMessageText(
-                chatId = target.chatId,
-                messageId = target.detailsMessageId,
-                text = newText,
-                parseMode = HTMLParseMode,
-                replyMarkup = target.exportKeyboard,
-            )
-        }
-    }
-
-    private suspend fun editSinglePhotoCaption(
-        target: EditTarget,
-        outcome: Result<DescriptionResult>,
-    ) {
-        val captionText =
+        val state =
             outcome.fold(
-                onSuccess = { formatter.captionSuccess(target.baseText, it, target.language) },
-                onFailure = { formatter.captionFallback(target.baseText, target.language) },
+                onSuccess = { DescriptionState.Ready(it) },
+                onFailure = { DescriptionState.Failed },
             )
-        runEdit("single-photo caption", target) {
-            bot.editMessageCaption(
-                chatId = target.chatId,
-                messageId = target.captionMessageId!!,
-                text = captionText,
-                parseMode = HTMLParseMode,
-                replyMarkup = target.exportKeyboard,
-            )
-        }
-    }
-
-    private suspend fun editSinglePhotoDetails(
-        target: EditTarget,
-        outcome: Result<DescriptionResult>,
-    ) {
-        val detailsText =
-            outcome.fold(
-                onSuccess = { formatter.expandableBlockquoteSuccess(it, target.language) },
-                onFailure = { formatter.expandableBlockquoteFallback(target.language) },
-            )
-        runEdit("single-photo details", target) {
-            bot.editMessageText(
-                chatId = target.chatId,
-                messageId = target.detailsMessageId,
-                text = detailsText,
-                parseMode = HTMLParseMode,
-            )
+        val html = renderer.render(target.data, state, target.fileIds.size, target.language)
+        val media = RichNotificationRenderer.mediaFrom(target.fileIds)
+        var sentKeyboard: InlineKeyboardMarkup? = null
+        val landed =
+            runEdit("rich notification", target) {
+                // Клавиатура спрашивается на каждой попытке, но внутри попытки она заморожена на весь
+                // сетевой вызов — включая повторы лимитера на 429, то есть на секунды.
+                val keyboard = target.keyboard()
+                sentKeyboard = keyboard
+                bot.execute(
+                    EditChatMessageRichText(
+                        target.chatId,
+                        target.messageId,
+                        InputRichMessageHTML(html, media = media.ifEmpty { null }),
+                        replyMarkup = keyboard,
+                    ),
+                )
+            }
+        if (!landed) return
+        // Правка переобъявляет reply_markup целиком, а пока она летела, экспорт мог закончиться —
+        // restoreButton уже вернул кнопки выбора — или начаться. Тогда наша клавиатура легла последней,
+        // и исправить её некому: runExport завершился, а описание больше не правится. Поэтому состояние
+        // перечитывается после того, как правка легла, и при расхождении актуальная клавиатура ставится
+        // отдельной markup-правкой. Остаточное окно — один вызов API вместо всего полёта rich-правки.
+        val current = target.keyboard()
+        if (current == sentKeyboard) return
+        runEdit("keyboard re-apply", target) {
+            bot.execute(EditChatMessageReplyMarkup(target.chatId, target.messageId, replyMarkup = current))
         }
     }
 
@@ -156,34 +149,38 @@ class DescriptionEditJobRunner(
      * - `MessageIsNotModifiedException` / `MessageToEditNotFoundException` are terminal — logged
      *   as DEBUG and NOT retried (message already has this text / user deleted it).
      * - Any other failure retries with backoff up to [EDIT_MAX_ATTEMPTS]. This symmetrises the
-     *   initial-send path (which uses `RetryHelper.retryIndefinitely`) so a transient 429 or
+     *   initial-send path (which uses `RetryHelper.retryBounded`) so a transient 429 or
      *   network blip on the edit call does not leave the user stuck with the hourglass.
-     *   Bounded (not indefinite) because edit is best-effort: after ~5 minutes of retries the
-     *   job gives up so scope shutdown completes and the placeholder stays as fallback.
+     *   Bounded (not indefinite) because edit is best-effort: after ~3.75 minutes of retries
+     *   (see [editBackoffMs]) the job gives up so scope shutdown completes and the placeholder
+     *   stays as fallback.
+     *
+     * @return `true` when [block] completed, i.e. the edit landed; `false` when it was skipped as
+     *   terminal or given up — nothing of ours reached the message, so there is nothing to follow up.
      */
     private suspend fun runEdit(
         label: String,
         target: EditTarget,
         block: suspend () -> Unit,
-    ) {
+    ): Boolean {
         var attempt = 0
         while (true) {
             try {
                 block()
-                return
+                return true
             } catch (e: CancellationException) {
                 throw e
             } catch (e: MessageIsNotModifiedException) {
                 logger.debug { "Edit skipped for $label (chat=${target.chatId}): message is not modified — ${e.message}" }
-                return
+                return false
             } catch (e: MessageToEditNotFoundException) {
                 logger.debug { "Edit skipped for $label (chat=${target.chatId}): message not found — ${e.message}" }
-                return
+                return false
             } catch (e: Exception) {
                 attempt++
                 if (attempt >= EDIT_MAX_ATTEMPTS) {
                     logger.warn(e) { "Failed to edit $label for chat=${target.chatId} after $attempt attempts; giving up" }
-                    return
+                    return false
                 }
                 val delayMs = editBackoffMs(attempt)
                 logger.warn(e) { "Edit $label failed for chat=${target.chatId} (attempt $attempt); retrying in ${delayMs / 1000}s" }

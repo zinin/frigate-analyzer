@@ -19,15 +19,7 @@ class ClaudeAsyncClientFactory(
             "At least one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN must be set " +
                 "when application.ai.description.enabled=true"
         }
-        val optionsBuilder =
-            CLIOptions
-                .builder()
-                .timeout(workTimeout)
-                .env(buildEnvMap())
-        if (claudeProperties.anthropic.modelOverride.isBlank()) {
-            optionsBuilder.model(claudeProperties.model)
-        }
-        val options = optionsBuilder.build()
+        val options = buildOptions(workTimeout)
 
         // workingDirectory ОБЯЗАТЕЛЕН для SDK 1.0.0 (AsyncSpec#build бросает
         // IllegalArgumentException("workingDirectory is required")).
@@ -40,6 +32,22 @@ class ClaudeAsyncClientFactory(
             spec.claudePath(claudeProperties.cliPath)
         }
         return spec.build()
+    }
+
+    /** Отдельно от [create] ради тестов: собранный клиент свои опции наружу не отдаёт. */
+    internal fun buildOptions(workTimeout: Duration): CLIOptions {
+        val optionsBuilder =
+            CLIOptions
+                .builder()
+                .timeout(workTimeout)
+                // StreamingTransport создаёт парсер входящих строк с этим лимитом
+                // (options.getEffectiveMaxBufferSize()); дефолт SDK — 1 MiB, см. ClaudeProperties.
+                .maxBufferSize(claudeProperties.maxBufferSize.toBytes().toInt())
+                .env(buildEnvMap())
+        if (claudeProperties.anthropic.modelOverride.isBlank()) {
+            optionsBuilder.model(claudeProperties.model)
+        }
+        return optionsBuilder.build()
     }
 
     internal fun buildEnvMap(): Map<String, String> =

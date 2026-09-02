@@ -10,7 +10,6 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
-import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.common.helper.UUIDGeneratorHelper
@@ -20,7 +19,6 @@ import ru.zinin.frigate.analyzer.service.AppSettingsService
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.dto.TelegramUserDto
 import ru.zinin.frigate.analyzer.telegram.dto.UserZoneInfo
-import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.model.UserStatus
 import ru.zinin.frigate.analyzer.telegram.queue.RecordingNotificationTask
 import ru.zinin.frigate.analyzer.telegram.queue.SimpleTextNotificationTask
@@ -31,25 +29,14 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
-import java.util.Locale
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
-import kotlin.test.assertTrue
 
 class TelegramNotificationServiceImplTest {
     private val userService = mockk<TelegramUserService>()
     private val notificationQueue = mockk<TelegramNotificationQueue>()
     private val uuidGeneratorHelper = mockk<UUIDGeneratorHelper>()
-    private val msg =
-        MessageResolver(
-            ReloadableResourceBundleMessageSource().apply {
-                setBasename("classpath:messages")
-                setDefaultEncoding("UTF-8")
-                setFallbackToSystemLocale(false)
-                setDefaultLocale(Locale.forLanguageTag("en"))
-            },
-        )
     private val signalLossFormatter = mockk<SignalLossMessageFormatter>(relaxed = true)
     private val rateLimiterProvider = mockk<ObjectProvider<DescriptionRateLimiter>>(relaxed = true)
     private val appSettings = mockk<AppSettingsService>()
@@ -59,7 +46,6 @@ class TelegramNotificationServiceImplTest {
             userService,
             notificationQueue,
             uuidGeneratorHelper,
-            msg,
             signalLossFormatter,
             rateLimiterProvider,
             appSettings,
@@ -112,7 +98,35 @@ class TelegramNotificationServiceImplTest {
             assertEquals(chatId, taskSlot.captured.chatId)
             assertEquals(visualizedFrames, taskSlot.captured.visualizedFrames)
             assertEquals("ru", taskSlot.captured.language)
-            assertTrue(taskSlot.captured.message.contains("camera1"), "message should contain camera ID")
+            assertEquals("camera1", taskSlot.captured.data.camId, "task must carry the camera id as data")
+        }
+
+    @Test
+    fun `all recipients of one recording share a single frame id holder`() =
+        runTest {
+            val recording = createRecording()
+            val visualizedFrames =
+                listOf(
+                    VisualizedFrameData(frameIndex = 0, visualizedBytes = byteArrayOf(1), detectionsCount = 1),
+                )
+            val tasks = mutableListOf<RecordingNotificationTask>()
+
+            coEvery { uuidGeneratorHelper.generateV1() } returnsMany listOf(UUID.randomUUID(), UUID.randomUUID())
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(
+                    UserZoneInfo(chatId = 100L, zone = ZoneId.of("Europe/Moscow"), language = "ru"),
+                    UserZoneInfo(chatId = 200L, zone = ZoneId.of("Asia/Tokyo"), language = "en"),
+                )
+            coEvery { notificationQueue.enqueue(capture(tasks)) } returns Unit
+
+            service.sendRecordingNotification(recording, visualizedFrames, descriptionSupplier = null)
+
+            assertEquals(2, tasks.size, "both subscribers must be enqueued")
+            assertSame(
+                tasks[0].frameIds,
+                tasks[1].frameIds,
+                "one upload must serve every recipient of the same recording",
+            )
         }
 
     @Test
