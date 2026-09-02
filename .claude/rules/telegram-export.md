@@ -102,12 +102,11 @@ future refactor from introducing a dual-lock deadlock, the following ordering mu
 
 ## Known Limitations
 
-- **ffmpeg cancellation is best-effort.** On MERGING/COMPRESSING stages `CancellationException`
-  waits for `FfmpegProcessRunner.run(...)` (a blocking `process.waitFor`) to return before
-  unwinding. UI shows a
-  "Cancelling…" state immediately but the final "Cancelled" state appears only after ffmpeg
-  finishes (seconds for merge, up to minutes for compress). Full sync cancel would need a
-  cancellation-aware ffmpeg wrapper (out of scope).
+- **ffmpeg cancellation is cooperative, not instant.** `FfmpegProcessRunner.run(...)` polls the
+  process every 200 ms with `ensureActive()` in between and kills it in `finally`, so on
+  MERGING/COMPRESSING stages a cancel, the outer export timeout or application shutdown stops
+  ffmpeg within about 200 ms; the partial output is deleted under `NonCancellable`. The
+  vision-server annotation is cancelled separately (see Cancellation above).
 - **Restart wipes registry.** Old cancel buttons respond with the "export already finished or
   unavailable" i18n message. Vision-server jobs orphaned on restart are killed by the server's
   TTL.

@@ -1,14 +1,25 @@
 package ru.zinin.frigate.analyzer.core.video
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Duration
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class FfmpegProcessRunnerTest {
+    @TempDir
+    lateinit var tempDir: Path
+
     private val runner = FfmpegProcessRunner()
 
     @Test
@@ -48,6 +59,27 @@ class FfmpegProcessRunnerTest {
             val elapsed = Duration.ofNanos(System.nanoTime() - startedAt)
             assertTrue(exception.message!!.contains("sh timed out after 500 ms"), exception.message)
             assertTrue(elapsed < Duration.ofSeconds(10), "runner waited $elapsed instead of killing the process")
+        }
+
+    @Test
+    fun `kills the process when the coroutine is cancelled`() =
+        // Real time on purpose: runTest would skip the delays and the marker check would pass
+        // before the shell had a chance to survive.
+        runBlocking {
+            val marker = tempDir.resolve("survived.marker")
+            val export =
+                launch(Dispatchers.Default) {
+                    runner.run(listOf("/bin/sh", "-c", "sleep 2; touch '$marker'"), Duration.ofSeconds(30))
+                }
+            delay(300)
+
+            val cancelledAt = System.nanoTime()
+            export.cancelAndJoin()
+            val cancelTook = Duration.ofNanos(System.nanoTime() - cancelledAt)
+
+            assertTrue(cancelTook < Duration.ofSeconds(5), "cancellation waited $cancelTook for the process")
+            delay(2500)
+            assertFalse(Files.exists(marker), "the process survived the cancellation and touched $marker")
         }
 
     @Test
