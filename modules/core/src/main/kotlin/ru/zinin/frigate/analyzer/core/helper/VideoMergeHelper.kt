@@ -47,34 +47,6 @@ class VideoMergeHelper(
         }
     }
 
-    suspend fun compressVideo(inputPath: Path): Path {
-        val outputFile = tempFileHelper.createTempFile("compressed-", ".mp4")
-        try {
-            runFfmpeg(
-                listOf(
-                    applicationProperties.ffmpegPath.toString(),
-                    "-hide_banner",
-                    "-i",
-                    inputPath.toString(),
-                    "-vcodec",
-                    "libx264",
-                    "-crf",
-                    "28",
-                    "-preset",
-                    "fast",
-                    "-acodec",
-                    "aac",
-                    "-y",
-                    outputFile.toString(),
-                ),
-            )
-            return outputFile
-        } catch (e: Exception) {
-            tempFileHelper.deleteIfExists(outputFile)
-            throw e
-        }
-    }
-
     /**
      * Re-encodes [inputPath] with [plan]: libx264 at CRF quality capped by `-maxrate`/`-bufsize`,
      * optionally downscaled, AAC audio or none, `faststart` for streaming playback. The caller
@@ -177,8 +149,6 @@ class VideoMergeHelper(
     private fun escapePath(path: Path): String = path.toAbsolutePath().toString().replace("'", "'\\''")
 
     companion object {
-        const val MAX_FILE_SIZE_BYTES = 50L * 1024 * 1024
-        const val COMPRESS_THRESHOLD_BYTES = 45L * 1024 * 1024
         const val FFMPEG_TIMEOUT_SECONDS = 300L
     }
 }

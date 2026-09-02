@@ -34,6 +34,9 @@ loaded alongside this file whenever you touch `modules/telegram/**`.
    - Both buttons replaced with a single progress button (e.g. "Merging video…", "Annotating 45%…").
    - Calls `VideoExportService.exportByRecordingId(recordingId, mode=ORIGINAL|ANNOTATED)`.
    - Exports ±1 min from `recordTimestamp` (2 min total).
+   - A merged file above 45 MiB is re-encoded by `TelegramVideoFitter` (core, `video/`) to fit
+     Telegram's upload limit; in ANNOTATED mode the annotated result goes through the fitter
+     again (`COMPRESSING_RESULT` stage). See "Size limit" below.
    - Timeouts: outer 5 min (original), outer 50 min (annotated); inner annotation timeout
      `DETECT_VIDEO_VISUALIZE_TIMEOUT` defaults to 45 min.
    - On inner annotation timeout a dedicated message `quickexport.error.annotation.timeout` is

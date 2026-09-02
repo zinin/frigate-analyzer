@@ -10,6 +10,7 @@ import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectionFilterProperties
 import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
 import ru.zinin.frigate.analyzer.core.helper.VideoMergeHelper
+import ru.zinin.frigate.analyzer.core.video.TelegramVideoFitter
 import ru.zinin.frigate.analyzer.model.dto.CameraRecordingCountDto
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
@@ -29,6 +30,7 @@ private val logger = KotlinLogging.logger {}
 class VideoExportServiceImpl(
     private val recordingRepository: RecordingEntityRepository,
     private val videoMergeHelper: VideoMergeHelper,
+    private val videoFitter: TelegramVideoFitter,
     private val tempFileHelper: TempFileHelper,
     private val videoVisualizationService: VideoVisualizationService,
     private val detectProperties: DetectProperties,
@@ -75,40 +77,28 @@ class VideoExportServiceImpl(
 
         onProgress(VideoExportProgress(Stage.MERGING))
 
-        var mergedFile = videoMergeHelper.mergeVideos(existingFiles)
+        // `current` always names the newest file this export owns: the fitter deletes its input
+        // only on success, annotate() deletes its input on both paths, deleteIfExists is
+        // idempotent, so the catch blocks below can delete `current` without bookkeeping.
+        var current = videoMergeHelper.mergeVideos(existingFiles)
 
         try {
-            val fileSize = withContext(Dispatchers.IO) { Files.size(mergedFile) }
-            logger.debug { "Merge complete: $mergedFile, size=${fileSize}B" }
-            if (fileSize > VideoMergeHelper.COMPRESS_THRESHOLD_BYTES) {
-                onProgress(VideoExportProgress(Stage.COMPRESSING))
-                logger.info { "Merged file is ${fileSize / 1024 / 1024}MB, compressing..." }
-                val compressedFile = videoMergeHelper.compressVideo(mergedFile)
-                tempFileHelper.deleteIfExists(mergedFile)
-                mergedFile = compressedFile
+            current = videoFitter.fit(current) { onProgress(VideoExportProgress(Stage.COMPRESSING)) }
 
-                val compressedSize = withContext(Dispatchers.IO) { Files.size(mergedFile) }
-                logger.debug { "Compression complete: $mergedFile, size=${compressedSize}B" }
-                if (compressedSize > VideoMergeHelper.MAX_FILE_SIZE_BYTES) {
-                    tempFileHelper.deleteIfExists(mergedFile)
-                    throw IllegalStateException(
-                        "Video too large even after compression: ${compressedSize / 1024 / 1024}MB",
-                    )
-                }
+            if (mode == ExportMode.ORIGINAL) {
+                return current
             }
 
-            if (mode == ExportMode.ANNOTATED) {
-                return annotate(mergedFile, onProgress, onJobSubmitted)
-            }
-
-            return mergedFile
+            current = annotate(current, onProgress, onJobSubmitted)
+            current = videoFitter.fit(current) { onProgress(VideoExportProgress(Stage.COMPRESSING_RESULT)) }
+            return current
         } catch (e: CancellationException) {
-            logger.debug(e) { "Export cancelled after merge, cleaning up: $mergedFile" }
-            safeDelete(mergedFile)
+            logger.debug(e) { "Export cancelled, cleaning up: $current" }
+            safeDelete(current)
             throw e
         } catch (e: Exception) {
-            logger.debug(e) { "Export failed, cleaning up: $mergedFile" }
-            safeDelete(mergedFile)
+            logger.debug(e) { "Export failed, cleaning up: $current" }
+            safeDelete(current)
             throw e
         }
     }
