@@ -371,6 +371,10 @@ class QuickExportHandler(
                 }
             }
 
+            VideoExportProgress.Stage.COMPRESSING_RESULT -> {
+                msg.get("quickexport.progress.compressing.result", lang)
+            }
+
             VideoExportProgress.Stage.SENDING -> {
                 msg.get("quickexport.progress.sending", lang)
             }

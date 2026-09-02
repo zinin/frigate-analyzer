@@ -110,12 +110,14 @@ class ExportExecutor(
         var lastRenderedStage: Stage? = Stage.PREPARING
         var lastRenderedPercent: Int? = null
         var hadCompressing = false
+        var hadCompressingResult = false
 
         val onProgress: suspend (VideoExportProgress) -> Unit = lambda@{ progress ->
             if (registry.get(exportId)?.state == ActiveExportRegistry.State.CANCELLING) {
                 return@lambda
             }
             if (progress.stage == Stage.COMPRESSING) hadCompressing = true
+            if (progress.stage == Stage.COMPRESSING_RESULT) hadCompressingResult = true
 
             val shouldUpdate =
                 when {
@@ -139,7 +141,15 @@ class ExportExecutor(
                 try {
                     bot.editMessageText(
                         statusMessage,
-                        renderProgress(progress.stage, progress.percent, mode, hadCompressing, msg, lang),
+                        renderProgress(
+                            stage = progress.stage,
+                            percent = progress.percent,
+                            mode = mode,
+                            compressing = hadCompressing,
+                            compressingResult = hadCompressingResult,
+                            msg = msg,
+                            lang = lang,
+                        ),
                         replyMarkup = cancelKeyboardMarkup,
                     )
                 } catch (e: CancellationException) {
@@ -194,7 +204,14 @@ class ExportExecutor(
                 try {
                     bot.editMessageText(
                         statusMessage,
-                        renderProgress(Stage.SENDING, mode = mode, compressing = hadCompressing, msg = msg, lang = lang),
+                        renderProgress(
+                            Stage.SENDING,
+                            mode = mode,
+                            compressing = hadCompressing,
+                            compressingResult = hadCompressingResult,
+                            msg = msg,
+                            lang = lang,
+                        ),
                         replyMarkup = cancelKeyboardMarkup,
                     )
                 } catch (e: CancellationException) {
@@ -243,7 +260,14 @@ class ExportExecutor(
                 try {
                     bot.editMessageText(
                         statusMessage,
-                        renderProgress(Stage.DONE, mode = mode, compressing = hadCompressing, msg = msg, lang = lang),
+                        renderProgress(
+                            Stage.DONE,
+                            mode = mode,
+                            compressing = hadCompressing,
+                            compressingResult = hadCompressingResult,
+                            msg = msg,
+                            lang = lang,
+                        ),
                         replyMarkup = null,
                     )
                 } catch (e: CancellationException) {

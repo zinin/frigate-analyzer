@@ -31,6 +31,7 @@ internal fun renderProgress(
     percent: Int? = null,
     mode: ExportMode = ExportMode.ORIGINAL,
     compressing: Boolean = false,
+    compressingResult: Boolean = false,
     msg: MessageResolver,
     lang: String,
 ): String {
@@ -40,6 +41,7 @@ internal fun renderProgress(
             add(Stage.MERGING to msg.get("export.progress.merging", lang))
             if (compressing) add(Stage.COMPRESSING to msg.get("export.progress.compressing", lang))
             if (mode == ExportMode.ANNOTATED) add(Stage.ANNOTATING to msg.get("export.progress.annotating", lang))
+            if (compressingResult) add(Stage.COMPRESSING_RESULT to msg.get("export.progress.compressing.result", lang))
             add(Stage.SENDING to msg.get("export.progress.sending", lang))
             add(Stage.DONE to msg.get("export.progress.done", lang))
         }
