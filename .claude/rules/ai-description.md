@@ -88,3 +88,6 @@ All variables documented in `.claude/rules/configuration.md` under "AI Descripti
 - `APP_AI_DESCRIPTION_SHORT_MAX` / `APP_AI_DESCRIPTION_DETAILED_MAX` — character caps for the
   short paragraph and the `<details>` body
 - `APP_AI_DESCRIPTION_MAX_FRAMES` — frames forwarded to the model per recording
+- `CLAUDE_MAX_BUFFER_SIZE` — max size of one JSON message from the CLI (default 16MB). The CLI
+  echoes every frame the model reads back as base64, so the SDK's 1 MiB default overflowed on
+  ~800 KB frames; an oversized line is dropped with `Failed to process message (continuing)`

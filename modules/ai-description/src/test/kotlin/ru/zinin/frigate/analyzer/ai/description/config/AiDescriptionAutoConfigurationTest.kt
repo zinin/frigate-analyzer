@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.util.unit.DataSize
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
@@ -12,6 +13,7 @@ import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import tools.jackson.databind.json.JsonMapper
 import java.time.Clock
 import kotlin.test.Test
+import kotlin.test.assertEquals
 
 class AiDescriptionAutoConfigurationTest {
     private val runner =
@@ -110,10 +112,14 @@ class AiDescriptionAutoConfigurationTest {
                 "application.ai.description.claude.anthropic.default-opus-model=",
                 "application.ai.description.claude.anthropic.default-sonnet-model=",
                 "application.ai.description.claude.anthropic.default-haiku-model=",
+                "application.ai.description.claude.max-buffer-size=32MB",
             ).run { ctx ->
                 assert(ctx.getBeansOfType(DescriptionAgent::class.java).isNotEmpty()) {
                     "DescriptionAgent should be registered"
                 }
+                // Строка в стиле application.yaml должна привязаться к DataSize: это единственное
+                // место, где реальный старт может упасть, а полный build в CI его не проверяет.
+                assertEquals(DataSize.ofMegabytes(32), ctx.getBean(ClaudeProperties::class.java).maxBufferSize)
             }
     }
 

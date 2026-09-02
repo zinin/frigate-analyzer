@@ -183,6 +183,7 @@ token (`claude setup-token`).
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
 | `CLAUDE_CODE_OAUTH_TOKEN` | *(required if enabled)* | Token from `claude setup-token` |
 | `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku` |
+| `CLAUDE_MAX_BUFFER_SIZE` | `16MB` | Max size of one JSON message from the CLI. Frames the model reads are echoed back as base64, so raise it for cameras with frames above ~12 MB |
 
 Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
 [`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.
