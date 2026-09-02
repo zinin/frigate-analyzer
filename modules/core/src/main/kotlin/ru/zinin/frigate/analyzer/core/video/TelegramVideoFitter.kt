@@ -3,6 +3,9 @@ package ru.zinin.frigate.analyzer.core.video
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
@@ -25,6 +28,8 @@ private val logger = KotlinLogging.logger {}
  *
  * File ownership: on success the input is deleted when a new file was produced; on failure or
  * cancellation only the files this class created are deleted and the input is left to the caller.
+ * A cancellation landing inside the success cleanup is the one exception: the input is already
+ * gone by then, so the fitted result goes with it and the cancellation is rethrown.
  */
 @Component
 class TelegramVideoFitter internal constructor(
@@ -66,6 +71,7 @@ class TelegramVideoFitter internal constructor(
         }
 
         val created = mutableListOf<Path>()
+        val export = currentCoroutineContext().job
         try {
             var result = encode(input, plan, attempt = 1, created)
             var resultSize = fileSize(result)
@@ -87,7 +93,20 @@ class TelegramVideoFitter internal constructor(
             // Path is Iterable<Path> (name elements), so plus(input) would flatten the path.
             // NonCancellable like the failure path below: deleteIfExists is suspend, and a
             // cancellation arriving here would otherwise skip the deletes and leak the files.
-            withContext(NonCancellable) { deleteAll(created.plusElement(input)) }
+            withContext(NonCancellable) {
+                deleteAll(created.plusElement(input))
+                // The deletes above cannot be interrupted and the return below is not a suspension
+                // point, so a cancellation arriving here would hand `result` to a caller that never
+                // takes it: VideoExportServiceImpl's catch does not run and the handler's
+                // withTimeoutOrNull drops the value, leaving the file on disk.
+                if (!export.isActive) {
+                    deleteAll(listOf(result))
+                }
+            }
+            // Everything this call created is either gone or being returned, so the catch below
+            // has nothing left to delete when ensureActive throws.
+            created.clear()
+            export.ensureActive()
             return result
         } catch (e: Exception) {
             withContext(NonCancellable) { deleteAll(created) }

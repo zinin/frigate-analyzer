@@ -22,6 +22,7 @@ import java.io.RandomAccessFile
 import java.nio.file.Path
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TelegramVideoFitterTest {
@@ -198,7 +199,40 @@ class TelegramVideoFitterTest {
             export = job
             job.join()
 
-            assertEquals(listOf(first, input), deleted)
+            // The result goes too: nobody is left to take it — see the test below.
+            assertEquals(listOf(first, input, second), deleted)
+        }
+
+    @Test
+    fun `deletes the fitted result when cancellation wins the success cleanup`() =
+        runTest {
+            val input = file("big.mp4", 5000)
+            val first = file("first.mp4", 1300)
+            val second = file("second.mp4", 1150)
+            coEvery { probe.probe(input) } returns info
+            every { planner.plan(info, 1000L) } returns plan
+            every { planner.shrink(plan, info, 1300L, 1000L) } returns retryPlan
+            coEvery { mergeHelper.compressVideo(input, plan) } returns first
+            coEvery { mergeHelper.compressVideo(first, retryPlan) } returns second
+            val deleted = mutableListOf<Path>()
+            var export: Job? = null
+            coEvery { tempFileHelper.deleteIfExists(any()) } coAnswers {
+                val path = firstArg<Path>()
+                if (path == first) export?.cancel()
+                deleted.add(path)
+                true
+            }
+
+            var handedBack: Path? = null
+            val job = launch { handedBack = fitter.fit(input) }
+            export = job
+            job.join()
+
+            // The cleanup runs under NonCancellable and `return` is not a suspension point, so
+            // without an explicit check fit hands the file to a caller that will never take it:
+            // the export's own catch does not run and withTimeoutOrNull drops the value.
+            assertNull(handedBack, "fit handed $handedBack back into a cancelled export")
+            assertTrue(deleted.contains(second), "the fitted result was left on disk: $second")
         }
 
     @Test
