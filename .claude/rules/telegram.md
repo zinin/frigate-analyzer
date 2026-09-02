@@ -89,14 +89,14 @@ Known residuals:
 - When the send gives up for the last recipient of a recording, the shared `descriptionHandle` is
   not cancelled — the sender cannot know it was the last one (see the photo-count note below) — so
   the Claude call runs to completion for nobody.
-- Rejections are more likely than on `master`: every notification is now an HTML document against
+- Rejections are more likely than before v0.11.0: every notification is now an HTML document against
   four undeclared limits (500 blocks, 16 nesting levels, 50 media, 20 table columns), and
   `SendRichMessage` validates nothing client-side. `LocalVisualizationProperties.maxFrames` is capped
   at `@Max(50)` — the same number as `MAX_MEDIA` — so a config drift cannot exceed Telegram's media
-  ceiling, but a collage above ten frames has never been rendered live: a large
+  ceiling, but a collage of more than three frames has never been rendered live: a large
   `LOCAL_VIZ_MAX_FRAMES` is a live-verification item, not something the code guarantees.
 
-Until `eed95b5` the retry was infinite (as on `master`): a deterministic failure blocked the single
+Until `79f9e05` (v0.11.0) the retry was infinite: a deterministic failure blocked the single
 sequential consumer forever, notifications stopped for every camera and every user until restart, and
 once `TELEGRAM_QUEUE_CAPACITY` tasks piled up `enqueue` pushed back-pressure into
 `RecordingProcessingFacade`.
@@ -112,7 +112,7 @@ recovery alerts are not rich: they stay plain `SimpleTextNotificationTask` text.
 |---|---|
 | `<h2>` heading + `<table bordered striped compact>` | `RecordingNotificationData`, i18n keys `notification.recording.*` |
 | `<p>` short description | `DescriptionState` — placeholder, model text or fallback; omitted when `Absent` |
-| frames | one frame → a bare `<img>`, two or more → `<tg-collage>`; capped at `MAX_MEDIA = 50`, which is also the `@Max` of `LOCAL_VIZ_MAX_FRAMES` (default 10; only up to ten frames were ever rendered live) |
+| frames | one frame → a bare `<img>`, two or more → `<tg-collage>`; capped at `MAX_MEDIA = 50`, which is also the `@Max` of `LOCAL_VIZ_MAX_FRAMES` (default 10; three frames is the most ever rendered live) |
 | `<details>` detailed description | omitted when `Absent` **and when `Failed`** (the `<p>` already carries the reason); the model text is trimmed to whatever is left of `MAX_LENGTH = 32768` |
 | Quick Export keyboard | `QuickExportHandler.createExportKeyboard` on the initial send, passed as `reply_markup` — never as HTML buttons. The description edit re-declares `reply_markup` wholesale, so it asks `QuickExportHandler.currentKeyboard(recordingId, chatId, lang)` at edit time: the choice row when nothing runs *in this chat* (the registry is one index for every chat), progress + Cancel for this chat's ACTIVE export, the single "cancelling…" row while it is CANCELLING. After the edit lands the runner asks again and, if the export state moved while the edit was in flight, follows up with one markup-only `editMessageReplyMarkup` — otherwise a progress keyboard for an already-finished export would stay as the last writer with nobody left to repair it |
 
