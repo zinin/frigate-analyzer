@@ -59,14 +59,28 @@ after the annotation (the vision server returns H.264, so a 30 MiB HEVC merge ca
 
 - up to 45 MiB the file is sent as it is, HEVC originals included;
 - above that, `VideoProbe` (ffprobe) reads duration, frame size, fps and audio; `CompressionPlanner`
-  turns the 45 MiB budget into a bitrate cap and picks the largest height of 1080/720/540 (never
-  above the source) whose bits-per-pixel stays at or above `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL`;
+  turns the 45 MiB budget into a bitrate cap and picks the largest candidate whose bits-per-pixel
+  stays at or above `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL`. Candidates are 1080/720/540 *plus the
+  source height*, with everything taller than the source dropped: the source height keeps a sub-540
+  camera from having no candidate at all and makes upscaling impossible, and by the same rule a
+  taller source wins whenever the budget per pixel allows it, which is how a short window ends up
+  encoded at full frame with no scale filter (`scaleHeight = null`);
   `VideoMergeHelper.compressVideo` runs libx264 with CRF plus `-maxrate`/`-bufsize`; the result is
   checked against 50 000 000 bytes (`FitLimits.TELEGRAM`), one overshoot is retried from the first
   result with the cap scaled down by the overshoot ratio and a further 10 %;
 - a second overshoot throws `VideoTooLargeException` (model), shown as
   `quickexport.error.too.large` / `export.error.too.large`. `IllegalStateException` keeps meaning
   "recording files unavailable".
+
+Encode cost is bounded by the budget, not by the ladder. A candidate is accepted only at
+bits-per-pixel at or above the floor, so pixels per second cannot exceed the video bitrate divided
+by that floor, and bitrate times duration is the fixed budget. The pixels libx264 has to produce
+are therefore capped at `budget_kbit x 1000 / min-bits-per-pixel` — about 3.7 gigapixels at the
+45 MiB budget and the 0.1 default, whatever the camera, its fps or the window length, which is
+roughly the two-minute 1080p case the 300 s ffmpeg timeout was sized around. Halving
+`EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` to buy quality doubles that ceiling and moves the encode
+towards the timeout: it is a cost knob as much as a quality floor. Decoding the source costs the
+same whichever height is chosen.
 
 Progress stages: `COMPRESSING` before annotation, `COMPRESSING_RESULT` after it; both appear only
 when a re-encode actually happened. The fitter logs the chosen plan and the result sizes at INFO.

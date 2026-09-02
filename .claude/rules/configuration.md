@@ -170,7 +170,7 @@ Settings under `application.export.compress` in `application.yaml`. They tune th
 |----------|---------|---------|
 | `EXPORT_COMPRESS_PRESET` | fast | libx264 preset name (`ultrafast` … `placebo`, validated at startup): speed versus compression on the host CPU |
 | `EXPORT_COMPRESS_CRF` | 23 | libx264 quality target (0–51); the bitrate cap from the budget still applies |
-| `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` | 0.1 | Smallest bits-per-pixel a candidate height (1080/720/540, never above the source) may have before the next smaller one is tried |
+| `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` | 0.1 | Smallest bits-per-pixel a candidate height (1080/720/540 plus the source height, never above it) may have before the next smaller one is tried. Also caps the work handed to libx264 — the budget divided by this value — so lowering it for quality moves the encode towards the ffmpeg timeout |
 
 ## Telegram
 
