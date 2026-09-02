@@ -30,6 +30,8 @@ class CompressionPlanner(
         targetBytes: Long,
     ): CompressionPlan {
         require(info.durationSeconds > 0) { "durationSeconds must be positive, got ${info.durationSeconds}" }
+        require(info.width > 0 && info.height > 0) { "frame size must be positive, got ${info.width}x${info.height}" }
+        require(info.fps > 0) { "fps must be positive, got ${info.fps}" }
         require(targetBytes > 0) { "targetBytes must be positive, got $targetBytes" }
 
         val totalKbps = targetBytes.toDouble() * BITS_PER_BYTE / BITS_PER_KBIT / info.durationSeconds
@@ -104,7 +106,7 @@ class CompressionPlanner(
         val candidates = (HEIGHTS + sourceHeight).filter { it <= sourceHeight }.distinct().sortedDescending()
         return candidates.firstOrNull { height ->
             val pixelsPerSecond = scaledWidth(info, height).toDouble() * height * info.fps
-            videoKbps * BITS_PER_KBIT / pixelsPerSecond >= settings.minBitsPerPixel
+            videoKbps.toDouble() * BITS_PER_KBIT / pixelsPerSecond >= settings.minBitsPerPixel
         } ?: candidates.last()
     }
 

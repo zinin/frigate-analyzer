@@ -21,14 +21,15 @@ import kotlin.time.Duration.Companion.minutes
 
 /**
  * Runs the real ffmpeg/ffprobe binaries. Skipped (reported as such, not as passed) when they are
- * not installed at /usr/bin; CI installs them with apt before the build.
+ * not found at /usr/bin, or at `FFMPEG_PATH` / `FFPROBE_PATH` when those are set; CI installs
+ * them with apt before the build.
  */
 class FfmpegCompressionIntegrationTest {
     @TempDir
     lateinit var tempDir: Path
 
-    private val ffmpeg: Path = Path.of("/usr/bin/ffmpeg")
-    private val ffprobe: Path = Path.of("/usr/bin/ffprobe")
+    private val ffmpeg: Path = Path.of(System.getenv("FFMPEG_PATH") ?: "/usr/bin/ffmpeg")
+    private val ffprobe: Path = Path.of(System.getenv("FFPROBE_PATH") ?: "/usr/bin/ffprobe")
 
     @BeforeEach
     fun requireTools() {

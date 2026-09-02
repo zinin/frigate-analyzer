@@ -54,8 +54,12 @@ class VideoProbe(
             streams.firstOrNull { it.path("codec_type").textOrNull() == "video" }
                 ?: throw RuntimeException("ffprobe found no video stream in $path")
         val hasAudio = streams.any { it.path("codec_type").textOrNull() == "audio" }
-        val width = video.path("width").intOrNull() ?: throw RuntimeException("ffprobe reported no width for $path")
-        val height = video.path("height").intOrNull() ?: throw RuntimeException("ffprobe reported no height for $path")
+        val width =
+            video.path("width").intOrNull()?.takeIf { it > 0 }
+                ?: throw RuntimeException("ffprobe reported no width for $path")
+        val height =
+            video.path("height").intOrNull()?.takeIf { it > 0 }
+                ?: throw RuntimeException("ffprobe reported no height for $path")
         val duration =
             root
                 .path("format")
@@ -88,7 +92,7 @@ class VideoProbe(
 
     private fun JsonNode.childNodes(): List<JsonNode> = (0 until size()).map { get(it) }
 
-    private fun JsonNode.textOrNull(): String? = if (isTextual) asText() else null
+    private fun JsonNode.textOrNull(): String? = if (isString) asString() else null
 
     private fun JsonNode.intOrNull(): Int? = if (isIntegralNumber) intValue() else null
 

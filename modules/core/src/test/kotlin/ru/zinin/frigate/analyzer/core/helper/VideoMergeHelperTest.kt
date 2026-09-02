@@ -3,6 +3,10 @@ package ru.zinin.frigate.analyzer.core.helper
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -113,6 +117,27 @@ class VideoMergeHelperTest {
             coEvery { runner.run(capture(commands), any()) } throws RuntimeException("ffmpeg exited with code 1")
 
             assertThrows<RuntimeException> { helper.mergeVideos(listOf(first, second)) }
+
+            val command = commands.single()
+            assertFalse(Files.exists(Path.of(command.last())), "merged output must be deleted")
+            assertFalse(Files.exists(Path.of(command[command.indexOf("-i") + 1])), "concat list must be deleted")
+        }
+
+    @Test
+    fun `mergeVideos deletes its files when the export is cancelled during ffmpeg`() =
+        runTest {
+            val first = sourceFile("a.mp4")
+            val second = sourceFile("b.mp4")
+            val commands = mutableListOf<List<String>>()
+            coEvery { runner.run(capture(commands), any()) } coAnswers {
+                // The export is cancelled while ffmpeg runs: deleteIfExists suspends and would
+                // throw instead of deleting unless the cleanup runs under NonCancellable.
+                currentCoroutineContext().cancel()
+                throw CancellationException("export cancelled")
+            }
+
+            val merge = launch { helper.mergeVideos(listOf(first, second)) }
+            merge.join()
 
             val command = commands.single()
             assertFalse(Files.exists(Path.of(command.last())), "merged output must be deleted")

@@ -1,5 +1,5 @@
 ---
-paths: "modules/telegram/**/handler/export/**,modules/telegram/**/handler/quickexport/**,modules/telegram/**/handler/cancel/**"
+paths: "modules/telegram/**/handler/export/**,modules/telegram/**/handler/quickexport/**,modules/telegram/**/handler/cancel/**,modules/core/**/video/**"
 ---
 
 # Telegram Video Export
@@ -60,13 +60,15 @@ after the annotation (the vision server returns H.264, so a 30 MiB HEVC merge ca
   above the source) whose bits-per-pixel stays at or above `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL`;
   `VideoMergeHelper.compressVideo` runs libx264 with CRF plus `-maxrate`/`-bufsize`; the result is
   checked against 50 000 000 bytes (`FitLimits.TELEGRAM`), one overshoot is retried from the first
-  result with a 10 % smaller cap;
+  result with the cap scaled down by the overshoot ratio and a further 10 %;
 - a second overshoot throws `VideoTooLargeException` (model), shown as
   `quickexport.error.too.large` / `export.error.too.large`. `IllegalStateException` keeps meaning
   "recording files unavailable".
 
 Progress stages: `COMPRESSING` before annotation, `COMPRESSING_RESULT` after it; both appear only
 when a re-encode actually happened. The fitter logs the chosen plan and the result sizes at INFO.
+In ANNOTATED mode the annotation runs on the already fitted file, so the vision server receives
+the re-encoded H.264 (1440x1080 for a two-minute cam4 window) rather than the HEVC source.
 Tunables: `FFPROBE_PATH`, `EXPORT_COMPRESS_PRESET`, `EXPORT_COMPRESS_CRF`,
 `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` — see `configuration.md`, "Video Export".
 
@@ -101,7 +103,8 @@ future refactor from introducing a dual-lock deadlock, the following ordering mu
 ## Known Limitations
 
 - **ffmpeg cancellation is best-effort.** On MERGING/COMPRESSING stages `CancellationException`
-  waits for `VideoMergeHelper.process.waitFor(...)` to return before unwinding. UI shows a
+  waits for `FfmpegProcessRunner.run(...)` (a blocking `process.waitFor`) to return before
+  unwinding. UI shows a
   "Cancelling…" state immediately but the final "Cancelled" state appears only after ffmpeg
   finishes (seconds for merge, up to minutes for compress). Full sync cancel would need a
   cancellation-aware ffmpeg wrapper (out of scope).

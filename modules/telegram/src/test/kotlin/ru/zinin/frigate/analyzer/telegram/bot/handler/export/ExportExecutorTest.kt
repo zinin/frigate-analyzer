@@ -13,6 +13,7 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -228,6 +229,7 @@ class ExportExecutorTest {
             scope.shutdown()
         }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun `too large export — status message edited with the too large text and no keyboard`() =
         runTest {

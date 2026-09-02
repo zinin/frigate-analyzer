@@ -6,6 +6,10 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -165,6 +169,36 @@ class TelegramVideoFitterTest {
 
             coVerify(exactly = 1) { tempFileHelper.deleteIfExists(first) }
             coVerify(exactly = 0) { tempFileHelper.deleteIfExists(input) }
+        }
+
+    @Test
+    fun `finishes the success cleanup even when cancellation arrives in the middle of it`() =
+        runTest {
+            val input = file("big.mp4", 5000)
+            val first = file("first.mp4", 1300)
+            val second = file("second.mp4", 1150)
+            coEvery { probe.probe(input) } returns info
+            every { planner.plan(info, 1000L) } returns plan
+            every { planner.shrink(plan, info, 1300L, 1000L) } returns retryPlan
+            coEvery { mergeHelper.compressVideo(input, plan) } returns first
+            coEvery { mergeHelper.compressVideo(first, retryPlan) } returns second
+            val deleted = mutableListOf<Path>()
+            var export: Job? = null
+            coEvery { tempFileHelper.deleteIfExists(any()) } coAnswers {
+                val path = firstArg<Path>()
+                if (path == first) export?.cancel()
+                // deleteIfExists suspends through withContext: in a cancelled coroutine it throws
+                // unless the cleanup runs under NonCancellable.
+                currentCoroutineContext().ensureActive()
+                deleted.add(path)
+                true
+            }
+
+            val job = launch { fitter.fit(input) }
+            export = job
+            job.join()
+
+            assertEquals(listOf(first, input), deleted)
         }
 
     @Test

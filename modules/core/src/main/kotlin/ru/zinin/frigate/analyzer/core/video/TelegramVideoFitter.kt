@@ -85,7 +85,9 @@ class TelegramVideoFitter internal constructor(
             }
             created.remove(result)
             // Path is Iterable<Path> (name elements), so plus(input) would flatten the path.
-            deleteAll(created.plusElement(input))
+            // NonCancellable like the failure path below: deleteIfExists is suspend, and a
+            // cancellation arriving here would otherwise skip the deletes and leak the files.
+            withContext(NonCancellable) { deleteAll(created.plusElement(input)) }
             return result
         } catch (e: Exception) {
             withContext(NonCancellable) { deleteAll(created) }
@@ -106,6 +108,7 @@ class TelegramVideoFitter internal constructor(
         return output
     }
 
+    /** Both callers run this under [NonCancellable], so the catch below never swallows a cancellation. */
     private suspend fun deleteAll(paths: List<Path>) {
         for (path in paths) {
             try {

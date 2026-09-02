@@ -39,11 +39,11 @@ class VideoMergeHelper(
                 runFfmpeg(buildMergeCommand(concatFile, outputFile))
                 return outputFile
             } catch (e: Exception) {
-                tempFileHelper.deleteIfExists(outputFile)
+                withContext(NonCancellable) { tempFileHelper.deleteIfExists(outputFile) }
                 throw e
             }
         } finally {
-            tempFileHelper.deleteIfExists(concatFile)
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(concatFile) }
         }
     }
 
@@ -137,7 +137,7 @@ class VideoMergeHelper(
             }
             return outputFile
         } catch (e: Exception) {
-            tempFileHelper.deleteIfExists(outputFile)
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(outputFile) }
             throw e
         }
     }

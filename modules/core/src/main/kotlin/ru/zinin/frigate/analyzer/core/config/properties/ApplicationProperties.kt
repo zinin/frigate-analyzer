@@ -14,6 +14,8 @@ data class ApplicationProperties(
     val tempFolder: Path,
     @field:NotNull
     val ffmpegPath: Path,
+    // Defaulted, unlike ffmpegPath: the test application.yaml and the tests that construct this
+    // class directly predate ffprobe and bind without the key; application.yaml sets it anyway.
     @field:NotNull
     val ffprobePath: Path = Path.of("/usr/bin/ffprobe"),
     @field:NotNull

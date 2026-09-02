@@ -221,8 +221,9 @@ class VideoExportServiceImplTest {
             assertTrue(progress.size >= 2)
             assertEquals(Stage.PREPARING, progress[0].stage)
             assertEquals(Stage.MERGING, progress[1].stage)
-            // No COMPRESSING because file is small
+            // No COMPRESSING: the default fitter stub returns its input without firing onCompressStart
             assertFalse(progress.any { it.stage == Stage.COMPRESSING })
+            coVerify(exactly = 1) { videoFitter.fit(mergedFile, any()) }
         }
 
     @Test

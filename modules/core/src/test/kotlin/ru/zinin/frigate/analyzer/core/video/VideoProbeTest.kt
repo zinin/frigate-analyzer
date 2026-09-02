@@ -117,6 +117,20 @@ class VideoProbeTest {
     }
 
     @Test
+    fun `parse rejects a zero frame size with a plain RuntimeException`() {
+        val json =
+            """
+            {"streams": [{"codec_type": "video", "width": 0, "height": 1080, "avg_frame_rate": "25/1"}],
+             "format": {"duration": "10"}}
+            """.trimIndent()
+
+        val exception = assertThrows<RuntimeException> { probe.parse(json, path) }
+
+        assertTrue(exception.message!!.contains("width"), exception.message)
+        assertEquals(RuntimeException::class, exception::class, "must not be IllegalStateException")
+    }
+
+    @Test
     fun `parse rejects output without duration`() {
         val json = """{"streams": [{"codec_type": "video", "width": 1280, "height": 720}], "format": {}}"""
 

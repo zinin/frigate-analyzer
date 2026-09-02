@@ -109,6 +109,17 @@ class CompressionPlannerTest {
     }
 
     @Test
+    fun `plan rejects a non-positive frame size`() {
+        assertThrows<IllegalArgumentException> { planner.plan(info(0, 1920, 120.0), TARGET) }
+        assertThrows<IllegalArgumentException> { planner.plan(info(2560, 0, 120.0), TARGET) }
+    }
+
+    @Test
+    fun `plan rejects a non-positive frame rate`() {
+        assertThrows<IllegalArgumentException> { planner.plan(info(2560, 1920, 120.0).copy(fps = 0.0), TARGET) }
+    }
+
+    @Test
     fun `plan reports VideoTooLargeException when audio alone exhausts the budget`() {
         assertThrows<VideoTooLargeException> { planner.plan(info(2560, 1920, 1_000_000.0, hasAudio = true), TARGET) }
     }

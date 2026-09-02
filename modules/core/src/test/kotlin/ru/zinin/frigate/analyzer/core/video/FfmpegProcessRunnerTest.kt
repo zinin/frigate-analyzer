@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class FfmpegProcessRunnerTest {
@@ -54,4 +55,41 @@ class FfmpegProcessRunnerTest {
         runTest {
             assertThrows<IllegalArgumentException> { runner.run(emptyList(), Duration.ofSeconds(1)) }
         }
+
+    @Test
+    fun `rejects a blank executable`() =
+        runTest {
+            assertThrows<IllegalArgumentException> { runner.run(listOf(" "), Duration.ofSeconds(1)) }
+        }
+
+    @Test
+    fun `keeps the last lines when the output is longer than the buffer`() =
+        runTest {
+            val output = runner.run(listOf("/bin/sh", "-c", COUNT_TO_600), Duration.ofSeconds(10))
+
+            assertEquals(500, output.size)
+            assertEquals("101", output.first())
+            assertEquals("600", output.last())
+        }
+
+    @Test
+    fun `reports the real tail of a long output when the exit code is not zero`() =
+        runTest {
+            val exception =
+                assertThrows<RuntimeException> {
+                    runner.run(
+                        listOf("/bin/sh", "-c", "$COUNT_TO_600; echo the-real-reason >&2; exit 4"),
+                        Duration.ofSeconds(10),
+                    )
+                }
+
+            val message = exception.message!!
+            assertTrue(message.contains("sh exited with code 4"), message)
+            assertTrue(message.endsWith("the-real-reason"), message)
+            assertFalse(message.contains(": 1\n"), "the tail must not start at the first line: $message")
+        }
+
+    companion object {
+        private const val COUNT_TO_600 = "i=1; while [ \$i -le 600 ]; do echo \$i; i=\$((i+1)); done"
+    }
 }
