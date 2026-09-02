@@ -48,6 +48,7 @@ application:
     cleanup-interval: ${WATCH_CLEANUP_INTERVAL:PT1H}
   temp-folder: ${TEMP_FOLDER:/tmp/frigate-analyzer/}
   ffmpeg-path: ${FFMPEG_PATH:/usr/bin/ffmpeg}
+  ffprobe-path: ${FFPROBE_PATH:/usr/bin/ffprobe}
   export:
     compress:
       preset: ${EXPORT_COMPRESS_PRESET:fast}

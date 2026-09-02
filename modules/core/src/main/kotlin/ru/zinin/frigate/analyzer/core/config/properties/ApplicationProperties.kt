@@ -15,6 +15,8 @@ data class ApplicationProperties(
     @field:NotNull
     val ffmpegPath: Path,
     @field:NotNull
+    val ffprobePath: Path = Path.of("/usr/bin/ffprobe"),
+    @field:NotNull
     val connectionTimeout: Duration,
     @field:NotNull
     val readTimeout: Duration,

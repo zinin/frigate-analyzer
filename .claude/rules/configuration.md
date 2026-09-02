@@ -13,6 +13,7 @@ All settings in `modules/core/src/main/resources/application.yaml`.
 | `APP_PORT` | 8080 | Server port |
 | `TEMP_FOLDER` | /tmp/frigate-analyzer/ | Extracted frames storage |
 | `FFMPEG_PATH` | /usr/bin/ffmpeg | ffmpeg binary path |
+| `FFPROBE_PATH` | /usr/bin/ffprobe | ffprobe binary path; read by `VideoProbe` before an export is re-encoded to fit the Telegram limit. The Alpine image installs it together with ffmpeg |
 
 ## Records Watcher
 
