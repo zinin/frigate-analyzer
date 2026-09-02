@@ -46,8 +46,10 @@ class TelegramNotificationSender(
      * - [SimpleTextNotificationTask]: plain localized text message (used by signal-loss / recovery
      *   alerts). No video, no inline export buttons.
      *
-     * Оба пути используют [RetryHelper.retryIndefinitely] для бесконечного ретрая по получателю,
-     * КРОМЕ попытки по кэшированным `file_id`: она делается ровно один раз и без ретрая, см. [sendRich].
+     * Оба пути используют [RetryHelper.retryBounded] — ограниченный ретрай по получателю с двумя
+     * порогами, см. его KDoc, — КРОМЕ попытки по кэшированным `file_id`: она делается ровно один раз
+     * и без ретрая, см. [sendRich]. Исчерпанный порог — исключение наружу: очередь пишет ERROR и
+     * переходит к следующей задаче, уведомление этому получателю потеряно.
      * Note: If the calling coroutine is cancelled, this method will propagate
      * CancellationException and the task may not be delivered.
      */
@@ -60,7 +62,7 @@ class TelegramNotificationSender(
 
     private suspend fun sendSimpleText(task: SimpleTextNotificationTask) {
         val chatIdObj = ChatId(RawChatId(task.chatId))
-        RetryHelper.retryIndefinitely("Send simple text", task.chatId) {
+        RetryHelper.retryBounded("Send simple text", task.chatId) {
             bot.sendTextMessage(chatId = chatIdObj, text = task.text)
         }
     }
@@ -158,7 +160,7 @@ class TelegramNotificationSender(
      *
      * Попытка по `file_id` делается ровно одна и БЕЗ бесконечного ретрая: иначе отказ
      * (устаревший или неприменимый идентификатор) крутился бы вечно и до загрузки байтов
-     * дело бы не дошло. Загрузка байтами — уже с обычным `retryIndefinitely`.
+     * дело бы не дошло. Загрузка байтами — уже с обычным `retryBounded`.
      *
      * Отказ и сбой различаются по тому, ответил ли Telegram. Любой ответ с ошибкой
      * ([RequestException], кроме флуд-контроля) сбрасывает общий кэш: библиотека узнаёт «wrong file
@@ -209,7 +211,7 @@ class TelegramNotificationSender(
                     TelegramMediaPhoto(frame.visualizedBytes.asMultipartFile("frame_${frame.frameIndex}.jpg")),
                 )
             }
-        return RetryHelper.retryIndefinitely("Send rich notification", task.chatId) {
+        return RetryHelper.retryBounded("Send rich notification", task.chatId) {
             deliver(chatIdObj, html, media, exportKeyboard)
         }
     }

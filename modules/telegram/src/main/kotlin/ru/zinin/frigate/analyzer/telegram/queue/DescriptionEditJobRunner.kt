@@ -149,7 +149,7 @@ class DescriptionEditJobRunner(
      * - `MessageIsNotModifiedException` / `MessageToEditNotFoundException` are terminal — logged
      *   as DEBUG and NOT retried (message already has this text / user deleted it).
      * - Any other failure retries with backoff up to [EDIT_MAX_ATTEMPTS]. This symmetrises the
-     *   initial-send path (which uses `RetryHelper.retryIndefinitely`) so a transient 429 or
+     *   initial-send path (which uses `RetryHelper.retryBounded`) so a transient 429 or
      *   network blip on the edit call does not leave the user stuck with the hourglass.
      *   Bounded (not indefinite) because edit is best-effort: after ~3.75 minutes of retries
      *   (see [editBackoffMs]) the job gives up so scope shutdown completes and the placeholder

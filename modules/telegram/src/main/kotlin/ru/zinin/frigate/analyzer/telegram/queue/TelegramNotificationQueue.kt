@@ -50,7 +50,10 @@ class TelegramNotificationQueue(
                 logger.warn { "Notification consumer cancelled; task ${task.id} for chat ${task.chatId} may be lost" }
                 throw e
             } catch (e: Exception) {
-                logger.error(e) { "Failed to send notification task ${task.id} for chat ${task.chatId}" }
+                // Сюда приходит исчерпанный порог RetryHelper.retryBounded: уведомление этому
+                // получателю потеряно, остальные задачи идут дальше.
+                val recording = (task as? RecordingNotificationTask)?.let { " (recording ${it.recordingId})" } ?: ""
+                logger.error(e) { "Failed to send notification task ${task.id} for chat ${task.chatId}$recording; dropped" }
             }
         }
     }

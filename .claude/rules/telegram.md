@@ -47,7 +47,7 @@ Sub-domain rules (loaded conditionally — see `paths:` in each file):
 | RichNotificationRenderer | `telegram/service/impl/` | Builds the rich-message HTML — heading, metadata table, frames, `<details>`; escaping and trimming live here |
 | SignalLossTelegramGuard | `telegram/config/` | Startup guard — fails fast when `signal-loss.enabled=true` but `telegram.enabled=false` |
 | AuthorizationFilter | `telegram/filter/` | Role-based auth (OWNER, USER) |
-| RetryHelper | `telegram/helper/` | Retry logic for Telegram API calls |
+| RetryHelper | `telegram/helper/` | `retryBounded` — send retry with backoff 30s → 5min and two bounds: 3 attempts when Telegram answered with an error (or the failure will repeat), 20 when there was no answer; see "Bounded retry" below |
 | TelegramProperties | `telegram/config/` | Spring Boot config |
 
 Export/QuickExport/cancellation components are documented in `telegram-export.md`;
@@ -60,32 +60,46 @@ Export/QuickExport/cancellation components are documented in `telegram-export.md
 - Graceful shutdown via `@PreDestroy`
 - `@ConditionalOnProperty` — only active when telegram enabled
 
-### Known exposure: a permanently rejected message stalls every notification
+### Bounded retry: a rejected message costs one recipient, not the queue
 
-`RetryHelper.retryIndefinitely` catches every `Exception` except `CancellationException` and loops
-forever (backoff 30s → 5min). The send path is wrapped in it, so on a **deterministic** failure —
-a permanent `400`, a `403` from a user who blocked the bot, a deleted chat — `send()` never returns
-and never throws. `consumeNotifications()` is a single sequential consumer, so it stays blocked on
-that one task: notifications stop for every camera and every user until the application restarts,
-and once `TELEGRAM_QUEUE_CAPACITY` tasks pile up `enqueue` suspends and pushes back-pressure into
+`RetryHelper.retryBounded` wraps every send. It retries with backoff 30s → 60s → 2min → 4min, then
+5min, and gives up on one of two bounds:
+
+| Failure | Bound | Wall clock |
+|---|---|---|
+| Telegram **answered** with an error — any `RequestException` except `TooMuchRequestsException` (a 400 on malformed markup, a 403 from a user who blocked the bot, a deleted chat) — or the failure will repeat anyway: an answer the library could not deserialize (`CommonBotException` without an `IOException` cause), a bug in our own send code | 3 attempts | ≈ 1.5 min |
+| **No answer**: a 429 that somehow surfaced, an HTTP error without a Bot API envelope (`ApiException`, e.g. a gateway's 502 page), or anything with an `IOException` in its cause chain — network, timeout, proxy, wrapped by the executor as `CommonBotException` | 20 attempts | ≈ 83 min |
+
+A 429 never reaches the helper — ktgbotapi's default `ExceptionsOnlyLimiter` retries it inside
+`execute` — and counts as "no answer" if it ever does. When a bound is hit the exception propagates
+to `TelegramNotificationQueue.consumeNotifications()`, whose `catch` logs an ERROR with the task, chat
+and recording and moves to the next task: the alert for *that* recipient is dropped, every other
+recipient and camera continues.
+
+Why two numbers: an error answer is deterministic — the same request gets the same answer — so
+retrying it only delays everyone queued behind it, and three attempts merely hedge against a stray
+5xx delivered as an answer. A missing answer is an outage that usually passes, and a motion alert
+delivered late is worth more than none, up to the point where it is stale anyway. Both numbers are
+constants in `RetryHelper` by intent, the same policy as `TelegramBotSupervisor`'s thresholds.
+
+Known residuals:
+
+- A user who blocked the bot no longer stalls the queue, but each of their notifications still
+  holds it for ≈ 1.5 min. Deactivating the subscription on a 403 is a separate follow-up.
+- When the send gives up for the last recipient of a recording, the shared `descriptionHandle` is
+  not cancelled — the sender cannot know it was the last one (see the photo-count note below) — so
+  the Claude call runs to completion for nobody.
+- Rejections are more likely than on `master`: every notification is now an HTML document against
+  four undeclared limits (500 blocks, 16 nesting levels, 50 media, 20 table columns), and
+  `SendRichMessage` validates nothing client-side. `LocalVisualizationProperties.maxFrames` is capped
+  at `@Max(50)` — the same number as `MAX_MEDIA` — so a config drift cannot exceed Telegram's media
+  ceiling, but a collage above ten frames has never been rendered live: a large
+  `LOCAL_VIZ_MAX_FRAMES` is a live-verification item, not something the code guarantees.
+
+Until `eed95b5` the retry was infinite (as on `master`): a deterministic failure blocked the single
+sequential consumer forever, notifications stopped for every camera and every user until restart, and
+once `TELEGRAM_QUEUE_CAPACITY` tasks piled up `enqueue` pushed back-pressure into
 `RecordingProcessingFacade`.
-
-Note what this defeats: the consumer's own `try/catch` around `sender.send(task)` already logs and
-moves to the next task. It is written for exactly this case and never fires, because the infinite
-retry leaves nothing to throw. The duplicate-send behaviour documented under "Do not emit Bot API
-10.3 constructs" has the same root.
-
-Pre-existing (master behaves identically), but the rich-message rewrite widened it: the non-AI path
-used to send plain text with no parse mode, so there was little to reject; every notification is now
-an HTML document against an API with four undeclared limits (500 blocks, 16 nesting levels, 50
-media, 20 table columns) and `SendRichMessage` performs no client-side validation at all.
-
-Not fixed deliberately. The fix — bounding the attempts, then letting the existing catch drain the
-queue — needs a number this repository does not contain: how long the system must keep trying before
-it silently drops a motion alert. That is a product decision. `LocalVisualizationProperties.maxFrames`
-is capped at `@Max(50)` — the same number as `MAX_MEDIA` — so a config drift cannot exceed Telegram's
-media ceiling, but a collage above ten frames has never been rendered live: a large
-`LOCAL_VIZ_MAX_FRAMES` is a live-verification item, not something the code guarantees.
 
 ## Recording Notification
 
@@ -123,12 +137,12 @@ All tasks of one recording share one `SharedFrameIds`, created in `TelegramNotif
 The first recipient uploads the bytes and stores the `file_id`s from the send response; the rest
 reference them instead of uploading again.
 
-- The cached attempt is made **once and without `retryIndefinitely`**: a stale or unusable id would
+- The cached attempt is made **once and without `retryBounded`**: a stale or unusable id would
   otherwise be retried forever and the upload path would never be reached. If Telegram *answers* the
   cached send with an error — any `RequestException` except a flood-wait; the library recognises
   `wrong file identifier` by its literal text, and a rich-media rejection comes back as
   `RICH_MESSAGE_PHOTO_INVALID` — the holder is invalidated and the frames go out as bytes, with the
-  usual infinite retry. A transport failure (no answer at all) keeps the ids for the other recipients;
+  usual bounded retry. A transport failure (no answer at all) keeps the ids for the other recipients;
   this recipient still uploads. A 429 never reaches this code — ktgbotapi's default
   `ExceptionsOnlyLimiter` retries it inside `execute` — and would keep the cache if it did.
 - If the photo-id count in the response does not match the number of frames sent — any mismatch,
@@ -148,8 +162,9 @@ with the photos one level below.
 
 **Verified live: `<tg-button>`.** Telegram accepts it and the message arrives, but ktgbotapi 36.1.0
 throws while deserializing the response — `RawMessage$$serializer` does not know the entity. The bot
-then sees a failed send for a message already in the chat, and `RetryHelper.retryIndefinitely` sends
-it a second time. Keep buttons in `reply_markup` until the library ships 10.3.
+then sees a failed send for a message already in the chat, and `RetryHelper.retryBounded` sends it
+again — a deserialization failure counts as an error answer, so up to three copies, not an endless
+stream. Keep buttons in `reply_markup` until the library ships 10.3.
 
 **What fails is a block or entity *type* the library does not model.** `RichBlockSerializer`
 dispatches on `type` and errors on an unknown one, so every 10.3 block or entity type
