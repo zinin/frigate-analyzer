@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
+import ru.zinin.frigate.analyzer.core.video.CompressionPlan
 import ru.zinin.frigate.analyzer.core.video.FfmpegProcessRunner
 import java.nio.file.Files
 import java.nio.file.Path
@@ -122,5 +123,86 @@ class VideoMergeHelperTest {
     fun `mergeVideos rejects an empty list`() =
         runTest {
             assertThrows<IllegalArgumentException> { helper.mergeVideos(emptyList()) }
+        }
+
+    @Test
+    fun `compressVideo builds a capped libx264 command with scaling and audio`() =
+        runTest {
+            val input = sourceFile("merged.mp4")
+            val plan = CompressionPlan(scaleHeight = 1080, videoMaxrateKbps = 3051, audioBitrateKbps = 64, crf = 23, preset = "fast")
+            val commands = mutableListOf<List<String>>()
+            coEvery { runner.run(capture(commands), Duration.ofSeconds(300)) } returns emptyList()
+
+            val output = helper.compressVideo(input, plan)
+
+            assertEquals(
+                listOf(
+                    "/usr/bin/ffmpeg",
+                    "-hide_banner",
+                    "-nostdin",
+                    "-i",
+                    input.toString(),
+                    "-vf",
+                    "scale=-2:1080",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "fast",
+                    "-crf",
+                    "23",
+                    "-maxrate",
+                    "3051k",
+                    "-bufsize",
+                    "6102k",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "64k",
+                    "-movflags",
+                    "+faststart",
+                    "-y",
+                    output.toString(),
+                ),
+                commands.single(),
+            )
+            assertTrue(output.startsWith(tempDir))
+            assertTrue(output.fileName.toString().contains("compressed-"))
+        }
+
+    @Test
+    fun `compressVideo keeps the source size and drops audio when the plan says so`() =
+        runTest {
+            val input = sourceFile("merged.mp4")
+            val plan = CompressionPlan(scaleHeight = null, videoMaxrateKbps = 1220, audioBitrateKbps = null, crf = 26, preset = "veryfast")
+            val commands = mutableListOf<List<String>>()
+            coEvery { runner.run(capture(commands), any()) } returns emptyList()
+
+            helper.compressVideo(input, plan)
+
+            val command = commands.single()
+            assertFalse(command.contains("-vf"), "no scale filter expected: $command")
+            assertFalse(command.any { it.startsWith("scale=") }, "no scale filter expected: $command")
+            assertTrue(command.contains("-an"), "audio must be dropped: $command")
+            assertFalse(command.contains("-c:a"), "audio must be dropped: $command")
+            assertEquals("veryfast", command[command.indexOf("-preset") + 1])
+            assertEquals("26", command[command.indexOf("-crf") + 1])
+            assertEquals("1220k", command[command.indexOf("-maxrate") + 1])
+            assertEquals("2440k", command[command.indexOf("-bufsize") + 1])
+        }
+
+    @Test
+    fun `compressVideo deletes its output when ffmpeg fails`() =
+        runTest {
+            val input = sourceFile("merged.mp4")
+            val plan = CompressionPlan(scaleHeight = 720, videoMaxrateKbps = 1220, audioBitrateKbps = null, crf = 23, preset = "fast")
+            val commands = mutableListOf<List<String>>()
+            coEvery { runner.run(capture(commands), any()) } throws RuntimeException("ffmpeg exited with code 1")
+
+            assertThrows<RuntimeException> { helper.compressVideo(input, plan) }
+
+            assertFalse(Files.exists(Path.of(commands.single().last())), "compressed output must be deleted")
+            assertTrue(Files.exists(input), "the input belongs to the caller and must survive")
         }
 }
