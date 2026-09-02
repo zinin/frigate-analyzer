@@ -19,7 +19,12 @@ sealed class ExportDialogOutcome {
 }
 
 internal const val EXPORT_DIALOG_TIMEOUT_MS = 600_000L
-internal const val EXPORT_ORIGINAL_TIMEOUT_MS = 300_000L
+
+// Covers the worst case of fitting the merged file into the Telegram limit: ffprobe (30 s) plus
+// two libx264 encodes of VideoMergeHelper.FFMPEG_TIMEOUT_SECONDS (300 s) each, plus the merge.
+// With a smaller budget the retry could never finish and the user saw the processing timeout
+// instead of the size message; the export stays cancellable throughout.
+internal const val EXPORT_ORIGINAL_TIMEOUT_MS = 720_000L
 
 // Must exceed application.detect.video-visualize.timeout (default 45m) so the inner
 // annotation timeout surfaces a real failure instead of being masked by this outer one.

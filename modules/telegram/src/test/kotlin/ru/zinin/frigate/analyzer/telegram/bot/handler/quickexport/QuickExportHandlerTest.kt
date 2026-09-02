@@ -848,7 +848,7 @@ class QuickExportHandlerTest {
                 coEvery {
                     videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any(), any())
                 } coAnswers {
-                    delay(400_000) // 400 seconds exceeds the 300-second (5 min) timeout
+                    delay(800_000) // 800 seconds exceeds the 720-second (12 min) ORIGINAL timeout
                     error("Should not reach here")
                 }
 
