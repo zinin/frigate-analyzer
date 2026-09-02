@@ -26,9 +26,11 @@ internal const val EXPORT_DIALOG_TIMEOUT_MS = 600_000L
 // instead of the size message; the export stays cancellable throughout.
 internal const val EXPORT_ORIGINAL_TIMEOUT_MS = 720_000L
 
-// Must exceed application.detect.video-visualize.timeout (default 45m) so the inner
-// annotation timeout surfaces a real failure instead of being masked by this outer one.
-internal const val EXPORT_ANNOTATED_TIMEOUT_MS = 3_000_000L
+// 75 minutes. Must exceed application.detect.video-visualize.timeout (default 45m) plus
+// everything the export does around the annotation, so the inner annotation timeout surfaces a
+// real failure instead of being masked by this outer one: the merge (300 s) and two fitting
+// passes of ffprobe (30 s) plus two libx264 encodes of 300 s each.
+internal const val EXPORT_ANNOTATED_TIMEOUT_MS = 4_500_000L
 internal const val MAX_EXPORT_DURATION_MINUTES = 5L
 
 internal fun renderProgress(

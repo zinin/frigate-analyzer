@@ -475,9 +475,11 @@ class QuickExportHandler(
         // (300 s) when the merged file has to be fitted into the Telegram limit, plus the merge.
         private const val QUICK_EXPORT_ORIGINAL_TIMEOUT_MS = 720_000L
 
-        // Must exceed application.detect.video-visualize.timeout (default 45m) so the inner
-        // annotation timeout surfaces DetectTimeoutException instead of being masked by this outer one.
-        private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 3_000_000L // 50 minutes
+        // 75 minutes. Must exceed application.detect.video-visualize.timeout (default 45m) plus
+        // everything the export does around the annotation, so the inner annotation timeout
+        // surfaces DetectTimeoutException instead of being masked by this outer one: the merge
+        // (300 s) and two fitting passes of ffprobe (30 s) plus two libx264 encodes of 300 s each.
+        private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 4_500_000L
 
         internal fun parseRecordingId(callbackData: String): UUID? {
             // Order matters: check the annotated prefix first because it shares the "qe:" stem
