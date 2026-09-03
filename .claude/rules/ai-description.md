@@ -73,6 +73,18 @@ with `GROK_HOME=<home>`, `GROK_DISABLE_AUTOUPDATER=1`, `GROK_MEMORY=0`, `GROK_SU
 `--disallowed-tools read_file` then removes that one tool. Frames are inline. `--effort` is omitted
 when blank so BYOK models without reasoning levels work.
 
+**What the isolation does not cover, and why.** `grok inspect` reports six compatibility cells per
+foreign harness. The five that actually scan the filesystem — `skills`, `rules`, `agents`, `mcps`,
+`hooks` for claude and cursor — all read `OFF (env)` under `ISOLATION_ENV`. The sixth, `sessions`,
+stays `on (default)` for claude, cursor **and** codex, and `[compat.codex]` exposes no other cell.
+That is deliberate: in 1.0.13 session cells are "staged and inert until a foreign-session scanner
+consumes them" and additionally need a `resume-claude`/`resume-codex`/`resume-cursor` skill before
+they do any filesystem I/O, while Codex's remaining cells are "reserved and currently inert — they
+do not enable `.codex` discovery" (the CLI's own `docs/user-guide/05-configuration.md`). Adding
+`GROK_*_SESSIONS_ENABLED=0` or `GROK_CODEX_*_ENABLED=0` would change the `inspect` output and
+nothing else. Re-check with `grok inspect` when `ARG GROK_VERSION` is raised — a later release may
+ship the scanner that makes those cells real.
+
 **Models that do not support `--json-schema`.** Only xAI endpoints reliably apply the schema. BYOK
 models from `config.toml` either ignore it (the object arrives in `text`, sometimes inside a
 ` ```json ` fence) or reject the request outright — a LiteLLM gateway answers `failed to parse
