@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.model.exception.VideoTooLargeException
 import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
@@ -110,12 +111,14 @@ class ExportExecutor(
         var lastRenderedStage: Stage? = Stage.PREPARING
         var lastRenderedPercent: Int? = null
         var hadCompressing = false
+        var hadCompressingResult = false
 
         val onProgress: suspend (VideoExportProgress) -> Unit = lambda@{ progress ->
             if (registry.get(exportId)?.state == ActiveExportRegistry.State.CANCELLING) {
                 return@lambda
             }
             if (progress.stage == Stage.COMPRESSING) hadCompressing = true
+            if (progress.stage == Stage.COMPRESSING_RESULT) hadCompressingResult = true
 
             val shouldUpdate =
                 when {
@@ -139,7 +142,15 @@ class ExportExecutor(
                 try {
                     bot.editMessageText(
                         statusMessage,
-                        renderProgress(progress.stage, progress.percent, mode, hadCompressing, msg, lang),
+                        renderProgress(
+                            stage = progress.stage,
+                            percent = progress.percent,
+                            mode = mode,
+                            compressing = hadCompressing,
+                            compressingResult = hadCompressingResult,
+                            msg = msg,
+                            lang = lang,
+                        ),
                         replyMarkup = cancelKeyboardMarkup,
                     )
                 } catch (e: CancellationException) {
@@ -194,7 +205,14 @@ class ExportExecutor(
                 try {
                     bot.editMessageText(
                         statusMessage,
-                        renderProgress(Stage.SENDING, mode = mode, compressing = hadCompressing, msg = msg, lang = lang),
+                        renderProgress(
+                            Stage.SENDING,
+                            mode = mode,
+                            compressing = hadCompressing,
+                            compressingResult = hadCompressingResult,
+                            msg = msg,
+                            lang = lang,
+                        ),
                         replyMarkup = cancelKeyboardMarkup,
                     )
                 } catch (e: CancellationException) {
@@ -243,7 +261,14 @@ class ExportExecutor(
                 try {
                     bot.editMessageText(
                         statusMessage,
-                        renderProgress(Stage.DONE, mode = mode, compressing = hadCompressing, msg = msg, lang = lang),
+                        renderProgress(
+                            Stage.DONE,
+                            mode = mode,
+                            compressing = hadCompressing,
+                            compressingResult = hadCompressingResult,
+                            msg = msg,
+                            lang = lang,
+                        ),
                         replyMarkup = null,
                     )
                 } catch (e: CancellationException) {
@@ -286,10 +311,10 @@ class ExportExecutor(
         } catch (e: Exception) {
             logger.error(e) { "Video export failed" }
             val errorText =
-                if (mode == ExportMode.ANNOTATED) {
-                    msg.get("export.error.annotated", lang)
-                } else {
-                    msg.get("export.error.original", lang)
+                when {
+                    e is VideoTooLargeException -> msg.get("export.error.too.large", lang)
+                    mode == ExportMode.ANNOTATED -> msg.get("export.error.annotated", lang)
+                    else -> msg.get("export.error.original", lang)
                 }
             try {
                 bot.editMessageText(statusMessage, errorText, replyMarkup = null)

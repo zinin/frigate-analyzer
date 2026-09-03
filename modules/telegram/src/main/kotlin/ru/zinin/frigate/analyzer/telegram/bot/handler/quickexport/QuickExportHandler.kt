@@ -25,6 +25,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.exception.VideoTooLargeException
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
@@ -320,6 +321,7 @@ class QuickExportHandler(
                     is IllegalArgumentException -> msg.get("quickexport.error.not.found", lang)
                     is IllegalStateException -> msg.get("quickexport.error.unavailable", lang)
                     is DetectTimeoutException -> msg.get("quickexport.error.annotation.timeout", lang)
+                    is VideoTooLargeException -> msg.get("quickexport.error.too.large", lang)
                     else -> msg.get("quickexport.error.generic", lang)
                 }
             try {
@@ -369,6 +371,10 @@ class QuickExportHandler(
                 } else {
                     msg.get("quickexport.progress.annotating", lang)
                 }
+            }
+
+            VideoExportProgress.Stage.COMPRESSING_RESULT -> {
+                msg.get("quickexport.progress.compressing.result", lang)
             }
 
             VideoExportProgress.Stage.SENDING -> {
@@ -464,11 +470,17 @@ class QuickExportHandler(
     companion object {
         const val CALLBACK_PREFIX = "qe:"
         const val CALLBACK_PREFIX_ANNOTATED = "qea:"
-        private const val QUICK_EXPORT_ORIGINAL_TIMEOUT_MS = 300_000L // 5 minutes
 
-        // Must exceed application.detect.video-visualize.timeout (default 45m) so the inner
-        // annotation timeout surfaces DetectTimeoutException instead of being masked by this outer one.
-        private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 3_000_000L // 50 minutes
+        // 18 minutes: the merge and the two libx264 encodes that fit the file into the Telegram
+        // limit are each capped at VideoMergeHelper.FFMPEG_TIMEOUT_SECONDS (300 s) and ffprobe at
+        // 30 s, so 930 s of external processes, plus room for the progress edits.
+        private const val QUICK_EXPORT_ORIGINAL_TIMEOUT_MS = 1_080_000L
+
+        // 75 minutes. Must exceed application.detect.video-visualize.timeout (default 45m) plus
+        // everything the export does around the annotation, so the inner annotation timeout
+        // surfaces DetectTimeoutException instead of being masked by this outer one: the merge
+        // (300 s) and two fitting passes of ffprobe (30 s) plus two libx264 encodes of 300 s each.
+        private const val QUICK_EXPORT_ANNOTATED_TIMEOUT_MS = 4_500_000L
 
         internal fun parseRecordingId(callbackData: String): UUID? {
             // Order matters: check the annotated prefix first because it shares the "qe:" stem

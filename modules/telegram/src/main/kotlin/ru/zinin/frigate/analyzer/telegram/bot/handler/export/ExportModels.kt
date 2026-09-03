@@ -19,11 +19,19 @@ sealed class ExportDialogOutcome {
 }
 
 internal const val EXPORT_DIALOG_TIMEOUT_MS = 600_000L
-internal const val EXPORT_ORIGINAL_TIMEOUT_MS = 300_000L
 
-// Must exceed application.detect.video-visualize.timeout (default 45m) so the inner
-// annotation timeout surfaces a real failure instead of being masked by this outer one.
-internal const val EXPORT_ANNOTATED_TIMEOUT_MS = 3_000_000L
+// 18 minutes. Every step of an ORIGINAL export runs inside this timeout: the merge and the two
+// libx264 encodes are each capped at VideoMergeHelper.FFMPEG_TIMEOUT_SECONDS (300 s) and ffprobe
+// at 30 s, so 930 s of external processes, plus room for the progress edits and the database
+// work. With a smaller budget the retry could never finish and the user saw the processing
+// timeout instead of the size message; the export stays cancellable throughout.
+internal const val EXPORT_ORIGINAL_TIMEOUT_MS = 1_080_000L
+
+// 75 minutes. Must exceed application.detect.video-visualize.timeout (default 45m) plus
+// everything the export does around the annotation, so the inner annotation timeout surfaces a
+// real failure instead of being masked by this outer one: the merge (300 s) and two fitting
+// passes of ffprobe (30 s) plus two libx264 encodes of 300 s each.
+internal const val EXPORT_ANNOTATED_TIMEOUT_MS = 4_500_000L
 internal const val MAX_EXPORT_DURATION_MINUTES = 5L
 
 internal fun renderProgress(
@@ -31,6 +39,7 @@ internal fun renderProgress(
     percent: Int? = null,
     mode: ExportMode = ExportMode.ORIGINAL,
     compressing: Boolean = false,
+    compressingResult: Boolean = false,
     msg: MessageResolver,
     lang: String,
 ): String {
@@ -40,6 +49,7 @@ internal fun renderProgress(
             add(Stage.MERGING to msg.get("export.progress.merging", lang))
             if (compressing) add(Stage.COMPRESSING to msg.get("export.progress.compressing", lang))
             if (mode == ExportMode.ANNOTATED) add(Stage.ANNOTATING to msg.get("export.progress.annotating", lang))
+            if (compressingResult) add(Stage.COMPRESSING_RESULT to msg.get("export.progress.compressing.result", lang))
             add(Stage.SENDING to msg.get("export.progress.sending", lang))
             add(Stage.DONE to msg.get("export.progress.done", lang))
         }

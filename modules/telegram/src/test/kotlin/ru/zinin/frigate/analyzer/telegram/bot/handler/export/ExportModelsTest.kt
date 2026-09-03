@@ -56,4 +56,29 @@ class ExportModelsTest {
         val result = renderProgress(Stage.PREPARING, msg = msg, lang = "en")
         assertContains(result, "Preparing")
     }
+
+    @Test
+    fun `renderProgress lists compressing result after annotation when it happened`() {
+        val result =
+            renderProgress(
+                Stage.COMPRESSING_RESULT,
+                mode = ExportMode.ANNOTATED,
+                compressingResult = true,
+                msg = msg,
+                lang = "ru",
+            )
+
+        val lines = result.lines()
+        assertContains(lines, "✅ Аннотация видео")
+        assertContains(lines, "🔄 Сжатие результата...")
+        assertTrue(lines.indexOf("✅ Аннотация видео") < lines.indexOf("🔄 Сжатие результата..."))
+        assertContains(lines, "⬜ Отправка")
+    }
+
+    @Test
+    fun `renderProgress omits compressing result unless it happened`() {
+        val result = renderProgress(Stage.SENDING, mode = ExportMode.ANNOTATED, msg = msg, lang = "ru")
+
+        assertFalse(result.contains("Сжатие результата"))
+    }
 }
