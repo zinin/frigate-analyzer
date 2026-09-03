@@ -8,9 +8,11 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Мини-RW-lock на корутинах для GROK_HOME: запуски `grok` берут [shared], sweeper берёт
- * [exclusive]. `exclusive` держит мьютекс только на саму уборку; если уже есть in-flight `grok`,
- * бросает [ExclusiveBusyException] сразу — этот час пропускается, описания не ждут. `shared`
- * берёт мьютекс только на инкремент счётчика, поэтому запуски друг друга не ждут.
+ * [exclusive]. Если уже есть in-flight `grok`, `exclusive` бросает [ExclusiveBusyException] сразу —
+ * этот час пропускается, а начатые описания не ждут уборки. Обратный порядок платный: запуск,
+ * начавшийся во время уборки, ждёт её конца на мьютексе (иначе `grok` писал бы свою сессию в
+ * каталог, который в этот момент удаляют). `shared` держит мьютекс только на инкремент счётчика,
+ * поэтому запуски друг друга не ждут.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")

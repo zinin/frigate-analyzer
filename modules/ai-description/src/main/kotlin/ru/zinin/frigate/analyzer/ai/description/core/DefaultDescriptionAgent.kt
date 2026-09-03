@@ -61,8 +61,18 @@ class DefaultDescriptionAgent(
         val callStart = timeSource.markNow()
         try {
             // Уменьшение кадров держим под семафором, но вне withTimeout: это CPU-работа, чей
-            // размер известен заранее, и она не должна съедать бюджет, отпущенный модели.
-            val prepared = downscaleFrames(request)
+            // размер известен заранее, и она не должна съедать бюджет, отпущенный модели. Отсюда
+            // же и перехват: вне attempt() исключение ушло бы из describe() сырым, мимо контракта
+            // DescriptionAgent, а описание важнее уменьшения — кадры пойдут как есть.
+            val prepared =
+                try {
+                    downscaleFrames(request)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.warn(e) { "Cannot downscale frames of recording ${request.recordingId}; sending them unchanged" }
+                    request
+                }
             return try {
                 withTimeout(commonSection.timeout.toMillis()) {
                     executeWithRetry(prepared)
@@ -164,27 +174,52 @@ class DefaultDescriptionAgent(
             "Description provider '${backend.providerId}' rejected the credentials; descriptions stay " +
                 "unavailable until re-login. Fix: ${backend.authRecoveryHint}"
         }
-        eventPublisher.publishEvent(
+        publishAuthEvent(
             DescriptionProviderAuthEvent(
                 provider = backend.providerId,
                 state = DescriptionProviderAuthEvent.State.LOST,
                 detail = e.detail,
                 recoveryHint = backend.authRecoveryHint,
             ),
+            rollbackFrom = AuthState.LOST,
+            rollbackTo = AuthState.HEALTHY,
         )
     }
 
     private fun onSuccess() {
         if (!authState.compareAndSet(AuthState.LOST, AuthState.HEALTHY)) return
         logger.info { "Description provider '${backend.providerId}' credentials work again" }
-        eventPublisher.publishEvent(
+        publishAuthEvent(
             DescriptionProviderAuthEvent(
                 provider = backend.providerId,
                 state = DescriptionProviderAuthEvent.State.RESTORED,
                 detail = null,
                 recoveryHint = backend.authRecoveryHint,
             ),
+            rollbackFrom = AuthState.HEALTHY,
+            rollbackTo = AuthState.LOST,
         )
+    }
+
+    /**
+     * Spring доставляет событие синхронно, на этом же потоке. Слушатель, который бросил, не должен
+     * ни выбрасывать уже оплаченный результат, ни съедать переход: состояние уже переключено, и без
+     * отката такой же отказ больше никогда не поднял бы событие, а владелец не узнал бы о нём вовсе.
+     */
+    private fun publishAuthEvent(
+        event: DescriptionProviderAuthEvent,
+        rollbackFrom: AuthState,
+        rollbackTo: AuthState,
+    ) {
+        try {
+            eventPublisher.publishEvent(event)
+        } catch (e: Exception) {
+            authState.compareAndSet(rollbackFrom, rollbackTo)
+            logger.warn(e) {
+                "Cannot publish ${event.state} auth event for '${backend.providerId}'; " +
+                    "the transition will be reported again on the next occurrence"
+            }
+        }
     }
 
     companion object {

@@ -75,7 +75,12 @@ class ClaudeExceptionMapper {
 
     private fun isUnauthorized(throwable: Throwable): Boolean {
         val message = throwable.message?.lowercase() ?: return false
-        return AUTH_MARKERS.any { it in message }
+        if (AUTH_MARKERS.any { it in message }) return true
+        // "oauth token" сам по себе не про отказ: он встречается и в транспортных сбоях вроде
+        // "Failed to refresh OAuth token: connection reset". Unauthorized не повторяется и шлёт
+        // владельцу требование перелогиниться, поэтому нужен подтверждающий контекст — так же,
+        // как isRateLimit ниже требует его для "429".
+        return "oauth token" in message && OAUTH_FAILURE_CONTEXT.any { it in message }
     }
 
     private fun isRateLimit(throwable: Throwable): Boolean {
@@ -93,6 +98,7 @@ class ClaudeExceptionMapper {
     }
 
     private companion object {
-        val AUTH_MARKERS = listOf("authentication_error", "invalid api key", "oauth token")
+        val AUTH_MARKERS = listOf("authentication_error", "invalid api key")
+        val OAUTH_FAILURE_CONTEXT = listOf("invalid", "expired", "revoked", "unauthorized", "401")
     }
 }

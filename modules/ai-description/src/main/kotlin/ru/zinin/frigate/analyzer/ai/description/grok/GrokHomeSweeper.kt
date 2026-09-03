@@ -73,24 +73,35 @@ class GrokHomeSweeper(
     ): Int {
         if (!Files.isDirectory(dir)) return 0
         var removed = 0
-        Files.list(dir).use { entries ->
-            entries.forEach { entry ->
-                try {
-                    when {
-                        Files.isRegularFile(entry) -> {
-                            Files.deleteIfExists(entry)
-                            removed++
-                        }
+        try {
+            Files.list(dir).use { entries ->
+                entries.forEach { entry ->
+                    // Не только IOException: Files.walk внутри deleteRecursively заворачивает
+                    // ошибку обхода в UncheckedIOException.
+                    try {
+                        when {
+                            Files.isRegularFile(entry) -> {
+                                Files.deleteIfExists(entry)
+                                removed++
+                            }
 
-                        Files.isDirectory(entry) && removeSubdirectories -> {
-                            deleteRecursively(entry)
-                            removed++
+                            Files.isDirectory(entry) && removeSubdirectories -> {
+                                deleteRecursively(entry)
+                                removed++
+                            }
                         }
+                    } catch (e: IOException) {
+                        logger.warn(e) { "Failed to remove $entry during Grok home sweep" }
+                    } catch (e: RuntimeException) {
+                        logger.warn(e) { "Failed to remove $entry during Grok home sweep" }
                     }
-                } catch (e: IOException) {
-                    logger.warn(e) { "Failed to remove $entry during Grok home sweep" }
                 }
             }
+        } catch (e: RuntimeException) {
+            // Files.list бросает UncheckedIOException из терминальной операции, то есть из самого
+            // forEach, мимо перехвата по одной записи. Без этого одна нечитаемая запись отменяла бы
+            // уборку целиком — и в следующий час тоже, а sessions/ хранит base64 всех кадров.
+            logger.warn(e) { "Grok home sweep could not walk $dir to the end; removed $removed so far" }
         }
         return removed
     }

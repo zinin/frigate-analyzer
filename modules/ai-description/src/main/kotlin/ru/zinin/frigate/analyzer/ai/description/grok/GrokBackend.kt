@@ -78,13 +78,16 @@ class GrokBackend(
         try {
             val file = promptFileWriter.write(request)
             promptFile = file
+            // Локальная копия, а не поле: параллельный вызов может снять флаг между запуском и
+            // разбором ошибки, и тогда запуск, который схему всё-таки передал, потерял бы повтор.
+            val useSchema = schemaSupported
             logger.debug {
                 "Grok request for recording ${request.recordingId}: model=${properties.model}, effort=${effortForLog()}, " +
-                    "json-schema=${if (schemaSupported) "on" else "off"}, frames=${request.frames.size}"
+                    "json-schema=${if (useSchema) "on" else "off"}, frames=${request.frames.size}"
             }
-            var result = runGrok(file, schemaSupported)
+            var result = runGrok(file, useSchema)
             var errorMessage = outputParser.errorMessage(result.stdout)
-            if (errorMessage != null && schemaSupported && exceptionMapper.isStructuredOutputUnsupported(errorMessage)) {
+            if (errorMessage != null && useSchema && exceptionMapper.isStructuredOutputUnsupported(errorMessage)) {
                 logger.warn {
                     "Model ${properties.model} does not accept --json-schema ($errorMessage); retrying without it " +
                         "and reading the JSON out of the response text from now on"

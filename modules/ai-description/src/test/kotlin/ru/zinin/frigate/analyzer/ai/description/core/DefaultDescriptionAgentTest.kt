@@ -76,10 +76,11 @@ class DefaultDescriptionAgentTest {
         backend: FakeBackend,
         customCommon: DescriptionProperties.CommonSection = common,
         timeSource: TimeSource = TimeSource.Monotonic,
+        eventPublisher: ApplicationEventPublisher = publisher,
     ) = DefaultDescriptionAgent(
         backend = backend,
         descriptionProperties = DescriptionProperties(enabled = true, provider = "fake", common = customCommon),
-        eventPublisher = publisher,
+        eventPublisher = eventPublisher,
         timeSource = timeSource,
     )
 
@@ -264,6 +265,41 @@ class DefaultDescriptionAgentTest {
             assertEquals("fake", lost.single().provider)
             assertEquals("Not signed in", lost.single().detail)
             assertEquals("run fake-login", lost.single().recoveryHint)
+        }
+
+    @Test
+    fun `a throwing listener does not swallow the transition`() =
+        runTest {
+            val delivered = mutableListOf<DescriptionProviderAuthEvent>()
+            val brokenListener =
+                ApplicationEventPublisher { event ->
+                    delivered.add(event as DescriptionProviderAuthEvent)
+                    throw IllegalStateException("listener is down")
+                }
+            val backend = FakeBackend { throw DescriptionException.Unauthorized("Not signed in") }
+            val agent = build(backend, eventPublisher = brokenListener)
+
+            assertFailsWith<DescriptionException.Unauthorized> { agent.describe(request) }
+            assertFailsWith<DescriptionException.Unauthorized> { agent.describe(request) }
+
+            // Состояние откатилось, поэтому владелец узнает об отказе на следующей попытке, а не никогда.
+            assertEquals(2, delivered.size)
+            assertTrue(delivered.all { it.state == DescriptionProviderAuthEvent.State.LOST })
+        }
+
+    @Test
+    fun `a throwing listener does not discard a successful description`() =
+        runTest {
+            var unauthorized = true
+            val backend =
+                FakeBackend {
+                    if (unauthorized) throw DescriptionException.Unauthorized("Not signed in") else ok
+                }
+            val agent = build(backend, eventPublisher = { throw IllegalStateException("listener is down") })
+
+            assertFailsWith<DescriptionException.Unauthorized> { agent.describe(request) }
+            unauthorized = false
+            assertEquals(ok, agent.describe(request))
         }
 
     @Test

@@ -140,4 +140,22 @@ class DefaultGrokProcessRunnerTest {
             }
         }
     }
+
+    @Test
+    fun `a grandchild holding the pipe open cannot hang the call`() =
+        runBlocking {
+            // `grok` вышел, но внук унаследовал конец pipe: блокирующее чтение отмену не замечает,
+            // и без верхней границы вызов держал бы слот семафора агента до перезапуска JVM.
+            // Порядок в стабе важен: JDK при выходе процесса дочитывает доступные байты и закрывает
+            // поток сам, поэтому висит только читатель, уже вошедший в блокирующий read, — вывод
+            // идёт первым, внук форкается после, и лишняя секунда даёт читателю дойти до блокировки.
+            val e =
+                assertFailsWith<DescriptionException.Transport> {
+                    DefaultGrokProcessRunner(drainTimeoutMs = 300).run(
+                        command(stub("""printf '%s' '{"text":"ok"}'; (sleep 3) & sleep 1; exit 0""")),
+                    )
+                }
+
+            assertTrue(e.message!!.contains("left its output pipe open"))
+        }
 }

@@ -9,6 +9,7 @@ import java.io.IOException
 import javax.imageio.IIOImage
 import javax.imageio.ImageIO
 import javax.imageio.ImageWriteParam
+import javax.imageio.stream.MemoryCacheImageOutputStream
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -21,7 +22,9 @@ private val logger = KotlinLogging.logger {}
  * отвечает «кадр недоступен», не сообщая причины.
  *
  * Всё, что не удалось прочитать или закодировать, возвращается как было: провайдер сам решит, что
- * делать с исходными байтами, а описание не должно падать из-за одного странного кадра.
+ * делать с исходными байтами, а описание не должно падать из-за одного странного кадра. Поэтому
+ * ловится не только [IOException]: плагины ImageIO бросают на битых данных и unchecked-исключения,
+ * а `BufferedImage` — [IllegalArgumentException] на вырожденных размерах.
  */
 object FrameDownscaler {
     /**
@@ -37,11 +40,8 @@ object FrameDownscaler {
     ): ByteArray {
         if (maxSide <= 0 || bytes.isEmpty()) return bytes
         val source =
-            try {
+            tryOrWarn("Frame is not a readable image (${bytes.size} bytes); sending it unchanged") {
                 ImageIO.read(ByteArrayInputStream(bytes))
-            } catch (e: IOException) {
-                logger.warn(e) { "Frame is not a readable image (${bytes.size} bytes); sending it unchanged" }
-                null
             } ?: return bytes
 
         val longest = max(source.width, source.height)
@@ -50,13 +50,25 @@ object FrameDownscaler {
         val scale = maxSide.toDouble() / longest
         val width = max(1, (source.width * scale).roundToInt())
         val height = max(1, (source.height * scale).roundToInt())
-        return try {
+        return tryOrWarn("Cannot re-encode a ${source.width}x${source.height} frame; sending it unchanged") {
             encodeJpeg(resize(source, width, height))
-        } catch (e: IOException) {
-            logger.warn(e) { "Cannot re-encode a ${source.width}x${source.height} frame; sending it unchanged" }
-            bytes
-        }
+        } ?: bytes
     }
+
+    /** `null` и WARN вместо исключения: кадр уйдёт как есть, но описание будет получено. */
+    private inline fun <T : Any> tryOrWarn(
+        message: String,
+        block: () -> T?,
+    ): T? =
+        try {
+            block()
+        } catch (e: IOException) {
+            logger.warn(e) { message }
+            null
+        } catch (e: RuntimeException) {
+            logger.warn(e) { message }
+            null
+        }
 
     private fun resize(
         source: BufferedImage,
@@ -83,7 +95,10 @@ object FrameDownscaler {
                 ?: throw IOException("No JPEG writer available")
         val output = ByteArrayOutputStream()
         try {
-            ImageIO.createImageOutputStream(output).use { stream ->
+            // Явно memory-cache: ImageIO.createImageOutputStream по умолчанию (ImageIO.getUseCache)
+            // заводит временный файл на каждый кадр, а на read-only или переполненном java.io.tmpdir
+            // ещё и бросает — кадр ушёл бы в полном разрешении, ровно то, что тут и предотвращается.
+            MemoryCacheImageOutputStream(output).use { stream ->
                 writer.output = stream
                 val params =
                     writer.defaultWriteParam.apply {

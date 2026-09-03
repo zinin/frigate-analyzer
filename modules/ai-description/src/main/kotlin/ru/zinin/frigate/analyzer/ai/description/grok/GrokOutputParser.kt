@@ -74,9 +74,14 @@ class GrokOutputParser(
             null
         }
 
-    private fun JsonNode.textOrNull(): String? = if (isTextual) asText() else null
+    private fun JsonNode.textOrNull(): String? = if (isString) stringValue() else null
 
-    private fun JsonNode.anyAsText(): String? = if (isNull || isMissingNode) null else asText()
+    /**
+     * Значение скалярного поля для строки лога. Проверка на `isValueNode` обязательна: `asString()`
+     * в Jackson 3 бросает на объектах и массивах, а [usageSummary] считается на успешном пути, до
+     * возврата [GrokOutput], — строка DEBUG-лога не должна стоить уже оплаченного ответа модели.
+     */
+    private fun JsonNode.anyAsText(): String? = if (isValueNode && !isNull) asString() else null
 
     private fun usageSummary(node: JsonNode): String {
         val usage = node["usage"] ?: return "usage=absent"

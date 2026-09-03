@@ -36,6 +36,23 @@ class GrokOutputParserTest {
     }
 
     @Test
+    fun `nested objects in usage do not cost a valid response`() {
+        val stdout =
+            """
+            {"stopReason":"end_turn","usage":{"input_tokens":{"text":10,"image":20},"output_tokens":5},
+             "total_cost_usd":{"amount":0.01},
+             "structuredOutput":{"short":"Car","detailed":"A car in the yard."}}
+            """.trimIndent()
+
+        val output = parser.parse(stdout)
+
+        assertEquals("Car", output.short)
+        assertTrue(output.usageSummary.contains("input_tokens=?"))
+        assertTrue(output.usageSummary.contains("output_tokens=5"))
+        assertTrue(output.usageSummary.contains("total_cost_usd=unknown"))
+    }
+
+    @Test
     fun `structured output wins and is not marked as text`() {
         assertEquals(false, parser.parse(success).fromText)
     }

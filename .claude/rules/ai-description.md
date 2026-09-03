@@ -26,6 +26,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Core | `DescriptionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry |
 | Core | `DefaultDescriptionAgent` | `core/` | Semaphore, queue/work timeouts, retry policy, auth state machine |
 | Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
+| Core | `FrameDownscaler` | `core/` | Optional resize to `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` (ImageIO, bilinear, JPEG q0.85), once per request in the agent; an unreadable frame is passed through with a WARN |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
 | Claude | `ClaudeImageStager`, `ClaudePromptBuilder`, `ClaudeInvoker`/`DefaultClaudeInvoker`, `ClaudeAsyncClientFactory`, `ClaudeResponseParser`, `ClaudeExceptionMapper` | `claude/` | Claude specifics; all gated on `provider=claude` |
 | Grok | `GrokBackend` | `grok/` | prompt.json → process → `structuredOutput` |
@@ -60,9 +61,9 @@ read as plain text) with ACP content blocks: intro text, then `Frame N:` + `{"ty
 
 ```
 grok --prompt-file <file> --json-schema '{…short,detailed…}' --output-format json -m <model>
-     [--effort <effort>] --max-turns 1 --tools read_file --no-plan --no-subagents
-     --disable-web-search --permission-mode bypassPermissions --no-auto-update
-     --system-prompt-override "<constant>" --cwd <working-directory>
+     [--effort <effort>] --max-turns 1 --tools read_file --disallowed-tools read_file
+     --no-plan --no-subagents --disable-web-search --permission-mode bypassPermissions
+     --no-auto-update --system-prompt-override "<constant>" --cwd <working-directory>
 ```
 
 with `GROK_HOME=<home>`, `GROK_DISABLE_AUTOUPDATER=1`, `GROK_MEMORY=0`, `GROK_SUBAGENTS=0` and

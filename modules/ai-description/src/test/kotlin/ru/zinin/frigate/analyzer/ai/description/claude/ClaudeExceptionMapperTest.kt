@@ -77,6 +77,15 @@ class ClaudeExceptionMapperTest {
     }
 
     @Test
+    fun `a transport failure that merely mentions the oauth token stays Transport`() {
+        // Unauthorized не повторяется и шлёт владельцу требование перелогиниться: упоминание токена
+        // в тексте сетевого сбоя не повод для такого сообщения.
+        assertIs<DescriptionException.Transport>(
+            mapper.map(ClaudeSDKException("Failed to refresh OAuth token: connection reset by peer")),
+        )
+    }
+
+    @Test
     fun `Unauthorized wins over rate-limit words in the same message`() {
         val e = mapper.map(ClaudeSDKException("authentication_error while checking rate limit"))
         assertIs<DescriptionException.Unauthorized>(e)
