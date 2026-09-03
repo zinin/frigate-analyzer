@@ -31,7 +31,9 @@ private val logger = KotlinLogging.logger {}
  *
  * Состояние авторизации провайдера: первый `Unauthorized` после успеха или старта публикует
  * [DescriptionProviderAuthEvent] LOST, первый успех после него RESTORED. Переход делается через
- * `compareAndSet`, поэтому параллельные вызовы дают ровно одно событие.
+ * `compareAndSet`, поэтому параллельные вызовы дают ровно одно событие, а сам переход и его
+ * публикация идут под одним замком: слушатель доставляет владельцу события в порядке публикации,
+ * и разъехавшийся порядок оставил бы его с сообщением об отказе при рабочих учётных данных.
  *
  * Не `@Component`: бин создаёт `AiDescriptionAutoConfiguration`, когда есть backend.
  */
@@ -46,6 +48,14 @@ class DefaultDescriptionAgent(
     private val commonSection: DescriptionProperties.CommonSection = descriptionProperties.common
     private val semaphore = Semaphore(commonSection.maxConcurrent)
     private val authState = AtomicReference(AuthState.HEALTHY)
+
+    /**
+     * Сериализует «сменить состояние и опубликовать». Без него параллельные вызовы успевают
+     * поменяться местами между `compareAndSet` и `publishEvent`: отказ переводит в LOST, успех
+     * возвращает в HEALTHY и публикует RESTORED первым, а LOST приходит владельцу последним — и
+     * больше не снимается, потому что состояние уже HEALTHY и следующий успех события не даст.
+     */
+    private val authTransitionLock = Any()
 
     private enum class AuthState { HEALTHY, LOST }
 
@@ -169,36 +179,40 @@ class DefaultDescriptionAgent(
         }
 
     private fun onUnauthorized(e: DescriptionException.Unauthorized) {
-        if (!authState.compareAndSet(AuthState.HEALTHY, AuthState.LOST)) return
-        logger.error(e) {
-            "Description provider '${backend.providerId}' rejected the credentials; descriptions stay " +
-                "unavailable until re-login. Fix: ${backend.authRecoveryHint}"
+        synchronized(authTransitionLock) {
+            if (!authState.compareAndSet(AuthState.HEALTHY, AuthState.LOST)) return
+            logger.error(e) {
+                "Description provider '${backend.providerId}' rejected the credentials; descriptions stay " +
+                    "unavailable until re-login. Fix: ${backend.authRecoveryHint}"
+            }
+            publishAuthEvent(
+                DescriptionProviderAuthEvent(
+                    provider = backend.providerId,
+                    state = DescriptionProviderAuthEvent.State.LOST,
+                    detail = e.detail,
+                    recoveryHint = backend.authRecoveryHint,
+                ),
+                rollbackFrom = AuthState.LOST,
+                rollbackTo = AuthState.HEALTHY,
+            )
         }
-        publishAuthEvent(
-            DescriptionProviderAuthEvent(
-                provider = backend.providerId,
-                state = DescriptionProviderAuthEvent.State.LOST,
-                detail = e.detail,
-                recoveryHint = backend.authRecoveryHint,
-            ),
-            rollbackFrom = AuthState.LOST,
-            rollbackTo = AuthState.HEALTHY,
-        )
     }
 
     private fun onSuccess() {
-        if (!authState.compareAndSet(AuthState.LOST, AuthState.HEALTHY)) return
-        logger.info { "Description provider '${backend.providerId}' credentials work again" }
-        publishAuthEvent(
-            DescriptionProviderAuthEvent(
-                provider = backend.providerId,
-                state = DescriptionProviderAuthEvent.State.RESTORED,
-                detail = null,
-                recoveryHint = backend.authRecoveryHint,
-            ),
-            rollbackFrom = AuthState.HEALTHY,
-            rollbackTo = AuthState.LOST,
-        )
+        synchronized(authTransitionLock) {
+            if (!authState.compareAndSet(AuthState.LOST, AuthState.HEALTHY)) return
+            logger.info { "Description provider '${backend.providerId}' credentials work again" }
+            publishAuthEvent(
+                DescriptionProviderAuthEvent(
+                    provider = backend.providerId,
+                    state = DescriptionProviderAuthEvent.State.RESTORED,
+                    detail = null,
+                    recoveryHint = backend.authRecoveryHint,
+                ),
+                rollbackFrom = AuthState.HEALTHY,
+                rollbackTo = AuthState.LOST,
+            )
+        }
     }
 
     /**

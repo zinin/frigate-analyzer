@@ -2,11 +2,13 @@ package ru.zinin.frigate.analyzer.ai.description.core
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -23,7 +25,9 @@ import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.time.Duration
+import java.util.Collections
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
 import kotlin.test.Test
@@ -35,6 +39,11 @@ import kotlin.test.assertTrue
 import kotlin.time.TimeSource
 
 class DefaultDescriptionAgentTest {
+    private companion object {
+        /** Слушатель занят дольше, чем параллельному вызову нужно, чтобы обогнать публикацию. */
+        const val LISTENER_DELAY_MS = 200L
+    }
+
     private val common =
         DescriptionProperties.CommonSection(
             language = "en",
@@ -265,6 +274,42 @@ class DefaultDescriptionAgentTest {
             assertEquals("fake", lost.single().provider)
             assertEquals("Not signed in", lost.single().detail)
             assertEquals("run fake-login", lost.single().recoveryHint)
+        }
+
+    @Test
+    fun `a slow listener cannot reorder concurrent auth transitions`() =
+        // Реальные потоки, не виртуальное время: проверяется сериализация перехода с публикацией.
+        runBlocking(Dispatchers.IO) {
+            val delivered = Collections.synchronizedList(mutableListOf<DescriptionProviderAuthEvent.State>())
+            val lostListenerEntered = CountDownLatch(1)
+            val slowListener =
+                ApplicationEventPublisher { event ->
+                    val state = (event as DescriptionProviderAuthEvent).state
+                    if (state == DescriptionProviderAuthEvent.State.LOST) {
+                        lostListenerEntered.countDown()
+                        Thread.sleep(LISTENER_DELAY_MS)
+                    }
+                    delivered.add(state)
+                }
+            val entered = AtomicInteger()
+            val backend =
+                FakeBackend {
+                    if (entered.incrementAndGet() == 1) throw DescriptionException.Unauthorized("Not signed in")
+                    // Успех попадает ровно в окно, где отказ уже переключил состояние, но ещё публикуется.
+                    lostListenerEntered.await()
+                    ok
+                }
+            val agent = build(backend, eventPublisher = slowListener)
+
+            val first = launch { runCatching { agent.describe(request) } }
+            val second = launch { runCatching { agent.describe(request) } }
+            first.join()
+            second.join()
+
+            assertEquals(
+                listOf(DescriptionProviderAuthEvent.State.LOST, DescriptionProviderAuthEvent.State.RESTORED),
+                delivered.toList(),
+            )
         }
 
     @Test
