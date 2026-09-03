@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -18,15 +20,16 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionProviderAuthEvent
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicInteger
 
 private val logger = KotlinLogging.logger {}
 
 /**
  * Доставляет владельцу переходы авторизации провайдера описаний: LOST с командой для починки и
  * техническим сообщением провайдера, RESTORED после первого успеха. Дедупликацию делает ядро
- * ai-description (одно событие на переход), здесь только рендер и отправка. Устройство повторяет
- * [StartupTelegramNotifier]: свой scope, чтобы доставка не держала поток публикации события, и
- * таймаут, чтобы зависший Telegram не копил корутины.
+ * ai-description (одно событие на переход), здесь только рендер и отправка. События идут в
+ * Channel и обрабатываются одним consumer-ом, чтобы RESTORED не обгонял LOST. Таймаут на enqueue
+ * как у [StartupTelegramNotifier], чтобы забитая очередь уведомлений не держала consumer вечно.
  */
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
@@ -37,21 +40,44 @@ class DescriptionAuthAlertNotifier(
 ) {
     internal val scope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("description-auth-alert"))
+    private val events = Channel<DescriptionProviderAuthEvent>(Channel.UNLIMITED)
+    private val pending = AtomicInteger(0)
+
+    init {
+        scope.launch {
+            for (event in events) {
+                try {
+                    withTimeout(ALERT_TIMEOUT.toMillis()) {
+                        telegramNotificationService.sendOwnerMessage { language -> render(event, language) }
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    logger.warn {
+                        "Description auth alert (${event.provider}, ${event.state}) timed out after $ALERT_TIMEOUT"
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    logger.warn(e) { "Failed to send description auth alert (${event.provider}, ${event.state})" }
+                } finally {
+                    pending.decrementAndGet()
+                }
+            }
+        }
+    }
 
     @EventListener
     fun onAuthEvent(event: DescriptionProviderAuthEvent) {
-        scope.launch {
-            try {
-                withTimeout(ALERT_TIMEOUT.toMillis()) {
-                    telegramNotificationService.sendOwnerMessage { language -> render(event, language) }
-                }
-            } catch (e: TimeoutCancellationException) {
-                logger.warn { "Description auth alert (${event.provider}, ${event.state}) timed out after $ALERT_TIMEOUT" }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                logger.warn(e) { "Failed to send description auth alert (${event.provider}, ${event.state})" }
-            }
+        pending.incrementAndGet()
+        val result = events.trySend(event)
+        if (result.isFailure) {
+            pending.decrementAndGet()
+            logger.warn { "Description auth alert (${event.provider}, ${event.state}) dropped: channel closed" }
+        }
+    }
+
+    internal suspend fun waitUntilIdle() {
+        while (pending.get() > 0) {
+            delay(5)
         }
     }
 
@@ -77,6 +103,7 @@ class DescriptionAuthAlertNotifier(
 
     @PreDestroy
     fun shutdown() {
+        events.close()
         scope.cancel()
     }
 

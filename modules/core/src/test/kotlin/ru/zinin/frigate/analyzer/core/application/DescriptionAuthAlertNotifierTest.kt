@@ -8,8 +8,6 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
-import kotlinx.coroutines.job
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -30,12 +28,7 @@ class DescriptionAuthAlertNotifierTest {
         notifier.shutdown()
     }
 
-    private fun awaitAlert() =
-        runBlocking {
-            notifier.scope.coroutineContext.job.children
-                .toList()
-                .joinAll()
-        }
+    private fun awaitAlert() = runBlocking { notifier.waitUntilIdle() }
 
     private fun captureBuilder(): CapturingSlot<(String) -> String> {
         val builderSlot = slot<(String) -> String>()
@@ -107,5 +100,29 @@ class DescriptionAuthAlertNotifierTest {
         awaitAlert()
 
         coVerify(exactly = 1) { telegramNotificationService.sendOwnerMessage(any()) }
+    }
+
+    @Test
+    fun `LOST is delivered before RESTORED when both are posted`() {
+        val texts = mutableListOf<String>()
+        every { messageResolver.get("ai.description.auth.lost", "en", "grok", "grok login --device-code") } returns "LOST"
+        every { messageResolver.get("ai.description.auth.restored", "en", "grok") } returns "RESTORED"
+        coEvery { telegramNotificationService.sendOwnerMessage(any()) } coAnswers {
+            val builder = arg<(String) -> String>(0)
+            texts.add(builder("en"))
+        }
+
+        notifier.onAuthEvent(lost(detail = null))
+        notifier.onAuthEvent(
+            DescriptionProviderAuthEvent(
+                provider = "grok",
+                state = DescriptionProviderAuthEvent.State.RESTORED,
+                detail = null,
+                recoveryHint = "grok login --device-code",
+            ),
+        )
+        awaitAlert()
+
+        assertEquals(listOf("LOST", "RESTORED"), texts)
     }
 }
