@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.core.ResultNormalizer
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 
@@ -29,24 +30,9 @@ class ClaudeResponseParser(
                 throw DescriptionException.InvalidResponse(e)
             }
 
-        val short = node["short"]?.asText().orEmpty()
-        val detailed = node["detailed"]?.asText().orEmpty()
-
-        if (short.isBlank()) {
-            throw DescriptionException.InvalidResponse(
-                IllegalStateException("missing or blank 'short' field"),
-            )
-        }
-        if (detailed.isBlank()) {
-            throw DescriptionException.InvalidResponse(
-                IllegalStateException("missing or blank 'detailed' field"),
-            )
-        }
-
-        return DescriptionResult(
-            short = truncate(short, shortMaxLength),
-            detailed = truncate(detailed, detailedMaxLength),
-        )
+        val short = node["short"]?.takeUnless { it.isNull }?.asText()
+        val detailed = node["detailed"]?.takeUnless { it.isNull }?.asText()
+        return ResultNormalizer.normalize(short, detailed, shortMaxLength, detailedMaxLength)
     }
 
     private fun extractJsonBlock(raw: String): String {
@@ -55,17 +41,5 @@ class ClaudeResponseParser(
         val start = trimmed.indexOf('{')
         val end = trimmed.lastIndexOf('}')
         return if (start in 0 until end) trimmed.substring(start, end + 1) else trimmed
-    }
-
-    private fun truncate(
-        text: String,
-        maxLength: Int,
-    ): String {
-        if (text.length <= maxLength) return text
-        // Avoid splitting a UTF-16 surrogate pair — substring(…, maxLength-1) could land
-        // between a high- and low-surrogate char (astral-plane codepoints like emoji, rare CJK).
-        val rawCut = maxLength - 1
-        val cut = if (rawCut > 0 && text[rawCut - 1].isHighSurrogate()) rawCut - 1 else rawCut
-        return text.substring(0, cut) + "…"
     }
 }
