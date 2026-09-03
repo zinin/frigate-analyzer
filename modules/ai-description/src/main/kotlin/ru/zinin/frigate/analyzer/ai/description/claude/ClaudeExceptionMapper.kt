@@ -11,6 +11,7 @@ import tools.jackson.core.JacksonException
 
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
+@ConditionalOnProperty("application.ai.description.provider", havingValue = "claude")
 class ClaudeExceptionMapper {
     /**
      * Маппит произвольный Throwable в иерархию DescriptionException.
@@ -20,7 +21,7 @@ class ClaudeExceptionMapper {
      *
      * Сигнатура обещает возврат DescriptionException, но метод может ТАК ЖЕ выбросить
      * CancellationException — см. @throws ниже. Вызывающему коду стоит писать
-     * `throw mapper.map(e)` (как в ClaudeDescriptionAgent.executeWithRetry), тогда
+     * `throw mapper.map(e)` (как в ClaudeBackend.describe), тогда
      * cancellation-path остаётся корректным, а возвращённые DescriptionException
      * ловятся штатными catch-ами.
      *

@@ -4,10 +4,12 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.springframework.context.ApplicationEventPublisher
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Files
 import java.nio.file.Path
@@ -20,12 +22,12 @@ import kotlin.io.path.writeText
 import kotlin.test.assertEquals
 
 /**
- * Opt-in end-to-end test for [ClaudeDescriptionAgent] against a bash stub CLI.
+ * Opt-in end-to-end test for [ClaudeBackend] against a bash stub CLI.
  *
  * Skipped by default. Run explicitly:
  * ```
  * INTEGRATION_CLAUDE=stub ./gradlew :frigate-analyzer-ai-description:test \
- *     --tests ClaudeDescriptionAgentIntegrationTest
+ *     --tests ClaudeBackendIntegrationTest
  * ```
  *
  * Verifies: prompt → subprocess → stream-json parse → [ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult],
@@ -42,16 +44,16 @@ import kotlin.test.assertEquals
  *
  * A faithful stub would need to: read a line from stdin, emit the canned JSONL response,
  * then block until stdin closes. This is non-trivial in pure sh and doesn't really buy us
- * coverage beyond what [ClaudeDescriptionAgentTest] already provides with a fake
+ * coverage beyond what [ClaudeBackendTest] already provides with a fake
  * [ClaudeInvoker]. Leaving the scaffolding here as a starting point if we later need a
  * real CLI compatibility test; to re-enable, remove `@Disabled` and gate on
  * `@EnabledIfEnvironmentVariable` once the stub properly participates in the streaming protocol.
  */
 @Disabled(
     "Stub CLI does not implement the SDK's bidirectional stream-json protocol; " +
-        "ClaudeDescriptionAgentTest covers the describe() pipeline via ClaudeInvoker.",
+        "ClaudeBackendTest covers the describe() pipeline via ClaudeInvoker.",
 )
-class ClaudeDescriptionAgentIntegrationTest {
+class ClaudeBackendIntegrationTest {
     @Test
     fun `end-to-end prompt to parsed result with stub CLI`(
         @TempDir tempDir: Path,
@@ -116,16 +118,16 @@ JSON
             }
         val stager = ClaudeImageStager(tempFileWriter)
 
-        val agent =
-            ClaudeDescriptionAgent(
+        val backend =
+            ClaudeBackend(
                 claudeProperties = claudeProps,
-                descriptionProperties = descriptionProps,
                 promptBuilder = ClaudePromptBuilder(),
                 responseParser = ClaudeResponseParser(mapper),
                 imageStager = stager,
                 invoker = invoker,
                 exceptionMapper = ClaudeExceptionMapper(),
             )
+        val agent = DefaultDescriptionAgent(backend, descriptionProps, ApplicationEventPublisher { })
 
         val request =
             DescriptionRequest(

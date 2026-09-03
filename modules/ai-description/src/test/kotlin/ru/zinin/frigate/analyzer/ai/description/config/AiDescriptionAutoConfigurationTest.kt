@@ -8,6 +8,10 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.util.unit.DataSize
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
+import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeAsyncClientFactory
+import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeBackend
+import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import tools.jackson.databind.json.JsonMapper
@@ -117,9 +121,54 @@ class AiDescriptionAutoConfigurationTest {
                 assert(ctx.getBeansOfType(DescriptionAgent::class.java).isNotEmpty()) {
                     "DescriptionAgent should be registered"
                 }
+                assert(ctx.getBean(DescriptionAgent::class.java) is DefaultDescriptionAgent) {
+                    "the agent must be the provider-neutral DefaultDescriptionAgent"
+                }
+                assert(ctx.getBeansOfType(ClaudeBackend::class.java).isNotEmpty()) {
+                    "ClaudeBackend should be registered for provider=claude"
+                }
                 // Строка в стиле application.yaml должна привязаться к DataSize: это единственное
                 // место, где реальный старт может упасть, а полный build в CI его не проверяет.
                 assertEquals(DataSize.ofMegabytes(32), ctx.getBean(ClaudeProperties::class.java).maxBufferSize)
+            }
+    }
+
+    @Test
+    fun `unknown provider registers neither backend nor agent and does not fail startup`() {
+        runner
+            .withPropertyValues(
+                "application.ai.description.enabled=true",
+                "application.ai.description.provider=unknown",
+                "application.ai.description.common.language=en",
+                "application.ai.description.common.short-max-length=200",
+                "application.ai.description.common.detailed-max-length=1500",
+                "application.ai.description.common.max-frames=10",
+                "application.ai.description.common.queue-timeout=30s",
+                "application.ai.description.common.timeout=60s",
+                "application.ai.description.common.max-concurrent=2",
+                "application.ai.description.common.rate-limit.enabled=false",
+                "application.ai.description.common.rate-limit.max-requests=10",
+                "application.ai.description.common.rate-limit.window=1h",
+                "application.ai.description.claude.oauth-token=fake",
+                "application.ai.description.claude.model=opus",
+                "application.ai.description.claude.cli-path=",
+                "application.ai.description.claude.working-directory=/tmp",
+                "application.ai.description.claude.proxy.http=",
+                "application.ai.description.claude.proxy.https=",
+                "application.ai.description.claude.proxy.no-proxy=",
+                "application.ai.description.claude.anthropic.auth-token=",
+                "application.ai.description.claude.anthropic.base-url=",
+                "application.ai.description.claude.anthropic.model-override=",
+                "application.ai.description.claude.anthropic.default-opus-model=",
+                "application.ai.description.claude.anthropic.default-sonnet-model=",
+                "application.ai.description.claude.anthropic.default-haiku-model=",
+            ).run { ctx ->
+                assert(ctx.startupFailure == null) { "unknown provider must not break startup: ${ctx.startupFailure}" }
+                assert(ctx.getBeansOfType(DescriptionBackend::class.java).isEmpty())
+                assert(ctx.getBeansOfType(DescriptionAgent::class.java).isEmpty())
+                assert(ctx.getBeansOfType(ClaudeAsyncClientFactory::class.java).isEmpty()) {
+                    "Claude helpers must be gated on provider=claude"
+                }
             }
     }
 
