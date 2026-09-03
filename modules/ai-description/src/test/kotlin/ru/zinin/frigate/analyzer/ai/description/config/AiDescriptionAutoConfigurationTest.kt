@@ -13,6 +13,7 @@ import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeAsyncClientFactory
 import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeBackend
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
+import ru.zinin.frigate.analyzer.ai.description.grok.GrokBackend
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import tools.jackson.databind.json.JsonMapper
@@ -129,6 +130,19 @@ class AiDescriptionAutoConfigurationTest {
                 // Строка в стиле application.yaml должна привязаться к DataSize: это единственное
                 // место, где реальный старт может упасть, а полный build в CI его не проверяет.
                 assertEquals(DataSize.ofMegabytes(32), ctx.getBean(ClaudeProperties::class.java).maxBufferSize)
+            }
+    }
+
+    @Test
+    fun `autoconfig activates the grok backend when provider=grok and no claude beans`() {
+        runner
+            .withPropertyValues(*properties(enabled = true, provider = "grok"))
+            .run { ctx ->
+                assert(ctx.startupFailure == null) { "grok context must start: ${ctx.startupFailure}" }
+                assert(ctx.getBean(DescriptionAgent::class.java) is DefaultDescriptionAgent)
+                assert(ctx.getBeansOfType(GrokBackend::class.java).isNotEmpty()) { "GrokBackend should be registered" }
+                assert(ctx.getBeansOfType(ClaudeBackend::class.java).isEmpty()) { "ClaudeBackend must be absent" }
+                assert(ctx.getBeansOfType(ClaudeAsyncClientFactory::class.java).isEmpty()) { "Claude helpers must be absent" }
             }
     }
 

@@ -26,6 +26,6 @@ class DescriptionAgentSanityChecker(
     }
 
     companion object {
-        private val KNOWN_PROVIDERS = listOf("claude")
+        private val KNOWN_PROVIDERS = listOf("claude", "grok")
     }
 }

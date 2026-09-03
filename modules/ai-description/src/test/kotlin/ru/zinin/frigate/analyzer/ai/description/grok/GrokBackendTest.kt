@@ -1,0 +1,150 @@
+package ru.zinin.frigate.analyzer.ai.description.grok
+
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.mockk
+import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.io.TempDir
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
+import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.UUID
+import kotlin.io.path.writeText
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+class GrokBackendTest {
+    @TempDir
+    lateinit var tempDir: Path
+
+    private val promptFile = Path.of("/tmp/frigate-analyzer/prompt.json")
+    private val promptFileWriter = mockk<GrokPromptFileWriter>(relaxUnitFun = true)
+    private val request =
+        DescriptionRequest(
+            recordingId = UUID.randomUUID(),
+            frames = listOf(DescriptionRequest.FrameImage(0, byteArrayOf(1))),
+            language = "en",
+            shortMaxLength = 200,
+            detailedMaxLength = 1500,
+        )
+
+    private fun props(home: Path = tempDir.resolve("home")) =
+        GrokProperties(
+            cliPath = tempDir.resolve("missing-grok").toString(),
+            model = "grok-4.6",
+            effort = "low",
+            home = home.toString(),
+            workingDirectory = tempDir.resolve("cwd").toString(),
+            proxy = GrokProperties.ProxySection("", "", ""),
+        )
+
+    private fun backend(
+        runner: GrokProcessRunner,
+        properties: GrokProperties = props(),
+    ): GrokBackend {
+        coEvery { promptFileWriter.write(any()) } returns promptFile
+        return GrokBackend(
+            properties = properties,
+            promptFileWriter = promptFileWriter,
+            commandBuilder = GrokCommandBuilder(properties),
+            runner = runner,
+            outputParser = GrokOutputParser(TestObjectMappers.internalMapper()),
+            exceptionMapper = GrokExceptionMapper(),
+            guard = GrokHomeGuard(),
+        )
+    }
+
+    private fun result(
+        exitCode: Int,
+        stdout: String,
+        stderr: String = "",
+    ) = GrokProcessResult(exitCode, stdout, stderr)
+
+    @Test
+    fun `success returns normalized structured output and deletes the prompt file`() =
+        runTest {
+            val stdout = """{"stopReason":"end_turn","sessionId":"s","structuredOutput":{"short":"Car","detailed":"A car."}}"""
+            val backend = backend(GrokProcessRunner { result(0, stdout) })
+
+            assertEquals(DescriptionResult("Car", "A car."), backend.describe(request))
+            coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
+    fun `runner receives the command built for the prompt file`() =
+        runTest {
+            var seen: GrokCommand? = null
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        seen = it
+                        result(0, """{"stopReason":"end_turn","structuredOutput":{"short":"a","detailed":"b"}}""")
+                    },
+                )
+            backend.describe(request)
+            assertTrue(seen!!.argv.contains(promptFile.toString()))
+            assertEquals(tempDir.resolve("home").toString(), seen!!.environment["GROK_HOME"])
+        }
+
+    @Test
+    fun `auth error envelope is Unauthorized and still deletes the prompt file`() =
+        runTest {
+            val stdout =
+                """{"type":"error","message":"Not signed in. To authenticate without a browser, """ +
+                    """run:\n  grok login --device-code"}"""
+            val backend = backend(GrokProcessRunner { result(1, stdout, "Error: Not signed in") })
+
+            val e = assertFailsWith<DescriptionException.Unauthorized> { backend.describe(request) }
+            assertTrue(e.detail.startsWith("Not signed in"))
+            coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
+    fun `other non-zero exit is Transport`() =
+        runTest {
+            val backend = backend(GrokProcessRunner { result(1, "", "connection reset") })
+            assertFailsWith<DescriptionException.Transport> { backend.describe(request) }
+        }
+
+    @Test
+    fun `missing structured output with max_tokens is InvalidResponse`() =
+        runTest {
+            val backend = backend(GrokProcessRunner { result(0, """{"stopReason":"max_tokens","text":"..."}""") })
+            assertFailsWith<DescriptionException.InvalidResponse> { backend.describe(request) }
+        }
+
+    @Test
+    fun `runner failure still deletes the prompt file`() =
+        runTest {
+            val backend = backend(GrokProcessRunner { throw DescriptionException.Transport(detail = "cannot start") })
+            assertFailsWith<DescriptionException.Transport> { backend.describe(request) }
+            coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
+    fun `init creates home and working directory`() {
+        backend(GrokProcessRunner { result(0, "{}") })
+        assertTrue(Files.isDirectory(tempDir.resolve("home")))
+        assertTrue(Files.isDirectory(tempDir.resolve("cwd")))
+    }
+
+    @Test
+    fun `init fails when the home path is a file`() {
+        val file = tempDir.resolve("home-file")
+        file.writeText("x")
+        assertFailsWith<IllegalStateException> { backend(GrokProcessRunner { result(0, "{}") }, props(home = file)) }
+    }
+
+    @Test
+    fun `identifies itself as grok with a device-code hint`() {
+        val backend = backend(GrokProcessRunner { result(0, "{}") })
+        assertEquals("grok", backend.providerId)
+        assertTrue(backend.authRecoveryHint.contains("grok login --device-code"))
+    }
+}
