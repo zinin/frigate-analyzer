@@ -1,0 +1,177 @@
+package ru.zinin.frigate.analyzer.ai.description.core
+
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withTimeout
+import org.springframework.context.ApplicationEventPublisher
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionProviderAuthEvent
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
+import kotlin.time.toKotlinDuration
+
+private val logger = KotlinLogging.logger {}
+
+/**
+ * Единственная реализация [DescriptionAgent]. Провайдер-нейтральная оркестрация одной попытки
+ * [DescriptionBackend.describe]: семафор на `maxConcurrent`, ожидание слота не дольше
+ * `queueTimeout`, общий `withTimeout(timeout)`, по одному повтору на `InvalidResponse` (сразу) и
+ * `Transport` (через [TRANSPORT_RETRY_DELAY]) с проверкой остатка бюджета. `Timeout`, `RateLimited`
+ * и `Unauthorized` не повторяются.
+ *
+ * Состояние авторизации провайдера: первый `Unauthorized` после успеха или старта публикует
+ * [DescriptionProviderAuthEvent] LOST, первый успех после него RESTORED. Переход делается через
+ * `compareAndSet`, поэтому параллельные вызовы дают ровно одно событие.
+ *
+ * Не `@Component`: бин создаёт `AiDescriptionAutoConfiguration`, когда есть backend.
+ */
+class DefaultDescriptionAgent(
+    private val backend: DescriptionBackend,
+    descriptionProperties: DescriptionProperties,
+    private val eventPublisher: ApplicationEventPublisher,
+    // Wall-clock по умолчанию; тесты подставляют TestTimeSource из runTest, чтобы проверка
+    // остатка бюджета жила в том же виртуальном времени, что и внешний withTimeout.
+    private val timeSource: TimeSource = TimeSource.Monotonic,
+) : DescriptionAgent {
+    private val commonSection: DescriptionProperties.CommonSection = descriptionProperties.common
+    private val semaphore = Semaphore(commonSection.maxConcurrent)
+    private val authState = AtomicReference(AuthState.HEALTHY)
+
+    private enum class AuthState { HEALTHY, LOST }
+
+    override suspend fun describe(request: DescriptionRequest): DescriptionResult {
+        try {
+            withTimeout(commonSection.queueTimeout.toMillis()) {
+                semaphore.acquire()
+            }
+        } catch (e: TimeoutCancellationException) {
+            throw DescriptionException.Timeout(cause = e)
+        }
+
+        val callStart = timeSource.markNow()
+        try {
+            return try {
+                withTimeout(commonSection.timeout.toMillis()) {
+                    executeWithRetry(request)
+                }
+            } catch (e: TimeoutCancellationException) {
+                throw DescriptionException.Timeout(cause = e)
+            }
+        } finally {
+            logger.debug {
+                "Description via '${backend.providerId}' completed in ${callStart.elapsedNow()} " +
+                    "for recording ${request.recordingId}"
+            }
+            semaphore.release()
+        }
+    }
+
+    private suspend fun executeWithRetry(request: DescriptionRequest): DescriptionResult {
+        val overallStart = timeSource.markNow()
+        val totalBudget = commonSection.timeout.toKotlinDuration()
+        var invalidRetries = 0
+        var transportRetries = 0
+        while (true) {
+            try {
+                val result = attempt(request)
+                onSuccess()
+                return result
+            } catch (e: DescriptionException.Unauthorized) {
+                onUnauthorized(e)
+                throw e
+            } catch (e: DescriptionException.InvalidResponse) {
+                if (invalidRetries >= 1) throw e
+                invalidRetries++
+                val remaining = totalBudget - overallStart.elapsedNow()
+                if (remaining <= INVALID_RESPONSE_RETRY_MIN_BUDGET) {
+                    logger.warn(e) {
+                        "Invalid response from '${backend.providerId}' but retry budget exhausted " +
+                            "(remaining=$remaining); giving up"
+                    }
+                    throw e
+                }
+                logger.warn(e) {
+                    "Invalid response from '${backend.providerId}', retrying " +
+                        "(attempt ${invalidRetries + 1}, remaining budget=$remaining)"
+                }
+            } catch (e: DescriptionException.Transport) {
+                if (transportRetries >= 1) throw e
+                transportRetries++
+                val remaining = totalBudget - overallStart.elapsedNow()
+                if (remaining <= TRANSPORT_RETRY_MIN_BUDGET) {
+                    logger.warn(e) {
+                        "Transport error from '${backend.providerId}' but retry budget exhausted " +
+                            "(remaining=$remaining); giving up"
+                    }
+                    throw e
+                }
+                logger.warn(e) {
+                    "Transport error from '${backend.providerId}', retrying in $TRANSPORT_RETRY_DELAY " +
+                        "(remaining budget=$remaining)"
+                }
+                delay(TRANSPORT_RETRY_DELAY)
+            }
+        }
+    }
+
+    /** Одна попытка; всё, что не DescriptionException и не отмена, становится Transport. */
+    private suspend fun attempt(request: DescriptionRequest): DescriptionResult =
+        try {
+            backend.describe(request)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: DescriptionException) {
+            throw e
+        } catch (e: Throwable) {
+            throw DescriptionException.Transport(e)
+        }
+
+    private fun onUnauthorized(e: DescriptionException.Unauthorized) {
+        if (!authState.compareAndSet(AuthState.HEALTHY, AuthState.LOST)) return
+        logger.error(e) {
+            "Description provider '${backend.providerId}' rejected the credentials; descriptions stay " +
+                "unavailable until re-login. Fix: ${backend.authRecoveryHint}"
+        }
+        eventPublisher.publishEvent(
+            DescriptionProviderAuthEvent(
+                provider = backend.providerId,
+                state = DescriptionProviderAuthEvent.State.LOST,
+                detail = e.detail,
+                recoveryHint = backend.authRecoveryHint,
+            ),
+        )
+    }
+
+    private fun onSuccess() {
+        if (!authState.compareAndSet(AuthState.LOST, AuthState.HEALTHY)) return
+        logger.info { "Description provider '${backend.providerId}' credentials work again" }
+        eventPublisher.publishEvent(
+            DescriptionProviderAuthEvent(
+                provider = backend.providerId,
+                state = DescriptionProviderAuthEvent.State.RESTORED,
+                detail = null,
+                recoveryHint = backend.authRecoveryHint,
+            ),
+        )
+    }
+
+    companion object {
+        private val TRANSPORT_RETRY_DELAY = 5.seconds
+
+        // Минимальный остаток бюджета перед повтором: пауза перед вызовом плюс запас на один
+        // реальный вызов провайдера. Иначе внешний withTimeout отменил бы повтор посередине и
+        // вместо честного Transport получился бы вводящий в заблуждение Timeout.
+        private val TRANSPORT_RETRY_MIN_BUDGET = 10.seconds
+
+        // То же для InvalidResponse, без паузы перед вызовом.
+        private val INVALID_RESPONSE_RETRY_MIN_BUDGET = 5.seconds
+    }
+}
