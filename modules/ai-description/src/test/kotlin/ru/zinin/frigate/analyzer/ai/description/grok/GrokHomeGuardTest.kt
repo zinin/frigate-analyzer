@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
 
 class GrokHomeGuardTest {
     @Test
-    fun `exclusive waits for in-flight shared blocks`() =
+    fun `exclusive skips immediately if a shared block is in flight`() =
         runTest {
             val guard = GrokHomeGuard()
             val gate = CompletableDeferred<Unit>()
@@ -21,13 +21,12 @@ class GrokHomeGuardTest {
 
             launch { guard.shared { gate.await() } }
             advanceUntilIdle()
-            launch { guard.exclusive { exclusiveRan = true } }
-            advanceTimeBy(5_000)
-            assertFalse(exclusiveRan, "exclusive must wait while a shared block is in flight")
-
+            assertFailsWith<GrokHomeGuard.ExclusiveBusyException> {
+                guard.exclusive { exclusiveRan = true }
+            }
+            assertFalse(exclusiveRan)
             gate.complete(Unit)
             advanceUntilIdle()
-            assertTrue(exclusiveRan)
         }
 
     @Test
@@ -65,29 +64,6 @@ class GrokHomeGuardTest {
             }
             advanceUntilIdle()
             assertEquals(3, entered)
-            gate.complete(Unit)
-            advanceUntilIdle()
-        }
-
-    @Test
-    fun `exclusive times out if a shared block never finishes`() =
-        runTest {
-            val guard = GrokHomeGuard()
-            val gate = CompletableDeferred<Unit>()
-            var exclusiveRan = false
-
-            launch { guard.shared { gate.await() } }
-            advanceUntilIdle()
-            val exclusive =
-                launch {
-                    assertFailsWith<GrokHomeGuard.ExclusiveWaitTimeoutException> {
-                        guard.exclusive { exclusiveRan = true }
-                    }
-                }
-            advanceTimeBy(60_000)
-            advanceUntilIdle()
-            exclusive.join()
-            assertFalse(exclusiveRan)
             gate.complete(Unit)
             advanceUntilIdle()
         }

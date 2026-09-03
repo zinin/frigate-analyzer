@@ -82,9 +82,10 @@ with the stderr tail. Exit 0 with both `structuredOutput` fields → result; exi
 
 **GROK_HOME hygiene.** Every headless run persists a session under `GROK_HOME/sessions/<cwd>/<id>/`
 with the base64 frames, and `sessions/session_search.sqlite` grows ~9 KB per run without shrinking.
-`GrokHomeSweeper` runs one minute after startup and then hourly under `GrokHomeGuard.exclusive`
-(waits for in-flight runs up to 60 s, then skips the sweep; new describes wait on the mutex for
-that drain) and deletes everything under `sessions/` plus the files in `logs/`. `auth.json` and `config.toml` are never touched. The app must be the only
+`GrokHomeSweeper` runs one minute after startup and then hourly on its own IO scope under
+`GrokHomeGuard.exclusive`. If a grok run is in flight the sweep is skipped until the next hour,
+so descriptions and the Spring scheduler are not blocked. It deletes everything under `sessions/`
+plus the files in `logs/`. `auth.json` and `config.toml` are never touched. The app must be the only
 user of that `GROK_HOME`; `grok login` creates no sessions.
 
 **Credentials.** OAuth via `grok login --device-code` inside the container; the access token lives

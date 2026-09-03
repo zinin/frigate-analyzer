@@ -1,8 +1,13 @@
 package ru.zinin.frigate.analyzer.ai.description.grok
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import jakarta.annotation.PreDestroy
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.scheduling.annotation.Scheduled
@@ -29,17 +34,24 @@ class GrokHomeSweeper(
     private val properties: GrokProperties,
     private val guard: GrokHomeGuard,
 ) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("grok-home-sweeper"))
+
     @Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT1M")
     fun sweepScheduled() {
-        runBlocking(Dispatchers.IO) {
+        scope.launch {
             try {
                 sweep()
-            } catch (e: GrokHomeGuard.ExclusiveWaitTimeoutException) {
+            } catch (e: GrokHomeGuard.ExclusiveBusyException) {
                 logger.warn { "Grok home sweep skipped: ${e.message}" }
             } catch (e: Exception) {
                 logger.warn(e) { "Grok home sweep failed" }
             }
         }
+    }
+
+    @PreDestroy
+    fun shutdown() {
+        scope.cancel()
     }
 
     /** Возвращает число удалённых записей верхнего уровня (каталогов сессий и файлов). */
