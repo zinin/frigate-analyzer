@@ -132,6 +132,20 @@ application:
           http: ${CLAUDE_HTTP_PROXY:}
           https: ${CLAUDE_HTTPS_PROXY:}
           no-proxy: ${CLAUDE_NO_PROXY:}
+      grok:
+        cli-path: ${GROK_CLI_PATH:}
+        model: ${GROK_MODEL:grok-4.6}
+        # Пусто = флаг --effort не передаётся (BYOK-модели без уровней reasoning).
+        effort: ${GROK_EFFORT:low}
+        # Собственный каталог Grok: auth.json, config.toml, сессии. В контейнере это том.
+        # Та же переменная ведёт ручной `grok login` внутри `docker compose exec`.
+        home: ${GROK_HOME:${application.temp-folder}/grok-home}
+        # Пустой каталог для --cwd: Grok читает из cwd AGENTS.md, CLAUDE.md, .claude/rules и .grok.
+        working-directory: ${GROK_WORKING_DIR:${application.temp-folder}/grok-cwd}
+        proxy:
+          http: ${GROK_HTTP_PROXY:}
+          https: ${GROK_HTTPS_PROXY:}
+          no-proxy: ${GROK_NO_PROXY:}
   detection-filter:
     enabled: ${DETECTION_FILTER_ENABLED:true}
     allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe}

@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.ai.description.config
 
 import io.mockk.mockk
+import org.junit.jupiter.api.io.TempDir
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
@@ -15,11 +16,15 @@ import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import tools.jackson.databind.json.JsonMapper
+import java.nio.file.Path
 import java.time.Clock
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class AiDescriptionAutoConfigurationTest {
+    @TempDir
+    lateinit var tempDir: Path
+
     private val runner =
         ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AiDescriptionAutoConfiguration::class.java))
@@ -35,51 +40,74 @@ class AiDescriptionAutoConfigurationTest {
         // (via spring-boot-jackson on the runtime classpath of the main application).
         // This module does not depend on spring-boot-jackson, so we supply a plain mapper here.
         // Return type is tools.jackson JsonMapper so Spring registers the bean as a
-        // tools.jackson.databind.ObjectMapper (its supertype) — matching ClaudeResponseParser's
-        // post-Jackson-3 constructor parameter type. Returning the Jackson 2 ObjectMapper here
-        // would leave the parser bean unresolvable.
+        // tools.jackson.databind.ObjectMapper (its supertype).
         @Bean
         fun objectMapper(): JsonMapper = TestObjectMappers.internalMapper()
 
         // Clock is provided in production by `:frigate-analyzer-common`'s ClockConfig.
-        // DescriptionRateLimiter (active when enabled=true) requires it via constructor.
         @Bean
         fun clock(): Clock = Clock.systemUTC()
     }
+
+    /**
+     * Полный набор свойств модуля в стиле application.yaml. Обе провайдерские секции биндятся
+     * всегда, поэтому присутствуют при любом provider; grok.home и working-directory указывают
+     * в @TempDir, чтобы GrokBackend.init не создавал каталоги в /tmp/frigate-analyzer.
+     */
+    private fun properties(
+        enabled: Boolean,
+        provider: String,
+        rateLimitEnabled: Boolean = false,
+        grokModel: String = "grok-4.6",
+    ): Array<String> =
+        arrayOf(
+            "application.ai.description.enabled=$enabled",
+            "application.ai.description.provider=$provider",
+            "application.ai.description.common.language=en",
+            "application.ai.description.common.short-max-length=200",
+            "application.ai.description.common.detailed-max-length=1500",
+            "application.ai.description.common.max-frames=10",
+            "application.ai.description.common.queue-timeout=30s",
+            "application.ai.description.common.timeout=60s",
+            "application.ai.description.common.max-concurrent=2",
+            "application.ai.description.common.rate-limit.enabled=$rateLimitEnabled",
+            "application.ai.description.common.rate-limit.max-requests=10",
+            "application.ai.description.common.rate-limit.window=1h",
+            "application.ai.description.claude.oauth-token=fake",
+            "application.ai.description.claude.model=opus",
+            "application.ai.description.claude.cli-path=",
+            "application.ai.description.claude.working-directory=/tmp",
+            "application.ai.description.claude.proxy.http=",
+            "application.ai.description.claude.proxy.https=",
+            "application.ai.description.claude.proxy.no-proxy=",
+            "application.ai.description.claude.anthropic.auth-token=",
+            "application.ai.description.claude.anthropic.base-url=",
+            "application.ai.description.claude.anthropic.model-override=",
+            "application.ai.description.claude.anthropic.default-opus-model=",
+            "application.ai.description.claude.anthropic.default-sonnet-model=",
+            "application.ai.description.claude.anthropic.default-haiku-model=",
+            "application.ai.description.claude.max-buffer-size=32MB",
+            "application.ai.description.grok.cli-path=${tempDir.resolve("missing-grok")}",
+            "application.ai.description.grok.model=$grokModel",
+            "application.ai.description.grok.effort=low",
+            "application.ai.description.grok.home=${tempDir.resolve("grok-home")}",
+            "application.ai.description.grok.working-directory=${tempDir.resolve("grok-cwd")}",
+            "application.ai.description.grok.proxy.http=",
+            "application.ai.description.grok.proxy.https=",
+            "application.ai.description.grok.proxy.no-proxy=",
+        )
 
     @Test
     fun `DescriptionProperties registered even when enabled=false`() {
         // Критично: facade инжектит DescriptionProperties безусловно — бин должен быть всегда.
         runner
-            .withPropertyValues(
-                "application.ai.description.enabled=false",
-                "application.ai.description.provider=claude",
-                "application.ai.description.common.language=en",
-                "application.ai.description.common.short-max-length=200",
-                "application.ai.description.common.detailed-max-length=1500",
-                "application.ai.description.common.max-frames=10",
-                "application.ai.description.common.queue-timeout=30s",
-                "application.ai.description.common.timeout=60s",
-                "application.ai.description.common.max-concurrent=2",
-                "application.ai.description.common.rate-limit.enabled=false",
-                "application.ai.description.common.rate-limit.max-requests=10",
-                "application.ai.description.common.rate-limit.window=1h",
-                "application.ai.description.claude.oauth-token=",
-                "application.ai.description.claude.model=opus",
-                "application.ai.description.claude.cli-path=",
-                "application.ai.description.claude.working-directory=/tmp",
-                "application.ai.description.claude.proxy.http=",
-                "application.ai.description.claude.proxy.https=",
-                "application.ai.description.claude.proxy.no-proxy=",
-                "application.ai.description.claude.anthropic.auth-token=",
-                "application.ai.description.claude.anthropic.base-url=",
-                "application.ai.description.claude.anthropic.model-override=",
-                "application.ai.description.claude.anthropic.default-opus-model=",
-                "application.ai.description.claude.anthropic.default-sonnet-model=",
-                "application.ai.description.claude.anthropic.default-haiku-model=",
-            ).run { ctx ->
+            .withPropertyValues(*properties(enabled = false, provider = "claude"))
+            .run { ctx ->
                 assert(ctx.getBeansOfType(DescriptionProperties::class.java).isNotEmpty()) {
                     "DescriptionProperties must be available when enabled=false (facade inject)"
+                }
+                assert(ctx.getBeansOfType(GrokProperties::class.java).isNotEmpty()) {
+                    "GrokProperties binds regardless of provider"
                 }
                 assert(ctx.getBeansOfType(DescriptionAgent::class.java).isEmpty()) {
                     "DescriptionAgent must NOT be registered when enabled=false"
@@ -90,37 +118,8 @@ class AiDescriptionAutoConfigurationTest {
     @Test
     fun `autoconfig activates beans when enabled=true, provider=claude`() {
         runner
-            .withPropertyValues(
-                "application.ai.description.enabled=true",
-                "application.ai.description.provider=claude",
-                "application.ai.description.common.language=en",
-                "application.ai.description.common.short-max-length=200",
-                "application.ai.description.common.detailed-max-length=1500",
-                "application.ai.description.common.max-frames=10",
-                "application.ai.description.common.queue-timeout=30s",
-                "application.ai.description.common.timeout=60s",
-                "application.ai.description.common.max-concurrent=2",
-                "application.ai.description.common.rate-limit.enabled=false",
-                "application.ai.description.common.rate-limit.max-requests=10",
-                "application.ai.description.common.rate-limit.window=1h",
-                "application.ai.description.claude.oauth-token=fake",
-                "application.ai.description.claude.model=opus",
-                "application.ai.description.claude.cli-path=",
-                "application.ai.description.claude.working-directory=/tmp",
-                "application.ai.description.claude.proxy.http=",
-                "application.ai.description.claude.proxy.https=",
-                "application.ai.description.claude.proxy.no-proxy=",
-                "application.ai.description.claude.anthropic.auth-token=",
-                "application.ai.description.claude.anthropic.base-url=",
-                "application.ai.description.claude.anthropic.model-override=",
-                "application.ai.description.claude.anthropic.default-opus-model=",
-                "application.ai.description.claude.anthropic.default-sonnet-model=",
-                "application.ai.description.claude.anthropic.default-haiku-model=",
-                "application.ai.description.claude.max-buffer-size=32MB",
-            ).run { ctx ->
-                assert(ctx.getBeansOfType(DescriptionAgent::class.java).isNotEmpty()) {
-                    "DescriptionAgent should be registered"
-                }
+            .withPropertyValues(*properties(enabled = true, provider = "claude"))
+            .run { ctx ->
                 assert(ctx.getBean(DescriptionAgent::class.java) is DefaultDescriptionAgent) {
                     "the agent must be the provider-neutral DefaultDescriptionAgent"
                 }
@@ -136,33 +135,8 @@ class AiDescriptionAutoConfigurationTest {
     @Test
     fun `unknown provider registers neither backend nor agent and does not fail startup`() {
         runner
-            .withPropertyValues(
-                "application.ai.description.enabled=true",
-                "application.ai.description.provider=unknown",
-                "application.ai.description.common.language=en",
-                "application.ai.description.common.short-max-length=200",
-                "application.ai.description.common.detailed-max-length=1500",
-                "application.ai.description.common.max-frames=10",
-                "application.ai.description.common.queue-timeout=30s",
-                "application.ai.description.common.timeout=60s",
-                "application.ai.description.common.max-concurrent=2",
-                "application.ai.description.common.rate-limit.enabled=false",
-                "application.ai.description.common.rate-limit.max-requests=10",
-                "application.ai.description.common.rate-limit.window=1h",
-                "application.ai.description.claude.oauth-token=fake",
-                "application.ai.description.claude.model=opus",
-                "application.ai.description.claude.cli-path=",
-                "application.ai.description.claude.working-directory=/tmp",
-                "application.ai.description.claude.proxy.http=",
-                "application.ai.description.claude.proxy.https=",
-                "application.ai.description.claude.proxy.no-proxy=",
-                "application.ai.description.claude.anthropic.auth-token=",
-                "application.ai.description.claude.anthropic.base-url=",
-                "application.ai.description.claude.anthropic.model-override=",
-                "application.ai.description.claude.anthropic.default-opus-model=",
-                "application.ai.description.claude.anthropic.default-sonnet-model=",
-                "application.ai.description.claude.anthropic.default-haiku-model=",
-            ).run { ctx ->
+            .withPropertyValues(*properties(enabled = true, provider = "unknown"))
+            .run { ctx ->
                 assert(ctx.startupFailure == null) { "unknown provider must not break startup: ${ctx.startupFailure}" }
                 assert(ctx.getBeansOfType(DescriptionBackend::class.java).isEmpty())
                 assert(ctx.getBeansOfType(DescriptionAgent::class.java).isEmpty())
@@ -175,36 +149,22 @@ class AiDescriptionAutoConfigurationTest {
     @Test
     fun `DescriptionRateLimiter bean registered when ai-description and rate-limit both enabled`() {
         runner
-            .withPropertyValues(
-                "application.ai.description.enabled=true",
-                "application.ai.description.provider=claude",
-                "application.ai.description.common.language=en",
-                "application.ai.description.common.short-max-length=200",
-                "application.ai.description.common.detailed-max-length=1500",
-                "application.ai.description.common.max-frames=10",
-                "application.ai.description.common.queue-timeout=30s",
-                "application.ai.description.common.timeout=60s",
-                "application.ai.description.common.max-concurrent=2",
-                "application.ai.description.common.rate-limit.enabled=true",
-                "application.ai.description.common.rate-limit.max-requests=10",
-                "application.ai.description.common.rate-limit.window=1h",
-                "application.ai.description.claude.oauth-token=fake",
-                "application.ai.description.claude.model=opus",
-                "application.ai.description.claude.cli-path=",
-                "application.ai.description.claude.working-directory=/tmp",
-                "application.ai.description.claude.proxy.http=",
-                "application.ai.description.claude.proxy.https=",
-                "application.ai.description.claude.proxy.no-proxy=",
-                "application.ai.description.claude.anthropic.auth-token=",
-                "application.ai.description.claude.anthropic.base-url=",
-                "application.ai.description.claude.anthropic.model-override=",
-                "application.ai.description.claude.anthropic.default-opus-model=",
-                "application.ai.description.claude.anthropic.default-sonnet-model=",
-                "application.ai.description.claude.anthropic.default-haiku-model=",
-            ).run { ctx ->
+            .withPropertyValues(*properties(enabled = true, provider = "claude", rateLimitEnabled = true))
+            .run { ctx ->
                 assert(ctx.getBeansOfType(DescriptionRateLimiter::class.java).isNotEmpty()) {
                     "DescriptionRateLimiter must be registered when ai-description.enabled=true (regardless of rate-limit.enabled)"
                 }
+            }
+    }
+
+    @Test
+    fun `blank grok model fails binding even for provider=claude`() {
+        // GrokProperties биндится всегда: пустой GROK_MODEL валит старт любого деплоя,
+        // ровно как пустой CLAUDE_MODEL. Тест делает это свойство явным.
+        runner
+            .withPropertyValues(*properties(enabled = true, provider = "claude", grokModel = ""))
+            .run { ctx ->
+                assert(ctx.startupFailure != null) { "blank grok.model must fail validation" }
             }
     }
 }

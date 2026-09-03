@@ -13,7 +13,7 @@ import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
 
 @AutoConfiguration
 @ComponentScan("ru.zinin.frigate.analyzer.ai.description")
-@EnableConfigurationProperties(DescriptionProperties::class, ClaudeProperties::class)
+@EnableConfigurationProperties(DescriptionProperties::class, ClaudeProperties::class, GrokProperties::class)
 open class AiDescriptionAutoConfiguration {
     /**
      * Агент существует только вместе с backend-ом выбранного провайдера. `@ConditionalOnBean`

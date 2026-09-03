@@ -73,6 +73,16 @@ application:
           http: ""
           https: ""
           no-proxy: ""
+      grok:
+        cli-path: ""
+        model: grok-4.6
+        effort: low
+        home: /tmp/frigate-analyzer/grok-home
+        working-directory: /tmp/frigate-analyzer/grok-cwd
+        proxy:
+          http: ""
+          https: ""
+          no-proxy: ""
   detection-filter:
     enabled: true
     allowed-classes:
