@@ -32,8 +32,19 @@ class ClaudeResponseParser(
                 throw DescriptionException.InvalidResponse(e)
             }
 
-        val short = node["short"]?.takeUnless { it.isNull }?.asText()
-        val detailed = node["detailed"]?.takeUnless { it.isNull }?.asText()
-        return ResultNormalizer.normalize(short, detailed, shortMaxLength, detailedMaxLength)
+        return ResultNormalizer.normalize(
+            node["short"]?.scalarOrNull(),
+            node["detailed"]?.scalarOrNull(),
+            shortMaxLength,
+            detailedMaxLength,
+        )
     }
+
+    /**
+     * Объект или массив в поле это невалидный ответ, а не строка: `asString()` в Jackson 3 на них
+     * бросает, а бросок отсюда прошёл бы мимо [ClaudeExceptionMapper] (parse вызывается вне его
+     * try) и стал бы в агенте Transport — повтор через 5 с и только при остатке бюджета в 10 с,
+     * вместо немедленного InvalidResponse. Числа по-прежнему приводятся к строке.
+     */
+    private fun JsonNode.scalarOrNull(): String? = if (isValueNode && !isNull) asString() else null
 }
