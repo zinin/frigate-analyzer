@@ -47,17 +47,16 @@ RUN curl -fsSL https://claude.ai/install.sh | bash && \
                   '  }' \
                   '}' > /home/appuser/.claude/settings.json
 
-# Install Grok Build as appuser: static binary in ~/.grok/bin/grok, symlink in ~/.local/bin (already
-# on PATH below). GROK_HOME at runtime points at the mounted volume, not at this ~/.grok.
-RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "$GROK_VERSION" && \
-    /home/appuser/.local/bin/grok --version
+# Put CLI binaries on PATH before Grok install: x.ai/cli/install.sh only creates
+# ~/.local/bin/grok when that directory is already on PATH and writable. ~/.grok/bin
+# is a fallback if the symlink is skipped. ENV is image metadata — no root needed.
+# GROK_HOME at runtime points at the mounted volume, not at this ~/.grok.
+ENV PATH="/home/appuser/.local/bin:/home/appuser/.grok/bin:${PATH}"
 
-# Put the CLI on PATH globally so both the entrypoint probe (`command -v claude`)
-# and the JVM subprocess (ProcessBuilder) can find it. Needs root to mutate ENV;
-# drop back to appuser before the app runs.
-USER root
-ENV PATH="/home/appuser/.local/bin:${PATH}"
-USER appuser
+# Install Grok Build as appuser: static binary in ~/.grok/bin/grok, symlink in ~/.local/bin.
+RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "$GROK_VERSION" && \
+    grok --version
+
 WORKDIR /application
 
 EXPOSE 8080
