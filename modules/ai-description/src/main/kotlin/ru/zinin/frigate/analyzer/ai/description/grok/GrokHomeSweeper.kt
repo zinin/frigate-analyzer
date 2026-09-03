@@ -34,6 +34,8 @@ class GrokHomeSweeper(
         runBlocking(Dispatchers.IO) {
             try {
                 sweep()
+            } catch (e: GrokHomeGuard.ExclusiveWaitTimeoutException) {
+                logger.warn { "Grok home sweep skipped: ${e.message}" }
             } catch (e: Exception) {
                 logger.warn(e) { "Grok home sweep failed" }
             }

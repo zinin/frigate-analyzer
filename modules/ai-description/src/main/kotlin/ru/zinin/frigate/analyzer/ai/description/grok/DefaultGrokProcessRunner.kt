@@ -9,13 +9,15 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 private val logger = KotlinLogging.logger {}
 
 /**
  * Запуск `grok` через ProcessBuilder. stdin закрывается сразу, stdout читается целиком, от stderr
  * остаётся хвост в [STDERR_TAIL_BYTES]. Отмена корутины (таймаут агента) убивает процесс в
- * `finally`, поэтому зависший `grok` не переживает свой вызов.
+ * `finally` и ждёт [KILL_WAIT_TIMEOUT_MS]; если child не уходит, слот агента всё равно
+ * освобождается.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -42,7 +44,11 @@ class DefaultGrokProcessRunner : GrokProcessRunner {
                 if (process.isAlive) {
                     logger.debug { "Killing grok process ${process.pid()} after cancellation" }
                     process.destroyForcibly()
-                    process.waitFor()
+                    if (!process.waitFor(KILL_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        logger.warn {
+                            "grok process ${process.pid()} still alive after ${KILL_WAIT_TIMEOUT_MS}ms SIGKILL"
+                        }
+                    }
                 }
             }
         }
@@ -56,5 +62,6 @@ class DefaultGrokProcessRunner : GrokProcessRunner {
 
     companion object {
         const val STDERR_TAIL_BYTES = 8 * 1024
+        const val KILL_WAIT_TIMEOUT_MS = 5_000L
     }
 }

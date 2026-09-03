@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.ai.description.core
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -283,6 +284,13 @@ class DefaultDescriptionAgentTest {
             assertFailsWith<DescriptionException.Timeout> { second.await().getOrThrow() }
             blocker.complete(Unit)
             first.await()
+        }
+
+    @Test
+    fun `CancellationException from the backend is not wrapped as Transport`() =
+        runTest {
+            val agent = build(FakeBackend { throw CancellationException("cancelled by caller") })
+            assertFailsWith<CancellationException> { agent.describe(request) }
         }
 
     @Test

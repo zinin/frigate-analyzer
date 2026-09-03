@@ -56,13 +56,15 @@ class GrokOutputParser(
             null
         }
 
-    private fun JsonNode.textOrNull(): String? = if (isNull) null else asText()
+    private fun JsonNode.textOrNull(): String? = if (isTextual) asText() else null
+
+    private fun JsonNode.anyAsText(): String? = if (isNull || isMissingNode) null else asText()
 
     private fun usageSummary(node: JsonNode): String {
         val usage = node["usage"] ?: return "usage=absent"
-        val cost = node["total_cost_usd"]?.textOrNull() ?: "unknown"
+        val cost = node["total_cost_usd"]?.anyAsText() ?: "unknown"
         return listOf("input_tokens", "cache_read_input_tokens", "output_tokens", "reasoning_tokens")
-            .joinToString(" ") { key -> "$key=${usage[key]?.textOrNull() ?: "?"}" } +
+            .joinToString(" ") { key -> "$key=${usage[key]?.anyAsText() ?: "?"}" } +
             " total_cost_usd=$cost"
     }
 }

@@ -71,19 +71,19 @@ loads Claude Code skills, rules and plugins from `HOME`). `--tools read_file` is
 disables default tool injection; frames are inline, the model needs no tool. `--effort` is omitted
 when blank so BYOK models without reasoning levels work.
 
-Output classification (`GrokExceptionMapper`): exit 0 with both `structuredOutput` fields → result;
-exit 0 with `stopReason` `max_tokens` / `refusal` / `max_turn_requests` or a partial object →
-`InvalidResponse`; `cancelled` → `Transport`; non-zero exit with `{"type":"error","message":…}` on
-stdout → `Unauthorized` when the message mentions `not signed in`, `grok login`, `not authenticated`,
+Output classification (`GrokExceptionMapper`): `{"type":"error","message":…}` on stdout, regardless of
+exit code → `Unauthorized` when the message mentions `not signed in`, `grok login`, `not authenticated`,
 `unauthorized`, `invalid_grant`, `refresh token`, `authentication failed`; `RateLimited` on
-`rate limit`, `too many requests`, `429`; everything else `Transport` with the stderr tail. Token usage
-and cost are logged at DEBUG.
+`rate limit`, `too many requests`, or `429` with HTTP/status/API context; everything else `Transport`
+with the stderr tail. Exit 0 with both `structuredOutput` fields → result; exit 0 with `stopReason`
+`max_tokens` / `refusal` / `max_turn_requests` or a partial object → `InvalidResponse`; `cancelled` →
+`Transport`. Token usage and cost are logged at DEBUG.
 
 **GROK_HOME hygiene.** Every headless run persists a session under `GROK_HOME/sessions/<cwd>/<id>/`
 with the base64 frames, and `sessions/session_search.sqlite` grows ~9 KB per run without shrinking.
 `GrokHomeSweeper` runs one minute after startup and then hourly under `GrokHomeGuard.exclusive`
-(waits for in-flight runs, blocks new ones for milliseconds) and deletes everything under `sessions/`
-plus the files in `logs/`. `auth.json` and `config.toml` are never touched. The app must be the only
+(waits for in-flight runs up to 60 s, then skips the sweep; new describes wait on the mutex for
+that drain) and deletes everything under `sessions/` plus the files in `logs/`. `auth.json` and `config.toml` are never touched. The app must be the only
 user of that `GROK_HOME`; `grok login` creates no sessions.
 
 **Credentials.** OAuth via `grok login --device-code` inside the container; the access token lives

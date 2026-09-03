@@ -106,6 +106,19 @@ class GrokBackendTest {
         }
 
     @Test
+    fun `error envelope on exit 0 is still Unauthorized and deletes the prompt file`() =
+        runTest {
+            val stdout =
+                """{"type":"error","message":"Not signed in. To authenticate without a browser, """ +
+                    """run:\n  grok login --device-code"}"""
+            val backend = backend(GrokProcessRunner { result(0, stdout) })
+
+            val e = assertFailsWith<DescriptionException.Unauthorized> { backend.describe(request) }
+            assertTrue(e.detail.startsWith("Not signed in"))
+            coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
     fun `other non-zero exit is Transport`() =
         runTest {
             val backend = backend(GrokProcessRunner { result(1, "", "connection reset") })

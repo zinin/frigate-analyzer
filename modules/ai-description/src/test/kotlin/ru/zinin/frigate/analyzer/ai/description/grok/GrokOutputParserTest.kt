@@ -67,4 +67,12 @@ class GrokOutputParserTest {
         assertNull(parser.errorMessage("garbage"))
         assertNull(parser.errorMessage(""))
     }
+
+    @Test
+    fun `numeric structured fields are not descriptions`() {
+        val output =
+            parser.parse("""{"stopReason":"end_turn","structuredOutput":{"short":1,"detailed":true}}""")
+        assertNull(output.short)
+        assertNull(output.detailed)
+    }
 }

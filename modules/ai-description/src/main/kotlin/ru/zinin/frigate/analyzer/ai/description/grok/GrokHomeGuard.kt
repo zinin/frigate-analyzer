@@ -10,8 +10,9 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Мини-RW-lock на корутинах для GROK_HOME: запуски `grok` берут [shared], sweeper берёт
  * [exclusive]. `exclusive` держит мьютекс, чем не пускает новые запуски, и ждёт, пока текущие
- * не завершатся; `shared` берёт мьютекс только на инкремент счётчика, поэтому запуски друг друга
- * не ждут. Ожидание `exclusive` ограничено сверху таймаутом агента.
+ * не завершатся, но не дольше 60 с — иначе бросает [ExclusiveWaitTimeoutException], и sweeper
+ * пропускает этот час. `shared` берёт мьютекс только
+ * на инкремент счётчика, поэтому запуски друг друга не ждут.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -31,13 +32,23 @@ class GrokHomeGuard {
 
     suspend fun <T> exclusive(block: suspend () -> T): T =
         mutex.withLock {
+            var waited = 0L
             while (inFlight.get() > 0) {
+                if (waited >= EXCLUSIVE_WAIT_TIMEOUT_MS) {
+                    throw ExclusiveWaitTimeoutException(EXCLUSIVE_WAIT_TIMEOUT_MS)
+                }
                 delay(DRAIN_POLL_MS)
+                waited += DRAIN_POLL_MS
             }
             block()
         }
 
+    class ExclusiveWaitTimeoutException(
+        timeoutMs: Long,
+    ) : IllegalStateException("GROK_HOME exclusive wait timed out after ${timeoutMs}ms")
+
     private companion object {
         const val DRAIN_POLL_MS = 100L
+        const val EXCLUSIVE_WAIT_TIMEOUT_MS = 60_000L
     }
 }

@@ -22,7 +22,7 @@ graph TD
     D -. "polled" .-> SL["Signal-loss Monitor"]
     SL -.-> F
 
-    F -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI)"]
+    F -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI or Grok Build CLI)"]
     AI -. "edit message" .-> F
 
     F --> EX["Export / Annotate jobs<br/>(ffmpeg merge or Vision API annotate)"]
@@ -40,7 +40,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 - **Configurable object filtering** — only keep detections for classes you care about (person, car, dog, etc.)
 - **Object tracking** — cross-recording IoU matching suppresses duplicate notifications when the same object lingers across consecutive recordings
 - **Signal-loss detection** — polls the database for last recording per camera and alerts (Telegram) on signal loss / recovery
-- **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI, edited into the notification message
+- **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI or Grok Build CLI, edited into the notification message
 - **Telegram bot** — real-time notifications with annotated images, inline quick-export buttons, video export (raw or annotated), per-user and global notification toggles, timezone support, user management
 - **Reactive stack** — built on Spring WebFlux, R2DBC, and Kotlin Coroutines for non-blocking I/O throughout
 
@@ -53,7 +53,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 | PostgreSQL 15+ | Stores recordings, detections, and user data |
 | Telegram Bot Token | Obtain from [@BotFather](https://t.me/BotFather) |
 | Docker + Docker Compose | For deployment |
-| Claude Code CLI *(optional)* | Required only if `APP_AI_DESCRIPTION_ENABLED=true`; auto-installed inside the Docker image, for local runs install via `claude.ai/install.sh` and run `claude setup-token` |
+| Claude Code CLI or Grok Build CLI *(optional)* | Required only if `APP_AI_DESCRIPTION_ENABLED=true`; the image installs both, pick one with `APP_AI_DESCRIPTION_PROVIDER`. Locally: `claude setup-token` or `grok login --device-code` |
 
 ## Quick Start
 
@@ -278,7 +278,7 @@ When objects are detected in a recording, the bot sends a notification with:
 - Top frames annotated with bounding boxes and confidence scores
 - Inline "Original" / "Annotated" buttons for instant quick-export (±1 min around the recording)
 
-If AI description is enabled, the message first carries placeholders; once Claude responds, the short description paragraph and a collapsible detailed description (`<details>`) are edited into the same message.
+If AI description is enabled, the message first carries placeholders; once the description provider responds, the short description paragraph and a collapsible detailed description (`<details>`) are edited into the same message.
 
 ### Signal-loss alerts
 
@@ -346,7 +346,7 @@ Module dependencies: main chain `core` → `telegram` → `service` → `model` 
 - **MapStruct** (entity mapping)
 - **ktgbotapi 33** (Telegram bot)
 - **Jackson 3** (`tools.jackson.*`)
-- **Claude Code SDK** (optional AI description)
+- **Claude Code SDK** or **Grok Build CLI** (optional AI description)
 - **Java 25** with AOT cache for fast startup
 
 ## License

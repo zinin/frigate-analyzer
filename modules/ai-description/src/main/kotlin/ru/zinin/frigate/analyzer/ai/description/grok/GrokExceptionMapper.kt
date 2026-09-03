@@ -25,7 +25,7 @@ class GrokExceptionMapper {
                 DescriptionException.Unauthorized(message)
             }
 
-            RATE_LIMIT_MARKERS.any { it in lower } || RATE_LIMIT_429.containsMatchIn(lower) -> {
+            isRateLimited(lower) -> {
                 DescriptionException.RateLimited(detail = message)
             }
 
@@ -41,6 +41,12 @@ class GrokExceptionMapper {
             "cancelled" -> DescriptionException.Transport(detail = "grok reported stopReason=cancelled")
             else -> DescriptionException.InvalidResponse(detail = "no structured output, stopReason=${stopReason ?: "unknown"}")
         }
+
+    private fun isRateLimited(lower: String): Boolean {
+        if (RATE_LIMIT_MARKERS.any { it in lower }) return true
+        return RATE_LIMIT_429.containsMatchIn(lower) &&
+            ("http" in lower || "status" in lower || "api" in lower)
+    }
 
     companion object {
         val AUTH_MARKERS =

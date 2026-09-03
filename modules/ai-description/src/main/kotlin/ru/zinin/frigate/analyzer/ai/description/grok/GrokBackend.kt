@@ -63,12 +63,17 @@ class GrokBackend(
     }
 
     override suspend fun describe(request: DescriptionRequest): DescriptionResult {
-        val promptFile = promptFileWriter.write(request)
+        var promptFile: Path? = null
         try {
+            promptFile = promptFileWriter.write(request)
             val command = commandBuilder.build(promptFile)
             val result = guard.shared { runner.run(command) }
+            val errorMessage = outputParser.errorMessage(result.stdout)
+            if (errorMessage != null) {
+                throw exceptionMapper.fromFailure(result.exitCode, errorMessage, result.stderrTail)
+            }
             if (result.exitCode != 0) {
-                throw exceptionMapper.fromFailure(result.exitCode, outputParser.errorMessage(result.stdout), result.stderrTail)
+                throw exceptionMapper.fromFailure(result.exitCode, null, result.stderrTail)
             }
             val output = outputParser.parse(result.stdout)
             logger.debug {
@@ -80,7 +85,7 @@ class GrokBackend(
             }
             throw exceptionMapper.fromStopReason(output.stopReason)
         } finally {
-            promptFileWriter.delete(promptFile)
+            promptFile?.let { promptFileWriter.delete(it) }
         }
     }
 

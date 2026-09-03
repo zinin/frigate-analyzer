@@ -7,6 +7,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -64,6 +65,29 @@ class GrokHomeGuardTest {
             }
             advanceUntilIdle()
             assertEquals(3, entered)
+            gate.complete(Unit)
+            advanceUntilIdle()
+        }
+
+    @Test
+    fun `exclusive times out if a shared block never finishes`() =
+        runTest {
+            val guard = GrokHomeGuard()
+            val gate = CompletableDeferred<Unit>()
+            var exclusiveRan = false
+
+            launch { guard.shared { gate.await() } }
+            advanceUntilIdle()
+            val exclusive =
+                launch {
+                    assertFailsWith<GrokHomeGuard.ExclusiveWaitTimeoutException> {
+                        guard.exclusive { exclusiveRan = true }
+                    }
+                }
+            advanceTimeBy(60_000)
+            advanceUntilIdle()
+            exclusive.join()
+            assertFalse(exclusiveRan)
             gate.complete(Unit)
             advanceUntilIdle()
         }

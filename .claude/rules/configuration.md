@@ -153,9 +153,9 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 | `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. Validated `1..50`, but the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. |
 | `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | 30s | Max wait for a free concurrency slot. |
 | `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). |
-| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous Claude requests. |
+| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous description requests. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED` | true | Enable sliding-window throttle on AI description invocations. When `false`, every recording with AI enabled gets a description request. |
-| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 10 | Max invocations within the sliding window. Counter increments when a slot is granted; failed Claude calls (transport errors, retries) do not refund the slot. |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 10 | Max invocations within the sliding window. Counter increments when a slot is granted; failed model calls (transport errors, retries) do not refund the slot. |
 | `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
 

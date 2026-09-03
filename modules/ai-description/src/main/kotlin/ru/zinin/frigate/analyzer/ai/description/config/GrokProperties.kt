@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.ai.description.config
 
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Pattern
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.validation.annotation.Validated
 import java.nio.file.Path
@@ -19,6 +20,10 @@ data class GrokProperties(
     @field:NotBlank
     val model: String,
     /** Пусто = флаг `--effort` не передаётся (BYOK-модели без уровней reasoning). */
+    @field:Pattern(
+        regexp = "|none|minimal|low|medium|high|xhigh",
+        message = "must be empty or one of none, minimal, low, medium, high, xhigh",
+    )
     val effort: String,
     /** `GROK_HOME` дочернего процесса: `auth.json`, `config.toml`, сессии. В контейнере это том. */
     @field:NotBlank

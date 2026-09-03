@@ -48,6 +48,11 @@ class GrokExceptionMapperTest {
     }
 
     @Test
+    fun `bare 429 without http context is Transport`() {
+        assertIs<DescriptionException.Transport>(mapper.fromFailure(1, "session 429 lost", ""))
+    }
+
+    @Test
     fun `other error message is Transport with exit code and message`() {
         val e = mapper.fromFailure(1, "Couldn't set model to nope", "")
         assertIs<DescriptionException.Transport>(e)
