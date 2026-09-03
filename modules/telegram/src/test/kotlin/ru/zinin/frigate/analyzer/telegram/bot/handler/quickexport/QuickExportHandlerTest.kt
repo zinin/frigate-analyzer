@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.exception.VideoTooLargeException
 import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ActiveExportRegistry
 import ru.zinin.frigate.analyzer.telegram.bot.handler.export.ExportCoroutineScope
@@ -57,6 +58,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -846,7 +848,7 @@ class QuickExportHandlerTest {
                 coEvery {
                     videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any(), any())
                 } coAnswers {
-                    delay(400_000) // 400 seconds exceeds the 300-second (5 min) timeout
+                    delay(1_200_000) // 1200 seconds exceeds the 1080-second (18 min) ORIGINAL timeout
                     error("Should not reach here")
                 }
 
@@ -973,6 +975,33 @@ class QuickExportHandlerTest {
                 assertTrue(
                     sendTextRequests.any { it.text.contains(expectedUnavailableMsg) },
                     "Expected 'missing files' error message, but got: ${sendTextRequests.map { it.text }}",
+                )
+            }
+
+        @Test
+        fun `handle sends too large message for VideoTooLargeException`() =
+            runTest {
+                val handler = createHandler()
+                val callback = createMessageCallback()
+
+                val capturedRequests = mutableListOf<Request<*>>()
+                coEvery { bot.execute(capture(capturedRequests)) } returns mockk(relaxed = true)
+                coEvery {
+                    videoExportService.exportByRecordingId(eq(recordingId), any(), any(), any(), any())
+                } throws VideoTooLargeException("Video is 60.0 MiB after two compression attempts, limit is 47.7 MiB")
+
+                handler.handle(callback)?.join()
+
+                val expectedTooLargeMsg = msg.get("quickexport.error.too.large", "ru")
+                val unavailableMsg = msg.get("quickexport.error.unavailable", "ru")
+                val sendTextRequests = capturedRequests.filterIsInstance<SendTextMessage>()
+                assertTrue(
+                    sendTextRequests.any { it.text.contains(expectedTooLargeMsg) },
+                    "Expected 'too large' error message, but got: ${sendTextRequests.map { it.text }}",
+                )
+                assertFalse(
+                    sendTextRequests.any { it.text.contains(unavailableMsg) },
+                    "Must not fall back to 'files unavailable': ${sendTextRequests.map { it.text }}",
                 )
             }
 

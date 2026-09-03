@@ -27,5 +27,8 @@ jobs:
         with:
           cache-provider: basic
 
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Build and test
         run: ./gradlew build

@@ -2,12 +2,9 @@ package ru.zinin.frigate.analyzer.core.service
 
 import io.mockk.coEvery
 import io.mockk.coVerify
-import io.mockk.every
 import io.mockk.mockk
-import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.spyk
-import io.mockk.unmockkStatic
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
@@ -17,7 +14,9 @@ import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectionFilterProperties
 import ru.zinin.frigate.analyzer.core.helper.TempFileHelper
 import ru.zinin.frigate.analyzer.core.helper.VideoMergeHelper
+import ru.zinin.frigate.analyzer.core.video.TelegramVideoFitter
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
+import ru.zinin.frigate.analyzer.model.exception.VideoTooLargeException
 import ru.zinin.frigate.analyzer.model.persistent.RecordingEntity
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
 import ru.zinin.frigate.analyzer.telegram.service.model.ExportMode
@@ -39,6 +38,10 @@ class VideoExportServiceImplTest {
     private val recordingRepository = mockk<RecordingEntityRepository>()
     private val videoMergeHelper = mockk<VideoMergeHelper>()
     private val tempFileHelper = mockk<TempFileHelper>()
+    private val videoFitter =
+        mockk<TelegramVideoFitter>().also { fitter ->
+            coEvery { fitter.fit(any(), any()) } coAnswers { firstArg<Path>() }
+        }
     private val detectProperties = DetectProperties(goodModel = "yolo26x.pt")
     private val videoVisualizationService =
         spyk(
@@ -54,6 +57,7 @@ class VideoExportServiceImplTest {
         VideoExportServiceImpl(
             recordingRepository = recordingRepository,
             videoMergeHelper = videoMergeHelper,
+            videoFitter = videoFitter,
             tempFileHelper = tempFileHelper,
             videoVisualizationService = videoVisualizationService,
             detectProperties = detectProperties,
@@ -217,12 +221,13 @@ class VideoExportServiceImplTest {
             assertTrue(progress.size >= 2)
             assertEquals(Stage.PREPARING, progress[0].stage)
             assertEquals(Stage.MERGING, progress[1].stage)
-            // No COMPRESSING because file is small
+            // No COMPRESSING: the default fitter stub returns its input without firing onCompressStart
             assertFalse(progress.any { it.stage == Stage.COMPRESSING })
+            coVerify(exactly = 1) { videoFitter.fit(mergedFile, any()) }
         }
 
     @Test
-    fun `export original emits COMPRESSING when threshold exceeded`() =
+    fun `export original emits COMPRESSING when the fitter compresses`() =
         runTest {
             val recordingFile = createTempFile("recording1.mp4")
             val mergedFile = createTempFile("merged-large.mp4")
@@ -231,34 +236,24 @@ class VideoExportServiceImplTest {
             coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
                 listOf(recording(recordingFile.toString()))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
-            coEvery { videoMergeHelper.compressVideo(mergedFile) } returns compressedFile
-            coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
-
-            mockkStatic(Files::class)
-            try {
-                every { Files.exists(any<Path>()) } returns true
-                every { Files.size(mergedFile) } returns VideoMergeHelper.COMPRESS_THRESHOLD_BYTES + 1
-                every { Files.size(compressedFile) } returns VideoMergeHelper.MAX_FILE_SIZE_BYTES - 1
-
-                val progress = mutableListOf<VideoExportProgress>()
-
-                val result =
-                    service.exportVideo(
-                        startInstant = start,
-                        endInstant = end,
-                        camId = camId,
-                        mode = ExportMode.ORIGINAL,
-                        onProgress = { progress.add(it) },
-                    )
-
-                assertEquals(compressedFile, result)
-                assertEquals(Stage.PREPARING, progress[0].stage)
-                assertEquals(Stage.MERGING, progress[1].stage)
-                assertEquals(Stage.COMPRESSING, progress[2].stage)
-                coVerify { tempFileHelper.deleteIfExists(mergedFile) }
-            } finally {
-                unmockkStatic(Files::class)
+            coEvery { videoFitter.fit(mergedFile, any()) } coAnswers {
+                secondArg<suspend () -> Unit>().invoke()
+                compressedFile
             }
+
+            val progress = mutableListOf<VideoExportProgress>()
+
+            val result =
+                service.exportVideo(
+                    startInstant = start,
+                    endInstant = end,
+                    camId = camId,
+                    mode = ExportMode.ORIGINAL,
+                    onProgress = { progress.add(it) },
+                )
+
+            assertEquals(compressedFile, result)
+            assertEquals(listOf(Stage.PREPARING, Stage.MERGING, Stage.COMPRESSING), progress.map { it.stage })
         }
 
     @Test
@@ -406,12 +401,78 @@ class VideoExportServiceImplTest {
         }
 
     @Test
+    fun `annotated mode fits the annotated file and emits COMPRESSING_RESULT`() =
+        runTest {
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+            val annotatedFile = createTempFile("annotated.mp4")
+            val fittedFile = createTempFile("annotated-fitted.mp4")
+
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+            coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
+            stubAnnotateVideo(annotatedFile)
+            coEvery { videoFitter.fit(annotatedFile, any()) } coAnswers {
+                secondArg<suspend () -> Unit>().invoke()
+                fittedFile
+            }
+
+            val progress = mutableListOf<VideoExportProgress>()
+
+            val result =
+                service.exportVideo(
+                    startInstant = start,
+                    endInstant = end,
+                    camId = camId,
+                    mode = ExportMode.ANNOTATED,
+                    onProgress = { progress.add(it) },
+                )
+
+            assertEquals(fittedFile, result)
+            assertAnnotateCalledWith(mergedFile, "person,car", "yolo26x.pt")
+            assertEquals(
+                listOf(Stage.PREPARING, Stage.MERGING, Stage.ANNOTATING, Stage.COMPRESSING_RESULT),
+                progress.map { it.stage },
+            )
+        }
+
+    @Test
+    fun `annotated mode deletes the annotated file when fitting it fails`() =
+        runTest {
+            val recordingFile = createTempFile("recording1.mp4")
+            val mergedFile = createTempFile("merged.mp4")
+            val annotatedFile = createTempFile("annotated.mp4")
+
+            coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
+                listOf(recording(recordingFile.toString()))
+            coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
+            coEvery { tempFileHelper.deleteIfExists(any()) } returns true
+            stubAnnotateVideo(annotatedFile)
+            coEvery { videoFitter.fit(annotatedFile, any()) } throws RuntimeException("ffmpeg exited with code 1")
+
+            val exception =
+                assertThrows<RuntimeException> {
+                    service.exportVideo(
+                        startInstant = start,
+                        endInstant = end,
+                        camId = camId,
+                        mode = ExportMode.ANNOTATED,
+                    )
+                }
+
+            assertEquals("ffmpeg exited with code 1", exception.message)
+            coVerify { tempFileHelper.deleteIfExists(annotatedFile) }
+        }
+
+    @Test
     fun `annotated mode with empty allowedClasses passes null for classes`() =
         runTest {
             val emptyClassesService =
                 VideoExportServiceImpl(
                     recordingRepository = recordingRepository,
                     videoMergeHelper = videoMergeHelper,
+                    videoFitter = videoFitter,
                     tempFileHelper = tempFileHelper,
                     videoVisualizationService = videoVisualizationService,
                     detectProperties = detectProperties,
@@ -447,6 +508,7 @@ class VideoExportServiceImplTest {
                 VideoExportServiceImpl(
                     recordingRepository = recordingRepository,
                     videoMergeHelper = videoMergeHelper,
+                    videoFitter = videoFitter,
                     tempFileHelper = tempFileHelper,
                     videoVisualizationService = videoVisualizationService,
                     detectProperties = detectProperties,
@@ -721,41 +783,30 @@ class VideoExportServiceImplTest {
     // --- end exportByRecordingId tests ---
 
     @Test
-    fun `export original with compress still too large throws and cleans up`() =
+    fun `export original propagates VideoTooLargeException and deletes the merged file`() =
         runTest {
             val recordingFile = createTempFile("recording1.mp4")
             val mergedFile = createTempFile("merged-large.mp4")
-            val compressedFile = createTempFile("compressed-large.mp4")
 
             coEvery { recordingRepository.findByCamIdAndInstantRange(camId, start, end) } returns
                 listOf(recording(recordingFile.toString()))
             coEvery { videoMergeHelper.mergeVideos(any()) } returns mergedFile
-            coEvery { videoMergeHelper.compressVideo(mergedFile) } returns compressedFile
+            coEvery { videoFitter.fit(mergedFile, any()) } throws
+                VideoTooLargeException("Video is 60.0 MiB after two compression attempts, limit is 47.7 MiB")
             coEvery { tempFileHelper.deleteIfExists(mergedFile) } returns true
-            coEvery { tempFileHelper.deleteIfExists(compressedFile) } returns true
 
-            mockkStatic(Files::class)
-            try {
-                every { Files.exists(any<Path>()) } returns true
-                every { Files.size(mergedFile) } returns VideoMergeHelper.COMPRESS_THRESHOLD_BYTES + 1
-                every { Files.size(compressedFile) } returns VideoMergeHelper.MAX_FILE_SIZE_BYTES + 1
+            val exception =
+                assertThrows<VideoTooLargeException> {
+                    service.exportVideo(
+                        startInstant = start,
+                        endInstant = end,
+                        camId = camId,
+                        mode = ExportMode.ORIGINAL,
+                    )
+                }
 
-                val exception =
-                    assertThrows<IllegalStateException> {
-                        service.exportVideo(
-                            startInstant = start,
-                            endInstant = end,
-                            camId = camId,
-                            mode = ExportMode.ORIGINAL,
-                        )
-                    }
-
-                assertTrue(exception.message!!.contains("too large"))
-                coVerify { tempFileHelper.deleteIfExists(mergedFile) }
-                coVerify { tempFileHelper.deleteIfExists(compressedFile) }
-            } finally {
-                unmockkStatic(Files::class)
-            }
+            assertTrue(exception.message!!.contains("two compression attempts"))
+            coVerify { tempFileHelper.deleteIfExists(mergedFile) }
         }
 
     @Test

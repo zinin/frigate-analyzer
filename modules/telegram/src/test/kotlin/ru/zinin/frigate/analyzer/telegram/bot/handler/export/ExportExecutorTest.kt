@@ -13,14 +13,17 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
+import ru.zinin.frigate.analyzer.model.exception.VideoTooLargeException
 import ru.zinin.frigate.analyzer.telegram.config.TelegramProperties
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.VideoExportService
@@ -223,6 +226,68 @@ class ExportExecutorTest {
 
             firstJob.cancel()
             firstJob.join()
+            scope.shutdown()
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `too large export — status message edited with the too large text and no keyboard`() =
+        runTest {
+            val bot: TelegramBot = mockk(relaxed = true)
+            val videoExportService: VideoExportService = mockk(relaxed = true)
+            val properties =
+                mockk<TelegramProperties>(relaxed = true).also {
+                    every { it.sendVideoTimeout } returns Duration.ofSeconds(30)
+                }
+            val scope = newTestScope()
+            val registry = ActiveExportRegistry(scope)
+            val executor = ExportExecutor(bot, videoExportService, properties, msg, registry, scope)
+
+            val chatId = ChatId(RawChatId(42L))
+
+            val capturedRequests = mutableListOf<Request<*>>()
+            coEvery { bot.execute(any<Request<*>>()) } coAnswers {
+                val req = firstArg<Request<*>>()
+                capturedRequests.add(req)
+                if (req is SendTextMessage) {
+                    // Same shape as the cancellation test above: the status message must carry a
+                    // real PrivateChatImpl so that editMessageText can read its chat id.
+                    mockk<PrivateContentMessage<MessageContent>>(relaxed = true).apply {
+                        every { chat } returns PrivateChatImpl(id = chatId, firstName = "Test")
+                    }
+                } else {
+                    mockk(relaxed = true)
+                }
+            }
+
+            coEvery {
+                videoExportService.exportVideo(any(), any(), any(), any(), any(), any())
+            } throws VideoTooLargeException("Video is 60.0 MiB after two compression attempts, limit is 47.7 MiB")
+
+            val outcome =
+                ExportDialogOutcome.Success(
+                    Instant.parse("2026-02-16T12:00:00Z"),
+                    Instant.parse("2026-02-16T12:05:00Z"),
+                    "cam1",
+                    ExportMode.ORIGINAL,
+                )
+
+            val executeJob = scope.launch { executor.execute(chatId, ZoneOffset.UTC, outcome, "ru") }
+            executeJob.join()
+            advanceUntilIdle()
+
+            val expected = msg.get("export.error.too.large", "ru")
+            val generic = msg.get("export.error.original", "ru")
+            val editRequests = capturedRequests.filterIsInstance<EditChatMessageText>()
+            val errorEdit = editRequests.find { it.text.orEmpty().contains(expected) }
+            assertNotNull(errorEdit, "Expected a 'too large' editMessageText, got: ${editRequests.map { it.text }}")
+            assertNull(errorEdit.replyMarkup, "Error edit must clear the reply markup")
+            assertTrue(
+                editRequests.none { it.text.orEmpty().contains(generic) },
+                "Must not show the generic export error: ${editRequests.map { it.text }}",
+            )
+            assertNull(firstActiveExport(registry), "registry must be released after the failure")
+
             scope.shutdown()
         }
 

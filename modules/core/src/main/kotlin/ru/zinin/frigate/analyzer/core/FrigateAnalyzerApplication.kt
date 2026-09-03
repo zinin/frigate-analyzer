@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.EnableScheduling
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.core.config.properties.DetectionFilterProperties
+import ru.zinin.frigate.analyzer.core.config.properties.ExportProperties
 import ru.zinin.frigate.analyzer.core.config.properties.LocalVisualizationProperties
 import ru.zinin.frigate.analyzer.core.config.properties.PipelineProperties
 import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
@@ -27,6 +28,7 @@ private val logger = KotlinLogging.logger {}
     ApplicationProperties::class,
     DetectionFilterProperties::class,
     DetectProperties::class,
+    ExportProperties::class,
     PipelineProperties::class,
     LocalVisualizationProperties::class,
     RecordsWatcherProperties::class,

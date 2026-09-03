@@ -13,6 +13,7 @@ All settings in `modules/core/src/main/resources/application.yaml`.
 | `APP_PORT` | 8080 | Server port |
 | `TEMP_FOLDER` | /tmp/frigate-analyzer/ | Extracted frames storage |
 | `FFMPEG_PATH` | /usr/bin/ffmpeg | ffmpeg binary path |
+| `FFPROBE_PATH` | /usr/bin/ffprobe | ffprobe binary path; read by `VideoProbe` before an export is re-encoded to fit the Telegram limit. The Alpine image installs it together with ffmpeg |
 
 ## Records Watcher
 
@@ -157,6 +158,19 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 10 | Max invocations within the sliding window. Counter increments when a slot is granted; failed Claude calls (transport errors, retries) do not refund the slot. |
 | `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
+
+## Video Export
+
+Settings under `application.export.compress` in `application.yaml`. They tune the re-encode that
+`TelegramVideoFitter` (core, `video/`) runs when a merged export exceeds 45 MiB — see
+`telegram-export.md`, "Size limit". The 45 MiB budget and the 50 MB acceptance limit are constants
+(`FitLimits.TELEGRAM`), not settings.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EXPORT_COMPRESS_PRESET` | fast | libx264 preset name (`ultrafast` … `placebo`, validated at startup): speed versus compression on the host CPU |
+| `EXPORT_COMPRESS_CRF` | 23 | libx264 quality target (0–51); the bitrate cap from the budget still applies |
+| `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` | 0.1 | Smallest bits-per-pixel a candidate height (1080/720/540 plus the source height, never above it) may have before the next smaller one is tried. Also caps the work handed to libx264 — the budget divided by this value — so lowering it for quality moves the encode towards the ffmpeg timeout |
 
 ## Telegram
 

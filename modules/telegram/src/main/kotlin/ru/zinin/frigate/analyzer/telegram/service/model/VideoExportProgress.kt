@@ -4,5 +4,5 @@ data class VideoExportProgress(
     val stage: Stage,
     val percent: Int? = null,
 ) {
-    enum class Stage { PREPARING, MERGING, COMPRESSING, ANNOTATING, SENDING, DONE }
+    enum class Stage { PREPARING, MERGING, COMPRESSING, ANNOTATING, COMPRESSING_RESULT, SENDING, DONE }
 }

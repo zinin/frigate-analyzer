@@ -74,7 +74,7 @@ Detailed docs in `.claude/rules/` with conditional loading via `paths:` frontmat
 | pipeline.md | Pipeline, facade, tasks, signal-loss monitor, watchers | `**/pipeline/**`, `**/facade/**`, `**/task/**` |
 | detection.md | Load balancer, detect/filter/visualization/export services | `**/loadbalancer/**`, `**/Detect*`, `**/Visualization*`, `**/Filter*` |
 | telegram.md | Bot core: components, queue, auth, ktgbotapi waiter API | `modules/telegram/**` |
-| telegram-export.md | `/export` + Quick Export, cancellation, lock-ordering invariant | `**/handler/export/**`, `**/handler/quickexport/**`, `**/handler/cancel/**` |
+| telegram-export.md | `/export` + Quick Export, size limit (`core.video`), cancellation, lock-ordering invariant | `**/handler/export/**`, `**/handler/quickexport/**`, `**/handler/cancel/**`, `core/**/video/**` |
 | telegram-notifications.md | `/notifications` dialog, `nfs:*` callbacks, per-user/global flag storage | `**/handler/notifications/**` |
 | ai-description.md | Claude Code SDK integration, rate limiter, description agent | `modules/ai-description/**` |
 | configuration.md | All environment variables | `**/application.yaml` |

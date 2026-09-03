@@ -1,21 +1,22 @@
 package ru.zinin.frigate.analyzer.core.helper
 
-import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.core.config.properties.ApplicationProperties
+import ru.zinin.frigate.analyzer.core.video.CompressionPlan
+import ru.zinin.frigate.analyzer.core.video.FfmpegProcessRunner
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
-import java.util.concurrent.TimeUnit
-
-private val logger = KotlinLogging.logger {}
+import java.time.Duration
 
 @Component
 class VideoMergeHelper(
     private val applicationProperties: ApplicationProperties,
     private val tempFileHelper: TempFileHelper,
+    private val processRunner: FfmpegProcessRunner,
 ) {
     suspend fun mergeVideos(filePaths: List<Path>): Path {
         require(filePaths.isNotEmpty()) { "filePaths must not be empty" }
@@ -35,59 +36,98 @@ class VideoMergeHelper(
 
             val outputFile = tempFileHelper.createTempFile("merged-", ".mp4")
             try {
-                runFfmpeg(
-                    listOf(
-                        applicationProperties.ffmpegPath.toString(),
-                        "-hide_banner",
-                        "-f",
-                        "concat",
-                        "-safe",
-                        "0",
-                        "-i",
-                        concatFile.toString(),
-                        "-c",
-                        "copy",
-                        "-y",
-                        outputFile.toString(),
-                    ),
-                )
+                runFfmpeg(buildMergeCommand(concatFile, outputFile))
                 return outputFile
             } catch (e: Exception) {
-                tempFileHelper.deleteIfExists(outputFile)
+                withContext(NonCancellable) { tempFileHelper.deleteIfExists(outputFile) }
                 throw e
             }
         } finally {
-            tempFileHelper.deleteIfExists(concatFile)
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(concatFile) }
         }
     }
 
-    suspend fun compressVideo(inputPath: Path): Path {
+    /**
+     * Re-encodes [inputPath] with [plan]: libx264 at CRF quality capped by `-maxrate`/`-bufsize`,
+     * optionally downscaled, AAC audio or none, `faststart` for streaming playback. The caller
+     * owns both files; on failure the partial output is deleted under [NonCancellable] so that a
+     * cancelled export does not leak it.
+     */
+    suspend fun compressVideo(
+        inputPath: Path,
+        plan: CompressionPlan,
+    ): Path {
         val outputFile = tempFileHelper.createTempFile("compressed-", ".mp4")
         try {
-            runFfmpeg(
-                listOf(
-                    applicationProperties.ffmpegPath.toString(),
-                    "-hide_banner",
-                    "-i",
-                    inputPath.toString(),
-                    "-vcodec",
-                    "libx264",
-                    "-crf",
-                    "28",
-                    "-preset",
-                    "fast",
-                    "-acodec",
-                    "aac",
-                    "-y",
-                    outputFile.toString(),
-                ),
-            )
+            runFfmpeg(buildCompressCommand(inputPath, outputFile, plan))
             return outputFile
         } catch (e: Exception) {
-            tempFileHelper.deleteIfExists(outputFile)
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(outputFile) }
             throw e
         }
     }
+
+    internal fun buildCompressCommand(
+        inputPath: Path,
+        outputFile: Path,
+        plan: CompressionPlan,
+    ): List<String> =
+        buildList {
+            add(applicationProperties.ffmpegPath.toString())
+            add("-hide_banner")
+            add("-nostdin")
+            add("-i")
+            add(inputPath.toString())
+            plan.scaleHeight?.let { height ->
+                add("-vf")
+                add("scale=-2:$height")
+            }
+            add("-c:v")
+            add("libx264")
+            add("-preset")
+            add(plan.preset)
+            add("-crf")
+            add(plan.crf.toString())
+            add("-maxrate")
+            add("${plan.videoMaxrateKbps}k")
+            add("-bufsize")
+            add("${plan.videoMaxrateKbps * 2}k")
+            add("-pix_fmt")
+            add("yuv420p")
+            val audioKbps = plan.audioBitrateKbps
+            if (audioKbps != null) {
+                add("-c:a")
+                add("aac")
+                add("-b:a")
+                add("${audioKbps}k")
+            } else {
+                add("-an")
+            }
+            add("-movflags")
+            add("+faststart")
+            add("-y")
+            add(outputFile.toString())
+        }
+
+    internal fun buildMergeCommand(
+        concatFile: Path,
+        outputFile: Path,
+    ): List<String> =
+        listOf(
+            applicationProperties.ffmpegPath.toString(),
+            "-hide_banner",
+            "-nostdin",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            concatFile.toString(),
+            "-c",
+            "copy",
+            "-y",
+            outputFile.toString(),
+        )
 
     private suspend fun copyToTemp(source: Path): Path {
         val outputFile = tempFileHelper.createTempFile("merged-", ".mp4")
@@ -97,61 +137,18 @@ class VideoMergeHelper(
             }
             return outputFile
         } catch (e: Exception) {
-            tempFileHelper.deleteIfExists(outputFile)
+            withContext(NonCancellable) { tempFileHelper.deleteIfExists(outputFile) }
             throw e
         }
     }
 
     private suspend fun runFfmpeg(command: List<String>) {
-        logger.debug { "Running ffmpeg: ${command.joinToString(" ")}" }
-
-        withContext(Dispatchers.IO) {
-            val process =
-                ProcessBuilder(command)
-                    .redirectErrorStream(true)
-                    .start()
-
-            // Drain stdout in a separate thread so waitFor timeout works correctly
-            val outputLines = mutableListOf<String>()
-            val outputThread =
-                kotlin.concurrent.thread(isDaemon = true) {
-                    process.inputStream.bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            logger.trace { "ffmpeg: $line" }
-                            synchronized(outputLines) {
-                                if (outputLines.size < MAX_OUTPUT_LINES) {
-                                    outputLines.add(line)
-                                }
-                            }
-                        }
-                    }
-                }
-
-            val completed = process.waitFor(FFMPEG_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            if (!completed) {
-                process.destroyForcibly()
-                outputThread.join(OUTPUT_THREAD_JOIN_TIMEOUT_MS)
-                throw RuntimeException("ffmpeg timed out after ${FFMPEG_TIMEOUT_SECONDS}s")
-            }
-            outputThread.join(OUTPUT_THREAD_JOIN_TIMEOUT_MS)
-
-            val exitCode = process.exitValue()
-            if (exitCode != 0) {
-                val lastLines = synchronized(outputLines) { outputLines.takeLast(ERROR_TAIL_LINES) }
-                val errorDetail = if (lastLines.isNotEmpty()) ": ${lastLines.joinToString("\n")}" else ""
-                throw RuntimeException("ffmpeg exited with code $exitCode$errorDetail")
-            }
-        }
+        processRunner.run(command, Duration.ofSeconds(FFMPEG_TIMEOUT_SECONDS))
     }
 
     private fun escapePath(path: Path): String = path.toAbsolutePath().toString().replace("'", "'\\''")
 
     companion object {
-        const val MAX_FILE_SIZE_BYTES = 50L * 1024 * 1024
-        const val COMPRESS_THRESHOLD_BYTES = 45L * 1024 * 1024
         const val FFMPEG_TIMEOUT_SECONDS = 300L
-        private const val MAX_OUTPUT_LINES = 500
-        private const val ERROR_TAIL_LINES = 20
-        private const val OUTPUT_THREAD_JOIN_TIMEOUT_MS = 5000L
     }
 }
