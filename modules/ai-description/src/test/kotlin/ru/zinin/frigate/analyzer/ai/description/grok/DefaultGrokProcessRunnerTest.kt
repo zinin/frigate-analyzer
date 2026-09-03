@@ -8,6 +8,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
+import java.io.ByteArrayInputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
@@ -98,6 +99,23 @@ class DefaultGrokProcessRunnerTest {
             delay(200)
             assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false), "child must be dead after cancel")
         }
+
+    @Test
+    fun `stdout above the cap is Transport without loading the rest`() {
+        val payload = ByteArray(32) { 'x'.code.toByte() }
+        assertFailsWith<DescriptionException.Transport> {
+            DefaultGrokProcessRunner.readAtMost(ByteArrayInputStream(payload), maxBytes = 16)
+        }
+        assertEquals("ok", DefaultGrokProcessRunner.readAtMost(ByteArrayInputStream("ok".toByteArray()), maxBytes = 16))
+    }
+
+    @Test
+    fun `stderr ring keeps the tail`() {
+        val payload = ("a".repeat(20) + "END").toByteArray()
+        val tail = DefaultGrokProcessRunner.readTail(ByteArrayInputStream(payload), maxBytes = 8)
+        assertEquals(8, tail.length)
+        assertTrue(tail.endsWith("END"))
+    }
 
     @Test
     fun `isolated environment keeps PATH and overrides, not arbitrary JVM keys`() {

@@ -8,14 +8,17 @@ import kotlinx.coroutines.withContext
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 private val logger = KotlinLogging.logger {}
 
 /**
- * Запуск `grok` через ProcessBuilder. stdin закрывается сразу, stdout читается целиком, от stderr
- * остаётся хвост в [STDERR_TAIL_BYTES]. Отмена корутины (таймаут агента) убивает процесс в
+ * Запуск `grok` через ProcessBuilder. stdin закрывается сразу. stdout читается потоком до
+ * [STDOUT_MAX_BYTES], превышение — [DescriptionException.Transport]. От stderr остаётся хвост
+ * [STDERR_TAIL_BYTES] в кольцевом буфере. Отмена корутины (таймаут агента) убивает процесс в
  * `finally` и ждёт [KILL_WAIT_TIMEOUT_MS]; если child не уходит, слот агента всё равно
  * освобождается.
  */
@@ -39,8 +42,8 @@ class DefaultGrokProcessRunner : GrokProcessRunner {
                 }
             try {
                 process.outputStream.close()
-                val stdout = async { process.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8) }
-                val stderr = async { tail(process.errorStream.use { it.readBytes() }) }
+                val stdout = async { process.inputStream.use { readAtMost(it, STDOUT_MAX_BYTES) } }
+                val stderr = async { process.errorStream.use { readTail(it, STDERR_TAIL_BYTES) } }
                 val exitCode = process.onExit().await().exitValue()
                 GrokProcessResult(exitCode, stdout.await(), stderr.await())
             } finally {
@@ -56,16 +59,55 @@ class DefaultGrokProcessRunner : GrokProcessRunner {
             }
         }
 
-    private fun tail(bytes: ByteArray): String =
-        if (bytes.size <= STDERR_TAIL_BYTES) {
-            bytes.toString(Charsets.UTF_8)
-        } else {
-            bytes.copyOfRange(bytes.size - STDERR_TAIL_BYTES, bytes.size).toString(Charsets.UTF_8)
-        }
-
     companion object {
         const val STDERR_TAIL_BYTES = 8 * 1024
+        const val STDOUT_MAX_BYTES = 16 * 1024 * 1024
         const val KILL_WAIT_TIMEOUT_MS = 5_000L
+
+        fun readAtMost(
+            stream: InputStream,
+            maxBytes: Int,
+        ): String {
+            val out = ByteArrayOutputStream()
+            val chunk = ByteArray(8192)
+            var total = 0
+            while (true) {
+                val n = stream.read(chunk)
+                if (n < 0) break
+                if (total + n > maxBytes) {
+                    throw DescriptionException.Transport(detail = "grok stdout exceeded $maxBytes bytes")
+                }
+                out.write(chunk, 0, n)
+                total += n
+            }
+            return out.toString(Charsets.UTF_8)
+        }
+
+        fun readTail(
+            stream: InputStream,
+            maxBytes: Int,
+        ): String {
+            val ring = ByteArray(maxBytes)
+            var filled = 0
+            var pos = 0
+            val chunk = ByteArray(8192)
+            while (true) {
+                val n = stream.read(chunk)
+                if (n < 0) break
+                for (i in 0 until n) {
+                    ring[pos] = chunk[i]
+                    pos = (pos + 1) % maxBytes
+                    if (filled < maxBytes) filled++
+                }
+            }
+            if (filled < maxBytes) {
+                return String(ring, 0, filled, Charsets.UTF_8)
+            }
+            val result = ByteArray(maxBytes)
+            System.arraycopy(ring, pos, result, 0, maxBytes - pos)
+            System.arraycopy(ring, 0, result, maxBytes - pos, pos)
+            return String(result, Charsets.UTF_8)
+        }
 
         private val INHERITED_KEYS = listOf("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "USER", "LOGNAME", "TERM")
 
