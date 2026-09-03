@@ -18,12 +18,19 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionProviderAuthEvent
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import java.awt.Color
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
+import javax.imageio.ImageIO
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.TimeSource
 
@@ -76,6 +83,22 @@ class DefaultDescriptionAgentTest {
         timeSource = timeSource,
     )
 
+    private fun jpeg(
+        width: Int,
+        height: Int,
+    ): ByteArray {
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+        val graphics = image.createGraphics()
+        repeat(40) { i ->
+            graphics.color = Color(i * 6 % 256, (i * 13) % 256, (i * 29) % 256)
+            graphics.fillRect(i * width / 40, 0, width / 40 + 1, height)
+        }
+        graphics.dispose()
+        val out = ByteArrayOutputStream()
+        ImageIO.write(image, "jpeg", out)
+        return out.toByteArray()
+    }
+
     private fun authEvents() = events.filterIsInstance<DescriptionProviderAuthEvent>()
 
     @Test
@@ -84,6 +107,51 @@ class DefaultDescriptionAgentTest {
             val agent = build(FakeBackend { ok })
             assertEquals(ok, agent.describe(request))
             assertTrue(authEvents().isEmpty())
+        }
+
+    @Test
+    fun `frames are downscaled once before the backend sees them`() =
+        runTest {
+            val big = jpeg(1920, 1080)
+            val seen = mutableListOf<DescriptionRequest>()
+            var first = true
+            val backend =
+                FakeBackend { request ->
+                    seen += request
+                    if (first) {
+                        first = false
+                        throw DescriptionException.InvalidResponse(detail = "retry me")
+                    }
+                    ok
+                }
+
+            val agent = build(backend, common.copy(maxImageSide = 1568))
+            agent.describe(request.copy(frames = listOf(DescriptionRequest.FrameImage(0, big))))
+
+            assertEquals(2, seen.size)
+            val delivered = seen.map { it.frames.single().bytes }
+            assertFalse(delivered.first().contentEquals(big), "backend must get the resized frame")
+            // Повтор идёт по тем же байтам: уменьшение живёт до цикла попыток.
+            assertTrue(delivered[0].contentEquals(delivered[1]))
+            assertEquals(1568, ImageIO.read(ByteArrayInputStream(delivered.first())).width)
+        }
+
+    @Test
+    fun `frames are left alone when the limit is disabled`() =
+        runTest {
+            val big = jpeg(1920, 1080)
+            var seen: ByteArray? = null
+            val agent =
+                build(
+                    FakeBackend {
+                        seen = it.frames.single().bytes
+                        ok
+                    },
+                )
+
+            agent.describe(request.copy(frames = listOf(DescriptionRequest.FrameImage(0, big))))
+
+            assertSame(big, seen)
         }
 
     @Test

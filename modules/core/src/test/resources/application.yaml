@@ -50,6 +50,7 @@ application:
         short-max-length: 200
         detailed-max-length: 1500
         max-frames: 10
+        max-image-side: 0
         queue-timeout: 30s
         timeout: 60s
         max-concurrent: 2

@@ -151,6 +151,7 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 | `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (the `<p>` above the frames). |
 | `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (the `<details>` body). |
 | `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. Validated `1..50`, but the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. |
+| `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | 0 | Longest frame side in pixels before the model call; `0` sends frames at camera resolution. Validated `0` or `256..8192`. Vision endpoints bill by image area, and some gateways drop an image above their own limit without saying so — the LiteLLM gateway in front of DKS-Vision ignores anything wider than 1568 px and the model answers "frame unavailable". Resizing happens once per request in `DefaultDescriptionAgent`, before the provider attempt, so both providers get it. |
 | `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | 30s | Max wait for a free concurrency slot. |
 | `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous description requests. |
@@ -164,7 +165,7 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `GROK_MODEL` | grok-4.6 | Model id, or the name of a `[model.<name>]` BYOK entry from `GROK_HOME/config.toml`. Must not be blank even when the provider is `claude`. |
-| `GROK_EFFORT` | low | Reasoning effort passed as `--effort`. Empty = the flag is not passed, which BYOK models without reasoning levels need. grok-4.6 accepts `low`, `medium`, `high`, `xhigh`. |
+| `GROK_EFFORT` | low | Reasoning effort passed as `--effort`. Empty = the flag is not passed, which BYOK models without reasoning levels need. grok-4.6 accepts `low`, `medium`, `high`, `xhigh` and rejects anything else before calling the model (exit 1); BYOK models may also accept `max` when their `config.toml` declares it. `high` costs ~5x the wall-clock of `low` on grok-4.6 for a frame description and adds little. |
 | `GROK_CLI_PATH` | (empty) | Explicit binary; empty = `grok` from `PATH`. |
 | `GROK_HOME` | `<TEMP_FOLDER>/grok-home` | Grok's own directory: `auth.json`, optional `config.toml`, sessions. The same variable drives a manual `grok login` inside `docker compose exec`, so `docker-compose.yml` sets it to the mounted `./grok-home`. Must be writable by uid 1000: the refresh token rotates and is written back. `GrokHomeSweeper` empties `sessions/` and `logs/` hourly. |
 | `GROK_WORKING_DIR` | `<TEMP_FOLDER>/grok-cwd` | Empty directory passed as `--cwd`; Grok reads `AGENTS.md`, `CLAUDE.md`, `.claude/rules` and `.grok` from there, so keep it empty. |

@@ -28,6 +28,14 @@ data class DescriptionProperties(
         val detailedMaxLength: Int,
         @field:Min(1) @field:Max(50)
         val maxFrames: Int,
+        /**
+         * Длинная сторона кадра в пикселях перед отправкой модели; `0` — отдавать как есть.
+         * Кадры приходят в разрешении камеры, а vision-эндпоинты часто режут по длинной стороне
+         * (гейт LiteLLM молча выбрасывает картинку больше 1568 px) и всегда считают токены по
+         * площади. Уменьшение делается один раз на запрос, до попыток провайдера.
+         */
+        @field:Min(0) @field:Max(8192)
+        val maxImageSide: Int = 0,
         val queueTimeout: Duration,
         val timeout: Duration,
         @field:Min(1) @field:Max(10)
@@ -40,6 +48,9 @@ data class DescriptionProperties(
         val rateLimit: RateLimit = RateLimit(),
     ) {
         init {
+            require(maxImageSide == 0 || maxImageSide >= 256) {
+                "max-image-side must be 0 (disabled) or at least 256, was $maxImageSide"
+            }
             require(queueTimeout.toMillis() > 0) { "queue-timeout must be positive" }
             require(timeout.toMillis() > 0) { "timeout must be positive" }
         }

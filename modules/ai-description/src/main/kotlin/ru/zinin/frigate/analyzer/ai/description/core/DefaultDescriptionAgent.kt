@@ -2,9 +2,11 @@ package ru.zinin.frigate.analyzer.ai.description.core
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.springframework.context.ApplicationEventPublisher
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
@@ -58,9 +60,12 @@ class DefaultDescriptionAgent(
 
         val callStart = timeSource.markNow()
         try {
+            // Уменьшение кадров держим под семафором, но вне withTimeout: это CPU-работа, чей
+            // размер известен заранее, и она не должна съедать бюджет, отпущенный модели.
+            val prepared = downscaleFrames(request)
             return try {
                 withTimeout(commonSection.timeout.toMillis()) {
-                    executeWithRetry(request)
+                    executeWithRetry(prepared)
                 }
             } catch (e: TimeoutCancellationException) {
                 throw DescriptionException.Timeout(cause = e)
@@ -72,6 +77,25 @@ class DefaultDescriptionAgent(
             }
             semaphore.release()
         }
+    }
+
+    /** Один проход на запрос, до повторов: провайдер получает уже готовые кадры. */
+    private suspend fun downscaleFrames(request: DescriptionRequest): DescriptionRequest {
+        val maxSide = commonSection.maxImageSide
+        if (maxSide <= 0 || request.frames.isEmpty()) return request
+        val before = request.frames.sumOf { it.bytes.size }
+        val frames =
+            withContext(Dispatchers.Default) {
+                request.frames.map { frame -> frame.copy(bytes = FrameDownscaler.downscale(frame.bytes, maxSide)) }
+            }
+        val after = frames.sumOf { it.bytes.size }
+        if (after != before) {
+            logger.debug {
+                "Downscaled ${frames.size} frames of recording ${request.recordingId} to <=$maxSide px: " +
+                    "$before -> $after bytes"
+            }
+        }
+        return request.copy(frames = frames)
     }
 
     private suspend fun executeWithRetry(request: DescriptionRequest): DescriptionResult {

@@ -105,6 +105,10 @@ application:
         short-max-length: ${APP_AI_DESCRIPTION_SHORT_MAX:200}
         detailed-max-length: ${APP_AI_DESCRIPTION_DETAILED_MAX:1500}
         max-frames: ${APP_AI_DESCRIPTION_MAX_FRAMES:10}
+        # Длинная сторона кадра в пикселях перед отправкой модели; 0 = отдавать как есть.
+        # Кадры идут в разрешении камеры: токены считаются по площади, а некоторые
+        # vision-шлюзы молча выбрасывают картинку больше своего предела (1568 px у LiteLLM).
+        max-image-side: ${APP_AI_DESCRIPTION_MAX_IMAGE_SIDE:0}
         queue-timeout: ${APP_AI_DESCRIPTION_QUEUE_TIMEOUT:30s}
         timeout: ${APP_AI_DESCRIPTION_TIMEOUT:60s}
         max-concurrent: ${APP_AI_DESCRIPTION_MAX_CONCURRENT:2}
