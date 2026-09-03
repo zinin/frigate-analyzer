@@ -29,8 +29,11 @@ class DefaultGrokProcessRunner : GrokProcessRunner {
                 try {
                     ProcessBuilder(command.argv)
                         .directory(command.workingDirectory.toFile())
-                        .also { it.environment().putAll(command.environment) }
-                        .start()
+                        .also { builder ->
+                            val env = builder.environment()
+                            env.keys.toList().forEach { env.remove(it) }
+                            env.putAll(isolatedEnvironment(command.environment))
+                        }.start()
                 } catch (e: IOException) {
                     throw DescriptionException.Transport(e, "cannot start ${command.argv.first()}: ${e.message}")
                 }
@@ -63,5 +66,25 @@ class DefaultGrokProcessRunner : GrokProcessRunner {
     companion object {
         const val STDERR_TAIL_BYTES = 8 * 1024
         const val KILL_WAIT_TIMEOUT_MS = 5_000L
+
+        private val INHERITED_KEYS = listOf("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "USER", "LOGNAME", "TERM")
+
+        /**
+         * Env дочернего процесса: не копия JVM. PATH/HOME/locale, затем `GROK_*`/`XAI_*` с хоста
+         * (BYOK `env_key`), затем [overrides] (`GROK_HOME`, изоляция, прокси).
+         */
+        fun isolatedEnvironment(overrides: Map<String, String>): Map<String, String> {
+            val env = linkedMapOf<String, String>()
+            INHERITED_KEYS.forEach { key ->
+                System.getenv(key)?.let { env[key] = it }
+            }
+            System.getenv().forEach { (key, value) ->
+                if (key.startsWith("GROK_") || key.startsWith("XAI_")) {
+                    env[key] = value
+                }
+            }
+            env.putAll(overrides)
+            return env
+        }
     }
 }

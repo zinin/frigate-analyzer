@@ -66,9 +66,10 @@ grok --prompt-file <file> --json-schema '{…short,detailed…}' --output-format
 ```
 
 with `GROK_HOME=<home>`, `GROK_DISABLE_AUTOUPDATER=1`, `GROK_MEMORY=0`, `GROK_SUBAGENTS=0` and
-`GROK_CLAUDE_*_ENABLED=0` / `GROK_CURSOR_*_ENABLED=0` on top of the JVM environment (Grok otherwise
-loads Claude Code skills, rules and plugins from `HOME`). `--tools read_file` is only an allowlist that
-disables default tool injection; frames are inline, the model needs no tool. `--effort` is omitted
+`GROK_CLAUDE_*_ENABLED=0` / `GROK_CURSOR_*_ENABLED=0`. The child env is not a copy of the JVM:
+`ProcessBuilder` is cleared, then PATH/HOME/locale, host `GROK_*`/`XAI_*` (BYOK `env_key`), and the
+command map. `--tools read_file` is an allowlist that disables default tool injection;
+`--disallowed-tools read_file` then removes that one tool. Frames are inline. `--effort` is omitted
 when blank so BYOK models without reasoning levels work.
 
 Output classification (`GrokExceptionMapper`): `{"type":"error","message":…}` on stdout, regardless of

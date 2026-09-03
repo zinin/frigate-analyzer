@@ -46,6 +46,8 @@ class GrokCommandBuilderTest {
                 "1",
                 "--tools",
                 "read_file",
+                "--disallowed-tools",
+                "read_file",
                 "--no-plan",
                 "--no-subagents",
                 "--disable-web-search",

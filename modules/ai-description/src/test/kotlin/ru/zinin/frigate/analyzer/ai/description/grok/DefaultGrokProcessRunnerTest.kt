@@ -100,6 +100,21 @@ class DefaultGrokProcessRunnerTest {
         }
 
     @Test
+    fun `isolated environment keeps PATH and overrides, not arbitrary JVM keys`() {
+        val env = DefaultGrokProcessRunner.isolatedEnvironment(mapOf("GROK_HOME" to "/data/home"))
+        assertEquals("/data/home", env["GROK_HOME"])
+        assertTrue(
+            env.keys.all { key ->
+                key in setOf("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "USER", "LOGNAME", "TERM") ||
+                    key.startsWith("GROK_") ||
+                    key.startsWith("XAI_")
+            },
+        )
+        assertFalse("TELEGRAM_BOT_TOKEN" in env)
+        assertFalse("DB_PASS" in env)
+    }
+
+    @Test
     fun `missing binary is Transport`() {
         runBlocking {
             assertFailsWith<DescriptionException.Transport> {

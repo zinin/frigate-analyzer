@@ -8,10 +8,11 @@ import java.nio.file.Path
 /**
  * Собирает argv и env для одного headless-вызова Grok Build. Флаги зафиксированы spec-ом:
  * `--json-schema` даёт готовый объект в `structuredOutput`; `--tools read_file` это allowlist,
- * который отключает инъекцию инструментов по умолчанию (кадры уже inline, инструмент модели не
- * нужен); `--max-turns 1` запрещает второй ход; `--system-prompt-override` заменяет промпт
- * кодового агента; `--cwd` указывает на пустой каталог. Env изолирует процесс от skills, rules и
- * плагинов Claude Code и Cursor, которые Grok иначе читает из HOME.
+ * который отключает инъекцию инструментов по умолчанию, а `--disallowed-tools read_file` снимает
+ * и этот один инструмент (кадры уже inline); `--max-turns 1` запрещает второй ход;
+ * `--system-prompt-override` заменяет промпт кодового агента; `--cwd` указывает на пустой каталог.
+ * Env изолирует процесс от skills, rules и плагинов Claude Code и Cursor, которые Grok иначе
+ * читает из HOME.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -38,6 +39,8 @@ class GrokCommandBuilder(
                 add("--max-turns")
                 add("1")
                 add("--tools")
+                add("read_file")
+                add("--disallowed-tools")
                 add("read_file")
                 add("--no-plan")
                 add("--no-subagents")
