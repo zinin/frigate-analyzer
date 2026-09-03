@@ -76,6 +76,18 @@ class GrokOutputParserTest {
     }
 
     @Test
+    fun `blank structured fields are completed from the text instead of being kept`() {
+        val stdout =
+            """{"text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}","structuredOutput":{"short":"","detailed":"  "},"stopReason":"end_turn"}"""
+
+        val output = parser.parse(stdout)
+
+        assertEquals("Bike", output.short)
+        assertEquals("A bike.", output.detailed)
+        assertTrue(output.fromText)
+    }
+
+    @Test
     fun `missing structured output yields null fields`() {
         val output = parser.parse("""{"text":"sorry","stopReason":"max_tokens","sessionId":"s"}""")
 

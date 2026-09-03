@@ -150,6 +150,10 @@ application:
           http: ${GROK_HTTP_PROXY:}
           https: ${GROK_HTTPS_PROXY:}
           no-proxy: ${GROK_NO_PROXY:}
+        # Имена переменных окружения, которые нужно передать дочернему grok дословно, через запятую.
+        # Нужно для BYOK-модели, чей [model.<name>] в config.toml ссылается на env_key с именем
+        # вне префиксов GROK_ и XAI_ — иначе ключ до grok не доедет.
+        pass-through-env: ${GROK_PASS_THROUGH_ENV:}
   detection-filter:
     enabled: ${DETECTION_FILTER_ENABLED:true}
     allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe}

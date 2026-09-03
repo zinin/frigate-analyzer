@@ -23,6 +23,14 @@ class GrokPropertiesBindingTest {
         assertThat(props.proxy.http).isEmpty()
         assertThat(props.proxy.https).isEmpty()
         assertThat(props.proxy.noProxy).isEmpty()
+        assertThat(props.passThroughEnv).isEmpty()
+    }
+
+    @Test
+    fun `GROK_PASS_THROUGH_ENV binds to the list of names`() {
+        val props = bind(env = mapOf("GROK_PASS_THROUGH_ENV" to "MY_GATEWAY_KEY,SECOND_KEY"))
+
+        assertThat(props.passThroughEnv).containsExactly("MY_GATEWAY_KEY", "SECOND_KEY")
     }
 
     @Test

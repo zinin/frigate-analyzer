@@ -14,6 +14,7 @@ class GrokCommandBuilderTest {
         http: String = "",
         https: String = "",
         noProxy: String = "",
+        passThroughEnv: List<String> = emptyList(),
     ) = GrokProperties(
         cliPath = cliPath,
         model = "grok-4.6",
@@ -21,6 +22,7 @@ class GrokCommandBuilderTest {
         home = "/data/grok-home",
         workingDirectory = "/data/grok-cwd",
         proxy = GrokProperties.ProxySection(http, https, noProxy),
+        passThroughEnv = passThroughEnv,
     )
 
     private val promptFile = Path.of("/tmp/frigate-analyzer/prompt.json")
@@ -113,6 +115,33 @@ class GrokCommandBuilderTest {
         assertFalse(without.contains("--json-schema"))
         assertFalse(without.contains(GrokCommandBuilder.JSON_SCHEMA))
         assertEquals(withSchema.filterNot { it == "--json-schema" || it == GrokCommandBuilder.JSON_SCHEMA }, without)
+    }
+
+    @Test
+    fun `listed environment variables are handed to the child process`() {
+        val host = mapOf("MY_GATEWAY_KEY" to "secret", "DB_PASS" to "must not leak")
+
+        val env =
+            GrokCommandBuilder(props(passThroughEnv = listOf("MY_GATEWAY_KEY", "ABSENT_KEY")), host::get)
+                .build(promptFile)
+                .environment
+
+        assertEquals("secret", env["MY_GATEWAY_KEY"])
+        assertFalse(env.containsKey("ABSENT_KEY"))
+        assertFalse(env.containsKey("DB_PASS"))
+    }
+
+    @Test
+    fun `a pass-through name cannot override the grok home or the isolation flags`() {
+        val host = mapOf("GROK_HOME" to "/home/developer/.grok", "GROK_MEMORY" to "1")
+
+        val env =
+            GrokCommandBuilder(props(passThroughEnv = listOf("GROK_HOME", "GROK_MEMORY")), host::get)
+                .build(promptFile)
+                .environment
+
+        assertEquals("/data/grok-home", env["GROK_HOME"])
+        assertEquals("0", env["GROK_MEMORY"])
     }
 
     @Test

@@ -51,8 +51,10 @@ class GrokOutputParser(
         return GrokOutput(
             stopReason = node["stopReason"]?.textOrNull(),
             sessionId = node["sessionId"]?.textOrNull(),
-            short = short ?: fallback?.get("short")?.textOrNull(),
-            detailed = detailed ?: fallback?.get("detailed")?.textOrNull(),
+            // takeUnless, а не Elvis: пустая строка в structuredOutput это тот же «поля нет»,
+            // и держаться за неё значило бы выбросить готовый ответ из текста.
+            short = short?.takeUnless { it.isBlank() } ?: fallback?.get("short")?.textOrNull(),
+            detailed = detailed?.takeUnless { it.isBlank() } ?: fallback?.get("detailed")?.textOrNull(),
             usageSummary = usageSummary(node),
             fromText = fallback != null,
         )

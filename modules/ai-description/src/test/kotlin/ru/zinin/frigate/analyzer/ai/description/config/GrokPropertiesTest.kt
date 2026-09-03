@@ -4,6 +4,7 @@ import jakarta.validation.Validation
 import jakarta.validation.Validator
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -13,15 +14,18 @@ import kotlin.test.assertTrue
 class GrokPropertiesTest {
     private val validator: Validator = Validation.buildDefaultValidatorFactory().validator
 
-    private fun props(effort: String) =
-        GrokProperties(
-            cliPath = "",
-            model = "grok-4.6",
-            effort = effort,
-            home = "/tmp/frigate-analyzer/grok-home",
-            workingDirectory = "/tmp/frigate-analyzer/grok-cwd",
-            proxy = GrokProperties.ProxySection("", "", ""),
-        )
+    private fun props(
+        effort: String,
+        passThroughEnv: List<String> = emptyList(),
+    ) = GrokProperties(
+        cliPath = "",
+        model = "grok-4.6",
+        effort = effort,
+        home = "/tmp/frigate-analyzer/grok-home",
+        workingDirectory = "/tmp/frigate-analyzer/grok-cwd",
+        proxy = GrokProperties.ProxySection("", "", ""),
+        passThroughEnv = passThroughEnv,
+    )
 
     @Test
     fun `levels grok accepts pass validation`() {
@@ -37,6 +41,16 @@ class GrokPropertiesTest {
             assertEquals(1, violations.size, "effort='$effort' must be rejected")
             assertTrue(violations.first().message.contains("low, medium, high, xhigh, max"))
         }
+    }
+
+    @Test
+    fun `pass-through names must look like environment variables`() {
+        props("low", listOf("MY_GATEWAY_KEY", "_key2"))
+
+        val e = assertFailsWith<IllegalArgumentException> { props("low", listOf("MY KEY")) }
+        assertTrue(e.message!!.contains("MY KEY"))
+        assertFailsWith<IllegalArgumentException> { props("low", listOf("2KEY")) }
+        assertFailsWith<IllegalArgumentException> { props("low", listOf("")) }
     }
 
     @Test

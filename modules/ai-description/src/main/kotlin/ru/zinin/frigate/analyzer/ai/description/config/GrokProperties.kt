@@ -37,12 +37,30 @@ data class GrokProperties(
     val workingDirectory: String,
     @field:Valid
     val proxy: ProxySection,
+    /**
+     * Имена переменных окружения JVM, которые нужно передать дочернему `grok` дословно. Дочернее
+     * окружение собирается с нуля, и из хоста наследуются только `GROK_*` и `XAI_*`, поэтому BYOK-модель
+     * с `env_key = "MY_GATEWAY_KEY"` в `config.toml` иначе осталась бы без ключа. Всё, что здесь не
+     * перечислено и не начинается с этих префиксов, до `grok` не доходит — включая `DB_PASS` и
+     * `TELEGRAM_BOT_TOKEN`.
+     */
+    val passThroughEnv: List<String> = emptyList(),
 ) {
+    init {
+        passThroughEnv.forEach { name ->
+            require(ENV_NAME.matches(name)) { "pass-through-env entry '$name' is not an environment variable name" }
+        }
+    }
+
     val homePath: Path
         get() = Path.of(home).toAbsolutePath().normalize()
 
     val workingDirectoryPath: Path
         get() = Path.of(workingDirectory).toAbsolutePath().normalize()
+
+    companion object {
+        private val ENV_NAME = Regex("[A-Za-z_][A-Za-z0-9_]*")
+    }
 
     data class ProxySection(
         val http: String,

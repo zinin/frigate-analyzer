@@ -19,6 +19,8 @@ import java.nio.file.Path
 @ConditionalOnProperty("application.ai.description.provider", havingValue = "grok")
 class GrokCommandBuilder(
     private val properties: GrokProperties,
+    /** Окружение JVM; параметром — чтобы тесты не зависели от переменных машины. */
+    private val environmentSource: (String) -> String? = System::getenv,
 ) {
     /**
      * [structuredOutput] `false` убирает `--json-schema`: эндпоинт BYOK-модели отверг схему
@@ -64,6 +66,10 @@ class GrokCommandBuilder(
             }
         val environment =
             buildMap {
+                // Первыми, чтобы опечатка в pass-through-env не перебила GROK_HOME или прокси.
+                properties.passThroughEnv.forEach { name ->
+                    environmentSource(name)?.let { value -> put(name, value) }
+                }
                 put("GROK_HOME", properties.homePath.toString())
                 putAll(ISOLATION_ENV)
                 val proxy = properties.proxy
