@@ -22,6 +22,9 @@ services:
       - ${FRIGATE_RECORDS_FOLDER:-/mnt/data/frigate/recordings}:/mnt/data/frigate/recordings:ro
       - ./application-docker.yaml:/application/config/application-docker.yaml:ro
       - ./logs:/application/logs
+      # Grok Build home (provider=grok): auth.json, optional config.toml with BYOK models, sessions.
+      # Create it on the host first: mkdir -p grok-home && sudo chown 1000:1000 grok-home
+      - ./grok-home:/application/grok-home
       # Uncomment to override log4j2 config (copy log4j2.yaml.example to log4j2.yaml first):
       # - ./log4j2.yaml:/application/config/log4j2.yaml:ro
     environment:
@@ -29,6 +32,7 @@ services:
       - FRIGATE_RECORDS_FOLDER=/mnt/data/frigate/recordings
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - APP_LOG_LEVEL=${APP_LOG_LEVEL:-info}
+      - GROK_HOME=/application/grok-home
     ports:
       - "${HOST_PORT:-8080}:8080"
     healthcheck:
