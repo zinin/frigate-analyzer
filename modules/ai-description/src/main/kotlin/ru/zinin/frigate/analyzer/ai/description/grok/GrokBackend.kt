@@ -36,6 +36,14 @@ class GrokBackend(
     override val authRecoveryHint: String =
         "grok login --device-code (in Docker: docker compose exec frigate-analyzer grok login --device-code)"
 
+    /**
+     * Схема поддержана, пока эндпоинт не доказал обратное. Первый отказ по `response_format`/grammar
+     * переводит провайдер на текстовый JSON до конца жизни процесса: модель фиксирована свойствами,
+     * так что повторно платить за проверку незачем.
+     */
+    @Volatile
+    private var schemaSupported: Boolean = true
+
     init {
         val home = properties.homePath
         val cwd = properties.workingDirectoryPath
@@ -60,15 +68,31 @@ class GrokBackend(
                     "with their own api_key in config.toml"
             }
         }
+        logger.info {
+            "Grok description backend: model=${properties.model}, effort=${effortForLog()}, home=$home, cwd=$cwd"
+        }
     }
 
     override suspend fun describe(request: DescriptionRequest): DescriptionResult {
         var promptFile: Path? = null
         try {
-            promptFile = promptFileWriter.write(request)
-            val command = commandBuilder.build(promptFile)
-            val result = guard.shared { runner.run(command) }
-            val errorMessage = outputParser.errorMessage(result.stdout)
+            val file = promptFileWriter.write(request)
+            promptFile = file
+            logger.debug {
+                "Grok request for recording ${request.recordingId}: model=${properties.model}, effort=${effortForLog()}, " +
+                    "json-schema=${if (schemaSupported) "on" else "off"}, frames=${request.frames.size}"
+            }
+            var result = runGrok(file, schemaSupported)
+            var errorMessage = outputParser.errorMessage(result.stdout)
+            if (errorMessage != null && schemaSupported && exceptionMapper.isStructuredOutputUnsupported(errorMessage)) {
+                logger.warn {
+                    "Model ${properties.model} does not accept --json-schema ($errorMessage); retrying without it " +
+                        "and reading the JSON out of the response text from now on"
+                }
+                schemaSupported = false
+                result = runGrok(file, structuredOutput = false)
+                errorMessage = outputParser.errorMessage(result.stdout)
+            }
             if (errorMessage != null) {
                 throw exceptionMapper.fromFailure(result.exitCode, errorMessage, result.stderrTail)
             }
@@ -77,7 +101,8 @@ class GrokBackend(
             }
             val output = outputParser.parse(result.stdout)
             logger.debug {
-                "Grok describe for recording ${request.recordingId}: ${output.usageSummary}, " +
+                "Grok describe for recording ${request.recordingId}: model=${properties.model}, effort=${effortForLog()}, " +
+                    "fields=${if (output.fromText) "text" else "structuredOutput"}, ${output.usageSummary}, " +
                     "stopReason=${output.stopReason}, session=${output.sessionId}"
             }
             if (!output.short.isNullOrBlank() && !output.detailed.isNullOrBlank()) {
@@ -88,6 +113,16 @@ class GrokBackend(
             promptFile?.let { promptFileWriter.delete(it) }
         }
     }
+
+    private suspend fun runGrok(
+        promptFile: Path,
+        structuredOutput: Boolean,
+    ): GrokProcessResult {
+        val command = commandBuilder.build(promptFile, structuredOutput)
+        return guard.shared { runner.run(command) }
+    }
+
+    private fun effortForLog(): String = properties.effort.ifBlank { "<none>" }
 
     private fun cliAvailable(): Boolean {
         val cliPath = properties.cliPath

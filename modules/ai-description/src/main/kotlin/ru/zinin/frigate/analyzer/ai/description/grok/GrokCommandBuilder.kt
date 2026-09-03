@@ -20,14 +20,23 @@ import java.nio.file.Path
 class GrokCommandBuilder(
     private val properties: GrokProperties,
 ) {
-    fun build(promptFile: Path): GrokCommand {
+    /**
+     * [structuredOutput] `false` убирает `--json-schema`: эндпоинт BYOK-модели отверг схему
+     * (`response_format` / grammar), и ответ будет разобран из текстового JSON.
+     */
+    fun build(
+        promptFile: Path,
+        structuredOutput: Boolean = true,
+    ): GrokCommand {
         val argv =
             buildList {
                 add(properties.cliPath.ifBlank { "grok" })
                 add("--prompt-file")
                 add(promptFile.toAbsolutePath().normalize().toString())
-                add("--json-schema")
-                add(JSON_SCHEMA)
+                if (structuredOutput) {
+                    add("--json-schema")
+                    add(JSON_SCHEMA)
+                }
                 add("--output-format")
                 add("json")
                 add("-m")

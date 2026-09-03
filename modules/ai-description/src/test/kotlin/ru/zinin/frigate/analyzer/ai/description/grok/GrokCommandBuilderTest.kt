@@ -106,6 +106,16 @@ class GrokCommandBuilderTest {
     }
 
     @Test
+    fun `structured output disabled drops the json-schema flag and keeps everything else`() {
+        val withSchema = GrokCommandBuilder(props()).build(promptFile).argv
+        val without = GrokCommandBuilder(props()).build(promptFile, structuredOutput = false).argv
+
+        assertFalse(without.contains("--json-schema"))
+        assertFalse(without.contains(GrokCommandBuilder.JSON_SCHEMA))
+        assertEquals(withSchema.filterNot { it == "--json-schema" || it == GrokCommandBuilder.JSON_SCHEMA }, without)
+    }
+
+    @Test
     fun `json schema requires exactly short and detailed`() {
         assertTrue(GrokCommandBuilder.JSON_SCHEMA.contains("\"required\":[\"short\",\"detailed\"]"))
         assertTrue(GrokCommandBuilder.JSON_SCHEMA.contains("\"additionalProperties\":false"))

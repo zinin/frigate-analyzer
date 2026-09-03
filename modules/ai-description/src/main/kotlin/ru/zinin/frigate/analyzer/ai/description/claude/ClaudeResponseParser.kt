@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.core.JsonBlockExtractor
 import ru.zinin.frigate.analyzer.ai.description.core.ResultNormalizer
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
@@ -22,7 +23,7 @@ class ClaudeResponseParser(
         shortMaxLength: Int,
         detailedMaxLength: Int,
     ): DescriptionResult {
-        val jsonText = extractJsonBlock(raw)
+        val jsonText = JsonBlockExtractor.extract(raw)
         val node: JsonNode =
             try {
                 objectMapper.readTree(jsonText)
@@ -34,13 +35,5 @@ class ClaudeResponseParser(
         val short = node["short"]?.takeUnless { it.isNull }?.asText()
         val detailed = node["detailed"]?.takeUnless { it.isNull }?.asText()
         return ResultNormalizer.normalize(short, detailed, shortMaxLength, detailedMaxLength)
-    }
-
-    private fun extractJsonBlock(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed
-        val start = trimmed.indexOf('{')
-        val end = trimmed.lastIndexOf('}')
-        return if (start in 0 until end) trimmed.substring(start, end + 1) else trimmed
     }
 }

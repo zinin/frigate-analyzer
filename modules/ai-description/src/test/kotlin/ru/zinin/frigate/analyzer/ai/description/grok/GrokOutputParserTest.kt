@@ -36,6 +36,46 @@ class GrokOutputParserTest {
     }
 
     @Test
+    fun `structured output wins and is not marked as text`() {
+        assertEquals(false, parser.parse(success).fromText)
+    }
+
+    @Test
+    fun `fields are read from the response text when the model ignored the schema`() {
+        val stdout =
+            """{"text":"{\"short\":\"Bike\",\"detailed\":\"A bike by the fence.\"}","stopReason":"end_turn","sessionId":"s"}"""
+
+        val output = parser.parse(stdout)
+
+        assertEquals("Bike", output.short)
+        assertEquals("A bike by the fence.", output.detailed)
+        assertTrue(output.fromText)
+    }
+
+    @Test
+    fun `json fenced in markdown inside the text is still read`() {
+        val stdout =
+            """{"text":"```json\n{\"short\":\"Bike\",\"detailed\":\"A bike.\"}\n```","stopReason":"end_turn"}"""
+
+        val output = parser.parse(stdout)
+
+        assertEquals("Bike", output.short)
+        assertEquals("A bike.", output.detailed)
+        assertTrue(output.fromText)
+    }
+
+    @Test
+    fun `partial structured output is completed from the text`() {
+        val stdout =
+            """{"text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}","structuredOutput":{"short":"Bike"},"stopReason":"end_turn"}"""
+
+        val output = parser.parse(stdout)
+
+        assertEquals("Bike", output.short)
+        assertEquals("A bike.", output.detailed)
+    }
+
+    @Test
     fun `missing structured output yields null fields`() {
         val output = parser.parse("""{"text":"sorry","stopReason":"max_tokens","sessionId":"s"}""")
 

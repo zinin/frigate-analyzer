@@ -3,6 +3,7 @@ package ru.zinin.frigate.analyzer.ai.description.grok
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -80,6 +81,30 @@ class GrokExceptionMapperTest {
     fun `without error json and stderr the exit code alone is the detail`() {
         val e = mapper.fromFailure(2, null, "   ")
         assertEquals("Description provider transport error: exit 2: grok exited with code 2", e.message)
+    }
+
+    @Test
+    fun `schema rejection is recognised on the messages real endpoints return`() {
+        val litellm =
+            "API error (status 400 Bad Request): invalid_request_error: litellm.BadRequestError: " +
+                "Custom_openaiException - Failed to initialize samplers: failed to parse grammar. " +
+                "Received Model Group=DKS-Vision"
+        val deepseek = "API error (status 400 Bad Request): invalid_request_error: This response_format type is unavailable now"
+
+        assertTrue(mapper.isStructuredOutputUnsupported(litellm))
+        assertTrue(mapper.isStructuredOutputUnsupported(deepseek))
+    }
+
+    @Test
+    fun `other failures are not mistaken for schema rejection`() {
+        assertFalse(mapper.isStructuredOutputUnsupported("Not signed in. To authenticate without a browser, run: grok login"))
+        assertFalse(mapper.isStructuredOutputUnsupported("API error (status 429): rate limit exceeded"))
+        assertFalse(mapper.isStructuredOutputUnsupported("connection refused"))
+    }
+
+    @Test
+    fun `schema rejection stays a transport error for the agent`() {
+        assertIs<DescriptionException.Transport>(mapper.fromFailure(1, "This response_format type is unavailable now", ""))
     }
 
     @Test

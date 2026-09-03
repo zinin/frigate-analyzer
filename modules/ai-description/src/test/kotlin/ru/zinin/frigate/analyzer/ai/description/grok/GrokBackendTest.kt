@@ -17,6 +17,7 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class GrokBackendTest {
@@ -116,6 +117,62 @@ class GrokBackendTest {
             val e = assertFailsWith<DescriptionException.Unauthorized> { backend.describe(request) }
             assertTrue(e.detail.startsWith("Not signed in"))
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
+    fun `schema rejection is retried without the flag and the answer is read from the text`() =
+        runTest {
+            val commands = mutableListOf<GrokCommand>()
+            val schemaError =
+                """{"type":"error","message":"API error (status 400 Bad Request): This response_format type is unavailable now"}"""
+            val textAnswer =
+                """{"stopReason":"end_turn","text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}"}"""
+            val backend =
+                backend(
+                    GrokProcessRunner { command ->
+                        commands += command
+                        if (command.argv.contains("--json-schema")) result(1, schemaError) else result(0, textAnswer)
+                    },
+                )
+
+            assertEquals(DescriptionResult("Bike", "A bike."), backend.describe(request))
+            assertEquals(2, commands.size)
+            assertTrue(commands[0].argv.contains("--json-schema"))
+            assertFalse(commands[1].argv.contains("--json-schema"))
+            coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
+    fun `schema rejection is remembered so later calls skip the flag`() =
+        runTest {
+            val commands = mutableListOf<GrokCommand>()
+            val schemaError =
+                """{"type":"error","message":"litellm.BadRequestError: failed to parse grammar. Received Model Group=DKS-Vision"}"""
+            val textAnswer =
+                """{"stopReason":"end_turn","text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}"}"""
+            val backend =
+                backend(
+                    GrokProcessRunner { command ->
+                        commands += command
+                        if (command.argv.contains("--json-schema")) result(1, schemaError) else result(0, textAnswer)
+                    },
+                )
+
+            backend.describe(request)
+            backend.describe(request)
+
+            assertEquals(3, commands.size)
+            assertFalse(commands[2].argv.contains("--json-schema"))
+        }
+
+    @Test
+    fun `a schema rejection that repeats without the flag is reported as Transport`() =
+        runTest {
+            val schemaError =
+                """{"type":"error","message":"This response_format type is unavailable now"}"""
+            val backend = backend(GrokProcessRunner { result(1, schemaError) })
+
+            assertFailsWith<DescriptionException.Transport> { backend.describe(request) }
         }
 
     @Test

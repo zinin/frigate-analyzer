@@ -35,6 +35,16 @@ class GrokExceptionMapper {
         }
     }
 
+    /**
+     * Эндпоинт модели не принимает `--json-schema`. Проверено на BYOK-моделях: LiteLLM-гейт отвечает
+     * `failed to parse grammar`, DeepSeek — `This response_format type is unavailable now`. Такой
+     * запуск повторяется без схемы, а ответ читается из текстового JSON.
+     */
+    fun isStructuredOutputUnsupported(message: String): Boolean {
+        val lower = message.lowercase()
+        return SCHEMA_MARKERS.any { it in lower }
+    }
+
     /** exit 0, но structured output неполный: решает stopReason. */
     fun fromStopReason(stopReason: String?): DescriptionException =
         when (stopReason) {
@@ -69,6 +79,18 @@ class GrokExceptionMapper {
             )
         val REFRESH_TOKEN_CONTEXT = listOf("invalid", "expired", "rejected", "failed", "revoked")
         val RATE_LIMIT_MARKERS = listOf("rate limit", "too many requests")
+        val SCHEMA_MARKERS =
+            listOf(
+                "response_format",
+                "response format",
+                "json_schema",
+                "json schema",
+                "--json-schema",
+                "structured output",
+                "structured_output",
+                "parse grammar",
+                "invalid grammar",
+            )
         val RATE_LIMIT_429 = Regex("\\b429\\b")
         val AUTH_401 = Regex("\\b401\\b")
     }

@@ -25,7 +25,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
 | Core | `DescriptionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry |
 | Core | `DefaultDescriptionAgent` | `core/` | Semaphore, queue/work timeouts, retry policy, auth state machine |
-| Core | `ResultNormalizer` / `LanguageNames` | `core/` | Blank-field check + `…` truncation; language names for prompts |
+| Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
 | Claude | `ClaudeImageStager`, `ClaudePromptBuilder`, `ClaudeInvoker`/`DefaultClaudeInvoker`, `ClaudeAsyncClientFactory`, `ClaudeResponseParser`, `ClaudeExceptionMapper` | `claude/` | Claude specifics; all gated on `provider=claude` |
 | Grok | `GrokBackend` | `grok/` | prompt.json → process → `structuredOutput` |
@@ -72,12 +72,34 @@ command map. `--tools read_file` is an allowlist that disables default tool inje
 `--disallowed-tools read_file` then removes that one tool. Frames are inline. `--effort` is omitted
 when blank so BYOK models without reasoning levels work.
 
+**Models that do not support `--json-schema`.** Only xAI endpoints reliably apply the schema. BYOK
+models from `config.toml` either ignore it (the object arrives in `text`, sometimes inside a
+` ```json ` fence) or reject the request outright — a LiteLLM gateway answers `failed to parse
+grammar`, DeepSeek `This response_format type is unavailable now`. Three things make the provider
+model-agnostic:
+
+- the prompt rules always ask for `{"short": …, "detailed": …}` as text, so an unconstrained model
+  still answers in the expected shape;
+- `GrokOutputParser` falls back to the JSON found in `text` (via `core/JsonBlockExtractor`, shared
+  with `ClaudeResponseParser`) whenever `structuredOutput` is missing or partial, and reports which
+  source was used through `GrokOutput.fromText`;
+- on an error whose message matches `GrokExceptionMapper.isStructuredOutputUnsupported`
+  (`response_format`, `json_schema`, `parse grammar`, …) `GrokBackend` re-runs the same prompt file
+  once without `--json-schema` and keeps the flag off for the rest of the process lifetime
+  (`@Volatile schemaSupported`; the model is fixed by properties, so probing again would just cost
+  tokens). Both attempts share the agent's single `timeout`, so the very first description after
+  startup may time out on a slow endpoint — the next one goes straight to the schema-less form.
+
+`GrokBackend` logs `model` and `effort` at INFO once at startup, and per recording at DEBUG:
+`model=…, effort=…, json-schema=on|off, frames=N` before the run and
+`model=…, effort=…, fields=structuredOutput|text, input_tokens=…` after it.
+
 Output classification (`GrokExceptionMapper`): `{"type":"error","message":…}` on stdout, regardless of
 exit code → `Unauthorized` when the message mentions `not signed in`, `grok login`, `not authenticated`,
 `unauthorized`, `invalid_grant`, `authentication failed`, `invalid api key`, or `refresh token`
 together with invalid/expired/rejected/failed/revoked, or `401` with HTTP/status/API context;
 `RateLimited` on `rate limit`, `too many requests`, or `429` with HTTP/status/API context; everything else `Transport`
-with the stderr tail. Exit 0 with both `structuredOutput` fields → result; exit 0 with `stopReason`
+with the stderr tail. Exit 0 with both description fields (from `structuredOutput` or from the text JSON) → result; exit 0 with `stopReason`
 `max_tokens` / `refusal` / `max_turn_requests` or a partial object → `InvalidResponse`; `cancelled` →
 `Transport`. Token usage and cost are logged at DEBUG.
 

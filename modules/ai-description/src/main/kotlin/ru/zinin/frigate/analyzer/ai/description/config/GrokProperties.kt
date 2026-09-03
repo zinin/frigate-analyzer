@@ -19,10 +19,14 @@ data class GrokProperties(
     /** Модель xAI или имя `[model.<name>]` BYOK-записи из `config.toml` в [home]. */
     @field:NotBlank
     val model: String,
-    /** Пусто = флаг `--effort` не передаётся (BYOK-модели без уровней reasoning). */
+    /**
+     * Пусто = флаг `--effort` не передаётся (BYOK-модели без уровней reasoning). Набор уровней
+     * grok 1.0.13 проверяет до вызова модели: `none` и `minimal` он отвергает с exit 1, `max`
+     * принимает у BYOK-моделей, объявивших его в `reasoning_efforts`.
+     */
     @field:Pattern(
-        regexp = "|none|minimal|low|medium|high|xhigh",
-        message = "must be empty or one of none, minimal, low, medium, high, xhigh",
+        regexp = "|low|medium|high|xhigh|max",
+        message = "must be empty or one of low, medium, high, xhigh, max",
     )
     val effort: String,
     /** `GROK_HOME` дочернего процесса: `auth.json`, `config.toml`, сессии. В контейнере это том. */

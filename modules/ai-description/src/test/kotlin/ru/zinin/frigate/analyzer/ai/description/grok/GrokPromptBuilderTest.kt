@@ -38,8 +38,15 @@ class GrokPromptBuilderTest {
     }
 
     @Test
-    fun `system prompt forbids tools and asks for structured output`() {
-        assertTrue(GrokPromptBuilder.SYSTEM_PROMPT.contains("structured output"))
+    fun `rules ask for a plain JSON object so models without schema support can answer`() {
+        val rules = builder.rules(150, 800)
+        assertTrue(rules.contains("Return ONLY this JSON object"))
+        assertTrue(rules.contains("""{"short": "...", "detailed": "..."}"""))
+    }
+
+    @Test
+    fun `system prompt forbids tools and asks for the JSON object`() {
+        assertTrue(GrokPromptBuilder.SYSTEM_PROMPT.contains("JSON object"))
         assertTrue(GrokPromptBuilder.SYSTEM_PROMPT.contains("Do not call tools"))
     }
 }

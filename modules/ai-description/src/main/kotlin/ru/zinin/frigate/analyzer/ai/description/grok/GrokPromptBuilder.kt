@@ -6,8 +6,9 @@ import ru.zinin.frigate.analyzer.ai.description.core.LanguageNames
 
 /**
  * Текстовые части промпта для Grok. Кадры идут отдельными image-блоками между [frameLabel]-ами,
- * см. [GrokPromptFileWriter]. Ответ приходит через `--json-schema`, поэтому правила говорят о полях
- * structured output, а не о JSON в тексте.
+ * см. [GrokPromptFileWriter]. Правила просят JSON-объект текстом, а не «заполни structured output»:
+ * xAI-модели всё равно отдают его в `structuredOutput` по `--json-schema`, а BYOK-эндпоинты, которые
+ * схему не применяют или не принимают, кладут тот же объект в `text` — [GrokOutputParser] читает оба.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -28,17 +29,19 @@ class GrokPromptBuilder {
         detailedMaxLength: Int,
     ): String =
         buildString {
-            appendLine("Fill the structured output fields \"short\" and \"detailed\".")
+            appendLine("Return ONLY this JSON object (no prose around it):")
+            appendLine("""{"short": "...", "detailed": "..."}""")
+            appendLine()
             appendLine("Rules:")
             appendLine("- \"short\" must not exceed $shortMaxLength characters.")
             appendLine("- \"detailed\" must not exceed $detailedMaxLength characters.")
-            append("- No markdown, no explanations.")
+            append("- No markdown, no explanations - just the JSON object.")
         }
 
     companion object {
         /** Для `--system-prompt-override`: вместо стандартного промпта кодового агента. */
         const val SYSTEM_PROMPT =
             "You describe frames from a security camera for a notification message. " +
-                "Answer only through the structured output. Do not call tools and do not ask questions."
+                "Answer only with the requested JSON object. Do not call tools and do not ask questions."
     }
 }
