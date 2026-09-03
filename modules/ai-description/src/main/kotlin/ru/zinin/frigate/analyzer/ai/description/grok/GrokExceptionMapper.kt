@@ -21,7 +21,7 @@ class GrokExceptionMapper {
         val message = errorMessage ?: stderrTail.trim().ifBlank { "grok exited with code $exitCode" }
         val lower = message.lowercase()
         return when {
-            AUTH_MARKERS.any { it in lower } -> {
+            isUnauthorized(lower) -> {
                 DescriptionException.Unauthorized(message)
             }
 
@@ -42,6 +42,13 @@ class GrokExceptionMapper {
             else -> DescriptionException.InvalidResponse(detail = "no structured output, stopReason=${stopReason ?: "unknown"}")
         }
 
+    private fun isUnauthorized(lower: String): Boolean {
+        if (AUTH_MARKERS.any { it in lower }) return true
+        if ("refresh token" in lower && REFRESH_TOKEN_CONTEXT.any { it in lower }) return true
+        return AUTH_401.containsMatchIn(lower) &&
+            ("http" in lower || "status" in lower || "api" in lower)
+    }
+
     private fun isRateLimited(lower: String): Boolean {
         if (RATE_LIMIT_MARKERS.any { it in lower }) return true
         return RATE_LIMIT_429.containsMatchIn(lower) &&
@@ -56,10 +63,13 @@ class GrokExceptionMapper {
                 "not authenticated",
                 "unauthorized",
                 "invalid_grant",
-                "refresh token",
                 "authentication failed",
+                "invalid api key",
+                "invalid_api_key",
             )
+        val REFRESH_TOKEN_CONTEXT = listOf("invalid", "expired", "rejected", "failed", "revoked")
         val RATE_LIMIT_MARKERS = listOf("rate limit", "too many requests")
         val RATE_LIMIT_429 = Regex("\\b429\\b")
+        val AUTH_401 = Regex("\\b401\\b")
     }
 }

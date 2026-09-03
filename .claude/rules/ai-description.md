@@ -74,8 +74,9 @@ when blank so BYOK models without reasoning levels work.
 
 Output classification (`GrokExceptionMapper`): `{"type":"error","message":…}` on stdout, regardless of
 exit code → `Unauthorized` when the message mentions `not signed in`, `grok login`, `not authenticated`,
-`unauthorized`, `invalid_grant`, `refresh token`, `authentication failed`; `RateLimited` on
-`rate limit`, `too many requests`, or `429` with HTTP/status/API context; everything else `Transport`
+`unauthorized`, `invalid_grant`, `authentication failed`, `invalid api key`, or `refresh token`
+together with invalid/expired/rejected/failed/revoked, or `401` with HTTP/status/API context;
+`RateLimited` on `rate limit`, `too many requests`, or `429` with HTTP/status/API context; everything else `Transport`
 with the stderr tail. Exit 0 with both `structuredOutput` fields → result; exit 0 with `stopReason`
 `max_tokens` / `refusal` / `max_turn_requests` or a partial object → `InvalidResponse`; `cancelled` →
 `Transport`. Token usage and cost are logged at DEBUG.

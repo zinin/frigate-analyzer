@@ -25,9 +25,19 @@ class GrokExceptionMapperTest {
             "token refresh failed: invalid_grant",
             "Refresh token rejected by auth.x.ai",
             "Authentication failed",
+            "invalid api key",
+            "invalid_api_key for model dks-vision",
+            "HTTP 401 from x.ai",
         ).forEach { message ->
             assertIs<DescriptionException.Unauthorized>(mapper.fromFailure(1, message, ""), message)
         }
+    }
+
+    @Test
+    fun `refresh token without an auth verb is Transport`() {
+        assertIs<DescriptionException.Transport>(
+            mapper.fromFailure(1, "proxy dropped the Refresh token header", ""),
+        )
     }
 
     @Test
