@@ -37,7 +37,7 @@ Use `/build` command for automated build with error handling.
 | common | Utilities (UUID, clock) |
 | model | Entities, DTOs, requests/responses |
 | service | Business logic, repositories, MapStruct mappers |
-| ai-description | AI-generated detection descriptions via Claude Code SDK |
+| ai-description | AI-generated detection descriptions; providers: Claude Code SDK, Grok Build CLI |
 | telegram | Bot, notifications, authorization, AI description editing |
 | core | Spring Boot app, controllers, pipeline, tasks, signal-loss monitor |
 
@@ -49,7 +49,7 @@ Main chain: `core` → `telegram` → `service` → `model` → `common`. Cross-
 - **Detection:** Priority-based load balancing across multiple servers
 - **Signal-loss monitor:** Polls latest recording per camera, alerts on gap > threshold
 - **Object tracking:** Cross-recording IoU matching to suppress duplicate notifications
-- **AI description:** Async Claude Code CLI invocation with rate-limit + queue, edits notification message
+- **AI description:** Provider-neutral agent (semaphore, retry, auth-loss alert to owner) over `DescriptionBackend`; Claude Code SDK or headless Grok Build CLI; edits the notification message
 - **Database:** R2DBC reactive, Liquibase migrations in `docker/liquibase/migration/`
 - **Mapping:** MapStruct with KAPT (`unmappedTargetPolicy=error`)
 - **Logging:** kotlin-logging with Log4j2
@@ -76,7 +76,7 @@ Detailed docs in `.claude/rules/` with conditional loading via `paths:` frontmat
 | telegram.md | Bot core: components, queue, auth, ktgbotapi waiter API | `modules/telegram/**` |
 | telegram-export.md | `/export` + Quick Export, size limit (`core.video`), cancellation, lock-ordering invariant | `**/handler/export/**`, `**/handler/quickexport/**`, `**/handler/cancel/**`, `core/**/video/**` |
 | telegram-notifications.md | `/notifications` dialog, `nfs:*` callbacks, per-user/global flag storage | `**/handler/notifications/**` |
-| ai-description.md | Claude Code SDK integration, rate limiter, description agent | `modules/ai-description/**` |
+| ai-description.md | Provider SPI, Claude and Grok backends, auth alerts, rate limiter | `modules/ai-description/**` |
 | configuration.md | All environment variables | `**/application.yaml` |
 | database.md | Schema, migrations | `**/liquibase/**`, `**/repository/**`, `**/entity/**`, `**/persistent/**` |
 | telegram-timeout-bug.md | ktgbotapi long-polling timeout workaround status | `**/TelegramAutoConfiguration*` |

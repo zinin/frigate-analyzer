@@ -1,36 +1,108 @@
 ---
-paths: "modules/ai-description/**,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*"
+paths: "modules/ai-description/**,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*,**/DescriptionAuthAlertNotifier*"
 ---
 
 # AI Description Module
 
-Optional module that generates short and detailed natural-language descriptions of detections by
-invoking the Claude Code CLI via `org.springaicommunity:claude-code-sdk`. Gated by
-`application.ai.description.enabled` — when `false`, no bean is created, no Claude binary is
-required, and the notification goes out with `DescriptionState.Absent`: no description blocks,
-no edit job.
+Optional module that generates short and detailed natural-language descriptions of detections and
+edits them into the Telegram notification. Two providers, selected by
+`application.ai.description.provider`: `claude` (Claude Code CLI via `org.springaicommunity:claude-code-sdk`)
+and `grok` (Grok Build CLI from xAI, headless via `ProcessBuilder`). Gated by
+`application.ai.description.enabled` — when `false`, no agent bean is created, no CLI is required, and
+the notification goes out with `DescriptionState.Absent`: no description blocks, no edit job.
 
-The `claude` CLI binary is installed into the runtime container by `docker/deploy/Dockerfile`
-(`curl -fsSL https://claude.ai/install.sh | bash`); local development must have `claude` on `PATH`.
+Both CLIs are installed into the runtime container by `docker/deploy/Dockerfile` (`claude.ai/install.sh`
+and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs the chosen binary on
+`PATH` or an explicit `*_CLI_PATH`.
 
 ## Layers
 
 | Layer | Component | Location | Purpose |
 |-------|-----------|----------|---------|
 | API | `DescriptionAgent` | `api/` | Single-method `suspend fun describe(request): DescriptionResult` |
-| API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs |
-| API | `TempFileWriter` | `api/` | Filesystem abstraction for staging images |
-| Claude impl | `ClaudeDescriptionAgent` | `claude/` | Orchestrates stage → prompt → invoke → parse |
-| Claude impl | `ClaudeImageStager` | `claude/` | Writes frame bytes to temp files for `claude` CLI |
-| Claude impl | `ClaudePromptBuilder` | `claude/` | Builds prompt with language/format/max-length rules |
-| Claude impl | `ClaudeInvoker` / `DefaultClaudeInvoker` | `claude/` | Wraps `ClaudeAsyncClient` from spring-ai-claude-code-sdk |
-| Claude impl | `ClaudeAsyncClientFactory` | `claude/` | Builds the async client (concurrency, timeout, binary path) |
-| Claude impl | `ClaudeResponseParser` | `claude/` | Parses JSON `{short, detailed}` reply, applies max-length truncation |
-| Claude impl | `ClaudeExceptionMapper` | `claude/` | Maps SDK exceptions → `DescriptionException` taxonomy |
-| Config | `AiDescriptionAutoConfiguration` | `config/` | Spring auto-config gated by `enabled=true` + `provider=claude` |
-| Config | `DescriptionProperties` / `ClaudeProperties` | `config/` | `@ConfigurationProperties` for `application.ai.description.*` |
-| Config | `DescriptionAgentSanityChecker` | `config/` | Startup smoke-test (invokes `claude --version` or similar) |
+| API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs; `DescriptionException` is provider-neutral: `Timeout`, `InvalidResponse`, `Transport`, `RateLimited`, `Unauthorized` |
+| API | `DescriptionProviderAuthEvent` | `api/` | Spring event `LOST` / `RESTORED`, one per transition |
+| API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
+| Core | `DescriptionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry |
+| Core | `DefaultDescriptionAgent` | `core/` | Semaphore, queue/work timeouts, retry policy, auth state machine |
+| Core | `ResultNormalizer` / `LanguageNames` | `core/` | Blank-field check + `…` truncation; language names for prompts |
+| Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
+| Claude | `ClaudeImageStager`, `ClaudePromptBuilder`, `ClaudeInvoker`/`DefaultClaudeInvoker`, `ClaudeAsyncClientFactory`, `ClaudeResponseParser`, `ClaudeExceptionMapper` | `claude/` | Claude specifics; all gated on `provider=claude` |
+| Grok | `GrokBackend` | `grok/` | prompt.json → process → `structuredOutput` |
+| Grok | `GrokPromptBuilder`, `GrokPromptFileWriter` | `grok/` | Prompt text, ACP content blocks with inline base64 frames |
+| Grok | `GrokCommandBuilder`, `GrokProcessRunner`/`DefaultGrokProcessRunner` | `grok/` | argv + isolated env; `ProcessBuilder` with cancellation-safe kill |
+| Grok | `GrokOutputParser`, `GrokExceptionMapper` | `grok/` | JSON stdout, error envelope, classification |
+| Grok | `GrokHomeGuard`, `GrokHomeSweeper` | `grok/` | shared/exclusive lock on `GROK_HOME`; hourly cleanup of `sessions/` and `logs/` |
+| Config | `AiDescriptionAutoConfiguration` | `config/` | Registers properties; creates the agent `@Bean` when a `DescriptionBackend` exists |
+| Config | `DescriptionProperties` / `ClaudeProperties` / `GrokProperties` | `config/` | `@ConfigurationProperties` for `application.ai.description.*`; both provider sections bind always |
+| Config | `DescriptionAgentSanityChecker` | `config/` | WARN when `enabled=true` but no agent (unknown provider) |
 | Limits | `DescriptionRateLimiter` | `ratelimit/` | Sliding-window throttle; `tryAcquire()` returns false when quota exceeded |
+
+## Provider selection and retry
+
+Backends are `@Component`s gated on `enabled=true` and `provider=<id>`. The agent is a `@Bean` in the
+auto-configuration guarded by `@ConditionalOnBean(DescriptionBackend::class)`, so an unknown provider
+yields no agent, a WARN from `DescriptionAgentSanityChecker`, and notifications without placeholders.
+Consumers (`RecordingProcessingFacade`, telegram) use `ObjectProvider<DescriptionAgent>` and never see
+the provider.
+
+`DefaultDescriptionAgent` retries once on `InvalidResponse` (immediately) and once on `Transport`
+(after 5 s), each only if enough of `timeout` is left (5 s and 10 s respectively). `Timeout`,
+`RateLimited` and `Unauthorized` are not retried. Anything a backend throws that is not a
+`DescriptionException` becomes `Transport`.
+
+## Grok invocation
+
+Per recording `GrokPromptFileWriter` writes `prompt.json` (suffix mandatory: any other extension is
+read as plain text) with ACP content blocks: intro text, then `Frame N:` + `{"type":"image",
+"mimeType":"image/jpeg","data":"<base64>"}` per frame in `frameIndex` order, then the rules.
+`GrokCommandBuilder` runs:
+
+```
+grok --prompt-file <file> --json-schema '{…short,detailed…}' --output-format json -m <model>
+     [--effort <effort>] --max-turns 1 --tools read_file --no-plan --no-subagents
+     --disable-web-search --permission-mode bypassPermissions --no-auto-update
+     --system-prompt-override "<constant>" --cwd <working-directory>
+```
+
+with `GROK_HOME=<home>`, `GROK_DISABLE_AUTOUPDATER=1`, `GROK_MEMORY=0`, `GROK_SUBAGENTS=0` and
+`GROK_CLAUDE_*_ENABLED=0` / `GROK_CURSOR_*_ENABLED=0` on top of the JVM environment (Grok otherwise
+loads Claude Code skills, rules and plugins from `HOME`). `--tools read_file` is only an allowlist that
+disables default tool injection; frames are inline, the model needs no tool. `--effort` is omitted
+when blank so BYOK models without reasoning levels work.
+
+Output classification (`GrokExceptionMapper`): exit 0 with both `structuredOutput` fields → result;
+exit 0 with `stopReason` `max_tokens` / `refusal` / `max_turn_requests` or a partial object →
+`InvalidResponse`; `cancelled` → `Transport`; non-zero exit with `{"type":"error","message":…}` on
+stdout → `Unauthorized` when the message mentions `not signed in`, `grok login`, `not authenticated`,
+`unauthorized`, `invalid_grant`, `refresh token`, `authentication failed`; `RateLimited` on
+`rate limit`, `too many requests`, `429`; everything else `Transport` with the stderr tail. Token usage
+and cost are logged at DEBUG.
+
+**GROK_HOME hygiene.** Every headless run persists a session under `GROK_HOME/sessions/<cwd>/<id>/`
+with the base64 frames, and `sessions/session_search.sqlite` grows ~9 KB per run without shrinking.
+`GrokHomeSweeper` runs one minute after startup and then hourly under `GrokHomeGuard.exclusive`
+(waits for in-flight runs, blocks new ones for milliseconds) and deletes everything under `sessions/`
+plus the files in `logs/`. `auth.json` and `config.toml` are never touched. The app must be the only
+user of that `GROK_HOME`; `grok login` creates no sessions.
+
+**Credentials.** OAuth via `grok login --device-code` inside the container; the access token lives
+6 hours and refreshes itself, the refresh token rotates, so `auth.json` must never be copied from
+another machine. BYOK models are `[model.<name>]` entries in `GROK_HOME/config.toml` with their own
+`api_key`/`env_key`; the app only passes `-m <name>`.
+
+## Authorization alerts
+
+`DefaultDescriptionAgent` keeps an `AtomicReference` of `HEALTHY`/`LOST`. The first `Unauthorized`
+after a success (or startup) flips it and publishes `DescriptionProviderAuthEvent(LOST, detail,
+recoveryHint)` with an ERROR log; the first success afterwards flips it back and publishes `RESTORED`.
+`compareAndSet` guarantees one event per transition under concurrency. Calls are not short-circuited
+while `LOST`: a failing `grok` exits fast and costs nothing, and the next success is what restores.
+
+`DescriptionAuthAlertNotifier` (core, `application/`, gated on telegram and ai enabled) listens and
+calls `TelegramNotificationService.sendOwnerMessage` with `ai.description.auth.lost` /
+`ai.description.auth.restored` (args: provider, recovery hint), appending the provider's technical
+detail trimmed to 300 characters. Rate-limiter slots are never refunded on failure.
 
 ## Integration with Telegram
 
@@ -39,7 +111,7 @@ When a notification is enqueued and AI description is enabled:
 1. `TelegramNotificationSender` sends the rich message rendered with `DescriptionState.Pending` —
    the short and detailed placeholders (only if `DescriptionRateLimiter.tryAcquire()` succeeded).
 2. `DescriptionEditJobRunner` (in `telegram/queue/`) launches a coroutine on `DescriptionEditScope`
-   that awaits `DescriptionAgent.describe(...)`. One Claude call per recording fans out to one
+   that awaits `DescriptionAgent.describe(...)`. One model call per recording fans out to one
    `EditTarget` per recipient.
 3. **One** edit closes the flow per recipient: `EditChatMessageRichText` with the HTML re-rendered
    for `DescriptionState.Ready` (model text) or `DescriptionState.Failed` (the
@@ -66,31 +138,41 @@ sense when there's a chat to edit.
 ## Rate Limiting
 
 - `DescriptionRateLimiter` enforces a sliding window (`max` requests per `window`).
-- Counter increments **when a slot is granted**; failed Claude calls do NOT refund the slot —
+- Counter increments **when a slot is granted**; failed model calls do NOT refund the slot —
   this is intentional to keep cost predictable when the binary is misbehaving.
 - When the limit is exceeded, the recording is sent with `DescriptionState.Absent` — no
-  placeholders, no edit job, no Claude call.
+  placeholders, no edit job, no model call.
 - Disable with `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED=false`.
 
 ## Concurrency
 
-- `APP_AI_DESCRIPTION_MAX_CONCURRENT` (default `2`) bounds simultaneous Claude calls — enforced
-  inside `ClaudeAsyncClientFactory` via a `Semaphore`.
+- `APP_AI_DESCRIPTION_MAX_CONCURRENT` (default `2`) bounds simultaneous model calls — enforced
+  inside `DefaultDescriptionAgent` via a `Semaphore`; for Grok that is also the number of `grok`
+  processes alive at once.
 - `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` (default `30s`) — max wait for a free slot before failing
   the describe call.
-- `APP_AI_DESCRIPTION_TIMEOUT` (default `60s`) — per-call timeout (including any internal
-  retries by the SDK).
+- `APP_AI_DESCRIPTION_TIMEOUT` (default `60s`) — per-call timeout including the agent's retries;
+  on expiry the Grok process is killed.
 
 ## Configuration
 
 All variables documented in `.claude/rules/configuration.md` under "AI Description". Key flags:
 
 - `APP_AI_DESCRIPTION_ENABLED` — master gate
-- `APP_AI_DESCRIPTION_PROVIDER` — currently only `claude`
+- `APP_AI_DESCRIPTION_PROVIDER` — `claude` or `grok`
 - `APP_AI_DESCRIPTION_LANGUAGE` — `ru` or `en`
 - `APP_AI_DESCRIPTION_SHORT_MAX` / `APP_AI_DESCRIPTION_DETAILED_MAX` — character caps for the
   short paragraph and the `<details>` body
 - `APP_AI_DESCRIPTION_MAX_FRAMES` — frames forwarded to the model per recording
-- `CLAUDE_MAX_BUFFER_SIZE` — max size of one JSON message from the CLI (default 16MB). The CLI
+- `CLAUDE_MAX_BUFFER_SIZE` — max size of one JSON message from the Claude CLI (default 16MB). The CLI
   echoes every frame the model reads back as base64, so the SDK's 1 MiB default overflowed on
   ~800 KB frames; an oversized line is dropped with `Failed to process message (continuing)`
+- `GROK_MODEL`, `GROK_EFFORT`, `GROK_HOME`, `GROK_WORKING_DIR`, `GROK_CLI_PATH`, `GROK_*_PROXY` — Grok
+  section, see `configuration.md`
+
+## Testing
+
+Unit tests use fakes at the seams: `DescriptionBackend` for the agent, `ClaudeInvoker` for Claude,
+`GrokProcessRunner` for Grok. `DefaultGrokProcessRunnerTest` runs a stub `grok` shell script
+(POSIX only) and covers stdout/stderr capture, environment, and the kill on cancellation.
+`AiDescriptionAutoConfigurationTest` covers `provider=claude`, `provider=grok` and an unknown provider.

@@ -141,12 +141,12 @@ The reference form (`${FIRST_SCAN_PERIOD:${application.records-watcher.watch-per
 
 ## AI Description
 
-Settings under `application.ai.description` in `application.yaml`. Enables AI-generated short and detailed descriptions of detections via Claude (or future providers). Requires `APP_AI_DESCRIPTION_ENABLED=true`.
+Settings under `application.ai.description` in `application.yaml`. Enables AI-generated short and detailed descriptions of detections via Claude Code CLI or Grok Build CLI. Requires `APP_AI_DESCRIPTION_ENABLED=true`. Both provider sections bind on every deployment, so their defaults must stay valid regardless of `APP_AI_DESCRIPTION_PROVIDER`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `APP_AI_DESCRIPTION_ENABLED` | false | Master flag for AI description. When `false`, no Claude calls, no placeholders, no edit jobs. |
-| `APP_AI_DESCRIPTION_PROVIDER` | claude | Provider implementation. Currently only `claude` is supported. |
+| `APP_AI_DESCRIPTION_PROVIDER` | claude | Provider implementation: `claude` or `grok`. An unknown value logs a WARN at startup and every recording goes out without description blocks. |
 | `APP_AI_DESCRIPTION_LANGUAGE` | en | Reply language. `ru` or `en`. |
 | `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (the `<p>` above the frames). |
 | `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (the `<details>` body). |
@@ -158,6 +158,22 @@ Settings under `application.ai.description` in `application.yaml`. Enables AI-ge
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 10 | Max invocations within the sliding window. Counter increments when a slot is granted; failed Claude calls (transport errors, retries) do not refund the slot. |
 | `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
+
+### Grok provider (`APP_AI_DESCRIPTION_PROVIDER=grok`)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GROK_MODEL` | grok-4.6 | Model id, or the name of a `[model.<name>]` BYOK entry from `GROK_HOME/config.toml`. Must not be blank even when the provider is `claude`. |
+| `GROK_EFFORT` | low | Reasoning effort passed as `--effort`. Empty = the flag is not passed, which BYOK models without reasoning levels need. grok-4.6 accepts `low`, `medium`, `high`, `xhigh`. |
+| `GROK_CLI_PATH` | (empty) | Explicit binary; empty = `grok` from `PATH`. |
+| `GROK_HOME` | `<TEMP_FOLDER>/grok-home` | Grok's own directory: `auth.json`, optional `config.toml`, sessions. The same variable drives a manual `grok login` inside `docker compose exec`, so `docker-compose.yml` sets it to the mounted `./grok-home`. Must be writable by uid 1000: the refresh token rotates and is written back. `GrokHomeSweeper` empties `sessions/` and `logs/` hourly. |
+| `GROK_WORKING_DIR` | `<TEMP_FOLDER>/grok-cwd` | Empty directory passed as `--cwd`; Grok reads `AGENTS.md`, `CLAUDE.md`, `.claude/rules` and `.grok` from there, so keep it empty. |
+| `GROK_HTTP_PROXY` / `GROK_HTTPS_PROXY` / `GROK_NO_PROXY` | (empty) | Passed to the `grok` process as `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` when set. |
+
+First sign-in: `mkdir -p grok-home && sudo chown 1000:1000 grok-home`, `docker compose up -d`, then
+`docker compose exec frigate-analyzer grok login --device-code`. Never copy `auth.json` from another
+machine. When the credentials stop working the owner receives one Telegram message per outage with
+the command to run, and another when descriptions work again.
 
 ## Video Export
 

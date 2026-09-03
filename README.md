@@ -173,21 +173,39 @@ All settings use environment variables with sensible defaults. Key variables:
 
 ### AI description (optional)
 
-When enabled, generates a short and a detailed natural-language description of detections via the
-Claude Code CLI and edits them into the notification. Requires `claude` on `PATH` and an OAuth
-token (`claude setup-token`).
+When enabled, generates a short and a detailed natural-language description of detections and edits
+them into the notification. Two providers: the Claude Code CLI (`claude`) and the xAI Grok Build CLI
+(`grok`). Both binaries ship in the image; pick one with `APP_AI_DESCRIPTION_PROVIDER`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APP_AI_DESCRIPTION_ENABLED` | `false` | Master switch |
-| `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Provider (only `claude` supported) |
+| `APP_AI_DESCRIPTION_PROVIDER` | `claude` | `claude` or `grok` |
 | `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
-| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous Claude requests |
+| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous model requests |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `10` | Max invocations per sliding window |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
-| `CLAUDE_CODE_OAUTH_TOKEN` | *(required if enabled)* | Token from `claude setup-token` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | *(required for claude)* | Token from `claude setup-token` |
 | `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku` |
-| `CLAUDE_MAX_BUFFER_SIZE` | `16MB` | Max size of one JSON message from the CLI. Frames the model reads are echoed back as base64, so raise it for cameras with frames above ~12 MB |
+| `CLAUDE_MAX_BUFFER_SIZE` | `16MB` | Max size of one JSON message from the Claude CLI. Frames the model reads are echoed back as base64, so raise it for cameras with frames above ~12 MB |
+| `GROK_MODEL` | `grok-4.6` | Model id, or a BYOK model name from `grok-home/config.toml` |
+| `GROK_EFFORT` | `low` | Reasoning effort; empty = not passed |
+
+**Grok sign-in.** Grok uses your SuperGrok subscription, no API key. Once, on the host:
+
+```bash
+mkdir -p grok-home && sudo chown 1000:1000 grok-home   # compose would create it as root otherwise
+docker compose up -d
+docker compose exec frigate-analyzer grok login --device-code
+```
+
+Open the printed URL, enter the code. `grok-home/auth.json` then refreshes itself; never copy it from
+another machine, the refresh token rotates and only one copy survives. If the credentials stop
+working, the bot owner receives a Telegram message with the command to run.
+
+**Custom models (BYOK).** Put a `[model.<name>]` section with `model`, `base_url` and `env_key` into
+`grok-home/config.toml`, pass the key through `.env`, set `GROK_MODEL=<name>` and an empty
+`GROK_EFFORT`.
 
 Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
 [`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.
@@ -312,7 +330,7 @@ modules/
 ├── common/         # Utilities (UUID generation, clock)
 ├── model/          # Entities, DTOs, request/response types
 ├── service/        # Business logic, repositories, MapStruct mappers
-├── ai-description/ # AI-generated detection descriptions via Claude Code SDK
+├── ai-description/ # AI-generated detection descriptions via Claude Code SDK or Grok Build CLI
 ├── telegram/       # Telegram bot, notifications, user management
 └── core/           # Spring Boot app, controllers, pipeline, detection, signal-loss
 ```
