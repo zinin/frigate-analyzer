@@ -45,15 +45,25 @@ class ClaudeExceptionMapper {
                 DescriptionException.InvalidResponse(throwable)
             }
 
-            // Rate-limit check goes BEFORE the TransportException branch: CLI-side 429 errors
-            // arrive from the SDK as TransportException (which extends ClaudeSDKException), and
-            // without this order swap they would be re-tried as generic transport failures
-            // instead of surfaced as RateLimited (which skips retry).
+            // Авторизация проверяется раньше rate limit, а rate limit раньше общего Transport:
+            // Unauthorized не повторяется и поднимает событие, RateLimited не повторяется,
+            // Transport повторяется один раз.
             is ClaudeSDKException -> {
-                if (isRateLimit(throwable)) {
-                    DescriptionException.RateLimited(throwable)
-                } else {
-                    DescriptionException.Transport(throwable)
+                when {
+                    isUnauthorized(throwable) -> {
+                        DescriptionException.Unauthorized(
+                            throwable.message ?: "authentication error",
+                            throwable,
+                        )
+                    }
+
+                    isRateLimit(throwable) -> {
+                        DescriptionException.RateLimited(throwable)
+                    }
+
+                    else -> {
+                        DescriptionException.Transport(throwable)
+                    }
                 }
             }
 
@@ -61,6 +71,11 @@ class ClaudeExceptionMapper {
                 DescriptionException.Transport(throwable)
             }
         }
+    }
+
+    private fun isUnauthorized(throwable: Throwable): Boolean {
+        val message = throwable.message?.lowercase() ?: return false
+        return AUTH_MARKERS.any { it in message }
     }
 
     private fun isRateLimit(throwable: Throwable): Boolean {
@@ -75,5 +90,9 @@ class ClaudeExceptionMapper {
             return true
         }
         return false
+    }
+
+    private companion object {
+        val AUTH_MARKERS = listOf("authentication_error", "invalid api key", "oauth token")
     }
 }

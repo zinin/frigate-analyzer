@@ -60,6 +60,29 @@ class ClaudeExceptionMapperTest {
     }
 
     @Test
+    fun `authentication_error maps to Unauthorized`() {
+        val e = mapper.map(ClaudeSDKException("API Error: 401 {\"type\":\"authentication_error\"}"))
+        assertIs<DescriptionException.Unauthorized>(e)
+        assert(e.detail.contains("authentication_error"))
+    }
+
+    @Test
+    fun `invalid api key maps to Unauthorized`() {
+        assertIs<DescriptionException.Unauthorized>(mapper.map(ClaudeSDKException("Invalid API key provided")))
+    }
+
+    @Test
+    fun `expired oauth token maps to Unauthorized`() {
+        assertIs<DescriptionException.Unauthorized>(mapper.map(ClaudeSDKException("OAuth token has expired")))
+    }
+
+    @Test
+    fun `Unauthorized wins over rate-limit words in the same message`() {
+        val e = mapper.map(ClaudeSDKException("authentication_error while checking rate limit"))
+        assertIs<DescriptionException.Unauthorized>(e)
+    }
+
+    @Test
     fun `JsonParseException maps to InvalidResponse`() {
         val e = mapper.map(JsonParseException(null, "bad json"))
         assertIs<DescriptionException.InvalidResponse>(e)
