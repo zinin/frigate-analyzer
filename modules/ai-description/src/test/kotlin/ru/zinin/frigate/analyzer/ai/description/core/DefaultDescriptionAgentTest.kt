@@ -2,13 +2,11 @@ package ru.zinin.frigate.analyzer.ai.description.core
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -28,9 +26,7 @@ import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.time.Duration
-import java.util.Collections
 import java.util.UUID
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
 import kotlin.test.Test
@@ -42,11 +38,6 @@ import kotlin.test.assertTrue
 import kotlin.time.TimeSource
 
 class DefaultDescriptionAgentTest {
-    private companion object {
-        /** Слушатель занят дольше, чем параллельному вызову нужно, чтобы обогнать публикацию. */
-        const val LISTENER_DELAY_MS = 200L
-    }
-
     private val common =
         DescriptionProperties.CommonSection(
             language = "en",
@@ -75,6 +66,7 @@ class DefaultDescriptionAgentTest {
         private val handler: suspend (DescriptionRequest) -> DescriptionResult,
     ) : DescriptionBackend {
         override val providerId = "fake"
+        override val authScopeId = "fake"
         override val authRecoveryHint = "run fake-login"
         val calls = AtomicInteger()
 
@@ -123,8 +115,10 @@ class DefaultDescriptionAgentTest {
         settings: DescriptionRuntimeSettings = InMemoryDescriptionRuntimeSettings(),
     ) = DefaultDescriptionAgent(
         resolver = ActivePresetResolver(catalogOf("test" to backend, *extraPresets.toTypedArray()), settings),
+        // Настоящий трекер, а не заглушка: инварианты агента про авторизацию проверяются на живой
+        // машине состояний, а её собственные — в ProviderAuthTrackerTest.
+        authTracker = ProviderAuthTracker(eventPublisher),
         descriptionProperties = DescriptionProperties(enabled = true, provider = "fake", common = customCommon),
-        eventPublisher = eventPublisher,
         timeSource = timeSource,
     )
 
@@ -139,7 +133,7 @@ class DefaultDescriptionAgentTest {
                         model = "$id-model",
                         effectiveModel = "$id-model",
                         effort = "",
-                        authScopeId = backend.providerId,
+                        authScopeId = backend.authScopeId,
                         unavailableReason = null,
                     ),
                     backend,
@@ -326,65 +320,9 @@ class DefaultDescriptionAgentTest {
             val lost = authEvents()
             assertEquals(1, lost.size)
             assertEquals(DescriptionProviderAuthEvent.State.LOST, lost.single().state)
-            assertEquals("fake", lost.single().provider)
+            assertEquals("fake", lost.single().authScopeId)
             assertEquals("Not signed in", lost.single().detail)
             assertEquals("run fake-login", lost.single().recoveryHint)
-        }
-
-    @Test
-    fun `a slow listener cannot reorder concurrent auth transitions`() =
-        // Реальные потоки, не виртуальное время: проверяется сериализация перехода с публикацией.
-        runBlocking(Dispatchers.IO) {
-            val delivered = Collections.synchronizedList(mutableListOf<DescriptionProviderAuthEvent.State>())
-            val lostListenerEntered = CountDownLatch(1)
-            val slowListener =
-                ApplicationEventPublisher { event ->
-                    val state = (event as DescriptionProviderAuthEvent).state
-                    if (state == DescriptionProviderAuthEvent.State.LOST) {
-                        lostListenerEntered.countDown()
-                        Thread.sleep(LISTENER_DELAY_MS)
-                    }
-                    delivered.add(state)
-                }
-            val entered = AtomicInteger()
-            val backend =
-                FakeBackend {
-                    if (entered.incrementAndGet() == 1) throw DescriptionException.Unauthorized("Not signed in")
-                    // Успех попадает ровно в окно, где отказ уже переключил состояние, но ещё публикуется.
-                    lostListenerEntered.await()
-                    ok
-                }
-            val agent = build(backend, eventPublisher = slowListener)
-
-            val first = launch { runCatching { agent.describe(request) } }
-            val second = launch { runCatching { agent.describe(request) } }
-            first.join()
-            second.join()
-
-            assertEquals(
-                listOf(DescriptionProviderAuthEvent.State.LOST, DescriptionProviderAuthEvent.State.RESTORED),
-                delivered.toList(),
-            )
-        }
-
-    @Test
-    fun `a throwing listener does not swallow the transition`() =
-        runTest {
-            val delivered = mutableListOf<DescriptionProviderAuthEvent>()
-            val brokenListener =
-                ApplicationEventPublisher { event ->
-                    delivered.add(event as DescriptionProviderAuthEvent)
-                    throw IllegalStateException("listener is down")
-                }
-            val backend = FakeBackend { throw DescriptionException.Unauthorized("Not signed in") }
-            val agent = build(backend, eventPublisher = brokenListener)
-
-            assertFailsWith<DescriptionException.Unauthorized> { agent.describe(request) }
-            assertFailsWith<DescriptionException.Unauthorized> { agent.describe(request) }
-
-            // Состояние откатилось, поэтому владелец узнает об отказе на следующей попытке, а не никогда.
-            assertEquals(2, delivered.size)
-            assertTrue(delivered.all { it.state == DescriptionProviderAuthEvent.State.LOST })
         }
 
     @Test
@@ -400,49 +338,6 @@ class DefaultDescriptionAgentTest {
             assertFailsWith<DescriptionException.Unauthorized> { agent.describe(request) }
             unauthorized = false
             assertEquals(ok, agent.describe(request))
-        }
-
-    @Test
-    fun `success after LOST publishes RESTORED once`() =
-        runTest {
-            var failing = true
-            val backend =
-                FakeBackend {
-                    if (failing) throw DescriptionException.Unauthorized("Not signed in") else ok
-                }
-            val agent = build(backend)
-            runCatching { agent.describe(request) }
-            failing = false
-            agent.describe(request)
-            agent.describe(request)
-            val states = authEvents().map { it.state }
-            assertEquals(
-                listOf(DescriptionProviderAuthEvent.State.LOST, DescriptionProviderAuthEvent.State.RESTORED),
-                states,
-            )
-        }
-
-    @Test
-    fun `concurrent Unauthorized failures publish a single LOST`() =
-        runTest {
-            val gate = CompletableDeferred<Unit>()
-            val entered = AtomicInteger()
-            val allEntered = CompletableDeferred<Unit>()
-            val backend =
-                FakeBackend {
-                    if (entered.incrementAndGet() == 5) allEntered.complete(Unit)
-                    gate.await()
-                    throw DescriptionException.Unauthorized("Not signed in")
-                }
-            val agent = build(backend, customCommon = common.copy(maxConcurrent = 5))
-            coroutineScope {
-                repeat(5) { launch { runCatching { agent.describe(request) } } }
-                // Не advanceUntilIdle(): он докрутит виртуальное время до withTimeout и
-                // отменит вызовы как Timeout, так и не будет ни одного LOST.
-                allEntered.await()
-                gate.complete(Unit)
-            }
-            assertEquals(1, authEvents().size)
         }
 
     @Test

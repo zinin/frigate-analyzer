@@ -19,6 +19,7 @@ import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalogBuilder
 import ru.zinin.frigate.analyzer.ai.description.core.InMemoryDescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.core.ProviderAuthTracker
 
 private val logger = KotlinLogging.logger {}
 
@@ -87,12 +88,19 @@ open class AiDescriptionAutoConfiguration {
             runtimeSettings: DescriptionRuntimeSettings,
         ): ActivePresetResolver = ActivePresetResolver(catalog, runtimeSettings)
 
+        /**
+         * Виден и по конкретному типу — агенту, — и по `ProviderAuthStates`: экран `/ai` читает
+         * состояние авторизации через интерфейс из `api`.
+         */
+        @Bean
+        fun providerAuthTracker(eventPublisher: ApplicationEventPublisher): ProviderAuthTracker = ProviderAuthTracker(eventPublisher)
+
         @Bean
         fun descriptionAgent(
             resolver: ActivePresetResolver,
+            authTracker: ProviderAuthTracker,
             descriptionProperties: DescriptionProperties,
-            eventPublisher: ApplicationEventPublisher,
-        ): DescriptionAgent = DefaultDescriptionAgent(resolver, descriptionProperties, eventPublisher)
+        ): DescriptionAgent = DefaultDescriptionAgent(resolver, authTracker, descriptionProperties)
 
         /**
          * Пустая карта означает деплой, настроенный старым способом: один пресет из `provider` и

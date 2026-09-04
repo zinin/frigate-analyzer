@@ -14,12 +14,13 @@ private val logger = KotlinLogging.logger {}
  * Семафор, таймауты и повторы живут в `DefaultDescriptionAgent`; отмена корутины по таймауту
  * убивает процесс в runner-е, а prompt-файл удаляется в `finally` под NonCancellable.
  *
- * Не бин: экземпляр создаёт [GrokBackendFactory] на каждый grok-пресет, поэтому [model] и [effort]
- * приходят из пресета, а осмотр окружения остаётся в фабрике — один раз на провайдер.
+ * Не бин: экземпляр создаёт [GrokBackendFactory] на каждый grok-пресет, поэтому [model], [effort]
+ * и [authScopeId] приходят из пресета, а осмотр окружения остаётся в фабрике — один раз на провайдер.
  */
 class GrokBackend(
     val model: String,
     val effort: String,
+    override val authScopeId: String,
     private val promptFileWriter: GrokPromptFileWriter,
     private val commandBuilder: GrokCommandBuilder,
     private val runner: GrokProcessRunner,

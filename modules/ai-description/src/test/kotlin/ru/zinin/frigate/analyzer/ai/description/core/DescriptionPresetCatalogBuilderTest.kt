@@ -4,11 +4,18 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
+import io.mockk.mockk
+import org.junit.jupiter.api.io.TempDir
 import org.slf4j.LoggerFactory
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
+import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeBackendFactory
+import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
+import ru.zinin.frigate.analyzer.ai.description.grok.GrokBackendFactory
+import java.nio.file.Path
 import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -18,6 +25,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class DescriptionPresetCatalogBuilderTest {
+    @TempDir
+    lateinit var tempDir: Path
+
     private class FakeFactory(
         override val providerId: String,
         private val availability: DescriptionBackendFactory.Availability =
@@ -41,6 +51,7 @@ class DescriptionPresetCatalogBuilderTest {
             createdFor += preset.model
             return object : DescriptionBackend {
                 override val providerId = this@FakeFactory.providerId
+                override val authScopeId = this@FakeFactory.authScopeId(preset)
                 override val authRecoveryHint = "hint"
 
                 override suspend fun describe(request: DescriptionRequest): DescriptionResult =
@@ -273,6 +284,68 @@ class DescriptionPresetCatalogBuilderTest {
         assertEquals("grok:grok-4.6", catalog.byId("grok-fast")?.view?.authScopeId)
         assertEquals("claude", catalog.byId("claude-opus")?.view?.authScopeId)
     }
+
+    /**
+     * Область на backend-е и область в строке каталога приходят из одного
+     * `DescriptionBackendFactory.authScopeId`, но двумя разными путями: строку заполняет билдер,
+     * backend — `create(preset)`. Экран `/ai` группирует строки авторизации по `preset.authScopeId`
+     * и ищет их в `byScope()`, чьи ключи приходят от backend-а: разъехавшись, эти два пути навсегда
+     * оставили бы каждую строку авторизации серой, и больше ничто этого не поймало бы. Фабрики
+     * настоящие — заодно проверяются обе формы области, `claude` и `grok:<model>`.
+     */
+    @Test
+    fun `the backend and its catalog view carry the same auth scope`() {
+        val catalog =
+            catalogOf(
+                build(
+                    presets = linkedMapOf("grok-fast" to grok, "claude-opus" to claude),
+                    factories = listOf(realGrokFactory(), realClaudeFactory()),
+                ),
+            )
+
+        catalog.all().forEach { view ->
+            val backend = assertNotNull(assertNotNull(catalog.byId(view.id)).backend, view.id)
+            assertEquals(view.authScopeId, backend.authScopeId, "preset '${view.id}'")
+        }
+        assertEquals("grok:grok-4.6", assertNotNull(catalog.byId("grok-fast")).view.authScopeId)
+        assertEquals("claude", assertNotNull(catalog.byId("claude-opus")).view.authScopeId)
+    }
+
+    private fun realGrokFactory() =
+        GrokBackendFactory(
+            properties =
+                GrokProperties(
+                    cliPath = tempDir.resolve("missing-grok").toString(),
+                    model = "grok-4.6",
+                    effort = "low",
+                    home = tempDir.resolve("home").toString(),
+                    workingDirectory = tempDir.resolve("cwd").toString(),
+                    proxy = GrokProperties.ProxySection("", "", ""),
+                ),
+            promptFileWriter = mockk(relaxed = true),
+            commandBuilder = mockk(relaxed = true),
+            runner = mockk(relaxed = true),
+            outputParser = mockk(relaxed = true),
+            exceptionMapper = mockk(relaxed = true),
+            guard = mockk(relaxed = true),
+        )
+
+    private fun realClaudeFactory() =
+        ClaudeBackendFactory(
+            claudeProperties =
+                ClaudeProperties(
+                    oauthToken = "token",
+                    model = "opus",
+                    cliPath = tempDir.resolve("missing-claude").toString(),
+                    workingDirectory = tempDir.toString(),
+                    proxy = ClaudeProperties.ProxySection("", "", ""),
+                ),
+            promptBuilder = mockk(relaxed = true),
+            responseParser = mockk(relaxed = true),
+            imageStager = mockk(relaxed = true),
+            invoker = { _, _ -> "{}" },
+            exceptionMapper = mockk(relaxed = true),
+        )
 
     /**
      * `grok-4.6 xhigh` съедает ~48 с из 60 с, поэтому транспортный повтор (10 с бюджета плюс 5 с

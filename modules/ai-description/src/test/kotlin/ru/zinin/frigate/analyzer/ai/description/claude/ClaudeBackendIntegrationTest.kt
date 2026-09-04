@@ -14,6 +14,7 @@ import ru.zinin.frigate.analyzer.ai.description.core.ActivePresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
 import ru.zinin.frigate.analyzer.ai.description.core.InMemoryDescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.core.ProviderAuthTracker
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Files
 import java.nio.file.Path
@@ -125,6 +126,7 @@ JSON
         val backend =
             ClaudeBackend(
                 model = claudeProps.model,
+                authScopeId = "claude",
                 promptBuilder = ClaudePromptBuilder(),
                 responseParser = ClaudeResponseParser(mapper),
                 imageStager = stager,
@@ -141,7 +143,7 @@ JSON
                             model = claudeProps.model,
                             effectiveModel = claudeProps.model,
                             effort = "",
-                            authScopeId = backend.providerId,
+                            authScopeId = backend.authScopeId,
                             unavailableReason = null,
                         ),
                         backend,
@@ -150,7 +152,7 @@ JSON
                 fallbackId = "claude",
             )
         val resolver = ActivePresetResolver(catalog, InMemoryDescriptionRuntimeSettings())
-        val agent = DefaultDescriptionAgent(resolver, descriptionProps, ApplicationEventPublisher { })
+        val agent = DefaultDescriptionAgent(resolver, ProviderAuthTracker(ApplicationEventPublisher { }), descriptionProps)
 
         val request =
             DescriptionRequest(

@@ -9,11 +9,12 @@ import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
  * `@/abs/path`, вызов SDK, разбор JSON. Семафор, таймауты и повторы живут в
  * `DefaultDescriptionAgent`.
  *
- * Не бин: экземпляр создаёт [ClaudeBackendFactory] на каждый claude-пресет, поэтому [model]
- * приходит из пресета, а осмотр окружения остаётся в фабрике — один раз на провайдер.
+ * Не бин: экземпляр создаёт [ClaudeBackendFactory] на каждый claude-пресет, поэтому [model] и
+ * [authScopeId] приходят из пресета, а осмотр окружения остаётся в фабрике — один раз на провайдер.
  */
 class ClaudeBackend(
     val model: String,
+    override val authScopeId: String,
     private val promptBuilder: ClaudePromptBuilder,
     private val responseParser: ClaudeResponseParser,
     private val imageStager: ClaudeImageStager,

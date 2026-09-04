@@ -8,14 +8,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import org.springframework.context.ApplicationEventPublisher
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionProviderAuthEvent
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 import kotlin.time.toKotlinDuration
@@ -37,35 +34,23 @@ private val logger = KotlinLogging.logger {}
  * плата: вызов, простоявший в очереди, применит пресет, актуальный на момент постановки в очередь;
  * окно ограничено сверху `queueTimeout`.
  *
- * Состояние авторизации провайдера: первый `Unauthorized` после успеха или старта публикует
- * [DescriptionProviderAuthEvent] LOST, первый успех после него RESTORED. Переход делается через
- * `compareAndSet`, поэтому параллельные вызовы дают ровно одно событие, а сам переход и его
- * публикация идут под одним замком: слушатель доставляет владельцу события в порядке публикации,
- * и разъехавшийся порядок оставил бы его с сообщением об отказе при рабочих учётных данных.
+ * Состояние авторизации агент не держит: исход каждой попытки уходит в [ProviderAuthTracker] под
+ * областью учётных данных backend-а ([DescriptionBackend.authScopeId]), а переходы, дедупликацию и
+ * публикацию событий делает трекер. Одного состояния на агента и не хватило бы: пресетов за вызов
+ * теперь несколько, и успех BYOK-пресета снимал бы LOST, поднятый пресетом на протухшем OAuth.
  *
  * Не `@Component`: бин создаёт `AiDescriptionAutoConfiguration`, когда есть каталог пресетов.
  */
 class DefaultDescriptionAgent(
     private val resolver: ActivePresetResolver,
+    private val authTracker: ProviderAuthTracker,
     descriptionProperties: DescriptionProperties,
-    private val eventPublisher: ApplicationEventPublisher,
     // Wall-clock по умолчанию; тесты подставляют TestTimeSource из runTest, чтобы проверка
     // остатка бюджета жила в том же виртуальном времени, что и внешний withTimeout.
     private val timeSource: TimeSource = TimeSource.Monotonic,
 ) : DescriptionAgent {
     private val commonSection: DescriptionProperties.CommonSection = descriptionProperties.common
     private val semaphore = Semaphore(commonSection.maxConcurrent)
-    private val authState = AtomicReference(AuthState.HEALTHY)
-
-    /**
-     * Сериализует «сменить состояние и опубликовать». Без него параллельные вызовы успевают
-     * поменяться местами между `compareAndSet` и `publishEvent`: отказ переводит в LOST, успех
-     * возвращает в HEALTHY и публикует RESTORED первым, а LOST приходит владельцу последним — и
-     * больше не снимается, потому что состояние уже HEALTHY и следующий успех события не даст.
-     */
-    private val authTransitionLock = Any()
-
-    private enum class AuthState { HEALTHY, LOST }
 
     override suspend fun describe(request: DescriptionRequest): DescriptionResult {
         // Один раз на вызов и до захвата пермита: чтение настроек — ввод-вывод. Под пермитом при
@@ -145,10 +130,10 @@ class DefaultDescriptionAgent(
         while (true) {
             try {
                 val result = attempt(backend, request)
-                onSuccess(backend)
+                authTracker.onSuccess(backend.authScopeId, backend.authRecoveryHint)
                 return result
             } catch (e: DescriptionException.Unauthorized) {
-                onUnauthorized(backend, e)
+                authTracker.onUnauthorized(backend.authScopeId, e, backend.authRecoveryHint)
                 throw e
             } catch (e: DescriptionException.InvalidResponse) {
                 if (invalidRetries >= 1) throw e
@@ -199,70 +184,6 @@ class DefaultDescriptionAgent(
         } catch (e: Throwable) {
             throw DescriptionException.Transport(e)
         }
-
-    private fun onUnauthorized(
-        backend: DescriptionBackend,
-        e: DescriptionException.Unauthorized,
-    ) {
-        synchronized(authTransitionLock) {
-            if (!authState.compareAndSet(AuthState.HEALTHY, AuthState.LOST)) return
-            logger.error(e) {
-                "Description provider '${backend.providerId}' rejected the credentials; descriptions stay " +
-                    "unavailable until re-login. Fix: ${backend.authRecoveryHint}"
-            }
-            publishAuthEvent(
-                backend,
-                DescriptionProviderAuthEvent(
-                    provider = backend.providerId,
-                    state = DescriptionProviderAuthEvent.State.LOST,
-                    detail = e.detail,
-                    recoveryHint = backend.authRecoveryHint,
-                ),
-                rollbackFrom = AuthState.LOST,
-                rollbackTo = AuthState.HEALTHY,
-            )
-        }
-    }
-
-    private fun onSuccess(backend: DescriptionBackend) {
-        synchronized(authTransitionLock) {
-            if (!authState.compareAndSet(AuthState.LOST, AuthState.HEALTHY)) return
-            logger.info { "Description provider '${backend.providerId}' credentials work again" }
-            publishAuthEvent(
-                backend,
-                DescriptionProviderAuthEvent(
-                    provider = backend.providerId,
-                    state = DescriptionProviderAuthEvent.State.RESTORED,
-                    detail = null,
-                    recoveryHint = backend.authRecoveryHint,
-                ),
-                rollbackFrom = AuthState.HEALTHY,
-                rollbackTo = AuthState.LOST,
-            )
-        }
-    }
-
-    /**
-     * Spring доставляет событие синхронно, на этом же потоке. Слушатель, который бросил, не должен
-     * ни выбрасывать уже оплаченный результат, ни съедать переход: состояние уже переключено, и без
-     * отката такой же отказ больше никогда не поднял бы событие, а владелец не узнал бы о нём вовсе.
-     */
-    private fun publishAuthEvent(
-        backend: DescriptionBackend,
-        event: DescriptionProviderAuthEvent,
-        rollbackFrom: AuthState,
-        rollbackTo: AuthState,
-    ) {
-        try {
-            eventPublisher.publishEvent(event)
-        } catch (e: Exception) {
-            authState.compareAndSet(rollbackFrom, rollbackTo)
-            logger.warn(e) {
-                "Cannot publish ${event.state} auth event for '${backend.providerId}'; " +
-                    "the transition will be reported again on the next occurrence"
-            }
-        }
-    }
 
     companion object {
         private val TRANSPORT_RETRY_DELAY = 5.seconds

@@ -60,7 +60,7 @@ class DescriptionAuthAlertNotifier(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
-                    logger.warn(e) { "Failed to send description auth alert (${event.provider}, ${event.state})" }
+                    logger.warn(e) { "Failed to send description auth alert (${event.authScopeId}, ${event.state})" }
                 } finally {
                     pending.decrementAndGet()
                 }
@@ -80,7 +80,7 @@ class DescriptionAuthAlertNotifier(
             } catch (e: TimeoutCancellationException) {
                 if (attempt >= retryBackoff.size) {
                     logger.error {
-                        "Description auth alert (${event.provider}, ${event.state}) dropped: the notification " +
+                        "Description auth alert (${event.authScopeId}, ${event.state}) dropped: the notification " +
                             "queue stayed full through ${attempt + 1} attempts of $alertTimeout"
                     }
                     return
@@ -88,7 +88,7 @@ class DescriptionAuthAlertNotifier(
                 val backoff = retryBackoff[attempt]
                 attempt++
                 logger.warn {
-                    "Description auth alert (${event.provider}, ${event.state}) could not be queued within " +
+                    "Description auth alert (${event.authScopeId}, ${event.state}) could not be queued within " +
                         "$alertTimeout; retrying in $backoff (attempt ${attempt + 1})"
                 }
                 delay(backoff.toMillis())
@@ -102,7 +102,7 @@ class DescriptionAuthAlertNotifier(
         val result = events.trySend(event)
         if (result.isFailure) {
             pending.decrementAndGet()
-            logger.warn { "Description auth alert (${event.provider}, ${event.state}) dropped: channel closed" }
+            logger.warn { "Description auth alert (${event.authScopeId}, ${event.state}) dropped: channel closed" }
         }
     }
 
@@ -119,7 +119,7 @@ class DescriptionAuthAlertNotifier(
         when (event.state) {
             DescriptionProviderAuthEvent.State.LOST -> {
                 buildString {
-                    append(messageResolver.get("ai.description.auth.lost", language, event.provider, event.recoveryHint))
+                    append(messageResolver.get("ai.description.auth.lost", language, event.authScopeId, event.recoveryHint))
                     event.detail?.takeIf { it.isNotBlank() }?.let { detail ->
                         append("\n\n")
                         append(detail.take(DETAIL_MAX_LENGTH))
@@ -128,7 +128,7 @@ class DescriptionAuthAlertNotifier(
             }
 
             DescriptionProviderAuthEvent.State.RESTORED -> {
-                messageResolver.get("ai.description.auth.restored", language, event.provider)
+                messageResolver.get("ai.description.auth.restored", language, event.authScopeId)
             }
         }
 

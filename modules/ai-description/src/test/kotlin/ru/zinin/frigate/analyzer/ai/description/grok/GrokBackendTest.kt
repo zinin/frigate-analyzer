@@ -51,6 +51,7 @@ class GrokBackendTest {
         return GrokBackend(
             model = properties.model,
             effort = properties.effort,
+            authScopeId = "grok:${properties.model}",
             promptFileWriter = promptFileWriter,
             commandBuilder = GrokCommandBuilder(properties),
             runner = runner,

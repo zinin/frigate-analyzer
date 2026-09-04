@@ -54,6 +54,9 @@ class GrokBackendFactory(
         GrokBackend(
             model = preset.model,
             effort = preset.effort,
+            // Через authScopeId(preset), а не сборкой строки заново: область считает ровно одно
+            // место, и строка на backend-е совпадает с той, что каталог кладёт в DescriptionPreset.
+            authScopeId = authScopeId(preset),
             promptFileWriter = promptFileWriter,
             commandBuilder = commandBuilder,
             runner = runner,

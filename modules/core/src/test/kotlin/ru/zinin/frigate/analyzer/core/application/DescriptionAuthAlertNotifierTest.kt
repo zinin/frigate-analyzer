@@ -40,7 +40,7 @@ class DescriptionAuthAlertNotifierTest {
 
     private fun lost(detail: String? = "Not signed in. Run grok login --device-code") =
         DescriptionProviderAuthEvent(
-            provider = "grok",
+            authScopeId = "grok",
             state = DescriptionProviderAuthEvent.State.LOST,
             detail = detail,
             recoveryHint = "grok login --device-code",
@@ -82,7 +82,7 @@ class DescriptionAuthAlertNotifierTest {
 
         notifier.onAuthEvent(
             DescriptionProviderAuthEvent(
-                provider = "grok",
+                authScopeId = "grok",
                 state = DescriptionProviderAuthEvent.State.RESTORED,
                 detail = null,
                 recoveryHint = "grok login --device-code",
@@ -161,7 +161,7 @@ class DescriptionAuthAlertNotifierTest {
         notifier.onAuthEvent(lost(detail = null))
         notifier.onAuthEvent(
             DescriptionProviderAuthEvent(
-                provider = "grok",
+                authScopeId = "grok",
                 state = DescriptionProviderAuthEvent.State.RESTORED,
                 detail = null,
                 recoveryHint = "grok login --device-code",

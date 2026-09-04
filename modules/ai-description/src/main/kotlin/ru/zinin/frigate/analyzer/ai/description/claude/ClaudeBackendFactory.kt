@@ -53,6 +53,9 @@ class ClaudeBackendFactory(
     override fun create(preset: DescriptionProperties.Preset): DescriptionBackend =
         ClaudeBackend(
             model = preset.model,
+            // Через authScopeId(preset), а не providerId напрямую: область считает ровно одно
+            // место, и строка на backend-е совпадает с той, что каталог кладёт в DescriptionPreset.
+            authScopeId = authScopeId(preset),
             promptBuilder = promptBuilder,
             responseParser = responseParser,
             imageStager = imageStager,

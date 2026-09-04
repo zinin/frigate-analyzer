@@ -42,6 +42,7 @@ class ClaudeBackendTest {
     private fun build(invoker: ClaudeInvoker) =
         ClaudeBackend(
             model = "opus",
+            authScopeId = "claude",
             promptBuilder = promptBuilder,
             responseParser = responseParser,
             imageStager = imageStager,

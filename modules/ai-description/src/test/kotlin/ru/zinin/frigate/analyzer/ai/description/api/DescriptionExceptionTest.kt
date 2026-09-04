@@ -49,15 +49,15 @@ class DescriptionExceptionTest {
     }
 
     @Test
-    fun `event exposes provider state detail and hint`() {
+    fun `event exposes the auth scope, state, detail and hint`() {
         val event =
             DescriptionProviderAuthEvent(
-                provider = "grok",
+                authScopeId = "grok:grok-4.6",
                 state = DescriptionProviderAuthEvent.State.LOST,
                 detail = "Not signed in",
                 recoveryHint = "grok login --device-code",
             )
-        assertEquals("grok", event.provider)
+        assertEquals("grok:grok-4.6", event.authScopeId)
         assertEquals(DescriptionProviderAuthEvent.State.LOST, event.state)
     }
 }

@@ -25,6 +25,7 @@ class ActivePresetResolverTest {
     private fun backend(id: String) =
         object : DescriptionBackend {
             override val providerId = "grok"
+            override val authScopeId = "grok:grok-4.6"
             override val authRecoveryHint = "hint"
 
             override suspend fun describe(request: DescriptionRequest) = DescriptionResult(id, id)
