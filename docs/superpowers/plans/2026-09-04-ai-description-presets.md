@@ -15,7 +15,10 @@
 - Все команды Gradle (`./gradlew …`) запускаются **только** через агента `claude-forge:build-runner`, никогда напрямую в основной сессии (правило `CLAUDE.md`). На ошибки ktlint: `./gradlew ktlintFormat`, затем повтор.
 - Тесты одного модуля: `./gradlew :frigate-analyzer-ai-description:test`, `:frigate-analyzer-core:test`, `:frigate-analyzer-telegram:test`. Один класс: `--tests <FQCN>`.
 - После создания или изменения файла обязательно `git add <file>` (правило `CLAUDE.md`).
-- Каждое сообщение коммита заканчивается отдельным `-m` со строкой `Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk`.
+- Каждое сообщение коммита заканчивается отдельным `-m` со строкой `Claude-Session: <URL текущей сессии>`.
+  **В командах ниже стоит плейсхолдер `<SESSION_URL>` — исполнитель подставляет URL СВОЕЙ сессии.**
+  Ранее здесь был зашит id сессии, писавшей план; скопированный дословно, он приписал бы всю работу
+  чужой сессии.
 - Конструкторы `@ConfigurationProperties`-классов вызываются только с именованными аргументами; новые параметры добавляются в конец списка.
 - Идентификаторы провайдеров: `claude`, `grok`. Id пресета: `[a-z0-9][a-z0-9-]{0,31}`.
 - Уровни `effort`: пусто, `low`, `medium`, `high`, `xhigh`, `max`. Непустой `effort` допустим только при `provider=grok`.
@@ -24,6 +27,31 @@
 - Значения i18n не содержат апострофов (MessageFormat), ключи добавляются **в оба** бандла `modules/telegram/src/main/resources/messages_{ru,en}.properties`.
 - Секреты (токены, `auth.json`) не логируются и не попадают в сообщения Telegram.
 - Kotlin allopen через `kotlin-spring` применён ко всем модулям: `@Bean`-методы в `@AutoConfiguration` не требуют `open`.
+- **Tasks 3–5 — одна единица деплоя.** После Task 3 агент всегда берёт `catalog.fallback()`
+  (резолвер появляется в Task 4, трекер — в Task 5), поэтому промежуточные коммиты собираются и
+  проходят тесты, но переключать пресеты на стенде ещё не позволяют. Выкатывать их по отдельности
+  нельзя; мержится вся тройка.
+
+### Матрица тестов, которую обещает дизайн
+
+Раздел «Тестирование» дизайна называет проверки, которые легко потерять при разнесении по задачам.
+Каждая обязана получить шаг с файлом, иначе обещание остаётся только в дизайне:
+
+| Тест | Где | Почему нельзя потерять |
+|---|---|---|
+| резолюция один раз на вызов (переключение `InMemory` между попытками не меняет backend) | Task 4, `DefaultDescriptionAgentTest` | иначе retry может разъехаться по провайдерам |
+| общий семафор на два пресета | Task 4, `DefaultDescriptionAgentTest` | семафор — свойство фичи, а не пресета |
+| `warnOnce` однократен при повторных вызовах | Task 4, `ActivePresetResolverTest` | иначе лог засоряется одной строкой на каждую запись |
+| два многопоточных сценария авторизации | Task 5, `ProviderAuthTrackerTest` | единственная проверка смысла замка |
+| порядок карты (`containsExactly`) | Task 1, `DescriptionPresetsBindingTest` | на порядок опирается `fallbackId` |
+| регистр и посторонние символы в ключе карты | Task 1, `DescriptionPresetsBindingTest` | искажение id иначе всплывёт в `callback_data` |
+| legacy-`provider` в верхнем/смешанном регистре | Task 1 или 3 | обещание обратной совместимости |
+| карта через bracket-форму и через окружение видна условию | Task 3, тест условия | иначе «карта есть, каталога нет» |
+| whitespace-токен Claude (`isBlank()`) | Task 3, `ClaudeBackendFactoryTest` | покрытие уезжает вместе с удаляемым `ClaudeBackendValidationTest` |
+| бин `DescriptionRuntimeSettings` — не in-memory | Task 6, тест в `core` | иначе выбор молча не переживает рестарт |
+| ошибка чтения `app_settings` не теряет уведомление | Task 6, `RecordingProcessingFacadeTest` | инвариант фасада |
+| callback подтверждается на каждом исходе | Task 8, `AiSettingsCallbackHandlerTest` | иначе висящий спиннер |
+| метаданные команды (`ownerOnly`, `requiredRole`, уникальность `order`) | Task 8 | закрывает весь класс ошибок разом |
 
 ---
 
@@ -318,7 +346,9 @@ class DescriptionPresetsBindingTest {
             )
 
         assertThat(props.defaultPreset).isEqualTo("grok-fast")
-        assertThat(props.presets.keys).containsExactlyInAnyOrder("grok-fast", "claude-opus")
+        // containsExactly, а не InAnyOrder: правило "fallbackId = первый годный" опирается
+        // именно на порядок объявления в yaml, и без этого ассерта он ничем не зафиксирован.
+        assertThat(props.presets.keys).containsExactly("grok-fast", "claude-opus")
         assertThat(props.presets.getValue("grok-fast").model).isEqualTo("grok-4.6")
         assertThat(props.presets.getValue("grok-fast").effort).isEqualTo("low")
         assertThat(props.presets.getValue("claude-opus").effort).isEmpty()
@@ -389,7 +419,7 @@ git add modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/desc
         modules/core/src/test/resources/application.yaml \
         modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/config/properties/DescriptionPresetsBindingTest.kt
 git commit -m "feat(ai-description): declare description presets in configuration" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -533,7 +563,7 @@ git add modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/desc
         modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/claude/ClaudeBackend.kt \
         modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/
 git commit -m "refactor(ai-description): pass model and effort per call instead of per bean" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -546,16 +576,17 @@ git commit -m "refactor(ai-description): pass model and effort per call instead 
 - Create: `…/ai/description/api/DescriptionPreset.kt`, `…/api/DescriptionPresets.kt`
 - Create: `…/ai/description/core/DescriptionBackendFactory.kt`, `…/core/DescriptionPresetCatalog.kt`, `…/core/DescriptionPresetCatalogBuilder.kt`
 - Create: `…/ai/description/claude/ClaudeBackendFactory.kt`, `…/ai/description/grok/GrokBackendFactory.kt`
-- Create: `…/ai/description/config/DescriptionPresetsDeclaredCondition.kt`
+- Create: `…/ai/description/config/DescriptionPresetDeclarations.kt`, `…/config/DescriptionPresetsDeclaredCondition.kt`
 - Modify: `…/claude/ClaudeBackend.kt`, `…/grok/GrokBackend.kt`
 - Modify (только аннотации, 14 файлов): `claude/ClaudeAsyncClientFactory.kt`, `claude/ClaudeExceptionMapper.kt`, `claude/ClaudeImageStager.kt`, `claude/ClaudePromptBuilder.kt`, `claude/ClaudeResponseParser.kt`, `claude/DefaultClaudeInvoker.kt`, `grok/DefaultGrokProcessRunner.kt`, `grok/GrokCommandBuilder.kt`, `grok/GrokExceptionMapper.kt`, `grok/GrokHomeGuard.kt`, `grok/GrokHomeSweeper.kt`, `grok/GrokOutputParser.kt`, `grok/GrokPromptBuilder.kt`, `grok/GrokPromptFileWriter.kt`
 - Modify: `…/config/AiDescriptionAutoConfiguration.kt`, `…/config/DescriptionAgentSanityChecker.kt`
 - Modify: `…/core/DefaultDescriptionAgent.kt` (конструктор принимает каталог)
-- Test: `…/core/DescriptionPresetCatalogBuilderTest.kt` (create), `…/claude/ClaudeBackendFactoryTest.kt` (create, вместо `ClaudeBackendValidationTest.kt` — старый файл удалить), `…/grok/GrokBackendFactoryTest.kt` (create), `…/config/AiDescriptionAutoConfigurationTest.kt` (modify), `…/core/DefaultDescriptionAgentTest.kt` (modify)
+- Test: `…/core/DescriptionPresetCatalogBuilderTest.kt` (create), `…/claude/ClaudeBackendFactoryTest.kt` (create, вместо `ClaudeBackendValidationTest.kt` — старый файл удалить; **перенести туда сценарий whitespace-токена `isBlank()`**, иначе покрытие пропадёт вместе с удаляемым файлом), `…/grok/GrokBackendFactoryTest.kt` (create; **перенести туда из `GrokBackendTest` сценарии `init creates home and working directory` и `init fails when the home path is a file` — код `init` переезжает в фабрику**), `…/config/AiDescriptionAutoConfigurationTest.kt` (modify), `…/core/DefaultDescriptionAgentTest.kt` (modify)
+- Test (modify, **call-sites меняющихся конструкторов — без них модуль не компилируется**): `…/grok/GrokBackendTest.kt:53` (`GrokBackend(properties = …)` — параметра больше нет), `…/claude/ClaudeBackendTest.kt:53` (`ClaudeBackend(claudeProperties = …)` — то же), `…/claude/ClaudeBackendIntegrationTest.kt:122,131` (`ClaudeBackend(...)` **и** `DefaultDescriptionAgent(backend, props, publisher)`; файл `@Disabled`, но компилируется вместе с модулем, и конструктор агента ломается там ещё раз в Task 4 и Task 5)
 
 **Interfaces:**
 - Consumes: `DescriptionProperties.Preset`, `DescriptionProperties.presets`, `DescriptionProperties.defaultPreset` (Task 1); `GrokCommandBuilder.build(file, model, effort, schema)`, `ClaudeInvoker.invoke(prompt, model)` (Task 2).
-- Produces: `DescriptionBackendFactory` (`providerId`, `availability()`, `create(preset)`); `DescriptionBackendFactory.Availability.Available` / `.Unavailable(reason)`; `DescriptionPreset(id, provider, model, effort, unavailableReason)`; `DescriptionPresets.all()`; `DescriptionPresetCatalog.Entry(view, backend)`, `.byId(id)`, `.fallback()`, `.fallbackId`; `DescriptionPresetCatalogBuilder.build(presets, defaultPreset, factories)`; `DefaultDescriptionAgent(catalog, descriptionProperties, eventPublisher, timeSource)`.
+- Produces: `DescriptionBackendFactory` (`providerId`, `availability()`, `create(preset)`); `DescriptionBackendFactory.Availability.Available` / `.Unavailable(reason)`; `DescriptionPreset(id, provider, model, effort, unavailableReason)`; `DescriptionPresets.all()`; `DescriptionPresetCatalog.Entry(view, backend)`, `.byId(id)`, `.fallback()`, `.fallbackId`; `DescriptionPresetCatalogBuilder.build(presets, defaultPreset, factories): Result` с `Result.Catalog(catalog)` / `Result.NoPresets` / `Result.NoneUsable(message)` (sealed вместо «null плюс исключение»: три исхода в одной сигнатуре — это и есть та рассогласованность условия и билдера, ради которой иначе нужен `checkNotNull`); `DefaultDescriptionAgent(catalog, descriptionProperties, eventPublisher, timeSource)`.
 
 - [ ] **Step 1: Написать падающий тест сборки каталога**
 
@@ -673,7 +704,7 @@ class DescriptionPresetCatalogBuilderTest {
     }
 
     @Test
-    fun `a preset without a factory is unusable, not a crash`() {
+    fun `a single preset without a factory fails startup`() {
         val e =
             assertFailsWith<IllegalStateException> {
                 DescriptionPresetCatalogBuilder.build(
@@ -1270,6 +1301,52 @@ class GrokBackend(
 
 - [ ] **Step 9: Переписать автоконфигурацию, условие и sanity checker**
 
+`config/DescriptionPresetDeclarations.kt` — **единственная точка истины о том, что объявлено**;
+ею пользуются и условие, и автоконфигурация, поэтому разойтись им негде:
+
+```kotlin
+package ru.zinin.frigate.analyzer.ai.description.config
+
+import org.springframework.boot.context.properties.bind.Bindable
+import org.springframework.boot.context.properties.bind.Binder
+import org.springframework.core.env.Environment
+
+object DescriptionPresetDeclarations {
+    const val PRESETS_PREFIX = "application.ai.description.presets"
+    const val PROVIDER_PROPERTY = "application.ai.description.provider"
+
+    /**
+     * Есть ли что класть в каталог. Читается через `Binder` — тот же механизм, которым Spring
+     * биндит `DescriptionProperties`, поэтому видны все источники свойств, relaxed binding из
+     * окружения (`APP_AI_DESCRIPTION_PRESETS_…`), bracket-форма `presets[id]` и плейсхолдеры.
+     * Сканирование имён `EnumerablePropertySource` этого не умеет: карта связалась бы, условие
+     * сказало бы «пресетов нет», и получилось бы молчаливое «описания не работают».
+     */
+    fun anyDeclared(environment: Environment): Boolean =
+        boundPresetKeys(environment).isNotEmpty() || legacyProvider(environment) != null
+
+    fun boundPresetKeys(environment: Environment): Set<String> =
+        Binder.get(environment)
+            .bind(PRESETS_PREFIX, Bindable.mapOf(String::class.java, Any::class.java))
+            .orElseGet(::emptyMap)
+            .keys
+
+    /**
+     * Нормализованный legacy-провайдер или null, если он пуст либо неизвестен.
+     *
+     * `trim().lowercase()` обязателен: сегодняшний `@ConditionalOnProperty(havingValue = "claude")`
+     * сравнивает без учёта регистра, поэтому работающий деплой с
+     * `APP_AI_DESCRIPTION_PROVIDER=CLAUDE` активирует Claude. Регистрозависимая проверка тихо
+     * оставила бы такой деплой без агента и нарушила бы обещание обратной совместимости.
+     */
+    fun legacyProvider(environment: Environment): String? =
+        normalize(environment.getProperty(PROVIDER_PROPERTY, ""))
+
+    fun normalize(raw: String): String? =
+        raw.trim().lowercase().takeIf { it in DescriptionProperties.KNOWN_PROVIDERS }
+}
+```
+
 `config/DescriptionPresetsDeclaredCondition.kt`:
 
 ```kotlin
@@ -1277,36 +1354,19 @@ package ru.zinin.frigate.analyzer.ai.description.config
 
 import org.springframework.context.annotation.Condition
 import org.springframework.context.annotation.ConditionContext
-import org.springframework.core.env.ConfigurableEnvironment
-import org.springframework.core.env.EnumerablePropertySource
 import org.springframework.core.type.AnnotatedTypeMetadata
 
 /**
- * Каталог пресетов существует, только когда есть что в него класть: либо объявлена карта
- * `presets`, либо legacy-`provider` называет известного провайдера. Иначе бина нет, агента нет и
+ * Бины фичи существуют, только когда есть что класть в каталог: либо объявлена карта `presets`,
+ * либо legacy-`provider` называет известного провайдера. Иначе бинов нет, агента нет и
  * `DescriptionAgentSanityChecker` пишет WARN — то же поведение, что сегодня даёт опечатка в
- * `APP_AI_DESCRIPTION_PROVIDER`. Свойства читаются напрямую: биндить карту в условии нельзя,
- * условия вычисляются до создания `@ConfigurationProperties`.
+ * `APP_AI_DESCRIPTION_PROVIDER`.
  */
 class DescriptionPresetsDeclaredCondition : Condition {
     override fun matches(
         context: ConditionContext,
         metadata: AnnotatedTypeMetadata,
-    ): Boolean {
-        val environment = context.environment
-        val hasPresets =
-            (environment as? ConfigurableEnvironment)
-                ?.propertySources
-                ?.filterIsInstance<EnumerablePropertySource<*>>()
-                ?.any { source -> source.propertyNames.any { it.startsWith(PRESETS_PREFIX) } } == true
-        if (hasPresets) return true
-        return environment.getProperty("application.ai.description.provider", "") in
-            DescriptionProperties.KNOWN_PROVIDERS
-    }
-
-    private companion object {
-        const val PRESETS_PREFIX = "application.ai.description.presets."
-    }
+    ): Boolean = DescriptionPresetDeclarations.anyDeclared(context.environment)
 }
 ```
 
@@ -1315,14 +1375,15 @@ class DescriptionPresetsDeclaredCondition : Condition {
 ```kotlin
 package ru.zinin.frigate.analyzer.ai.description.config
 
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfiguration
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.ComponentScan
 import org.springframework.context.annotation.Conditional
+import org.springframework.context.annotation.Configuration
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
@@ -1334,68 +1395,89 @@ import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalogBui
 @EnableConfigurationProperties(DescriptionProperties::class, ClaudeProperties::class, GrokProperties::class)
 open class AiDescriptionAutoConfiguration {
     /**
-     * Порядок методов значим: `@ConditionalOnBean` ниже проверяется в порядке объявления
-     * `@Bean`-методов внутри `@AutoConfiguration`, поэтому каталог обязан объявляться выше агента.
+     * Все бины фичи живут здесь, под ОДНИМ условием, и связаны обычными зависимостями — поэтому
+     * порядок объявления `@Bean`-методов ни на что не влияет.
+     *
+     * Почему не `@ConditionalOnBean(DescriptionPresetCatalog::class)` на соседних методах:
+     * сегодняшний `@ConditionalOnBean(DescriptionBackend::class)` надёжен потому, что backend
+     * приходит из `@ComponentScan` — из другой фазы, гарантированно раньше. Для sibling-`@Bean`
+     * того же класса такой гарантии нет: Spring Boot не обещает, что он виден `OnBeanCondition`,
+     * а порядок методов в байткоде Kotlin может разойтись с порядком в файле. Цена ошибки
+     * несимметрична — каталог есть, агента нет, `/ai` рисует пресеты, а описания молча никогда
+     * не вызываются.
      */
-    @Bean
+    @Configuration(proxyBeanMethods = false)
     @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
     @Conditional(DescriptionPresetsDeclaredCondition::class)
-    fun descriptionPresetCatalog(
-        descriptionProperties: DescriptionProperties,
-        claudeProperties: ClaudeProperties,
-        grokProperties: GrokProperties,
-        factories: List<DescriptionBackendFactory>,
-    ): DescriptionPresetCatalog =
-        checkNotNull(
-            DescriptionPresetCatalogBuilder.build(
-                presets = declaredPresets(descriptionProperties, claudeProperties, grokProperties),
-                defaultPreset = descriptionProperties.defaultPreset,
-                factories = factories,
-            ),
-        ) { "No description preset declared while the catalog condition matched" }
-
-    @Bean
-    @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-    @ConditionalOnBean(DescriptionPresetCatalog::class)
-    fun descriptionAgent(
-        catalog: DescriptionPresetCatalog,
-        descriptionProperties: DescriptionProperties,
-        eventPublisher: ApplicationEventPublisher,
-    ): DescriptionAgent = DefaultDescriptionAgent(catalog, descriptionProperties, eventPublisher)
-
-    /**
-     * Пустая карта означает деплой, настроенный старым способом: один пресет из `provider` и
-     * секции этого провайдера. Неизвестный `provider` даёт пустую карту — тогда сюда не доходит
-     * даже условие каталога.
-     */
-    private fun declaredPresets(
-        descriptionProperties: DescriptionProperties,
-        claudeProperties: ClaudeProperties,
-        grokProperties: GrokProperties,
-    ): Map<String, DescriptionProperties.Preset> =
-        descriptionProperties.presets.ifEmpty {
-            when (descriptionProperties.provider) {
-                "claude" ->
-                    mapOf(
-                        "claude" to
-                            DescriptionProperties.Preset(provider = "claude", model = claudeProperties.model),
+    open class PresetBeans {
+        @Bean
+        open fun descriptionPresetCatalog(
+            descriptionProperties: DescriptionProperties,
+            claudeProperties: ClaudeProperties,
+            grokProperties: GrokProperties,
+            factories: ObjectProvider<DescriptionBackendFactory>,
+        ): DescriptionPresetCatalog =
+            when (
+                val result =
+                    DescriptionPresetCatalogBuilder.build(
+                        presets = declaredPresets(descriptionProperties, claudeProperties, grokProperties),
+                        defaultPreset = descriptionProperties.defaultPreset,
+                        // ObjectProvider, а не List<…>: при нуле кандидатов Spring бросает
+                        // NoSuchBeanDefinitionException вместо подстановки пустого списка.
+                        factories = factories.orderedStream().toList(),
                     )
-
-                "grok" ->
-                    mapOf(
-                        "grok" to
-                            DescriptionProperties.Preset(
-                                provider = "grok",
-                                model = grokProperties.model,
-                                effort = grokProperties.effort,
-                            ),
-                    )
-
-                else -> emptyMap()
+            ) {
+                is DescriptionPresetCatalogBuilder.Result.Catalog -> result.catalog
+                is DescriptionPresetCatalogBuilder.Result.NoneUsable -> error(result.message)
+                DescriptionPresetCatalogBuilder.Result.NoPresets ->
+                    error("Condition matched but no preset resolved — DescriptionPresetDeclarations is out of sync")
             }
-        }
+
+        @Bean
+        open fun descriptionAgent(
+            catalog: DescriptionPresetCatalog,
+            descriptionProperties: DescriptionProperties,
+            eventPublisher: ApplicationEventPublisher,
+        ): DescriptionAgent = DefaultDescriptionAgent(catalog, descriptionProperties, eventPublisher)
+
+        /**
+         * Пустая карта означает деплой, настроенный старым способом: один пресет из `provider` и
+         * секции этого провайдера. Неизвестный `provider` даёт пустую карту — тогда сюда не
+         * доходит даже условие. Значение нормализуется тем же кодом, что и в условии.
+         */
+        private fun declaredPresets(
+            descriptionProperties: DescriptionProperties,
+            claudeProperties: ClaudeProperties,
+            grokProperties: GrokProperties,
+        ): Map<String, DescriptionProperties.Preset> =
+            descriptionProperties.presets.ifEmpty {
+                when (DescriptionPresetDeclarations.normalize(descriptionProperties.provider)) {
+                    "claude" ->
+                        mapOf(
+                            "claude" to
+                                DescriptionProperties.Preset(provider = "claude", model = claudeProperties.model),
+                        )
+
+                    "grok" ->
+                        mapOf(
+                            "grok" to
+                                DescriptionProperties.Preset(
+                                    provider = "grok",
+                                    model = grokProperties.model,
+                                    effort = grokProperties.effort,
+                                ),
+                        )
+
+                    else -> emptyMap()
+                }
+            }
+    }
 }
 ```
+
+**Если карта непуста, а legacy-`provider` задан и не пуст** — вывести WARN
+«`application.ai.description.provider='<значение>'` ignored: presets are declared». Переменная по
+контракту перестаёт действовать, и без этой строки опечатка в ней остаётся невидимой.
 
 `config/DescriptionAgentSanityChecker.kt`: в тексте WARN заменить перечисление провайдеров на упоминание пресетов —
 
@@ -1437,10 +1519,10 @@ class DefaultDescriptionAgent(
 
 `executeWithRetry`, `attempt`, `onUnauthorized`, `onSuccess` получают `backend: DescriptionBackend` параметром вместо поля; в DEBUG-строке `finally` вместо `backend.providerId` печатать `catalog.fallbackId`. (В Task 4 `catalog.fallback()` станет `resolver.resolve()`.)
 
-В `DefaultDescriptionAgentTest` добавить хелпер и заменить им прямое создание агента:
+В `DefaultDescriptionAgentTest` уже есть хелпер `build(...)` (`DefaultDescriptionAgentTest.kt:84-94`) — править его, а не заводить новый. Ниже сигнатура после правки (`DescriptionProperties(…)` — плейсхолдер, аргументы взять из существующего вызова):
 
 ```kotlin
-    private fun agentOf(
+    private fun build(
         backend: DescriptionBackend,
         timeSource: TimeSource = TimeSource.Monotonic,
         publisher: ApplicationEventPublisher = ApplicationEventPublisher {},
@@ -1459,9 +1541,20 @@ class DefaultDescriptionAgent(
         )
 ```
 
-- [ ] **Step 11: Обновить тест автоконфигурации**
+- [ ] **Step 11: Переписать тест автоконфигурации**
 
-Существующие сценарии `provider=claude` и `provider=grok` дополнить проверкой каталога:
+**Существующие ассерты становятся заведомо ложными — их надо переписать, а не дополнить.** После
+Step 7 backend перестал быть Spring-бином, после Step 8 коллаборанты ОБОИХ провайдеров существуют
+при `enabled=true`. Конкретно ломаются:
+
+| Файл:строка | Ассерт | Почему ложен теперь | Чем заменить |
+|---|---|---|---|
+| `AiDescriptionAutoConfigurationTest.kt:127` | `getBeansOfType(ClaudeBackend).isNotEmpty()` | backend больше не бин | `catalog.byId("claude")?.backend` не null |
+| `:143` | `getBeansOfType(GrokBackend).isNotEmpty()` | то же | `catalog.byId("grok")?.backend` не null |
+| `:144-145` | при `provider=grok`: `ClaudeBackend` и `ClaudeAsyncClientFactory` отсутствуют | claude-коллаборанты теперь есть всегда | удалить; инвариант изоляции переехал на уровень каталога |
+| `:157-159` | при неизвестном провайдере: `ClaudeAsyncClientFactory` отсутствует (комментарий «Claude helpers must be gated on provider=claude») | то же | заменить на «бинов `DescriptionPresetCatalog` и `DescriptionAgent` нет» |
+
+Сценарии `provider=claude` и `provider=grok` дополнить проверкой каталога:
 `assertEquals(listOf("claude"), context.getBean(DescriptionPresetCatalog::class.java).all().map { it.id })`.
 `TestStubConfig` не трогать. Добавить четыре теста (в `withPropertyValues` побеждает последнее
 значение, поэтому пустой токен ставится **после** массива `properties(...)`):
@@ -1541,10 +1634,12 @@ class DefaultDescriptionAgent(
 - [ ] **Step 13: Коммит**
 
 ```bash
-git add modules/ai-description/src
+# git rm первым: `git add modules/ai-description/src` уже застейджит удаление файла с диска,
+# после чего `git rm` на него упадёт.
 git rm modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/claude/ClaudeBackendValidationTest.kt
+git add modules/ai-description/src
 git commit -m "feat(ai-description): build one backend per preset through provider factories" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -1552,9 +1647,9 @@ git commit -m "feat(ai-description): build one backend per preset through provid
 ### Task 4: Рантайм-настройки и резолюция активного пресета
 
 **Files:**
-- Create: `…/ai/description/api/DescriptionRuntimeSettings.kt`
+- Create: `…/ai/description/api/DescriptionRuntimeSettings.kt`, `…/api/ActiveDescriptionPreset.kt`
 - Create: `…/ai/description/core/InMemoryDescriptionRuntimeSettings.kt`
-- Create: `…/ai/description/core/ActivePresetResolver.kt`
+- Create: `…/ai/description/core/ActivePresetResolver.kt` (реализует `ActiveDescriptionPreset`, чтобы `telegram` зависел только от `api`)
 - Modify: `…/ai/description/core/DefaultDescriptionAgent.kt`
 - Modify: `…/ai/description/config/AiDescriptionAutoConfiguration.kt`
 - Test: `…/ai/description/core/ActivePresetResolverTest.kt` (create), `…/core/DefaultDescriptionAgentTest.kt` (modify)
@@ -1753,7 +1848,13 @@ class ActivePresetResolver(
         return catalog.fallback()
     }
 
-    suspend fun activePresetId(): String = resolve().view.id
+    // --- ActiveDescriptionPreset (api): экран обязан различать выбор владельца и то,
+    // что реально работает. Один метод activePresetId() этого не даёт: он возвращает уже
+    // резолвнутый fallback, из-за чего /ai рисовал бы ✅ на подменённом пресете и никогда
+    // не показал бы обещанное дизайном несоответствие.
+    override suspend fun storedId(): String? = runtimeSettings.activePresetId()?.takeIf { it.isNotBlank() }
+
+    override suspend fun effective(): DescriptionPreset = resolve().view
 
     private fun warnOnce(message: String) {
         if (lastWarning.getAndSet(message) != message) {
@@ -1784,28 +1885,28 @@ class ActivePresetResolver(
             val entry = resolver.resolve()
 ```
 
-и печатать в DEBUG `entry.view.id` вместо `catalog.fallbackId` — для этого перенести `logger.debug` из `finally` в тело (или сохранить id в локальную переменную до `try`).
+и печатать в DEBUG `entry.view.id` вместо `catalog.fallbackId`. **Переносить `logger.debug` из `finally` в тело нельзя** — тогда DEBUG-строка пропадёт на всех путях с исключением, а именно они и интересны при разборе. `finally` не видит `entry`, объявленный внутри `try`, поэтому объявить `var presetId: String? = null` ДО `try` и присвоить его сразу после резолюции.
 
-В автоконфигурации добавить бины между каталогом и агентом:
+В автоконфигурации добавить бины **внутрь `PresetBeans`** — порядок объявления там не значим, все бины под одним условием:
 
 ```kotlin
-    @Bean
-    @ConditionalOnMissingBean(DescriptionRuntimeSettings::class)
-    @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-    fun inMemoryDescriptionRuntimeSettings(): DescriptionRuntimeSettings = InMemoryDescriptionRuntimeSettings()
+        @Bean
+        @ConditionalOnMissingBean(DescriptionRuntimeSettings::class)
+        open fun inMemoryDescriptionRuntimeSettings(): DescriptionRuntimeSettings =
+            InMemoryDescriptionRuntimeSettings()
 
-    @Bean
-    @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-    @ConditionalOnBean(DescriptionPresetCatalog::class)
-    fun activePresetResolver(
-        catalog: DescriptionPresetCatalog,
-        runtimeSettings: DescriptionRuntimeSettings,
-    ): ActivePresetResolver = ActivePresetResolver(catalog, runtimeSettings)
+        @Bean
+        open fun activePresetResolver(
+            catalog: DescriptionPresetCatalog,
+            runtimeSettings: DescriptionRuntimeSettings,
+        ): ActivePresetResolver = ActivePresetResolver(catalog, runtimeSettings)
 ```
 
-(объявить их **после** метода каталога и **до** метода агента), а `descriptionAgent` принимает `resolver: ActivePresetResolver`.
+`descriptionAgent` принимает `resolver: ActivePresetResolver`.
 
-В `DefaultDescriptionAgentTest` хелпер `agentOf` заворачивает каталог в `ActivePresetResolver(catalogOf(backend), InMemoryDescriptionRuntimeSettings())`.
+**Обе реализации `DescriptionRuntimeSettings` пишут строку INFO при создании** — `InMemoryDescriptionRuntimeSettings`: «Description runtime settings: in-memory (choice does not survive restart)», `AppSettingsDescriptionRuntimeSettings` (Task 6): «Description runtime settings: app_settings». Без неё in-memory-дефолт может незаметно оказаться в проде (бин `core` не зарегистрировался, опечатка в пакете при рефакторинге): приложение стартует, `/ai` работает, а выбор владельца молча пропадает на каждом рестарте — ровно то, что дизайн отвергает как «временный эксперимент».
+
+В `DefaultDescriptionAgentTest` существующий хелпер называется `build(...)` (`DefaultDescriptionAgentTest.kt:84-94`), а не `agentOf` — именно его и править: он заворачивает каталог в `ActivePresetResolver(catalogOf(backend), InMemoryDescriptionRuntimeSettings())`.
 
 - [ ] **Step 6: Запустить тесты модуля**
 
@@ -1817,7 +1918,7 @@ class ActivePresetResolver(
 ```bash
 git add modules/ai-description/src
 git commit -m "feat(ai-description): resolve the active preset per call through a runtime SPI" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -1892,6 +1993,30 @@ class ProviderAuthTrackerTest {
 
         assertEquals(listOf("grok", "claude"), events.map { it.provider })
         assertEquals(ProviderAuthStates.Health.LOST, tracker.byProvider().getValue("claude"))
+    }
+
+    // --- Ниже: два теста ПЕРЕНОСЯТСЯ живьём из DefaultDescriptionAgentTest
+    // (`:279-313` и `:370-391`), с реальными потоками и CountDownLatch. Это единственные тесты,
+    // проверяющие смысл существования замка; однопоточные сценарии выше их не заменяют, и без
+    // них регрессия порядка LOST/RESTORED снова становится возможной. Дизайн обещает
+    // «одно событие на переход при параллельных отказах» именно про них.
+
+    @Test
+    fun `a slow listener cannot reorder concurrent auth transitions`() {
+        // перенести тело из DefaultDescriptionAgentTest.kt:279-313, заменив вызовы агента
+        // на прямые tracker.onUnauthorized(...) / tracker.onSuccess(...)
+    }
+
+    @Test
+    fun `concurrent Unauthorized failures publish a single LOST`() {
+        // перенести тело из DefaultDescriptionAgentTest.kt:370-391: пять параллельных вызовов
+        // onUnauthorized под runBlocking(Dispatchers.IO) → ровно одно событие
+    }
+
+    @Test
+    fun `a slow listener on one provider does not delay the other`() {
+        // новый: медленный слушатель на "grok" не задерживает публикацию события "claude" —
+        // замок берётся на провайдера, а не глобально
     }
 
     @Test
@@ -2050,16 +2175,15 @@ class ProviderAuthTracker(
                 throw e
 ```
 
-В автоконфигурации добавить бин трекера (выше агента) и передать его в агента:
+В автоконфигурации добавить бин трекера **внутрь `PresetBeans`** (порядок объявления там не значим) и передать его в агента:
 
 ```kotlin
-    @Bean
-    @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-    fun providerAuthTracker(eventPublisher: ApplicationEventPublisher): ProviderAuthTracker =
-        ProviderAuthTracker(eventPublisher)
+        @Bean
+        open fun providerAuthTracker(eventPublisher: ApplicationEventPublisher): ProviderAuthTracker =
+            ProviderAuthTracker(eventPublisher)
 ```
 
-В `DefaultDescriptionAgentTest` сценарии про авторизацию переносятся в `ProviderAuthTrackerTest`; в самом тесте агента остаётся проверка «`Unauthorized` не повторяется» и хелпер создаёт агента с `ProviderAuthTracker(publisher)`.
+В `DefaultDescriptionAgentTest` сценарии про авторизацию переносятся в `ProviderAuthTrackerTest` — **вместе с телами, включая оба многопоточных**, а не заменяются однопоточными аналогами. В самом тесте агента остаются проверка «`Unauthorized` не повторяется» и тест `a throwing listener does not discard a successful description` (`:335-348`): это инвариант **агента**, а не трекера, и трекером он не покрывается. Хелпер создаёт агента с настоящим `ProviderAuthTracker(publisher)`.
 
 - [ ] **Step 5: Запустить тесты модуля**
 
@@ -2071,7 +2195,7 @@ class ProviderAuthTracker(
 ```bash
 git add modules/ai-description/src
 git commit -m "refactor(ai-description): track authorization per provider, not per agent" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -2267,9 +2391,10 @@ class AppSettingsDescriptionRuntimeSettings(
     fun `the runtime switch keeps the description supplier out`() =
         runTest {
             val (f, req) = facade(agent = mockk(relaxed = true), runtimeEnabled = false)
+            // Стабы evaluate/saveProcessingResult уже стоят в @BeforeEach самого теста
+            // (RecordingProcessingFacadeTest.kt:94-105); хелперов notifyDecision()/savedResult()
+            // в нём нет, дублировать их здесь не нужно.
             coEvery { notificationDecisionService.isRecordingNotificationsGloballyEnabled() } returns true
-            coEvery { notificationDecisionService.evaluate(any(), any(), any()) } returns notifyDecision()
-            coEvery { recordingEntityService.saveProcessingResult(any()) } returns savedResult()
 
             val supplier = captureSupplierDuring { f.processAndNotify(req) }
 
@@ -2281,8 +2406,6 @@ class AppSettingsDescriptionRuntimeSettings(
         runTest {
             val (f, req) = facade(agent = mockk(relaxed = true), runtimeEnabled = true)
             coEvery { notificationDecisionService.isRecordingNotificationsGloballyEnabled() } returns true
-            coEvery { notificationDecisionService.evaluate(any(), any(), any()) } returns notifyDecision()
-            coEvery { recordingEntityService.saveProcessingResult(any()) } returns savedResult()
 
             val supplier = captureSupplierDuring { f.processAndNotify(req) }
 
@@ -2304,7 +2427,7 @@ class AppSettingsDescriptionRuntimeSettings(
 git add modules/service/src/main/kotlin/ru/zinin/frigate/analyzer/service/AppSettingKeys.kt \
         modules/core/src
 git commit -m "feat(core): persist the active preset and the runtime switch in app_settings" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -2320,8 +2443,8 @@ git commit -m "feat(core): persist the active preset and the runtime switch in a
 - Test: `…/telegram/bot/handler/aisettings/AiSettingsMessageRendererTest.kt` (create)
 
 **Interfaces:**
-- Consumes: `DescriptionPresets.all()`, `DescriptionPreset` (Task 3); `ActivePresetResolver.activePresetId()` (Task 4); `ProviderAuthStates.byProvider()`, `ProviderAuthStates.Health` (Task 5); `DescriptionRuntimeSettings.descriptionsEnabled()` (Task 4).
-- Produces: `AiSettingsViewState(descriptionsEnabled, activePresetId, presets, authByProvider, language)`; `AiSettingsCallbacks.PREFIX/CLOSE/ON/OFF/SET_PREFIX`; `AiSettingsViewStateFactory.build(language)`; `AiSettingsMessageRenderer.render(state): RenderedAiSettings(text, keyboard)`; ключи i18n `ai.settings.*`.
+- Consumes: `DescriptionPresets.all()`, `DescriptionPreset` (Task 3); `ActiveDescriptionPreset.storedId()` / `.effective()` из `api` (Task 4); `ProviderAuthStates.byProvider()`, `ProviderAuthStates.Health` (Task 5); `DescriptionRuntimeSettings.descriptionsEnabled()` (Task 4).
+- Produces: `AiSettingsViewState(descriptionsEnabled, storedPresetId, effectivePresetId, presets, authByProvider, language)` с `hasMismatch`; `AiSettingsCallbacks.PREFIX/CLOSE/ON/OFF/SET_PREFIX`; `AiSettingsViewStateFactory.build(language)`; `AiSettingsMessageRenderer.render(state): RenderedAiSettings(text, keyboard)`; ключи i18n `ai.settings.*`.
 
 - [ ] **Step 1: Написать падающий тест рендера**
 
@@ -2451,12 +2574,22 @@ import ru.zinin.frigate.analyzer.ai.description.api.ProviderAuthStates
 
 data class AiSettingsViewState(
     val descriptionsEnabled: Boolean,
-    /** null = каталога нет: фича включена, но пресеты не объявлены. */
-    val activePresetId: String?,
+    /** Что выбрал владелец. null = ключа нет, работает `default-preset`. */
+    val storedPresetId: String?,
+    /** Что реально применит следующий вызов. null = каталога нет: пресеты не объявлены. */
+    val effectivePresetId: String?,
     val presets: List<DescriptionPreset>,
     val authByProvider: Map<String, ProviderAuthStates.Health>,
     val language: String,
-)
+) {
+    /**
+     * Сохранённый пресет существует, но работает не он: рендер печатает строку
+     * `ai.settings.active.mismatch`. Без этого владелец не видит, что его выбор перекрыт,
+     * а битый id живёт в `app_settings` вечно — кликать по fallback-у незачем.
+     */
+    val hasMismatch: Boolean
+        get() = storedPresetId != null && effectivePresetId != null && storedPresetId != effectivePresetId
+}
 ```
 
 `bot/handler/aisettings/AiSettingsCallbacks.kt` — payload-и в одном месте, чтобы рендер и
@@ -2490,22 +2623,29 @@ import ru.zinin.frigate.analyzer.telegram.dto.AiSettingsViewState
 
 /**
  * Единая точка сборки состояния экрана: команда и перерисовка после коллбэка читают одно и то же.
- * Зависимости через [ObjectProvider] — при `ai.description.enabled=false` этих бинов нет, а бот
- * обязан стартовать.
+ *
+ * Зависимости через [ObjectProvider] потому, что **пресеты могут быть не объявлены** — тогда
+ * `PresetBeans` целиком не создаётся, а бот обязан стартовать. (Прежнее обоснование «при
+ * `ai.description.enabled=false` этих бинов нет» неверно: сам этот класс условен только на
+ * `application.telegram.enabled`, гейт на ai-флаг стоит лишь у `AiSettingsCommandHandler`.)
+ *
+ * Зависимость только на `api`: `core.ActivePresetResolver` за пределы модуля не выходит.
  */
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
 class AiSettingsViewStateFactory(
     private val presetsProvider: ObjectProvider<DescriptionPresets>,
-    private val resolverProvider: ObjectProvider<ActivePresetResolver>,
+    private val activePresetProvider: ObjectProvider<ActiveDescriptionPreset>,
     private val runtimeSettingsProvider: ObjectProvider<DescriptionRuntimeSettings>,
     private val authStatesProvider: ObjectProvider<ProviderAuthStates>,
 ) {
     suspend fun build(language: String): AiSettingsViewState {
         val presets = presetsProvider.getIfAvailable()?.all().orEmpty()
+        val active = activePresetProvider.getIfAvailable()
         return AiSettingsViewState(
             descriptionsEnabled = runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true,
-            activePresetId = if (presets.isEmpty()) null else resolverProvider.getIfAvailable()?.activePresetId(),
+            storedPresetId = active?.storedId(),
+            effectivePresetId = if (presets.isEmpty()) null else active?.effective()?.id,
             presets = presets,
             authByProvider = authStatesProvider.getIfAvailable()?.byProvider().orEmpty(),
             language = language,
@@ -2543,7 +2683,8 @@ class AiSettingsMessageRenderer(
 
     private fun renderText(state: AiSettingsViewState): String {
         val lang = state.language
-        val active = state.presets.firstOrNull { it.id == state.activePresetId }
+        val active = state.presets.firstOrNull { it.id == state.effectivePresetId }
+        val stored = state.storedPresetId?.let { id -> state.presets.firstOrNull { it.id == id } }
         return buildString {
             appendLine(msg.get("ai.settings.title", lang))
             appendLine(
@@ -2553,17 +2694,40 @@ class AiSettingsMessageRenderer(
                     msg.get(if (state.descriptionsEnabled) "ai.settings.state.on" else "ai.settings.state.off", lang),
                 ),
             )
-            if (active == null) {
+            // Ранний выход ТОЛЬКО при пустом каталоге. Раньше он срабатывал и на
+            // `active == null` при непустом списке (резолвер недоступен, ключ пуст) — и уносил
+            // с собой весь блок авторизации, то есть ровно ту диагностику, ради которой экран
+            // и открывают.
+            if (state.presets.isEmpty()) {
                 appendLine(msg.get("ai.settings.active.none", lang))
                 return@buildString
             }
-            appendLine(
-                msg.get("ai.settings.active", lang, active.id, active.provider, active.model, effortLabel(active)),
-            )
+            if (active == null) {
+                appendLine(msg.get("ai.settings.active.none", lang))
+            } else {
+                appendLine(
+                    msg.get("ai.settings.active", lang, active.id, active.provider, active.model, effortLabel(active)),
+                )
+            }
+            if (state.hasMismatch) {
+                appendLine(
+                    msg.get(
+                        "ai.settings.active.mismatch",
+                        lang,
+                        state.storedPresetId.orEmpty(),
+                        stored?.unavailableReason ?: msg.get("ai.settings.active.none", lang),
+                        state.effectivePresetId.orEmpty(),
+                    ),
+                )
+            }
             appendLine()
             state.presets.map { it.provider }.distinct().forEach { provider ->
                 appendLine(providerLine(state, provider, lang))
             }
+            // Состояние меняется только на вызове описания: после `grok login` здесь будет 🔴
+            // до следующей записи с детекциями, после рестарта — ⚪ при протухшем auth.json.
+            // Оговорка обязательна, иначе экран читается как проверка «сейчас».
+            appendLine(msg.get("ai.settings.auth.note", lang))
         }
     }
 
@@ -2651,10 +2815,12 @@ ai.settings.state.on=включены
 ai.settings.state.off=выключены
 ai.settings.active=Активный пресет: {0} ({1} / {2} / {3})
 ai.settings.active.none=Пресеты не настроены
+ai.settings.active.mismatch=⚠️ Выбран {0} ({1}) — работает {2}. Выбор сохранён и применится снова, когда пресет станет доступен.
 ai.settings.auth.healthy=🟢 {0} — авторизация в порядке
 ai.settings.auth.lost=🔴 {0} — отказ авторизации
 ai.settings.auth.unknown=⚪ {0} — ещё не вызывался
 ai.settings.auth.unavailable=⚠️ {0} — не настроен: {1}
+ai.settings.auth.note=Состояние показано на момент последнего вызова описания.
 ai.settings.button.enable=Включить описания
 ai.settings.button.disable=Выключить описания
 ai.settings.button.close=Закрыть
@@ -2664,7 +2830,7 @@ ai.settings.alert.disabled=Описания выключены
 ai.settings.alert.unavailable=Пресет недоступен: {0}
 ```
 
-`messages_en.properties` — те же ключи с английскими значениями (`AI descriptions`, `State: {0}`, `enabled`, `disabled`, `Active preset: {0} ({1} / {2} / {3})`, `No presets configured`, `{0} credentials work`, `{0} rejected the credentials`, `{0} not called yet`, `{0} not configured: {1}`, `Enable descriptions`, `Disable descriptions`, `Close`, `Preset {0} is active`, `Descriptions enabled`, `Descriptions disabled`, `Preset unavailable: {0}`).
+`messages_en.properties` — те же ключи с английскими значениями (`AI descriptions`, `State: {0}`, `enabled`, `disabled`, `Active preset: {0} ({1} / {2} / {3})`, `No presets configured`, `⚠️ Selected {0} ({1}) — running {2}. The choice is kept and applies again once the preset becomes available.`, `Auth state is shown as of the last description call.`, `{0} credentials work`, `{0} rejected the credentials`, `{0} not called yet`, `{0} not configured: {1}`, `Enable descriptions`, `Disable descriptions`, `Close`, `Preset {0} is active`, `Descriptions enabled`, `Descriptions disabled`, `Preset unavailable: {0}`).
 
 - [ ] **Step 5: Запустить тест рендера**
 
@@ -2676,7 +2842,7 @@ ai.settings.alert.unavailable=Пресет недоступен: {0}
 ```bash
 git add modules/telegram/src
 git commit -m "feat(telegram): render the AI description settings screen" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -2692,7 +2858,7 @@ git commit -m "feat(telegram): render the AI description settings screen" \
 
 **Interfaces:**
 - Consumes: `AiSettingsCallbacks`, `AiSettingsViewStateFactory.build(language)`, `AiSettingsMessageRenderer.render(state)` (Task 7); `DescriptionRuntimeSettings.setActivePresetId/setDescriptionsEnabled` (Task 4); `DescriptionPresets.all()` (Task 3).
-- Produces: `AiSettingsCallbackHandler.DispatchOutcome` (`RERENDER`, `CLOSE`, `UNAUTHORIZED`, `IGNORE`, `ALERT`), `AiSettingsCallbackHandler.Dispatched(outcome, alertKey, alertArgument)`, `AiSettingsCallbackHandler.dispatch(data, isOwner, changedBy): Dispatched`; команда `/ai` с `order = 8`.
+- Produces: `AiSettingsCallbackHandler.DispatchOutcome` (`RERENDER`, `CLOSE`, `UNAUTHORIZED`, `IGNORE`, `ALERT`), `AiSettingsCallbackHandler.Dispatched(outcome, alertKey, alertArgument)`, `AiSettingsCallbackHandler.dispatch(data, isOwner, changedBy): Dispatched`; команда `/ai` с `ownerOnly = true` и `order = 9`.
 
 - [ ] **Step 1: Написать падающий тест диспетчера**
 
@@ -2918,7 +3084,21 @@ class AiSettingsCommandHandler(
 ) : CommandHandler {
     override val command: String = "ai"
     override val requiredRole: UserRole = UserRole.OWNER
-    override val order: Int = 8
+
+    /**
+     * Видимость команды определяет `ownerOnly`, а НЕ `requiredRole`:
+     * `FrigateAnalyzerBot.registerDefaultCommands()` регистрирует в `BotCommandScopeDefault` всё,
+     * что `filterNot { it.ownerOnly }`, а `HelpCommandHandler` печатает такие команды в общем
+     * списке. Без этой строки `/ai` попала бы в меню каждого пользователя и в общий раздел
+     * `/help`, отбиваясь на клике `common.error.owner.only`. Все три owner-команды в дереве
+     * ставят оба поля.
+     */
+    override val ownerOnly: Boolean = true
+
+    // 8 занят `/status` (modules/core/.../StatusCommandHandler.kt:31). Раскладка:
+    // start=1, help=2, export=3, timezone=4, version=5, language=6, notifications=7,
+    // status=8, adduser=10, removeuser=11, users=12 — свободен 9.
+    override val order: Int = 9
 
     override suspend fun BehaviourContext.handle(
         message: ChatContentMessage<TextContent>,
@@ -2968,6 +3148,9 @@ class AiSettingsCommandHandler(
                                 dispatched.alertKey?.let { key ->
                                     msg.get(key, lang, dispatched.alertArgument.orEmpty())
                                 },
+                            // Модалка, а не тост: причина недоступности пресета — единственное
+                            // место, где владелец её узнаёт, а тост в углу легко пропустить.
+                            showAlert = dispatched.outcome == AiSettingsCallbackHandler.DispatchOutcome.ALERT,
                         )
                     } catch (e: CancellationException) {
                         throw e
@@ -3043,14 +3226,14 @@ ai.description.auth.lost=🔴 AI descriptions: provider {0} rejected the credent
 - [ ] **Step 6: Запустить тесты модуля**
 
 `./gradlew :frigate-analyzer-telegram:test`
-Ожидание: PASS. Тест на наличие ключей в обоих бандлах (если такого нет — добавить `AiSettingsMessagesTest`, который проверяет, что каждый ключ `ai.settings.*` и `command.ai.description` есть в обоих файлах).
+Ожидание: PASS. Отдельный тест на паритет ключей писать не нужно: `MessageKeyParityTest` уже проверяет, что множества ключей обоих бандлов совпадают, и новые `ai.settings.*` попадут под него автоматически.
 
 - [ ] **Step 7: Коммит**
 
 ```bash
 git add modules/telegram/src
 git commit -m "feat(telegram): switch the AI description preset from an owner-only /ai dialog" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -3092,7 +3275,16 @@ git commit -m "feat(telegram): switch the AI description preset from an owner-on
       echo "INFO: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_AUTH_TOKEN is set; claude presets will be marked unavailable."
   fi
 
-  if [ -n "${GROK_HOME:-}" ]; then
+  # ВАЖНО: сам по себе непустой GROK_HOME признаком не является — в docker-compose.yml он задан
+  # ВСЕГДА (:35) и том монтируется всегда (:27). Гейт по нему выдал бы WARN про отсутствующий
+  # auth.json каждому claude-only деплою, а дизайн обещает "WARN только на сломанное".
+  grok_intended=false
+  if [ -f "${GROK_HOME:-}/auth.json" ] || [ -f "${GROK_HOME:-}/config.toml" ] || \
+     [ "$(printf '%s' "${APP_AI_DESCRIPTION_PROVIDER:-}" | tr '[:upper:]' '[:lower:]')" = "grok" ]; then
+      grok_intended=true
+  fi
+
+  if [ "$grok_intended" = true ] && [ -n "${GROK_HOME:-}" ]; then
       if [ -n "${GROK_CLI_PATH:-}" ]; then
           if [ -x "${GROK_CLI_PATH}" ]; then
               echo "INFO: grok CLI detected at ${GROK_CLI_PATH}: $(${GROK_CLI_PATH} --version 2>/dev/null || echo 'unknown')"
@@ -3111,30 +3303,72 @@ git commit -m "feat(telegram): switch the AI description preset from an owner-on
       else
           echo "INFO: grok credentials found in ${GROK_HOME}"
       fi
-  else
+  elif [ "$grok_intended" = true ]; then
       echo "WARN: GROK_HOME is not set; grok presets would fall back to the ephemeral default under the temp folder, point GROK_HOME at a mounted volume." >&2
+  else
+      echo "INFO: no grok credentials found under GROK_HOME and APP_AI_DESCRIPTION_PROVIDER is not 'grok'; skipping grok checks."
   fi
+
+  # Две диагностики, которые нельзя терять вместе со старым `case`:
+  # 1) самый частый misconfig — включённая фича без единого признака провайдера. Legacy-синтез
+  #    одного claude-пресета без токена по-прежнему валит старт по правилу "ноль годных", и это
+  #    не должно выглядеть мягким INFO плюс падение JVM.
+  if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] && [ "$grok_intended" != true ]; then
+      echo "WARN: APP_AI_DESCRIPTION_ENABLED=true but neither a Claude token nor grok credentials were found; startup will fail if the only declared preset is unusable." >&2
+  fi
+  # 2) опечатка в legacy-переменной остаётся мягкой на уровне приложения, поэтому шелл — последнее
+  #    место, где её ещё видно рядом с причиной.
+  case "$(printf '%s' "${APP_AI_DESCRIPTION_PROVIDER:-}" | tr '[:upper:]' '[:lower:]')" in
+      ''|claude|grok) ;;
+      *) echo "WARN: unknown APP_AI_DESCRIPTION_PROVIDER='${APP_AI_DESCRIPTION_PROVIDER}'; it is ignored when presets are declared, and yields no preset otherwise." >&2 ;;
+  esac
 
   echo "INFO: the active preset is chosen in application-docker.yaml and in the /ai dialog; this check only reports which providers look usable."
 ```
 
 - [ ] **Step 2: Добавить пример пресетов в `application-docker.yaml.example`**
 
+Блок **закомментирован целиком**: пример содержит живые значения, профильный файл приоритетнее
+базового `application.yaml`, и копирование поверх работающего claude-деплоя иначе молча
+переключило бы его на `grok-fast`. `default-preset` — через плейсхолдер, иначе литерал делает
+`APP_AI_DESCRIPTION_DEFAULT_PRESET` из `.env.example` мёртвой переменной.
+
 ```yaml
   # AI-описания: сколько угодно пресетов, активный выбирается владельцем в /ai и переживает
   # рестарт. effort только у grok; пустой effort = флаг --effort не передаётся.
-  ai:
-    description:
-      default-preset: grok-fast
-      presets:
-        grok-fast:   { provider: grok,   model: grok-4.6,   effort: low }
-        grok-deep:   { provider: grok,   model: grok-4.6,   effort: xhigh }
-        claude-opus: { provider: claude, model: opus }
+  #
+  # ВНИМАНИЕ: раскомментированный блок presets ОТКЛЮЧАЕТ APP_AI_DESCRIPTION_PROVIDER,
+  # GROK_MODEL, GROK_EFFORT и CLAUDE_MODEL из .env — они применяются только при пустой карте.
+  #
+  # ai:
+  #   description:
+  #     default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:grok-fast}
+  #     presets:
+  #       grok-fast:   { provider: grok,   model: grok-4.6,   effort: low }
+  #       grok-deep:   { provider: grok,   model: grok-4.6,   effort: xhigh }
+  #       claude-opus: { provider: claude, model: opus }
 ```
+
+Заодно в `docker/deploy/docker-compose.yml` поправить комментарий тома `grok-home` («Grok Build
+home (provider=grok)», строка 25) — после перехода на пресеты он перестаёт быть правдой.
 
 - [ ] **Step 3: Обновить `.env.example`**
 
-Пометить `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EFFORT`, `CLAUDE_MODEL` как путь одного пресета, который применяется, только когда `presets` пуст, и указать на `application-docker.yaml`. Добавить `APP_AI_DESCRIPTION_DEFAULT_PRESET`.
+Пометить `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EFFORT`, `CLAUDE_MODEL` как путь одного пресета, который применяется, только когда `presets` пуст, и указать на `application-docker.yaml`. Добавить `APP_AI_DESCRIPTION_DEFAULT_PRESET` **с пустым значением** и комментарием, что оно действует только при объявленной карте.
+
+**Смежная правка в Task 1:** валидация `default-preset` при **пустой** карте ослабляется с
+`require` до WARN. Иначе оператор, скопировавший `.env.example` со значением до того, как объявил
+карту в yaml, получает отказ старта («default-preset 'grok-fast' is not declared in presets: »), и
+миграция «сначала env, потом yaml» становится невозможной. При непустой карте проверка остаётся
+строгой.
+
+- [ ] **Step 3a: Логировать значение, а не только факт**
+
+Переключение пресета и стартовая строка каталога пишутся на INFO **со значением** —
+`id (provider/model/effort)`. Сегодня на INFO уходит лишь `AppSettings: 'ai.description.preset.active' set by owner`,
+а само значение на DEBUG, чего для вопроса «какая модель сейчас работает» мало. Стартовая строка
+заодно возвращает правду формулировке `.claude/rules/ai-description.md` про «logs model and effort
+at INFO once at startup»: её источник, INFO-строка в `GrokBackend.init`, удаляется в Task 3.
 
 - [ ] **Step 4: Обновить README**
 
@@ -3142,14 +3376,14 @@ git commit -m "feat(telegram): switch the AI description preset from an owner-on
 
 - [ ] **Step 5: Обновить правила**
 
-`.claude/rules/ai-description.md`: в `paths:` добавить `**/handler/aisettings/**`; таблицу слоёв дополнить строками про фабрики, каталог, резолвер и трекер; описать пресеты, резолюцию, рантайм-выключатель и диалог. `.claude/rules/configuration.md`: свойства `presets.*`, `default-preset`, ключи `app_settings`, пометка legacy у `APP_AI_DESCRIPTION_PROVIDER`. `.claude/rules/database.md`: два новых ключа `app_settings` и оговорка про кэш. `CLAUDE.md`: строка модуля `ai-description` и ключевой паттерн упоминают пресеты и `/ai`.
+`.claude/rules/ai-description.md`: в `paths:` добавить `**/handler/aisettings/**`; таблицу слоёв дополнить строками про фабрики, каталог, резолвер и трекер; описать пресеты, резолюцию, рантайм-выключатель и диалог. `.claude/rules/configuration.md`: свойства `presets.*`, `default-preset`, ключи `app_settings`, пометка legacy у `APP_AI_DESCRIPTION_PROVIDER`. `.claude/rules/database.md`: два новых ключа `app_settings`, оговорка про кэш (прямой SQL невиден до рестарта) и явная строка о том, что **фича рассчитана на один экземпляр приложения**: запись инвалидирует только собственный кэш процесса, поэтому при двух контейнерах выбор пресета и рантайм-выключатель разъедутся и будут расходиться до рестарта. `CLAUDE.md`: строка модуля `ai-description` и ключевой паттерн упоминают пресеты и `/ai`.
 
 - [ ] **Step 6: Коммит**
 
 ```bash
 git add docker/deploy README.md CLAUDE.md .claude/rules
 git commit -m "docs(ai-description): document presets, the /ai dialog and the runtime switch" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 ---
@@ -3184,7 +3418,7 @@ docker compose logs frigate-analyzer | grep -i "Description presets"   # INFO с
 git rm docs/superpowers/specs/2026-09-04-ai-description-presets-design.md \
        docs/superpowers/plans/2026-09-04-ai-description-presets.md
 git commit -m "chore: drop the superpowers documents from the PR diff" \
-           -m "Claude-Session: https://claude.ai/code/session_01MppBgCU5bLAPtDtnjoCYVk"
+           -m "Claude-Session: <SESSION_URL>"
 ```
 
 - [ ] **Step 5: Дописать результаты в описание PR #44**

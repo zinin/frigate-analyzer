@@ -44,8 +44,10 @@ BYOK-эндпоинт и ключ уже привязаны к имени мод
 установленного бинарника, а не выбора модели; вынос их в пресет открыл бы путь секретам в
 пресетные логи и в диалог Telegram.
 
-**Пресеты живут в yaml, а не в env.** Это карта, а `.env` карт не умеет без индексных имён вида
-`..._PRESETS_0_MODEL`. В проекте карты уже настраиваются в `application-docker.yaml` (`detect-servers`),
+**Пресеты живут в yaml, а не в env.** Формально Spring биндит карты и из окружения
+(`APP_AI_DESCRIPTION_PRESETS_GROKFAST_MODEL` даёт ключ `grokfast`), но ключ при этом теряет регистр
+и не может содержать `-`: id вида `grok-fast` из `.env` недостижим, а искажение ключа всплывёт
+только в `callback_data` и в логах. В проекте карты уже настраиваются в `application-docker.yaml` (`detect-servers`),
 и файл смонтирован в контейнер томом. Плата: `docker-entrypoint.sh` пресетов не видит, поэтому его
 проверки перестают говорить о выбранном провайдере и начинают говорить о доступных.
 
@@ -108,9 +110,18 @@ application:
 **Legacy-путь.** Пустая карта плюс известный `application.ai.description.provider` дают один
 синтезированный пресет: `id` равен значению `provider`, `model` и `effort` берутся из секции
 провайдера (`claude.model`, `grok.model`, `grok.effort`). Существующий `.env` работает без правок.
+
+Значение legacy-`provider` перед сравнением нормализуется — `trim().lowercase()`. Сегодняшний
+`@ConditionalOnProperty(havingValue = "claude")` сравнивает **без учёта регистра**, поэтому
+работающий деплой с `APP_AI_DESCRIPTION_PROVIDER=CLAUDE` активирует Claude; регистрозависимая
+проверка в новом коде тихо оставила бы такой деплой без агента и нарушила бы обещание «существующие
+деплои работают без правок». Тест с mixed-case значением это фиксирует.
+
 При непустой карте `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EFFORT` и `CLAUDE_MODEL` не
 используются; секции провайдеров продолжают биндиться всегда, поэтому их значения обязаны
-оставаться валидными.
+оставаться валидными. Непустой legacy-`provider` при объявленной карте даёт WARN
+«`application.ai.description.provider='gemini'` ignored: presets are declared» — иначе опечатка в
+переменной, которая перестала действовать, остаётся невидимой.
 
 Ключи `app_settings`:
 
@@ -126,7 +137,7 @@ ai/description/
   api/      DescriptionAgent, DescriptionRequest, DescriptionResult, DescriptionException,
             TempFileWriter, DescriptionProviderAuthEvent,
             DescriptionPreset, DescriptionPresets, ProviderAuthStates,
-            DescriptionRuntimeSettings                              контракт наружу
+            ActiveDescriptionPreset, DescriptionRuntimeSettings     контракт наружу
   core/     DescriptionBackend, DescriptionBackendFactory, DescriptionPresetCatalog,
             ActivePresetResolver, ProviderAuthTracker,
             DefaultDescriptionAgent, ResultNormalizer, LanguageNames,
@@ -151,6 +162,17 @@ data class DescriptionPreset(
 
 interface DescriptionPresets {
     fun all(): List<DescriptionPreset>   // порядок объявления в yaml
+}
+
+/**
+ * Активный пресет для потребителей за пределами модуля. Два метода, а не один: экран обязан
+ * различать выбор владельца и то, что реально работает.
+ */
+interface ActiveDescriptionPreset {
+    /** Что выбрал владелец; null = ключа нет или он пуст. Резолюции не делает. */
+    suspend fun storedId(): String?
+    /** Что применит следующий вызов describe: сохранённый, если годен, иначе fallback. */
+    suspend fun effective(): DescriptionPreset
 }
 
 interface ProviderAuthStates {
@@ -263,34 +285,71 @@ class ProviderAuthTracker(private val eventPublisher: ApplicationEventPublisher)
 
 ### Автоконфигурация
 
+Все бины фичи объявляются во вложенной `@Configuration` под одним условием, обычными зависимыми
+бинами. Порядок `@Bean`-методов при этом ни на что не влияет:
+
 ```kotlin
-@Bean
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-fun descriptionPresetCatalog(
-    properties: DescriptionProperties,
-    factories: List<DescriptionBackendFactory>,
-): DescriptionPresetCatalog
+@Conditional(DescriptionPresetsDeclaredCondition::class)
+class PresetBeans {
+    @Bean fun descriptionPresetCatalog(
+        properties: DescriptionProperties,
+        factories: ObjectProvider<DescriptionBackendFactory>,
+    ): DescriptionPresetCatalog
+    @Bean fun activePresetResolver(...): ActivePresetResolver
+    @Bean fun providerAuthTracker(...): ProviderAuthTracker
+    @Bean fun descriptionAgent(...): DescriptionAgent
+}
 ```
+
+**Почему не `@ConditionalOnBean(DescriptionPresetCatalog::class)` на соседних `@Bean`-методах.**
+Сегодняшний `@ConditionalOnBean(DescriptionBackend::class)` надёжен потому, что backend приходит из
+`@ComponentScan` — из **другой фазы**, гарантированно раньше. Для соседнего `@Bean`-метода того же
+класса такой гарантии нет: Spring Boot не обещает, что sibling-`@Bean` виден `OnBeanCondition`, а
+порядок методов в байткоде Kotlin может разойтись с порядком в файле. Цена ошибки несимметрична:
+каталог есть, агента нет, `/ai` рисует пресеты, а описания молча никогда не вызываются. Одно
+условие на всю вложенную конфигурацию убирает и зависимость от порядка, и KDoc с тестом, которые
+эту зависимость закрепляли.
+
+`ObjectProvider` вместо `List<DescriptionBackendFactory>`: при нуле кандидатов Spring бросает
+`NoSuchBeanDefinitionException`, а не подставляет пустой список.
+
+**`DescriptionPresetsDeclaredCondition` — единственная точка истины о том, что объявлено.** Условие
+и сборка списка пресетов пользуются одной функцией `DescriptionPresetDeclarations.resolve(env)`, а
+внутри неё — `Binder.get(env).bind("application.ai.description.presets", Bindable.mapOf(...))`. Это
+тот же механизм, которым Spring биндит `DescriptionProperties`, поэтому видны все источники,
+relaxed binding из окружения, bracket-форма `presets[id]` и плейсхолдеры. Сканирование имён
+`EnumerablePropertySource` не годится: оно не видит ни env-карту, ни bracket-форму — карта
+связывается, условие говорит «пресетов нет», и получается молчаливое «описания не работают».
 
 Порядок сборки:
 
-1. Список пресетов — из карты, а при пустой карте синтез из legacy-`provider`; неизвестный
-   legacy-провайдер даёт пустой список.
-2. Пустой список — каталога и агента нет, WARN от `DescriptionAgentSanityChecker` (сообщение
-   упоминает и `presets`, и legacy-переменную).
+1. Список пресетов — из карты, а при пустой карте синтез из нормализованного legacy-`provider`;
+   неизвестный legacy-провайдер даёт пустой список.
+2. Пустой список — условие не сошлось, бинов фичи нет, WARN от `DescriptionAgentSanityChecker`
+   (сообщение упоминает и `presets`, и legacy-переменную).
 3. Непустой список, но ни одного годного пресета — `IllegalStateException`, приложение не стартует,
    в сообщении перечислены причины по каждому пресету.
-4. Иначе каталог, а следом агент: `@Bean` с `@ConditionalOnBean(DescriptionPresetCatalog::class)`.
+4. Иначе каталог и остальные бины внутри `PresetBeans`.
 
-`@ConditionalOnBean` здесь надёжен по той же причине, что и сегодняшний
-`@ConditionalOnBean(DescriptionBackend::class)`: это `@AutoConfiguration`, и условия `@Bean`-методов
-проверяются в порядке объявления, поэтому метод каталога обязан стоять **выше** метода агента. Это
-требование фиксируется KDoc-ом и тестом «пустой список пресетов не даёт агента».
+`DescriptionPresetCatalogBuilder.build` отдаёт `sealed`-результат (`Catalog` | `NoPresets` |
+`NoneUsable`), а не `null` вперемешку с исключением: три исхода в одной сигнатуре — это ровно та
+рассогласованность условия и билдера, ради которой иначе нужен `checkNotNull` с извиняющимся
+сообщением.
+
+Набор известных провайдеров выводится из зарегистрированных фабрик (`factories.map { it.providerId }`),
+а не задаётся константой рядом с `when`; `availability()` мемоизируется, поэтому выполняется один
+раз на провайдера, а не на каждый его пресет.
 
 `DescriptionRuntimeSettings` приходит из `core` (бин `@Service`), как `TempFileWriter` приходит из
 `TempFileWriterAdapter`. На случай отсутствия реализации автоконфигурация регистрирует
 `@ConditionalOnMissingBean`-дефолт, который держит выбор в памяти: он же используется в тестах
-модуля.
+модуля. Обе реализации пишут при создании строку INFO — `app_settings` либо
+`in-memory (choice does not survive restart)`. Без неё in-memory-дефолт может незаметно оказаться в
+проде (не зарегистрировался бин `core`, опечатка в пакете при рефакторинге), и выбор владельца
+будет молча пропадать на каждом рестарте — ровно то, что этот дизайн отвергает. Тест в `core`
+фиксирует, что бин `DescriptionRuntimeSettings` — это `AppSettingsDescriptionRuntimeSettings`.
 
 ## Модуль `core`
 
@@ -313,7 +372,7 @@ Owner-only команда, устройство повторяет `/notificatio
 
 | Класс | Ответственность |
 |---|---|
-| `AiSettingsCommandHandler` | `command = "ai"`, `requiredRole = OWNER`, `order = 8` |
+| `AiSettingsCommandHandler` | `command = "ai"`, `requiredRole = OWNER`, **`ownerOnly = true`**, `order = 9` |
 | `AiSettingsViewStateFactory` | Единая точка сборки состояния: каталог, активный id, флаг, авторизация |
 | `AiSettingsMessageRenderer` | Текст и клавиатура из состояния |
 | `AiSettingsCallbackHandler` | Обработка `aip:*`, запись в `DescriptionRuntimeSettings`, перерисовка |
@@ -331,14 +390,37 @@ Owner-only команда, устройство повторяет `/notificatio
 
 🟢 grok — авторизация в порядке
 ⚠️ claude — не настроен: нет CLAUDE_CODE_OAUTH_TOKEN
+Состояние показано на момент последнего вызова описания.
 
 [✅ grok-fast]  [grok-deep]
 [byok-luna]    [⚠️ claude-opus]
 [Выключить описания]  [Закрыть]
 ```
 
-Кнопка на пресет, по одной в ряд; `✅` у активного, `⚠️` у недоступного. Пустой `effort` рисуется
-как `—`. Строка авторизации на каждый провайдер, встречающийся в пресетах.
+При расхождении сохранённого и эффективного пресета над списком печатается отдельная строка
+(`ai.settings.active.mismatch`):
+
+```
+⚠️ Выбран claude-opus, но он недоступен — работает grok-fast.
+   Выбор сохранён и применится снова, когда пресет станет доступен.
+```
+
+Кнопка на пресет, по одной в ряд; `✅` у **эффективного**, `⚠️` у недоступного. Пустой `effort`
+рисуется как `—`. Строка авторизации на каждый провайдер, встречающийся в пресетах.
+
+**Экран несёт оба id — сохранённый и эффективный.** Иначе `/ai` показывает только результат
+резолюции, и обещанное разделом «Риски» «экран показывает несоответствие» не выполняется: владелец
+не видит, что его выбор перекрыт, битый id живёт в `app_settings` вечно (кликать по fallback-у
+незачем), а сценарий живой проверки «после рестарта активным остаётся выбранный пресет» проходит
+успешно и обманывает. Отсюда два метода в `ActiveDescriptionPreset`.
+
+Состояние авторизации меняется только на вызове описания: после `grok login` экран покажет 🔴 до
+следующей записи с детекциями, а после рестарта — ⚪ `UNKNOWN` даже при протухшем `auth.json`. Это
+принятое следствие отказа от кнопки «тест», поэтому строка-оговорка стоит прямо в тексте экрана.
+
+Блок строк авторизации печатается всегда, когда каталог непуст. Ранний выход применяется только к
+пустому каталогу: иначе состояние «каталог есть, активного нет» скрыло бы всю диагностику
+авторизации — то есть ровно то, ради чего экран и открывают.
 
 | Payload | Эффект |
 |---|---|
@@ -346,8 +428,9 @@ Owner-only команда, устройство повторяет `/notificatio
 | `aip:on` / `aip:off` | Включить или выключить описания (значение явное, не toggle) |
 | `aip:close` | Закрыть клавиатуру |
 
-Клик по недоступному пресету ничего не пишет и отвечает причиной через `answerCallbackQuery`. Клик
-по исчезнувшему из конфига id (экран открыт до рестарта) обрабатывается так же. Состояние после
+Клик по недоступному пресету ничего не пишет и отвечает причиной через `answerCallbackQuery` с
+`showAlert = true`: это единственное место, где владелец узнаёт причину недоступности, а тост в углу
+легко пропустить. Клик по исчезнувшему из конфига id (экран открыт до рестарта) обрабатывается так же. Состояние после
 любого клика перечитывается из БД и каталога, поэтому две вкладки одного экрана сходятся к одной
 картине.
 
@@ -361,7 +444,7 @@ Owner-only команда, устройство повторяет `/notificatio
 command.ai.description
 ai.settings.title
 ai.settings.state / ai.settings.state.on / ai.settings.state.off
-ai.settings.active / ai.settings.active.none
+ai.settings.active / ai.settings.active.none / ai.settings.active.mismatch
 ai.settings.auth.healthy / .lost / .unknown / .unavailable
 ai.settings.button.enable / .disable / .close
 ai.settings.alert.switched / .enabled / .disabled / .unavailable
@@ -374,11 +457,35 @@ ai.settings.alert.switched / .enabled / .disabled / .unavailable
 
 - `docker/deploy/docker-entrypoint.sh` перестаёт ветвиться по `APP_AI_DESCRIPTION_PROVIDER`: пресеты
   лежат в yaml и шеллу не видны. При `APP_AI_DESCRIPTION_ENABLED=true` прогоняются проверки того
-  провайдера, чьи входные данные присутствуют — claude при непустом токене, grok при существующем
-  `GROK_HOME`. WARN только на сломанное, никаких утверждений о том, какой пресет активен.
-- `docker/deploy/application-docker.yaml.example` получает блок `presets` с комментарием.
+  провайдера, чьи входные данные присутствуют. Признак «grok действительно нужен» — существующий
+  `$GROK_HOME/auth.json` **или** `config.toml`, **или** legacy `APP_AI_DESCRIPTION_PROVIDER=grok`:
+  самого по себе непустого `GROK_HOME` недостаточно, потому что в compose он задан всегда
+  (`docker-compose.yml:35`) и том монтируется всегда, так что иначе WARN про отсутствующий
+  `auth.json` получил бы каждый claude-деплой. Симметрично для claude. Сохраняются две сегодняшние
+  диагностики, которые иначе пропали бы: сводный WARN «ни токена Claude, ни признаков Grok — старт,
+  скорее всего, упадёт» (legacy-синтез одного claude-пресета без токена по-прежнему валит старт по
+  правилу «ноль годных», и самый частый misconfig не должен выглядеть мягким INFO плюс падение JVM)
+  и строка про неизвестное значение `APP_AI_DESCRIPTION_PROVIDER`. WARN только на сломанное,
+  никаких утверждений о том, какой пресет активен.
+- `docker/deploy/application-docker.yaml.example` получает **закомментированный** блок `presets` с
+  явной строкой «раскомментирование отключает `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`,
+  `GROK_EFFORT` и `CLAUDE_MODEL`»: пример содержит живые значения, а профильный файл приоритетнее
+  базового, поэтому копирование поверх claude-деплоя иначе молча переключило бы его на `grok-fast`.
+  `default-preset` в примере пишется как `${APP_AI_DESCRIPTION_DEFAULT_PRESET:grok-fast}` — литерал
+  сделал бы одноимённую переменную из `.env.example` мёртвой.
+- Валидация `default-preset` при **пустой** карте ослабляется до WARN: оператор, скопировавший
+  `.env.example` со значением до того, как объявил карту в yaml, иначе не стартует вовсе, и
+  миграция «сначала env, потом yaml» становится невозможной.
 - `docker/deploy/.env.example` помечает `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EFFORT`,
-  `CLAUDE_MODEL` как путь одного пресета и указывает на yaml для нескольких.
+  `CLAUDE_MODEL` как путь одного пресета и указывает на yaml для нескольких; значение
+  `APP_AI_DESCRIPTION_DEFAULT_PRESET` остаётся пустым.
+- `docker/deploy/docker-compose.yml`: комментарий тома `grok-home` («Grok Build home
+  (provider=grok)») перестаёт быть правдой и правится вместе с остальным.
+- Переключение пресета и стартовая строка каталога логируются на INFO **со значением** —
+  `id (provider/model/effort)`. Сегодня на INFO уходит только факт записи ключа, а значение на
+  DEBUG; для вопроса «какая модель сейчас работает» этого мало. Стартовая строка заодно возвращает
+  правду формулировке `.claude/rules/ai-description.md` про «logs model and effort at INFO once at
+  startup», которую отменяет удаление `GrokBackend.init`.
 - `.claude/rules/ai-description.md`: пресеты, фабрики, каталог и резолюция, авторизация по
   провайдеру, диалог; в `paths:` добавляется `**/handler/aisettings/**`.
 - `.claude/rules/configuration.md`: новые свойства и ключи `app_settings`.
@@ -395,7 +502,13 @@ ai.settings.alert.switched / .enabled / .disabled / .unavailable
 `ai-description`:
 
 - Биндинг: карта пресетов, синтез legacy-пресета из `provider`, пустая карта с неизвестным
-  провайдером, `default-preset` вне карты.
+  провайдером, `default-preset` вне карты. **Порядок карты фиксируется `containsExactly`, а не
+  `containsExactlyInAnyOrder`** — именно на порядок объявления опирается правило «`fallbackId` =
+  первый годный». Отдельные случаи: legacy-`provider` в верхнем и смешанном регистре даёт тот же
+  пресет; ключ карты в верхнем регистре и с пробелом — тест фиксирует, что именно делает relaxed
+  binding (id теряет регистр и посторонние символы), чтобы искажение не всплывало впервые в
+  `callback_data`; карта, объявленная bracket-формой `presets[id]` и через окружение, видна
+  условию.
 - Валидация: `effort` у claude, `effort` вне набора, кривой id, неизвестный `provider` в карте.
 - `DescriptionPresetCatalogTest`: `fallbackId` при недоступном `default-preset`, порядок пресетов,
   ноль годных → исключение, пустой список → отсутствие каталога.
@@ -407,16 +520,31 @@ ai.settings.alert.switched / .enabled / .disabled / .unavailable
   попытками не меняет backend), общий семафор на два пресета.
 - `ProviderAuthTrackerTest`: одно событие на переход при параллельных отказах, два grok-пресета
   дают одно событие, claude и grok независимы, `UNKNOWN` → `LOST` публикуется, откат при
-  исключении слушателя.
+  исключении слушателя. **Два concurrency-теста переносятся из `DefaultDescriptionAgentTest`
+  живьём, с реальными потоками и `CountDownLatch`** — `a slow listener cannot reorder concurrent
+  auth transitions` и `concurrent Unauthorized failures publish a single LOST`: это единственные
+  тесты, проверяющие смысл существования замка, и однопоточные сценарии их не заменяют. Плюс новый:
+  медленный слушатель на `grok` не задерживает событие `claude`. Тест `a throwing listener does not
+  discard a successful description` остаётся в `DefaultDescriptionAgentTest` — это инвариант
+  агента, а не трекера.
 - `AiDescriptionAutoConfigurationTest`: N пресетов → N backend-ов и один агент; ноль годных →
-  падение; `enabled=false` → нет бинов; legacy-путь даёт один пресет.
+  падение; `enabled=false` → нет бинов; legacy-путь даёт один пресет. Существующие сценарии
+  **переписываются, а не дополняются**: backend перестал быть бином, а коллаборанты обоих
+  провайдеров существуют при `enabled=true`, поэтому проверки `getBeansOfType(ClaudeBackend)` и
+  «helpers чужого провайдера отсутствуют» становятся ложными и заменяются проверками каталога.
+- Покрытие whitespace-токена Claude (`isBlank()`) переезжает из удаляемого
+  `ClaudeBackendValidationTest` в `ClaudeBackendFactoryTest`, а сценарии «home — это файл» и
+  «создание каталогов» — из `GrokBackendTest` в `GrokBackendFactoryTest` вместе с самим кодом.
 
 `core`: `AppSettingsDescriptionRuntimeSettingsTest` (дефолты, запись, `updatedBy`), тест фасада на
-выключенный рантайм-флаг (нет supplier-а, слот лимитера не тронут).
+выключенный рантайм-флаг (нет supplier-а, слот лимитера не тронут), тест «бин
+`DescriptionRuntimeSettings` — это `AppSettingsDescriptionRuntimeSettings`, а не in-memory-дефолт».
 
 `telegram`: рендер (включено/выключено, активный, недоступный, три состояния авторизации, пустой
-каталог), `aip:set` на годный и на недоступный, `aip:on`/`aip:off`, наличие всех новых ключей в
-обоих бандлах.
+каталог, **расхождение сохранённого и эффективного пресета**), `aip:set` на годный и на недоступный,
+`aip:on`/`aip:off`, **callback подтверждается на каждом исходе, включая ранние выходы и исключение
+записи**, метаданные команды (`ownerOnly = true`, `requiredRole = OWNER`, уникальность `order`),
+наличие всех новых ключей в обоих бандлах.
 
 **Живая проверка вне CI:** два пресета одного провайдера и один чужого; переключение в `/ai`
 меняет модель в DEBUG-строке следующей записи; выключение описаний даёт уведомление без блоков;
@@ -426,7 +554,13 @@ ai.settings.alert.switched / .enabled / .disabled / .unavailable
 
 - **Кэш `AppSettingsService` не имеет TTL.** Прямой SQL по `app_settings` мимо сервиса не виден
   работающему процессу; после ручной правки нужен рестарт. Ограничение унаследовано от
-  `/notifications` и остаётся в силе.
+  `/notifications` и остаётся в силе; оба новых ключа попадают в соответствующую оговорку
+  `database.md`.
+- **Фича рассчитана на один экземпляр приложения.** Запись через один экземпляр инвалидирует только
+  его собственный кэш, поэтому при двух работающих контейнерах выбор пресета и рантайм-выключатель
+  разъедутся и будут расходиться до рестарта. Сегодня это верно и для глобальных флагов
+  `/notifications`, но там ограничение записано только в примечаниях; здесь оно фиксируется явно,
+  потому что пресет меняет стоимость и латентность обработки.
 - **Пресет может стать недоступным после рестарта** (убрали токен из `.env`). Резолвер уводит на
   годный и пишет WARN, экран `/ai` показывает несоответствие, описания продолжают работать.
 - **Порядок кликов.** Дефолтный `markerFactory` сериализует коллбэки одного пользователя, так что
