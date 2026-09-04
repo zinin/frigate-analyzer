@@ -62,15 +62,30 @@ class ClaudeBackendTest {
     @Test
     fun `happy path stages, invokes, parses and cleans up`() =
         runTest {
-            val backend = build(ClaudeInvoker { """{"short": "s", "detailed": "d"}""" })
+            val backend = build(ClaudeInvoker { _, _ -> """{"short": "s", "detailed": "d"}""" })
             assertEquals(DescriptionResult("s", "d"), backend.describe(request))
             coVerify(exactly = 1) { imageStager.cleanup(stagedPaths) }
         }
 
     @Test
+    fun `the configured model is handed to the invoker`() =
+        runTest {
+            var seenModel: String? = null
+            val backend =
+                build(
+                    ClaudeInvoker { _, model ->
+                        seenModel = model
+                        """{"short": "s", "detailed": "d"}"""
+                    },
+                )
+            backend.describe(request)
+            assertEquals("opus", seenModel)
+        }
+
+    @Test
     fun `invalid JSON is InvalidResponse and still cleans up`() =
         runTest {
-            val backend = build(ClaudeInvoker { "not json" })
+            val backend = build(ClaudeInvoker { _, _ -> "not json" })
             assertFailsWith<DescriptionException.InvalidResponse> { backend.describe(request) }
             coVerify(exactly = 1) { imageStager.cleanup(stagedPaths) }
         }
@@ -78,13 +93,13 @@ class ClaudeBackendTest {
     @Test
     fun `SDK exceptions go through the exception mapper`() =
         runTest {
-            val backend = build(ClaudeInvoker { throw ClaudeSDKException("request was rate limited") })
+            val backend = build(ClaudeInvoker { _, _ -> throw ClaudeSDKException("request was rate limited") })
             assertFailsWith<DescriptionException.RateLimited> { backend.describe(request) }
         }
 
     @Test
     fun `identifies itself as claude`() {
-        val backend = build(ClaudeInvoker { "" })
+        val backend = build(ClaudeInvoker { _, _ -> "" })
         assertEquals("claude", backend.providerId)
         assert(backend.authRecoveryHint.contains("CLAUDE_CODE_OAUTH_TOKEN"))
     }

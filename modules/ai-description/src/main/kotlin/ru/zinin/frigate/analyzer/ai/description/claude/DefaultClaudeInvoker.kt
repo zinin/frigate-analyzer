@@ -32,9 +32,12 @@ class DefaultClaudeInvoker(
     // non-deterministic near the budget boundary. The SDK side then acts as a safety net.
     private val workTimeout: Duration = descriptionProperties.common.timeout.plus(SDK_TIMEOUT_BUFFER)
 
-    override suspend fun invoke(prompt: String): String {
-        logger.debug { "Claude prompt (${prompt.length} chars):\n$prompt" }
-        val client = clientFactory.create(workTimeout)
+    override suspend fun invoke(
+        prompt: String,
+        model: String,
+    ): String {
+        logger.debug { "Claude prompt for model $model (${prompt.length} chars):\n$prompt" }
+        val client = clientFactory.create(workTimeout, model)
         try {
             // We send the prompt as the FIRST user message via `connect(prompt)`.
             // The no-arg `connect()` would inject a default "Hello" message before ours, and the

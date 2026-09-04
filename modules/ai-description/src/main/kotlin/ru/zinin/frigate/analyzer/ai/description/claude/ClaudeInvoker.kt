@@ -5,5 +5,8 @@ package ru.zinin.frigate.analyzer.ai.description.claude
  * with a fake that returns canned responses or throws specific exceptions.
  */
 fun interface ClaudeInvoker {
-    suspend fun invoke(prompt: String): String
+    suspend fun invoke(
+        prompt: String,
+        model: String,
+    ): String
 }

@@ -10,6 +10,7 @@ import kotlin.test.assertTrue
 class GrokCommandBuilderTest {
     private fun props(
         cliPath: String = "",
+        model: String = "grok-4.6",
         effort: String = "low",
         http: String = "",
         https: String = "",
@@ -17,7 +18,7 @@ class GrokCommandBuilderTest {
         passThroughEnv: List<String> = emptyList(),
     ) = GrokProperties(
         cliPath = cliPath,
-        model = "grok-4.6",
+        model = model,
         effort = effort,
         home = "/data/grok-home",
         workingDirectory = "/data/grok-cwd",
@@ -29,7 +30,7 @@ class GrokCommandBuilderTest {
 
     @Test
     fun `argv matches the spec exactly`() {
-        val command = GrokCommandBuilder(props()).build(promptFile)
+        val command = GrokCommandBuilder(props()).build(promptFile, model = "grok-4.6", effort = "low")
 
         assertEquals(
             listOf(
@@ -68,19 +69,32 @@ class GrokCommandBuilderTest {
 
     @Test
     fun `blank effort omits the flag`() {
-        val argv = GrokCommandBuilder(props(effort = "")).build(promptFile).argv
+        val argv = GrokCommandBuilder(props()).build(promptFile, model = "grok-4.6", effort = "").argv
         assertFalse(argv.contains("--effort"))
     }
 
     @Test
+    fun `model and effort come from the call, not from the properties`() {
+        val builder = GrokCommandBuilder(props(model = "grok-4.6", effort = "low")) { null }
+
+        val command = builder.build(promptFile, model = "codex-luna", effort = "")
+
+        assertEquals("codex-luna", command.argv[command.argv.indexOf("-m") + 1])
+        assertFalse(command.argv.contains("--effort"))
+    }
+
+    @Test
     fun `explicit cli path replaces the bare binary name`() {
-        val argv = GrokCommandBuilder(props(cliPath = "/opt/grok/bin/grok")).build(promptFile).argv
+        val argv =
+            GrokCommandBuilder(props(cliPath = "/opt/grok/bin/grok"))
+                .build(promptFile, model = "grok-4.6", effort = "low")
+                .argv
         assertEquals("/opt/grok/bin/grok", argv.first())
     }
 
     @Test
     fun `environment carries GROK_HOME and the isolation variables, no proxy when blank`() {
-        val env = GrokCommandBuilder(props()).build(promptFile).environment
+        val env = GrokCommandBuilder(props()).build(promptFile, model = "grok-4.6", effort = "low").environment
 
         assertEquals("/data/grok-home", env["GROK_HOME"])
         assertEquals("1", env["GROK_DISABLE_AUTOUPDATER"])
@@ -99,7 +113,7 @@ class GrokCommandBuilderTest {
     fun `proxy variables are passed when configured`() {
         val env =
             GrokCommandBuilder(props(http = "http://proxy:80", https = "http://proxy:443", noProxy = "localhost"))
-                .build(promptFile)
+                .build(promptFile, model = "grok-4.6", effort = "low")
                 .environment
 
         assertEquals("http://proxy:80", env["HTTP_PROXY"])
@@ -109,8 +123,11 @@ class GrokCommandBuilderTest {
 
     @Test
     fun `structured output disabled drops the json-schema flag and keeps everything else`() {
-        val withSchema = GrokCommandBuilder(props()).build(promptFile).argv
-        val without = GrokCommandBuilder(props()).build(promptFile, structuredOutput = false).argv
+        val withSchema = GrokCommandBuilder(props()).build(promptFile, model = "grok-4.6", effort = "low").argv
+        val without =
+            GrokCommandBuilder(props())
+                .build(promptFile, model = "grok-4.6", effort = "low", structuredOutput = false)
+                .argv
 
         assertFalse(without.contains("--json-schema"))
         assertFalse(without.contains(GrokCommandBuilder.JSON_SCHEMA))
@@ -123,7 +140,7 @@ class GrokCommandBuilderTest {
 
         val env =
             GrokCommandBuilder(props(passThroughEnv = listOf("MY_GATEWAY_KEY", "ABSENT_KEY")), host::get)
-                .build(promptFile)
+                .build(promptFile, model = "grok-4.6", effort = "low")
                 .environment
 
         assertEquals("secret", env["MY_GATEWAY_KEY"])
@@ -137,7 +154,7 @@ class GrokCommandBuilderTest {
 
         val env =
             GrokCommandBuilder(props(passThroughEnv = listOf("GROK_HOME", "GROK_MEMORY")), host::get)
-                .build(promptFile)
+                .build(promptFile, model = "grok-4.6", effort = "low")
                 .environment
 
         assertEquals("/data/grok-home", env["GROK_HOME"])

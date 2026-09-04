@@ -94,6 +94,23 @@ class GrokBackendTest {
         }
 
     @Test
+    fun `the configured model and effort reach the command`() =
+        runTest {
+            var seen: GrokCommand? = null
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        seen = it
+                        result(0, """{"stopReason":"end_turn","structuredOutput":{"short":"a","detailed":"b"}}""")
+                    },
+                )
+            backend.describe(request)
+            val argv = seen!!.argv
+            assertEquals("grok-4.6", argv[argv.indexOf("-m") + 1])
+            assertEquals("low", argv[argv.indexOf("--effort") + 1])
+        }
+
+    @Test
     fun `auth error envelope is Unauthorized and still deletes the prompt file`() =
         runTest {
             val stdout =

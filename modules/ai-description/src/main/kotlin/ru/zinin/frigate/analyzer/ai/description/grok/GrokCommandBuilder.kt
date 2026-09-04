@@ -23,11 +23,17 @@ class GrokCommandBuilder(
     private val environmentSource: (String) -> String? = System::getenv,
 ) {
     /**
+     * [model] и [effort] — параметры вызова, а не свойства бина: один builder обслуживает несколько
+     * пресетов. Пустой [effort] убирает `--effort` целиком — BYOK-модели без уровней рассуждения
+     * отвергают флаг, а не его пустое значение.
+     *
      * [structuredOutput] `false` убирает `--json-schema`: эндпоинт BYOK-модели отверг схему
      * (`response_format` / grammar), и ответ будет разобран из текстового JSON.
      */
     fun build(
         promptFile: Path,
+        model: String,
+        effort: String,
         structuredOutput: Boolean = true,
     ): GrokCommand {
         val argv =
@@ -42,10 +48,10 @@ class GrokCommandBuilder(
                 add("--output-format")
                 add("json")
                 add("-m")
-                add(properties.model)
-                if (properties.effort.isNotBlank()) {
+                add(model)
+                if (effort.isNotBlank()) {
                     add("--effort")
-                    add(properties.effort)
+                    add(effort)
                 }
                 add("--max-turns")
                 add("1")

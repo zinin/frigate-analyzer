@@ -63,7 +63,7 @@ class ClaudeBackend(
             val prompt = promptBuilder.build(request, stagedPaths)
             val raw =
                 try {
-                    invoker.invoke(prompt)
+                    invoker.invoke(prompt, claudeProperties.model)
                 } catch (e: Throwable) {
                     // map() пробрасывает CancellationException как есть, см. его KDoc.
                     throw exceptionMapper.map(e)

@@ -121,7 +121,7 @@ class GrokBackend(
         promptFile: Path,
         structuredOutput: Boolean,
     ): GrokProcessResult {
-        val command = commandBuilder.build(promptFile, structuredOutput)
+        val command = commandBuilder.build(promptFile, properties.model, properties.effort, structuredOutput)
         return guard.shared { runner.run(command) }
     }
 
