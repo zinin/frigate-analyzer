@@ -1,0 +1,55 @@
+package ru.zinin.frigate.analyzer.ai.description.api
+
+/**
+ * Пресет, каким его видят потребители: диалог Telegram и логи. [unavailableReason] не null, если
+ * провайдер пресета не настроен — такой пресет остаётся в списке, но не выбирается.
+ */
+data class DescriptionPreset(
+    val id: String,
+    val provider: String,
+    /** Модель, объявленная в конфиге. */
+    val model: String,
+    /**
+     * Модель, которая реально уйдёт в запрос; может отличаться от [model]. `ANTHROPIC_MODEL`
+     * вытесняет объявленную модель, и без этого поля два claude-пресета с разными [model]
+     * выглядели бы на экране разными, а звали бы одно и то же.
+     */
+    val effectiveModel: String,
+    val effort: String,
+    /**
+     * Область учётных данных: `claude`, `grok:<model>`. Авторизация принадлежит набору ключей, а не
+     * провайдеру: два grok-пресета на одной модели живут в общем `auth.json`, а BYOK-модель ходит
+     * по собственному ключу из `config.toml`.
+     */
+    val authScopeId: String,
+    /** null = пресет годен. */
+    val unavailableReason: UnavailableReason?,
+) {
+    val available: Boolean get() = unavailableReason == null
+}
+
+/**
+ * Замкнутый набор причин непригодности. Именно код, а не свободная строка: значение рисуется
+ * владельцу в Telegram, и произвольный текст от фабрики открыл бы дорогу выводу провайдера — вместе
+ * с адресом эндпоинта или куском ключа — прямо на экран; заодно код локализуется, а английская
+ * строка из фабрики выпадала бы из локализованного экрана. Технические подробности остаются в логе.
+ */
+sealed interface UnavailableReason {
+    /** Ни одного токена провайдера в окружении. */
+    data object NoToken : UnavailableReason
+
+    /** CLI провайдера не найден: [path] — явно заданный путь, null — поиск по `PATH`. */
+    data class CliMissing(
+        val path: String?,
+    ) : UnavailableReason
+
+    /** Каталог провайдера непригоден для записи — логин и обновление токена не пройдут. */
+    data class HomeUnwritable(
+        val path: String,
+    ) : UnavailableReason
+
+    /** Пресет называет провайдера, которого не обслуживает ни одна фабрика. */
+    data class NoFactory(
+        val provider: String,
+    ) : UnavailableReason
+}
