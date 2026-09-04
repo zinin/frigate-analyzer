@@ -2952,7 +2952,7 @@ git commit -m "feat(telegram): render the AI description settings screen" \
 
 **Interfaces:**
 - Consumes: `AiSettingsCallbacks`, `AiSettingsViewStateFactory.build(language)`, `AiSettingsMessageRenderer.render(state)` (Task 7); `DescriptionRuntimeSettings.setActivePresetId/setDescriptionsEnabled` (Task 4); `DescriptionPresets.all()` (Task 3).
-- Produces: `AiSettingsCallbackHandler.DispatchOutcome` (`RERENDER`, `CLOSE`, `UNAUTHORIZED`, `IGNORE`, `ALERT`), `AiSettingsCallbackHandler.Dispatched(outcome, alertKey, alertArgument)`, `AiSettingsCallbackHandler.dispatch(data, isOwner, changedBy): Dispatched`; команда `/ai` с `ownerOnly = true` и `order = 9`.
+- Produces: `AiSettingsCallbackHandler.DispatchOutcome` (`RERENDER`, `CLOSE`, `UNAUTHORIZED`, `IGNORE`, `ALERT`), `AiSettingsCallbackHandler.Dispatched(outcome, alertKey, alertArgument)`; **`dispatch` разделён на две фазы** — `AiSettingsCallbackHandler.classify(data, isOwner): Dispatched` (чистая, без ввода-вывода: разбирает payload, сверяется с каталогом, отдаёт исход и текст алерта) и `AiSettingsCallbackHandler.apply(data, changedBy)` (запись в `DescriptionRuntimeSettings`, вызывается только для исходов, требующих записи). Регистрация коллбэков отвечает по результату `classify`, затем зовёт `apply` и перерисовывает; команда `/ai` с `ownerOnly = true` и `order = 9`.
 
 - [ ] **Step 1: Написать падающий тест диспетчера**
 
@@ -3233,8 +3233,18 @@ class AiSettingsCommandHandler(
                         } else {
                             handler.dispatch(callback.data, owner, current.username)
                         }
-                    // Ровно один ответ на коллбэк: с текстом, когда есть что сказать, иначе пустой —
-                    // он и гасит спиннер кнопки.
+                    // Ровно один ответ на коллбэк, и он уходит ДО записи в БД — как в блоке
+                    // nfs: (:188-195). Кажущееся противоречие "алерту нужен результат записи"
+                    // ложное: исходы, требующие алерта (ALERT/IGNORE/UNAUTHORIZED), разрешаются
+                    // из каталога и роли БЕЗ обращения к БД, а исходы с записью (RERENDER после
+                    // set/on/off) содержательного текста не несут — их подтверждает перерисовка,
+                    // которая идёт после записи и потому не может соврать: упавшая запись оставит
+                    // на экране прежний активный пресет.
+                    //
+                    // Это не косметика: дефолтный markerFactory сериализует коллбэки одного
+                    // пользователя, поэтому обработчик, зависший на медленной БД, блокирует
+                    // СЛЕДУЮЩИЙ клик владельца, а не только держит спиннер. Отсюда же требование
+                    // отвечать в каждой ранней ветке, включая отсутствие любого ObjectProvider.
                     try {
                         bot.answer(
                             callback,
