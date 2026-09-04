@@ -120,6 +120,27 @@ class AiSettingsViewStateFactoryTest {
             coVerify(exactly = 0) { active.effective() }
         }
 
+    /**
+     * Экран открывают ровно тогда, когда что-то сломалось: отказ `app_settings` не должен уносить
+     * с собой список пресетов и состояние авторизации, которые читаются мимо базы.
+     */
+    @Test
+    fun `a failing settings read leaves the rest of the screen intact`() =
+        runTest {
+            every { presets.all() } returns listOf(fast, opus)
+            every { authStates.byScope() } returns mapOf("claude" to ProviderAuthStates.Health.LOST)
+            coEvery { runtimeSettings.descriptionsEnabled() } throws IllegalStateException("app_settings is down")
+            coEvery { active.storedId() } returns "grok-fast"
+            coEvery { active.effective() } returns fast
+
+            val state = factory().build("ru")
+
+            assertTrue(state.descriptionsEnabled)
+            assertEquals(listOf("grok-fast", "claude-opus"), state.presets.map { it.id })
+            assertEquals(mapOf("claude" to ProviderAuthStates.Health.LOST), state.authByScope)
+            assertEquals("grok-fast", state.effectivePresetId)
+        }
+
     /** Без реализации настроек описания считаются включёнными: статический флаг фичи главнее. */
     @Test
     fun `a missing settings implementation reads as enabled`() =

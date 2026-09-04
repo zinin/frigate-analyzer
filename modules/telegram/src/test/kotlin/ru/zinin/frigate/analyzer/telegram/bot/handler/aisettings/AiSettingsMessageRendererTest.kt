@@ -218,6 +218,20 @@ class AiSettingsMessageRendererTest {
         }
     }
 
+    /**
+     * Сохранённый пресет цел и годен, а работает другой: `storedId()` и `effective()` — два
+     * независимых fail-open чтения настроек, поэтому такая пара достижима, и `.gone`
+     * («пресет больше не объявлен») был бы здесь прямой ложью.
+     */
+    @Test
+    fun `a stored preset that is present and usable reports an unknown reason`() {
+        renderer.render(state(storedId = "byok-luna", effectiveId = "grok-fast"))
+
+        verify {
+            msg.get("ai.settings.active.mismatch", "ru", "byok-luna", "ai.settings.reason.unknown", "grok-fast")
+        }
+    }
+
     @Test
     fun `there is no mismatch line when the stored preset is the effective one`() {
         val text = renderer.render(state()).text

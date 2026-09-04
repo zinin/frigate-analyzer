@@ -1,5 +1,7 @@
 package ru.zinin.frigate.analyzer.telegram.bot.handler.aisettings
 
+import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
@@ -9,6 +11,8 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.ProviderAuthStates
 import ru.zinin.frigate.analyzer.telegram.dto.AiSettingsViewState
 
+private val logger = KotlinLogging.logger {}
+
 /**
  * Единая точка сборки состояния экрана: команда и перерисовка после коллбэка читают одно и то же.
  *
@@ -17,6 +21,10 @@ import ru.zinin.frigate.analyzer.telegram.dto.AiSettingsViewState
  * `application.telegram.enabled`; гейт на флаг фичи стоит у команды.
  *
  * Зависимость только на `api`: резолвер из `core` за пределы модуля `ai-description` не выходит.
+ *
+ * Все чтения настроек здесь fail-open: экран открывают ровно тогда, когда что-то сломалось, и отказ
+ * `app_settings` не должен уносить с собой список пресетов и состояние авторизации, которые
+ * читаются мимо базы.
  *
  * Принятый зазор: [ActiveDescriptionPreset.storedId] читает настройки fail-open, поэтому при отказе
  * хранилища он вернёт null и экран нарисует ✅ на пресете по умолчанию, как будто его и выбрали.
@@ -35,7 +43,7 @@ class AiSettingsViewStateFactory(
         val presets = presetsProvider.getIfAvailable()?.all().orEmpty()
         val active = activePresetProvider.getIfAvailable()
         return AiSettingsViewState(
-            descriptionsEnabled = runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true,
+            descriptionsEnabled = descriptionsEnabled(),
             storedPresetId = active?.storedId(),
             // Резолюция требует каталога: без пресетов эффективного просто нет.
             effectivePresetId = if (presets.isEmpty()) null else active?.effective()?.id,
@@ -45,4 +53,20 @@ class AiSettingsViewStateFactory(
             language = language,
         )
     }
+
+    /**
+     * Флаг читается fail-open в `true` — дословно как `RecordingProcessingFacade.descriptionsEnabled`,
+     * и по той же причине: `true` — документированное умолчание самого ключа, поэтому во время
+     * отказа `app_settings` экран и конвейер говорят об описаниях одно и то же. Исключение отсюда
+     * закрывало бы `/ai` целиком — экран, который и открывают, чтобы разобраться в таком отказе.
+     */
+    private suspend fun descriptionsEnabled(): Boolean =
+        try {
+            runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to read the AI description switch for the /ai screen; failing open" }
+            true
+        }
 }
