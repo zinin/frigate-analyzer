@@ -576,7 +576,16 @@ git commit -m "refactor(ai-description): pass model and effort per call instead 
 
 ### Task 3: Фабрики backend-ов, каталог пресетов и проводка
 
-Самая крупная задача: провайдерные бины перестают зависеть от `provider=<id>`, backend создаётся на пресет, агент получает пресет из каталога. Разрезать её нельзя — промежуточное состояние не собирается.
+Самая крупная задача: провайдерные бины перестают зависеть от `provider=<id>`, backend создаётся на пресет, агент получает пресет из каталога.
+
+**Задача исполняется в два приёма, 3a и 3b, с отдельной сборкой и коммитом у каждого.** Номера шагов при этом сохраняются — на «Task 3 Step 7» и «Step 11» ссылаются другие места документа, и перенумерация их сломала бы:
+
+| Часть | Шаги | Свойство |
+|---|---|---|
+| **3a** | 1–4 (`DescriptionPresetCatalogBuilderTest`, api-DTO, SPI `DescriptionBackendFactory`, `DescriptionPresetCatalog`, `DescriptionPresetCatalogBuilder`, `DescriptionPresetDeclarations`) | чистое добавление: новые файлы, на которые пока никто не ссылается. Модуль собирается и все существующие тесты проходят. Заканчивается `./gradlew :frigate-analyzer-ai-description:test` и коммитом `feat(ai-description): add the preset catalog and the backend factory SPI` |
+| **3b** | 5–13 | ломающая часть: фабрики, переписывание backend-ов, 14 аннотаций, автоконфигурация, агент, все тесты. Промежуточного собираемого состояния внутри неё действительно нет |
+
+Довод «разрезать нельзя» верен только для 3b. 3a стоит смотреть отдельно потому, что в ней едет `DescriptionPresetCatalogBuilderTest` — самая содержательная логика фичи (выбор `fallbackId`, порядок объявления, «ноль годных», причины недоступности), не зависящая от проводки; в общем дифе её раздавит хвостом.
 
 **Files:**
 - Create: `…/ai/description/api/DescriptionPreset.kt`, `…/api/DescriptionPresets.kt`
