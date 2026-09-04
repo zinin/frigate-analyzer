@@ -99,7 +99,12 @@ application:
   ai:
     description:
       enabled: ${APP_AI_DESCRIPTION_ENABLED:false}
+      # Legacy-путь: применяется, только когда карта presets пуста. Тогда из него и из секции
+      # провайдера синтезируется единственный пресет.
       provider: ${APP_AI_DESCRIPTION_PROVIDER:claude}
+      # Активный пресет по умолчанию; пусто = первый годный из presets. Сами presets объявляются
+      # в смонтированном application-docker.yaml, пример — в application-docker.yaml.example.
+      default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:}
       common:
         language: ${APP_AI_DESCRIPTION_LANGUAGE:en}
         short-max-length: ${APP_AI_DESCRIPTION_SHORT_MAX:200}

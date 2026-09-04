@@ -45,6 +45,7 @@ application:
     description:
       enabled: false
       provider: claude
+      default-preset: ""
       common:
         language: en
         short-max-length: 200
