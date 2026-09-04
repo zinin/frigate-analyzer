@@ -1299,6 +1299,39 @@ class GrokBackend(
 
 оставив только `@ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")`. Неиспользованный импорт не удалять — вторая аннотация его использует. Проверка: `grep -rl 'application.ai.description.provider' modules/ai-description/src/main` должен вернуть пусто.
 
+**`GrokHomeSweeper` — исключение: снять с него условие `provider=grok` без замены нельзя.** Он
+`@Scheduled(fixedDelay=PT1H)` и под `guard.exclusive` удаляет содержимое `GROK_HOME/sessions/` и
+файлы в `logs/`, а его KDoc исходит из того, что приложение — единственный пользователь этого
+каталога. В compose `GROK_HOME` задан ВСЕГДА (`docker-compose.yml:35`) и том монтируется всегда, так
+что на claude-only стенде он начал бы ежечасно подметать каталог, который оператор мог смонтировать
+под ручной `grok`. Вместо условия — проверка в самом методе:
+
+```kotlin
+class GrokHomeSweeper(
+    private val presetsProvider: ObjectProvider<DescriptionPresets>,
+    // …
+) {
+    @Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT1M")
+    fun sweepScheduled() {
+        // Провайдер не участвует ни в одном пресете — каталог не наш, не трогаем.
+        if (presetsProvider.getIfAvailable()?.all().orEmpty().none { it.provider == "grok" }) return
+        // …существующее тело…
+    }
+}
+```
+
+**Фабрики обоих провайдеров становятся строго пассивными в конструкторе.** Осмотр окружения —
+создание каталогов, проверка исполняемости CLI, WARN про `auth.json` — переезжает в
+`availability()`, а `DescriptionPresetCatalogBuilder` зовёт её только для провайдеров, встречающихся
+хотя бы в одном объявленном пресете; результат мемоизируется (`by lazy` на фабрике). Иначе:
+
+- `GrokBackendFactory.init` с `Files.createDirectories(...)` и `IllegalStateException` убивает
+  контекст РАНЬШЕ сборки каталога — claude-деплой с годными claude-пресетами не стартует из-за
+  недоступного чужого каталога, вопреки правилу «ноль годных валит старт, один негодный — нет».
+  Превратить это в `⚠️` на пресете нельзя: исключение приходит до каталога, а `availability()` у
+  Grok всегда `Available`;
+- claude-only деплой получает два WARN про grok на каждом старте, grok-only — WARN про claude CLI.
+
 - [ ] **Step 9: Переписать автоконфигурацию, условие и sanity checker**
 
 `config/DescriptionPresetDeclarations.kt` — **единственная точка истины о том, что объявлено**;

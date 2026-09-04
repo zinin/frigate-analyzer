@@ -211,6 +211,27 @@ interface DescriptionBackendFactory {
 BYOK-модель ходит по собственному ключу. Проверки каталогов и WARN про `auth.json` переезжают из
 `GrokBackend.init` в фабрику, чтобы не повторяться на каждый grok-пресет.
 
+**Фабрики строго пассивны в конструкторе; всё окружение осматривается в `availability()`.** Это не
+стилистика, а следствие снятия `@ConditionalOnProperty(provider=…)`: фабрики теперь создаются при
+любом `enabled=true`, и любой побочный эффект в их конструкторе выполняется на деплое, где пресетов
+этого провайдера нет вовсе. Три конкретных следствия, которых так не будет:
+
+- `GrokHomeSweeper` ежечасно удаляет содержимое `GROK_HOME/sessions/` и `logs/`. Его собственный
+  KDoc исходит из того, что приложение — единственный пользователь этого каталога; на claude-only
+  стенде допущение перестаёт быть верным, а `GROK_HOME` в compose задан **всегда** и том монтируется
+  всегда. Sweeper получает `ObjectProvider<DescriptionPresets>` и молчит, когда grok-пресетов нет.
+- `GrokBackendFactory` создаёт `GROK_HOME` и working-dir и бросает `IllegalStateException` при
+  неудаче. Из конструктора это убивает контекст **раньше** сборки каталога — то есть claude-деплой с
+  полностью годными claude-пресетами не стартует из-за чужого каталога, вопреки правилу «негодный
+  пресет помечается, старт падает только когда не годен ни один». Превратить отказ в `⚠️` из
+  конструктора невозможно: исключение приходит до того, как каталог начнёт спрашивать.
+- Два WARN про grok на claude-деплое и симметричный WARN про claude CLI на grok-only.
+
+`DescriptionPresetCatalogBuilder` вызывает `availability()` **только для провайдеров, встречающихся
+хотя бы в одном объявленном пресете**, а результат мемоизируется (см. `KNOWN_PROVIDERS` и
+`availability()` в разделе про автоконфигурацию). Провайдер, которого нет ни в одном пресете, не
+трогает ни файловую систему, ни PATH и не пишет ни строки.
+
 Коллаборанты остаются синглтон-бинами: `GrokPromptFileWriter`, `GrokCommandBuilder`,
 `GrokProcessRunner`, `GrokOutputParser`, `GrokExceptionMapper`, `GrokHomeGuard`, `GrokHomeSweeper`,
 `ClaudeImageStager`, `ClaudePromptBuilder`, `ClaudeAsyncClientFactory`, `ClaudeInvoker`,
