@@ -2,11 +2,14 @@ package ru.zinin.frigate.analyzer.ai.description.core
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import ru.zinin.frigate.analyzer.ai.description.api.ActiveDescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.Duration.Companion.seconds
 
 private val logger = KotlinLogging.logger {}
 
@@ -14,11 +17,11 @@ private val logger = KotlinLogging.logger {}
  * Активный пресет на каждый вызов: чтение дешёвое, потому что реализация настроек кэширует значение
  * на процесс и сбрасывает кэш только на собственной записи.
  *
- * Читает [DescriptionRuntimeSettings] fail-open: ключ `ai.description.*` — про удобство, а не про
- * безопасность, поэтому любой отказ чтения даёт предупреждение и пресет по умолчанию, но никогда не
- * исключение. Реализация поверх `app_settings` намеренно НЕ кэширует неудачные чтения, так что
- * отказ БД бил бы по каждой записи подряд, а сырое исключение R2DBC покинуло бы контракт
- * `DescriptionException`, который обещает агент.
+ * Читает [DescriptionRuntimeSettings] fail-open и с потолком [READ_TIMEOUT]: ключ `ai.description.*` —
+ * про удобство, а не про безопасность, поэтому и отказ, и зависание чтения дают предупреждение и
+ * пресет по умолчанию, но никогда не исключение. Реализация поверх `app_settings` намеренно НЕ
+ * кэширует неудачные чтения, так что отказ БД бил бы по каждой записи подряд, а сырое исключение
+ * R2DBC покинуло бы контракт `DescriptionException`, который обещает агент.
  */
 class ActivePresetResolver(
     private val catalog: DescriptionPresetCatalog,
@@ -64,10 +67,27 @@ class ActivePresetResolver(
 
     override suspend fun effective(): DescriptionPreset = resolve().view
 
-    /** Пустая строка — это «не выбрано», а не сломанный id: иначе на неё шло бы предупреждение. */
+    /**
+     * Пустая строка — это «не выбрано», а не сломанный id: иначе на неё шло бы предупреждение.
+     *
+     * Чтение ограничено сверху: `describe` зовёт резолвер вне обоих своих `withTimeout`, поэтому без
+     * потолка зависшая реализация настроек подвесила бы вызов целиком, а `AppSettingsServiceImpl`
+     * сериализует чтения одним мьютексом — встал бы каждый describe-job, удерживая свои кадры.
+     */
     private suspend fun readStoredId(): StoredRead =
         try {
-            StoredRead(runtimeSettings.activePresetId()?.takeIf { it.isNotBlank() }, failed = false)
+            val stored = withTimeout(READ_TIMEOUT) { runtimeSettings.activePresetId() }
+            StoredRead(stored?.takeIf { it.isNotBlank() }, failed = false)
+        } catch (e: TimeoutCancellationException) {
+            // Раньше CancellationException: TimeoutCancellationException — её наследник, и общий
+            // catch увёл бы истечение потолка в отмену вызова вместо fail-open. В
+            // DescriptionException.Timeout это тоже не превращается: тогда лог и владелец винили бы
+            // в медлительности модель, тогда как задержалась база.
+            warnOnce(
+                "Reading the active description preset timed out after $READ_TIMEOUT; " +
+                    "using '${catalog.fallbackId}'",
+            )
+            StoredRead(null, failed = true)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -109,5 +129,13 @@ class ActivePresetResolver(
 
     private companion object {
         const val DEFAULT_PRESET_SOURCE = "default-preset"
+
+        /**
+         * Потолок на чтение настроек. Нормальный случай — попадание в кэш процесса, микросекунды, так
+         * что величина нужна только против зависшего пула R2DBC. Пять секунд — тот же порядок, что и
+         * у собственных констант повторов агента (`TRANSPORT_RETRY_DELAY`,
+         * `INVALID_RESPONSE_RETRY_MIN_BUDGET`), поэтому новой величины в системе не появляется.
+         */
+        val READ_TIMEOUT = 5.seconds
     }
 }

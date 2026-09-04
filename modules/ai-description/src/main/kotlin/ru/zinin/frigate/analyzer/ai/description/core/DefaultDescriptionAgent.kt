@@ -24,10 +24,12 @@ private val logger = KotlinLogging.logger {}
 
 /**
  * Единственная реализация [DescriptionAgent]. Провайдер-нейтральная оркестрация одной попытки
- * [DescriptionBackend.describe]: семафор на `maxConcurrent`, ожидание слота не дольше
- * `queueTimeout`, общий `withTimeout(timeout)`, по одному повтору на `InvalidResponse` (сразу) и
- * `Transport` (через [TRANSPORT_RETRY_DELAY]) с проверкой остатка бюджета. `Timeout`, `RateLimited`
- * и `Unauthorized` не повторяются.
+ * [DescriptionBackend.describe]. У каждой фазы вызова свой потолок, и `withTimeout` покрывает не
+ * весь вызов: резолюция пресета ограничена собственным потолком [ActivePresetResolver] (его
+ * истечение даёт пресет по умолчанию, а не исключение), ожидание слота семафора — `queueTimeout`,
+ * работа модели вместе с повторами — `withTimeout(timeout)`. Повторы: по одному на `InvalidResponse`
+ * (сразу) и `Transport` (через [TRANSPORT_RETRY_DELAY]) с проверкой остатка бюджета. `Timeout`,
+ * `RateLimited` и `Unauthorized` не повторяются.
  *
  * Пресет резолвится один раз на вызов и ДО семафора: повторы обязаны идти в тот же пресет, что и
  * первая попытка (иначе лог одной записи назвал бы двух разных провайдеров), а чтение настроек —

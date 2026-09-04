@@ -5,6 +5,8 @@ import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.slf4j.LoggerFactory
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
@@ -65,6 +67,27 @@ class ActivePresetResolverTest {
             value: Boolean,
             changedBy: String?,
         ) = throw failure()
+    }
+
+    /** Настройки, чьё чтение не возвращается никогда: проверка потолка на чтение. */
+    private class HangingSettings : DescriptionRuntimeSettings {
+        private val never = CompletableDeferred<String?>()
+
+        override val sourceName = "hanging settings"
+
+        override suspend fun activePresetId(): String? = never.await()
+
+        override suspend fun setActivePresetId(
+            id: String,
+            changedBy: String?,
+        ) = Unit
+
+        override suspend fun descriptionsEnabled(): Boolean = true
+
+        override suspend fun setDescriptionsEnabled(
+            value: Boolean,
+            changedBy: String?,
+        ) = Unit
     }
 
     /** Логгер резолвера — файловый, поэтому слушаем корень и отбираем по уровню. */
@@ -228,6 +251,33 @@ class ActivePresetResolverTest {
 
             assertEquals(1, lines.size)
             assertTrue(lines.single().endsWith("from default-preset"), lines.single())
+        }
+
+    /**
+     * Агент зовёт резолвер вне обоих своих `withTimeout`, поэтому потолок на чтение — единственное,
+     * что отделяет зависшую БД от подвисшего `describe`. Истечение потолка обязано дать пресет по
+     * умолчанию и предупреждение, а не отмену вызова и не `DescriptionException.Timeout`.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a read that never returns falls back on the bound`() =
+        runTest {
+            val resolver = ActivePresetResolver(catalog, HangingSettings())
+            val startedAt = testScheduler.currentTime
+
+            val warnings =
+                logsFrom(Level.WARN) {
+                    assertEquals("fast", resolver.resolve().view.id)
+                    assertNull(resolver.storedId(), "storedId has the same exposure through the /ai screen")
+                }
+
+            assertEquals(1, warnings.size, "one line per distinct problem: $warnings")
+            assertTrue(warnings.single().contains("timed out"), warnings.single())
+            assertEquals(
+                10_000,
+                testScheduler.currentTime - startedAt,
+                "both reads are bounded, 5 s each, and the wait is virtual",
+            )
         }
 
     @Test
