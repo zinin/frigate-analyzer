@@ -3,6 +3,9 @@ package ru.zinin.frigate.analyzer.core.config.properties
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.junit.jupiter.api.Test
+import org.springframework.boot.context.properties.bind.Binder
+import org.springframework.boot.env.YamlPropertySourceLoader
+import org.springframework.core.io.ByteArrayResource
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 
 /**
@@ -59,6 +62,51 @@ class DescriptionPresetsBindingTest {
             }
 
         assertThat(thrown).hasStackTraceContaining("default-preset")
+    }
+
+    /**
+     * Порядок пресетов приходит из настоящего YAML-документа, а не из `mapOf`: правило
+     * «fallback — первый годный пресет» опирается на порядок объявления, и держать его должна вся
+     * цепочка YamlPropertySourceLoader -> Binder -> LinkedHashMap, а не тот порядок, в котором тест
+     * сам сложил Map. Ключи объявлены не по алфавиту, поэтому сортировка или хеширование в любом
+     * звене этой цепочки даст другую последовательность и уронит containsExactly.
+     */
+    @Test
+    fun `declaration order in a yaml document survives the binder`() {
+        val props =
+            bindYaml(
+                """
+                application:
+                  ai:
+                    description:
+                      presets:
+                        zeta:
+                          provider: grok
+                          model: grok-4.6
+                          effort: high
+                        alpha:
+                          provider: claude
+                          model: opus
+                        middle:
+                          provider: grok
+                          model: grok-4.6-fast
+                """.trimIndent(),
+            )
+
+        assertThat(props.presets.keys).containsExactly("zeta", "alpha", "middle")
+        assertThat(props.presets.getValue("zeta").effort).isEqualTo("high")
+    }
+
+    /**
+     * Кладёт разобранный документ поверх production-yaml тем же загрузчиком, которым Spring Boot
+     * читает `application.yaml` на старте: только так путь ключей до карты совпадает с боевым.
+     */
+    private fun bindYaml(yaml: String): DescriptionProperties {
+        val environment = ProductionYamlBinder.environment()
+        YamlPropertySourceLoader()
+            .load("presets.yaml", ByteArrayResource(yaml.toByteArray()))
+            .forEach { environment.propertySources.addFirst(it) }
+        return Binder.get(environment).bind("application.ai.description", DescriptionProperties::class.java).get()
     }
 
     private fun bind(
