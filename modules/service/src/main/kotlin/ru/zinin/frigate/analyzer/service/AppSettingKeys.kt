@@ -6,4 +6,6 @@ object AppSettingKeys {
     const val NOTIFICATIONS_RECORDING_SCHEDULE_ENABLED = "notifications.recording.schedule.enabled"
     const val NOTIFICATIONS_RECORDING_SCHEDULE_WINDOW = "notifications.recording.schedule.window"
     const val NOTIFICATIONS_RECORDING_SCHEDULE_ZONE = "notifications.recording.schedule.zone"
+    const val AI_DESCRIPTION_PRESET_ACTIVE = "ai.description.preset.active"
+    const val AI_DESCRIPTION_ENABLED = "ai.description.enabled"
 }
