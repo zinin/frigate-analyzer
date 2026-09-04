@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "grok")
 class GrokHomeGuard {
     private val mutex = Mutex()
     private val inFlight = AtomicInteger(0)

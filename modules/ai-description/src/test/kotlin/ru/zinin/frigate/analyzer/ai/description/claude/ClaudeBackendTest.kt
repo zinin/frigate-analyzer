@@ -11,7 +11,6 @@ import org.springaicommunity.claude.agent.sdk.exceptions.ClaudeSDKException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
-import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Path
 import java.util.UUID
@@ -20,15 +19,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class ClaudeBackendTest {
-    private val claudeProps =
-        ClaudeProperties(
-            oauthToken = "token",
-            model = "opus",
-            cliPath = "",
-            workingDirectory = "/tmp",
-            proxy = ClaudeProperties.ProxySection("", "", ""),
-            anthropic = ClaudeProperties.AnthropicSection(),
-        )
     private val promptBuilder = mockk<ClaudePromptBuilder>()
     private val responseParser = ClaudeResponseParser(TestObjectMappers.internalMapper())
     private val imageStager = mockk<ClaudeImageStager>()
@@ -51,7 +41,7 @@ class ClaudeBackendTest {
 
     private fun build(invoker: ClaudeInvoker) =
         ClaudeBackend(
-            claudeProperties = claudeProps,
+            model = "opus",
             promptBuilder = promptBuilder,
             responseParser = responseParser,
             imageStager = imageStager,
@@ -68,7 +58,7 @@ class ClaudeBackendTest {
         }
 
     @Test
-    fun `the configured model is handed to the invoker`() =
+    fun `the preset model is handed to the invoker`() =
         runTest {
             var seenModel: String? = null
             val backend =

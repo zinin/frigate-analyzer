@@ -31,7 +31,6 @@ data class GrokOutput(
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "grok")
 class GrokOutputParser(
     private val objectMapper: ObjectMapper,
 ) {

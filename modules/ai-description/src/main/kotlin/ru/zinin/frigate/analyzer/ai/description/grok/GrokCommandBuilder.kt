@@ -16,7 +16,6 @@ import java.nio.file.Path
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "grok")
 class GrokCommandBuilder(
     private val properties: GrokProperties,
     /** Окружение JVM; параметром — чтобы тесты не зависели от переменных машины. */

@@ -35,10 +35,10 @@ private val logger = KotlinLogging.logger {}
  * публикация идут под одним замком: слушатель доставляет владельцу события в порядке публикации,
  * и разъехавшийся порядок оставил бы его с сообщением об отказе при рабочих учётных данных.
  *
- * Не `@Component`: бин создаёт `AiDescriptionAutoConfiguration`, когда есть backend.
+ * Не `@Component`: бин создаёт `AiDescriptionAutoConfiguration`, когда есть каталог пресетов.
  */
 class DefaultDescriptionAgent(
-    private val backend: DescriptionBackend,
+    private val catalog: DescriptionPresetCatalog,
     descriptionProperties: DescriptionProperties,
     private val eventPublisher: ApplicationEventPublisher,
     // Wall-clock по умолчанию; тесты подставляют TestTimeSource из runTest, чтобы проверка
@@ -83,16 +83,19 @@ class DefaultDescriptionAgent(
                     logger.warn(e) { "Cannot downscale frames of recording ${request.recordingId}; sending them unchanged" }
                     request
                 }
+            // В Task 4 это станет resolver.resolve(): пока пресет всегда один и тот же.
+            val entry = catalog.fallback()
+            val backend = requireNotNull(entry.backend) { "fallback preset has no backend" }
             return try {
                 withTimeout(commonSection.timeout.toMillis()) {
-                    executeWithRetry(prepared)
+                    executeWithRetry(backend, prepared)
                 }
             } catch (e: TimeoutCancellationException) {
                 throw DescriptionException.Timeout(cause = e)
             }
         } finally {
             logger.debug {
-                "Description via '${backend.providerId}' completed in ${callStart.elapsedNow()} " +
+                "Description via preset '${catalog.fallbackId}' completed in ${callStart.elapsedNow()} " +
                     "for recording ${request.recordingId}"
             }
             semaphore.release()
@@ -118,18 +121,21 @@ class DefaultDescriptionAgent(
         return request.copy(frames = frames)
     }
 
-    private suspend fun executeWithRetry(request: DescriptionRequest): DescriptionResult {
+    private suspend fun executeWithRetry(
+        backend: DescriptionBackend,
+        request: DescriptionRequest,
+    ): DescriptionResult {
         val overallStart = timeSource.markNow()
         val totalBudget = commonSection.timeout.toKotlinDuration()
         var invalidRetries = 0
         var transportRetries = 0
         while (true) {
             try {
-                val result = attempt(request)
-                onSuccess()
+                val result = attempt(backend, request)
+                onSuccess(backend)
                 return result
             } catch (e: DescriptionException.Unauthorized) {
-                onUnauthorized(e)
+                onUnauthorized(backend, e)
                 throw e
             } catch (e: DescriptionException.InvalidResponse) {
                 if (invalidRetries >= 1) throw e
@@ -167,7 +173,10 @@ class DefaultDescriptionAgent(
     }
 
     /** Одна попытка; всё, что не DescriptionException и не отмена, становится Transport. */
-    private suspend fun attempt(request: DescriptionRequest): DescriptionResult =
+    private suspend fun attempt(
+        backend: DescriptionBackend,
+        request: DescriptionRequest,
+    ): DescriptionResult =
         try {
             backend.describe(request)
         } catch (e: CancellationException) {
@@ -178,7 +187,10 @@ class DefaultDescriptionAgent(
             throw DescriptionException.Transport(e)
         }
 
-    private fun onUnauthorized(e: DescriptionException.Unauthorized) {
+    private fun onUnauthorized(
+        backend: DescriptionBackend,
+        e: DescriptionException.Unauthorized,
+    ) {
         synchronized(authTransitionLock) {
             if (!authState.compareAndSet(AuthState.HEALTHY, AuthState.LOST)) return
             logger.error(e) {
@@ -186,6 +198,7 @@ class DefaultDescriptionAgent(
                     "unavailable until re-login. Fix: ${backend.authRecoveryHint}"
             }
             publishAuthEvent(
+                backend,
                 DescriptionProviderAuthEvent(
                     provider = backend.providerId,
                     state = DescriptionProviderAuthEvent.State.LOST,
@@ -198,11 +211,12 @@ class DefaultDescriptionAgent(
         }
     }
 
-    private fun onSuccess() {
+    private fun onSuccess(backend: DescriptionBackend) {
         synchronized(authTransitionLock) {
             if (!authState.compareAndSet(AuthState.LOST, AuthState.HEALTHY)) return
             logger.info { "Description provider '${backend.providerId}' credentials work again" }
             publishAuthEvent(
+                backend,
                 DescriptionProviderAuthEvent(
                     provider = backend.providerId,
                     state = DescriptionProviderAuthEvent.State.RESTORED,
@@ -221,6 +235,7 @@ class DefaultDescriptionAgent(
      * отката такой же отказ больше никогда не поднял бы событие, а владелец не узнал бы о нём вовсе.
      */
     private fun publishAuthEvent(
+        backend: DescriptionBackend,
         event: DescriptionProviderAuthEvent,
         rollbackFrom: AuthState,
         rollbackTo: AuthState,

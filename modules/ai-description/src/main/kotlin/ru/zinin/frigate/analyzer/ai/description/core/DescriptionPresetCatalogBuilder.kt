@@ -52,6 +52,7 @@ object DescriptionPresetCatalogBuilder {
         val byProvider = factories.associateBy { it.providerId }
         val availability = availabilityOf(presets, byProvider)
         val entries = presets.map { (id, preset) -> entryOf(id, preset, byProvider, availability) }
+        warnAboutDisplacedModels(entries)
         val usable = entries.filter { it.backend != null }
         if (usable.isEmpty()) {
             return Result.NoneUsable(
@@ -112,6 +113,23 @@ object DescriptionPresetCatalogBuilder {
             logger.warn { "Description preset '$id' (${preset.provider}/${preset.model}) is unavailable: $reason" }
         }
         return DescriptionPresetCatalog.Entry(view, factory?.takeIf { reason == null }?.create(preset))
+    }
+
+    /**
+     * Настройка провайдера может вытеснить объявленную модель (`ANTHROPIC_MODEL` у claude): два
+     * пресета, отличающиеся только моделью, тогда шлют одинаковые запросы, а на экране выглядят
+     * разными. Предупреждение живёт здесь, а не в фабрике: только билдер видит все пресеты сразу и
+     * может перечислить задетые — фабрика получает по одному. Формулировка провайдер-нейтральна:
+     * ту же пару «объявленная → эффективная» оператор видит и на экране `/ai`.
+     */
+    private fun warnAboutDisplacedModels(entries: List<DescriptionPresetCatalog.Entry>) {
+        val displaced = entries.map { it.view }.filter { it.effectiveModel != it.model }
+        if (displaced.isEmpty()) return
+        logger.warn {
+            "provider configuration overrides the declared model: " +
+                displaced.joinToString { "preset '${it.id}' (${it.model} -> ${it.effectiveModel})" } +
+                "; presets that differ only by model will issue identical requests"
+        }
     }
 
     /**

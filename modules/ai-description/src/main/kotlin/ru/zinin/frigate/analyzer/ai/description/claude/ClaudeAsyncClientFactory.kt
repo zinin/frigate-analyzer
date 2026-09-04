@@ -11,7 +11,6 @@ import java.time.Duration
 
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "claude")
 class ClaudeAsyncClientFactory(
     private val claudeProperties: ClaudeProperties,
 ) {

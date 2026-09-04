@@ -12,7 +12,6 @@ import ru.zinin.frigate.analyzer.ai.description.core.LanguageNames
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "grok")
 class GrokPromptBuilder {
     fun introduction(language: String): String =
         buildString {

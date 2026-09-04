@@ -38,10 +38,9 @@ sealed interface UnavailableReason {
     /** Ни одного токена провайдера в окружении. */
     data object NoToken : UnavailableReason
 
-    /** CLI провайдера не найден: [path] — явно заданный путь, null — поиск по `PATH`. */
-    data class CliMissing(
-        val path: String?,
-    ) : UnavailableReason
+    // Пропавшего CLI здесь намеренно нет: это WARN, а не непригодность. Бинарник опциональной
+    // фичи, исчезнувший из образа, не должен уносить с собой наблюдение за камерами — описания
+    // уйдут в fallback, а всё остальное продолжит работать.
 
     /** Каталог провайдера непригоден для записи — логин и обновление токена не пройдут. */
     data class HomeUnwritable(

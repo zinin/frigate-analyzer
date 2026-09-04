@@ -10,10 +10,8 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
-import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -35,12 +33,12 @@ class GrokBackendTest {
             detailedMaxLength = 1500,
         )
 
-    private fun props(home: Path = tempDir.resolve("home")) =
+    private fun props() =
         GrokProperties(
             cliPath = tempDir.resolve("missing-grok").toString(),
             model = "grok-4.6",
             effort = "low",
-            home = home.toString(),
+            home = tempDir.resolve("home").toString(),
             workingDirectory = tempDir.resolve("cwd").toString(),
             proxy = GrokProperties.ProxySection("", "", ""),
         )
@@ -51,7 +49,8 @@ class GrokBackendTest {
     ): GrokBackend {
         coEvery { promptFileWriter.write(any()) } returns promptFile
         return GrokBackend(
-            properties = properties,
+            model = properties.model,
+            effort = properties.effort,
             promptFileWriter = promptFileWriter,
             commandBuilder = GrokCommandBuilder(properties),
             runner = runner,
@@ -213,20 +212,6 @@ class GrokBackendTest {
             assertFailsWith<DescriptionException.Transport> { backend.describe(request) }
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
         }
-
-    @Test
-    fun `init creates home and working directory`() {
-        backend(GrokProcessRunner { result(0, "{}") })
-        assertTrue(Files.isDirectory(tempDir.resolve("home")))
-        assertTrue(Files.isDirectory(tempDir.resolve("cwd")))
-    }
-
-    @Test
-    fun `init fails when the home path is a file`() {
-        val file = tempDir.resolve("home-file")
-        file.writeText("x")
-        assertFailsWith<IllegalStateException> { backend(GrokProcessRunner { result(0, "{}") }, props(home = file)) }
-    }
 
     @Test
     fun `identifies itself as grok with a device-code hint`() {

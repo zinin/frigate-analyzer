@@ -2,6 +2,9 @@ package ru.zinin.frigate.analyzer.ai.description.grok
 
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.io.TempDir
+import org.springframework.beans.factory.ObjectProvider
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import java.nio.file.Files
 import java.nio.file.Path
@@ -11,13 +14,14 @@ import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class GrokHomeSweeperTest {
     @TempDir
     lateinit var home: Path
 
-    private fun sweeper() =
+    private fun sweeper(presets: DescriptionPresets? = presetsOf("grok")) =
         GrokHomeSweeper(
             GrokProperties(
                 cliPath = "",
@@ -28,7 +32,36 @@ class GrokHomeSweeperTest {
                 proxy = GrokProperties.ProxySection("", "", ""),
             ),
             GrokHomeGuard(),
+            objectProviderOf(presets),
         )
+
+    private fun presetsOf(vararg providers: String): DescriptionPresets =
+        object : DescriptionPresets {
+            override fun all(): List<DescriptionPreset> =
+                providers.mapIndexed { index, provider ->
+                    DescriptionPreset(
+                        id = "p$index",
+                        provider = provider,
+                        model = "m",
+                        effectiveModel = "m",
+                        effort = "",
+                        authScopeId = provider,
+                        unavailableReason = null,
+                    )
+                }
+        }
+
+    /** Только `getIfAvailable`: ровно то, чем уборщик и пользуется. */
+    private fun objectProviderOf(presets: DescriptionPresets?): ObjectProvider<DescriptionPresets> =
+        object : ObjectProvider<DescriptionPresets> {
+            override fun getObject(vararg args: Any?): DescriptionPresets = checkNotNull(presets)
+
+            override fun getObject(): DescriptionPresets = checkNotNull(presets)
+
+            override fun getIfAvailable(): DescriptionPresets? = presets
+
+            override fun getIfUnique(): DescriptionPresets? = presets
+        }
 
     @Test
     fun `removes session directories, the search index and log files, keeps credentials and config`() {
@@ -68,5 +101,17 @@ class GrokHomeSweeperTest {
     fun `missing directories are not an error`() {
         assertEquals(0, runBlocking { sweeper().sweep() })
         assertTrue(Files.notExists(home.resolve("sessions")))
+    }
+
+    /**
+     * `GROK_HOME` в compose задан и смонтирован всегда, а коллаборанты Grok больше не привязаны к
+     * `provider=grok`: без этой проверки claude-only деплой ежечасно подметал бы каталог, который
+     * оператор мог отдать ручному `grok`.
+     */
+    @Test
+    fun `the sweep only runs when a declared preset uses grok`() {
+        assertTrue(sweeper().grokIsDeclared())
+        assertFalse(sweeper(presetsOf("claude")).grokIsDeclared(), "no grok preset")
+        assertFalse(sweeper(presets = null).grokIsDeclared(), "no catalog at all")
     }
 }

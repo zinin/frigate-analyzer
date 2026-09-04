@@ -1,18 +1,20 @@
 package ru.zinin.frigate.analyzer.ai.description.config
 
 import io.mockk.mockk
+import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.io.TempDir
 import org.springframework.boot.autoconfigure.AutoConfigurations
+import org.springframework.boot.test.context.assertj.AssertableApplicationContext
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.util.unit.DataSize
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
-import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeAsyncClientFactory
+import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeBackend
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokBackend
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
@@ -21,6 +23,9 @@ import java.nio.file.Path
 import java.time.Clock
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 class AiDescriptionAutoConfigurationTest {
     @TempDir
@@ -53,7 +58,8 @@ class AiDescriptionAutoConfigurationTest {
     /**
      * Полный набор свойств модуля в стиле application.yaml. Обе провайдерские секции биндятся
      * всегда, поэтому присутствуют при любом provider; grok.home и working-directory указывают
-     * в @TempDir, чтобы GrokBackend.init не создавал каталоги в /tmp/frigate-analyzer.
+     * в @TempDir, чтобы осмотр окружения в GrokBackendFactory не создавал каталоги в
+     * /tmp/frigate-analyzer.
      */
     private fun properties(
         enabled: Boolean,
@@ -98,6 +104,9 @@ class AiDescriptionAutoConfigurationTest {
             "application.ai.description.grok.proxy.no-proxy=",
         )
 
+    private fun catalog(context: AssertableApplicationContext): DescriptionPresetCatalog =
+        context.getBean(DescriptionPresetCatalog::class.java)
+
     @Test
     fun `DescriptionProperties registered even when enabled=false`() {
         // Критично: facade инжектит DescriptionProperties безусловно — бин должен быть всегда.
@@ -124,9 +133,10 @@ class AiDescriptionAutoConfigurationTest {
                 assert(ctx.getBean(DescriptionAgent::class.java) is DefaultDescriptionAgent) {
                     "the agent must be the provider-neutral DefaultDescriptionAgent"
                 }
-                assert(ctx.getBeansOfType(ClaudeBackend::class.java).isNotEmpty()) {
-                    "ClaudeBackend should be registered for provider=claude"
-                }
+                // Backend больше не бин: он живёт в каталоге, по одному на пресет.
+                val catalog = catalog(ctx)
+                assertEquals(listOf("claude"), catalog.all().map { it.id })
+                assertIs<ClaudeBackend>(assertNotNull(catalog.byId("claude")).backend)
                 // Строка в стиле application.yaml должна привязаться к DataSize: это единственное
                 // место, где реальный старт может упасть, а полный build в CI его не проверяет.
                 assertEquals(DataSize.ofMegabytes(32), ctx.getBean(ClaudeProperties::class.java).maxBufferSize)
@@ -134,29 +144,28 @@ class AiDescriptionAutoConfigurationTest {
     }
 
     @Test
-    fun `autoconfig activates the grok backend when provider=grok and no claude beans`() {
+    fun `autoconfig builds a grok preset when provider=grok`() {
         runner
             .withPropertyValues(*properties(enabled = true, provider = "grok"))
             .run { ctx ->
                 assert(ctx.startupFailure == null) { "grok context must start: ${ctx.startupFailure}" }
                 assert(ctx.getBean(DescriptionAgent::class.java) is DefaultDescriptionAgent)
-                assert(ctx.getBeansOfType(GrokBackend::class.java).isNotEmpty()) { "GrokBackend should be registered" }
-                assert(ctx.getBeansOfType(ClaudeBackend::class.java).isEmpty()) { "ClaudeBackend must be absent" }
-                assert(ctx.getBeansOfType(ClaudeAsyncClientFactory::class.java).isEmpty()) { "Claude helpers must be absent" }
+                // Коллаборанты обоих провайдеров теперь существуют при enabled=true; изоляция
+                // провайдеров переехала на уровень каталога — в нём только объявленные пресеты.
+                val catalog = catalog(ctx)
+                assertEquals(listOf("grok"), catalog.all().map { it.id })
+                assertIs<GrokBackend>(assertNotNull(catalog.byId("grok")).backend)
             }
     }
 
     @Test
-    fun `unknown provider registers neither backend nor agent and does not fail startup`() {
+    fun `unknown provider registers neither catalog nor agent and does not fail startup`() {
         runner
             .withPropertyValues(*properties(enabled = true, provider = "unknown"))
             .run { ctx ->
                 assert(ctx.startupFailure == null) { "unknown provider must not break startup: ${ctx.startupFailure}" }
-                assert(ctx.getBeansOfType(DescriptionBackend::class.java).isEmpty())
+                assert(ctx.getBeansOfType(DescriptionPresetCatalog::class.java).isEmpty())
                 assert(ctx.getBeansOfType(DescriptionAgent::class.java).isEmpty())
-                assert(ctx.getBeansOfType(ClaudeAsyncClientFactory::class.java).isEmpty()) {
-                    "Claude helpers must be gated on provider=claude"
-                }
             }
     }
 
@@ -168,6 +177,88 @@ class AiDescriptionAutoConfigurationTest {
                 assert(ctx.getBeansOfType(DescriptionRateLimiter::class.java).isNotEmpty()) {
                     "DescriptionRateLimiter must be registered when ai-description.enabled=true (regardless of rate-limit.enabled)"
                 }
+            }
+    }
+
+    @Test
+    fun `two presets give two usable entries and the default preset wins`() {
+        runner
+            .withPropertyValues(
+                *properties(enabled = true, provider = "grok"),
+                "application.ai.description.default-preset=grok-deep",
+                "application.ai.description.presets.grok-fast.provider=grok",
+                "application.ai.description.presets.grok-fast.model=grok-4.6",
+                "application.ai.description.presets.grok-fast.effort=low",
+                "application.ai.description.presets.grok-deep.provider=grok",
+                "application.ai.description.presets.grok-deep.model=grok-4.6",
+                "application.ai.description.presets.grok-deep.effort=xhigh",
+            ).run { context ->
+                val catalog = catalog(context)
+                assertEquals(listOf("grok-fast", "grok-deep"), catalog.all().map { it.id })
+                assertEquals("grok-deep", catalog.fallbackId)
+                assertEquals(2, catalog.all().count { it.available })
+                assertNotNull(context.getBean(DescriptionAgent::class.java))
+            }
+    }
+
+    @Test
+    fun `a claude preset without a token stays listed while grok keeps working`() {
+        runner
+            .withPropertyValues(
+                *properties(enabled = true, provider = "grok"),
+                "application.ai.description.claude.oauth-token=",
+                "application.ai.description.presets.claude-opus.provider=claude",
+                "application.ai.description.presets.claude-opus.model=opus",
+                "application.ai.description.presets.grok-fast.provider=grok",
+                "application.ai.description.presets.grok-fast.model=grok-4.6",
+            ).run { context ->
+                val catalog = catalog(context)
+                assertEquals(UnavailableReason.NoToken, catalog.all().first { it.id == "claude-opus" }.unavailableReason)
+                assertNull(assertNotNull(catalog.byId("claude-opus")).backend)
+                assertEquals("grok-fast", catalog.fallbackId)
+                assertNotNull(context.getBean(DescriptionAgent::class.java))
+            }
+    }
+
+    @Test
+    fun `a single unusable preset fails the startup`() {
+        runner
+            .withPropertyValues(
+                *properties(enabled = true, provider = "claude"),
+                "application.ai.description.claude.oauth-token=",
+                "application.ai.description.presets.claude-opus.provider=claude",
+                "application.ai.description.presets.claude-opus.model=opus",
+            ).run { context ->
+                assertThat(context).hasFailed()
+                assertThat(context.startupFailure).hasStackTraceContaining("No usable description preset")
+            }
+    }
+
+    @Test
+    fun `an unknown legacy provider without presets leaves the agent out`() {
+        runner
+            .withPropertyValues(*properties(enabled = true, provider = "gemini"))
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                assertThat(context).doesNotHaveBean(DescriptionAgent::class.java)
+                assertThat(context).doesNotHaveBean(DescriptionPresetCatalog::class.java)
+            }
+    }
+
+    /**
+     * Обещание обратной совместимости: `@ConditionalOnProperty(havingValue = "claude")` сравнивал
+     * без учёта регистра, поэтому работающий деплой с `APP_AI_DESCRIPTION_PROVIDER=CLAUDE` обязан
+     * получить claude-пресет и после перехода на каталог.
+     */
+    @Test
+    fun `a mixed-case legacy provider still activates its provider`() {
+        runner
+            .withPropertyValues(*properties(enabled = true, provider = "ClAuDe"))
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val catalog = catalog(context)
+                assertEquals(listOf("claude"), catalog.all().map { it.id })
+                assertIs<ClaudeBackend>(assertNotNull(catalog.byId("claude")).backend)
             }
     }
 

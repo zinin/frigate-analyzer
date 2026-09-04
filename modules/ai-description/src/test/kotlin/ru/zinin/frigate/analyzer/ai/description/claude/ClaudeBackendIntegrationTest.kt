@@ -5,11 +5,13 @@ import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.springframework.context.ApplicationEventPublisher
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Files
 import java.nio.file.Path
@@ -120,14 +122,32 @@ JSON
 
         val backend =
             ClaudeBackend(
-                claudeProperties = claudeProps,
+                model = claudeProps.model,
                 promptBuilder = ClaudePromptBuilder(),
                 responseParser = ClaudeResponseParser(mapper),
                 imageStager = stager,
                 invoker = invoker,
                 exceptionMapper = ClaudeExceptionMapper(),
             )
-        val agent = DefaultDescriptionAgent(backend, descriptionProps, ApplicationEventPublisher { })
+        val catalog =
+            DescriptionPresetCatalog(
+                listOf(
+                    DescriptionPresetCatalog.Entry(
+                        DescriptionPreset(
+                            id = "claude",
+                            provider = backend.providerId,
+                            model = claudeProps.model,
+                            effectiveModel = claudeProps.model,
+                            effort = "",
+                            authScopeId = backend.providerId,
+                            unavailableReason = null,
+                        ),
+                        backend,
+                    ),
+                ),
+                fallbackId = "claude",
+            )
+        val agent = DefaultDescriptionAgent(catalog, descriptionProps, ApplicationEventPublisher { })
 
         val request =
             DescriptionRequest(

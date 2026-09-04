@@ -9,9 +9,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import java.io.IOException
 import java.nio.file.Files
@@ -26,18 +28,27 @@ private val logger = KotlinLogging.logger {}
  * всё содержимое `sessions/` и файлы в `logs/`; Grok пересоздаёт индекс и логи при следующем
  * запуске. `auth.json`, `config.toml` и остальное не трогаются. Приложение единственный
  * пользователь этого GROK_HOME, `grok login` сессий не создаёт.
+ *
+ * Отсюда же и проверка [grokIsDeclared]: `GROK_HOME` в compose задан и смонтирован всегда, поэтому
+ * без неё claude-only деплой ежечасно подметал бы каталог, который оператор мог отдать ручному
+ * `grok` — а весь KDoc выше исходит из того, что каталог наш.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "grok")
 class GrokHomeSweeper(
     private val properties: GrokProperties,
     private val guard: GrokHomeGuard,
+    /**
+     * `ObjectProvider`, а не каталог: бин появляется только при объявленных пресетах, а уборщик
+     * существует при любом `enabled=true`.
+     */
+    private val presetsProvider: ObjectProvider<DescriptionPresets>,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("grok-home-sweeper"))
 
     @Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT1M")
     fun sweepScheduled() {
+        if (!grokIsDeclared()) return
         scope.launch {
             try {
                 sweep()
@@ -48,6 +59,14 @@ class GrokHomeSweeper(
             }
         }
     }
+
+    /** Провайдер не участвует ни в одном пресете — каталог не наш, не трогаем. */
+    internal fun grokIsDeclared(): Boolean =
+        presetsProvider
+            .getIfAvailable()
+            ?.all()
+            .orEmpty()
+            .any { it.provider == GrokBackend.PROVIDER_ID }
 
     @PreDestroy
     fun shutdown() {

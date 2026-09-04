@@ -1,16 +1,10 @@
 package ru.zinin.frigate.analyzer.ai.description.grok
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
-import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
-import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
 import ru.zinin.frigate.analyzer.ai.description.core.ResultNormalizer
-import java.io.File
-import java.io.IOException
-import java.nio.file.Files
 import java.nio.file.Path
 
 private val logger = KotlinLogging.logger {}
@@ -19,12 +13,13 @@ private val logger = KotlinLogging.logger {}
  * Одна попытка описания через headless Grok Build: `prompt.json` → процесс → `structuredOutput`.
  * Семафор, таймауты и повторы живут в `DefaultDescriptionAgent`; отмена корутины по таймауту
  * убивает процесс в runner-е, а prompt-файл удаляется в `finally` под NonCancellable.
+ *
+ * Не бин: экземпляр создаёт [GrokBackendFactory] на каждый grok-пресет, поэтому [model] и [effort]
+ * приходят из пресета, а осмотр окружения остаётся в фабрике — один раз на провайдер.
  */
-@Component
-@ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "grok")
 class GrokBackend(
-    private val properties: GrokProperties,
+    val model: String,
+    val effort: String,
     private val promptFileWriter: GrokPromptFileWriter,
     private val commandBuilder: GrokCommandBuilder,
     private val runner: GrokProcessRunner,
@@ -32,46 +27,17 @@ class GrokBackend(
     private val exceptionMapper: GrokExceptionMapper,
     private val guard: GrokHomeGuard,
 ) : DescriptionBackend {
-    override val providerId: String = "grok"
-    override val authRecoveryHint: String =
-        "grok login --device-code (in Docker: docker compose exec frigate-analyzer grok login --device-code)"
+    override val providerId: String = PROVIDER_ID
+    override val authRecoveryHint: String = AUTH_RECOVERY_HINT
 
     /**
      * Схема поддержана, пока эндпоинт не доказал обратное. Первый отказ по `response_format`/grammar
-     * переводит провайдер на текстовый JSON до конца жизни процесса: модель фиксирована свойствами,
-     * так что повторно платить за проверку незачем.
+     * переводит на текстовый JSON до конца жизни процесса. Поле экземпляра, то есть флаг живёт на
+     * пресет — ровно правильная область: модель зафиксирована пресетом, и второй пресет с другой
+     * моделью не должен наследовать чужой отказ.
      */
     @Volatile
     private var schemaSupported: Boolean = true
-
-    init {
-        val home = properties.homePath
-        val cwd = properties.workingDirectoryPath
-        try {
-            Files.createDirectories(home)
-            Files.createDirectories(cwd)
-        } catch (e: IOException) {
-            throw IllegalStateException("Cannot create Grok directories home=$home working-directory=$cwd: ${e.message}", e)
-        }
-        if (!Files.isWritable(home)) {
-            logger.warn { "Grok home $home is not writable; grok login and token refresh will fail (fix: chown the volume to uid 1000)" }
-        }
-        if (!cliAvailable()) {
-            logger.warn {
-                "grok CLI not found (cli-path='${properties.cliPath}', PATH lookup otherwise); " +
-                    "all description requests will return fallback"
-            }
-        }
-        if (!Files.isRegularFile(home.resolve("auth.json"))) {
-            logger.warn {
-                "No auth.json in $home; run `$authRecoveryHint`. Not needed only for BYOK models " +
-                    "with their own api_key in config.toml"
-            }
-        }
-        logger.info {
-            "Grok description backend: model=${properties.model}, effort=${effortForLog()}, home=$home, cwd=$cwd"
-        }
-    }
 
     override suspend fun describe(request: DescriptionRequest): DescriptionResult {
         var promptFile: Path? = null
@@ -82,14 +48,14 @@ class GrokBackend(
             // разбором ошибки, и тогда запуск, который схему всё-таки передал, потерял бы повтор.
             val useSchema = schemaSupported
             logger.debug {
-                "Grok request for recording ${request.recordingId}: model=${properties.model}, effort=${effortForLog()}, " +
+                "Grok request for recording ${request.recordingId}: model=$model, effort=${effortForLog()}, " +
                     "json-schema=${if (useSchema) "on" else "off"}, frames=${request.frames.size}"
             }
             var result = runGrok(file, useSchema)
             var errorMessage = outputParser.errorMessage(result.stdout)
             if (errorMessage != null && useSchema && exceptionMapper.isStructuredOutputUnsupported(errorMessage)) {
                 logger.warn {
-                    "Model ${properties.model} does not accept --json-schema ($errorMessage); retrying without it " +
+                    "Model $model does not accept --json-schema ($errorMessage); retrying without it " +
                         "and reading the JSON out of the response text from now on"
                 }
                 schemaSupported = false
@@ -104,7 +70,7 @@ class GrokBackend(
             }
             val output = outputParser.parse(result.stdout)
             logger.debug {
-                "Grok describe for recording ${request.recordingId}: model=${properties.model}, effort=${effortForLog()}, " +
+                "Grok describe for recording ${request.recordingId}: model=$model, effort=${effortForLog()}, " +
                     "fields=${if (output.fromText) "text" else "structuredOutput"}, ${output.usageSummary}, " +
                     "stopReason=${output.stopReason}, session=${output.sessionId}"
             }
@@ -121,20 +87,16 @@ class GrokBackend(
         promptFile: Path,
         structuredOutput: Boolean,
     ): GrokProcessResult {
-        val command = commandBuilder.build(promptFile, properties.model, properties.effort, structuredOutput)
+        val command = commandBuilder.build(promptFile, model, effort, structuredOutput)
         return guard.shared { runner.run(command) }
     }
 
-    private fun effortForLog(): String = properties.effort.ifBlank { "<none>" }
+    private fun effortForLog(): String = effort.ifBlank { "<none>" }
 
-    private fun cliAvailable(): Boolean {
-        val cliPath = properties.cliPath
-        if (cliPath.isNotBlank()) return Files.isExecutable(Path.of(cliPath))
-        return System
-            .getenv("PATH")
-            ?.split(File.pathSeparator)
-            .orEmpty()
-            .filter { it.isNotBlank() }
-            .any { Files.isExecutable(Path.of(it, "grok")) }
+    companion object {
+        const val PROVIDER_ID = "grok"
+
+        const val AUTH_RECOVERY_HINT =
+            "grok login --device-code (in Docker: docker compose exec frigate-analyzer grok login --device-code)"
     }
 }

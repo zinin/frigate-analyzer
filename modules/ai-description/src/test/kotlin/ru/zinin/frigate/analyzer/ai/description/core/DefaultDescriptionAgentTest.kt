@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.testTimeSource
 import org.springframework.context.ApplicationEventPublisher
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionProviderAuthEvent
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
@@ -87,11 +88,31 @@ class DefaultDescriptionAgentTest {
         timeSource: TimeSource = TimeSource.Monotonic,
         eventPublisher: ApplicationEventPublisher = publisher,
     ) = DefaultDescriptionAgent(
-        backend = backend,
+        catalog = catalogOf(backend),
         descriptionProperties = DescriptionProperties(enabled = true, provider = "fake", common = customCommon),
         eventPublisher = eventPublisher,
         timeSource = timeSource,
     )
+
+    /** Каталог из одного пресета: агент всегда берёт `fallback()`, пока в Task 4 не появится resolver. */
+    private fun catalogOf(backend: DescriptionBackend): DescriptionPresetCatalog =
+        DescriptionPresetCatalog(
+            listOf(
+                DescriptionPresetCatalog.Entry(
+                    DescriptionPreset(
+                        id = "test",
+                        provider = backend.providerId,
+                        model = "test-model",
+                        effectiveModel = "test-model",
+                        effort = "",
+                        authScopeId = backend.providerId,
+                        unavailableReason = null,
+                    ),
+                    backend,
+                ),
+            ),
+            fallbackId = "test",
+        )
 
     private fun jpeg(
         width: Int,

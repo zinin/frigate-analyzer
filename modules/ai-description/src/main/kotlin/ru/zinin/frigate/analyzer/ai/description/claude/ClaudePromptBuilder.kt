@@ -8,7 +8,6 @@ import java.nio.file.Path
 
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "claude")
 class ClaudePromptBuilder {
     fun build(
         request: DescriptionRequest,
