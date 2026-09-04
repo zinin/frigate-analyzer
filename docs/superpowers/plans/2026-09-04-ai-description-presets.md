@@ -462,6 +462,12 @@ git commit -m "feat(ai-description): declare description presets in configuratio
 
 В `ClaudeAsyncClientFactoryTest` заменить `buildOptions(timeout)` на `buildOptions(timeout, model = "opus")` и добавить проверку, что переданная модель попадает в `CLIOptions`, а `anthropic.model-override` по-прежнему её вытесняет.
 
+**Поведение override не меняется, но перестаёт быть невидимым.** С пресетами вытеснение означает, что два claude-пресета с разными `model` шлют один и тот же запрос, а `/ai` рисует разные модели. Ломать семантику переменной нельзя — она единственная дорога к Anthropic-совместимым эндпоинтам, раз пресетные `base-url` отвергнуты, — и валить старт нельзя: это конфигурация, которая работала до обновления. Поэтому:
+
+- `ClaudeBackendFactory` заполняет в `DescriptionPreset` поле `effectiveModel`: `modelOverride.ifBlank { preset.model }`. Для grok `effectiveModel == model` всегда;
+- при непустом `modelOverride` и хотя бы одном claude-пресете — WARN на старте: `anthropic.model-override='<значение>' overrides the model of claude presets: grok-opus, claude-sonnet`;
+- рендер `/ai` печатает `effectiveModel`, а когда она отличается от объявленной — обе (`opus → <override>`).
+
 В `ClaudeBackendTest` и `GrokBackendTest` подправить фейки под новые сигнатуры (`ClaudeInvoker { _, _ -> … }`, `commandBuilder.build(any(), any(), any(), any())`).
 
 - [ ] **Step 2: Запустить тесты и убедиться, что они падают**
