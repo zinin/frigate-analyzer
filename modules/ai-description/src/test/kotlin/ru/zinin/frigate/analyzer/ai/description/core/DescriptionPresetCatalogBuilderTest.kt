@@ -398,4 +398,36 @@ class DescriptionPresetCatalogBuilderTest {
 
         assertEquals(emptyList(), warnings)
     }
+
+    /**
+     * Отметка на пресете и предупреждение при старте идут от одного условия: экран `/ai` — это
+     * единственное место, где владелец узнаёт о нехватке бюджета на повтор ДО выбора пресета.
+     */
+    @Test
+    fun `a preset whose effort leaves no retry budget is marked`() {
+        val catalog =
+            catalogOf(
+                build(
+                    presets = linkedMapOf("grok-deep" to grokDeep, "grok-top" to grokMax, "grok-fast" to grok),
+                    factories = listOf(FakeFactory("grok")),
+                    timeout = Duration.ofSeconds(60),
+                ),
+            )
+
+        assertEquals(listOf("grok-deep", "grok-top"), catalog.all().filter { it.slowEffort }.map { it.id })
+    }
+
+    @Test
+    fun `a slow effort at the recommended timeout is not marked`() {
+        val catalog =
+            catalogOf(
+                build(
+                    presets = linkedMapOf("grok-deep" to grokDeep),
+                    factories = listOf(FakeFactory("grok")),
+                    timeout = Duration.ofSeconds(120),
+                ),
+            )
+
+        assertTrue(catalog.all().none { it.slowEffort }, catalog.all().toString())
+    }
 }

@@ -24,6 +24,12 @@ data class DescriptionPreset(
     val authScopeId: String,
     /** null = пресет годен. */
     val unavailableReason: UnavailableReason?,
+    /**
+     * Уровень усилия не оставляет бюджета на повтор внутри общего таймаута — то же условие, по
+     * которому на старте выводится WARN. Экран `/ai` помечает такие пресеты: это единственное
+     * место, где владелец узнаёт о ловушке ДО того, как выберет пресет, а не по `Timeout` в проде.
+     */
+    val slowEffort: Boolean = false,
 ) {
     val available: Boolean get() = unavailableReason == null
 }

@@ -51,7 +51,10 @@ object DescriptionPresetCatalogBuilder {
 
         val byProvider = factories.associateBy { it.providerId }
         val availability = availabilityOf(presets, byProvider)
-        val entries = presets.map { (id, preset) -> entryOf(id, preset, byProvider, availability) }
+        val entries =
+            presets.map { (id, preset) ->
+                entryOf(id, preset, byProvider, availability, leavesNoRetryBudget(preset, timeout))
+            }
         warnAboutDisplacedModels(entries)
         val usable = entries.filter { it.backend != null }
         if (usable.isEmpty()) {
@@ -88,6 +91,7 @@ object DescriptionPresetCatalogBuilder {
         preset: DescriptionProperties.Preset,
         byProvider: Map<String, DescriptionBackendFactory>,
         availability: Map<String, DescriptionBackendFactory.Availability>,
+        slowEffort: Boolean,
     ): DescriptionPresetCatalog.Entry {
         val factory = byProvider[preset.provider]
         val reason =
@@ -108,6 +112,7 @@ object DescriptionPresetCatalogBuilder {
                 effort = preset.effort,
                 authScopeId = factory?.authScopeId(preset) ?: preset.provider,
                 unavailableReason = reason,
+                slowEffort = slowEffort,
             )
         if (reason != null) {
             logger.warn { "Description preset '$id' (${preset.provider}/${preset.model}) is unavailable: $reason" }
@@ -142,9 +147,8 @@ object DescriptionPresetCatalogBuilder {
         presets: Map<String, DescriptionProperties.Preset>,
         timeout: Duration,
     ) {
-        if (timeout >= RECOMMENDED_SLOW_EFFORT_TIMEOUT) return
         presets
-            .filterValues { it.effort in SLOW_EFFORTS }
+            .filterValues { leavesNoRetryBudget(it, timeout) }
             .forEach { (id, preset) ->
                 logger.warn {
                     "preset '$id': effort=${preset.effort} with timeout=${timeout.toSeconds()}s leaves no retry " +
@@ -152,4 +156,13 @@ object DescriptionPresetCatalogBuilder {
                 }
             }
     }
+
+    /**
+     * Одно условие на предупреждение при старте и на отметку в `/ai`: две копии разъехались бы, а
+     * тогда экран обещал бы бюджет повтора там, где лог его уже отрицает.
+     */
+    private fun leavesNoRetryBudget(
+        preset: DescriptionProperties.Preset,
+        timeout: Duration,
+    ): Boolean = preset.effort in SLOW_EFFORTS && timeout < RECOMMENDED_SLOW_EFFORT_TIMEOUT
 }
