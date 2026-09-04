@@ -10,8 +10,10 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import ru.zinin.frigate.analyzer.ai.description.core.ActivePresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
+import ru.zinin.frigate.analyzer.ai.description.core.InMemoryDescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Files
 import java.nio.file.Path
@@ -147,7 +149,8 @@ JSON
                 ),
                 fallbackId = "claude",
             )
-        val agent = DefaultDescriptionAgent(catalog, descriptionProps, ApplicationEventPublisher { })
+        val resolver = ActivePresetResolver(catalog, InMemoryDescriptionRuntimeSettings())
+        val agent = DefaultDescriptionAgent(resolver, descriptionProps, ApplicationEventPublisher { })
 
         val request =
             DescriptionRequest(

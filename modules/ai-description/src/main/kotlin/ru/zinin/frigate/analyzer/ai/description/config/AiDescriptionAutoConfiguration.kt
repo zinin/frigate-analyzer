@@ -3,6 +3,7 @@ package ru.zinin.frigate.analyzer.ai.description.config
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfiguration
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationEventPublisher
@@ -11,10 +12,13 @@ import org.springframework.context.annotation.ComponentScan
 import org.springframework.context.annotation.Conditional
 import org.springframework.context.annotation.Configuration
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.core.ActivePresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalogBuilder
+import ru.zinin.frigate.analyzer.ai.description.core.InMemoryDescriptionRuntimeSettings
 
 private val logger = KotlinLogging.logger {}
 
@@ -64,12 +68,31 @@ open class AiDescriptionAutoConfiguration {
             }
         }
 
+        /**
+         * Дефолт, уступающий реализации из `core`: там выбор владельца ложится в `app_settings` и
+         * переживает рестарт. Условие именно `@ConditionalOnMissingBean` — автоконфигурация
+         * обрабатывается после пользовательских бинов, поэтому в проде побеждает `core`.
+         */
+        @Bean
+        @ConditionalOnMissingBean(DescriptionRuntimeSettings::class)
+        fun inMemoryDescriptionRuntimeSettings(): DescriptionRuntimeSettings = InMemoryDescriptionRuntimeSettings()
+
+        /**
+         * Резолвер, а не каталог: он же отдаёт `telegram` реализацию `ActiveDescriptionPreset` —
+         * бин виден и по конкретному типу, и по интерфейсу из `api`.
+         */
+        @Bean
+        fun activePresetResolver(
+            catalog: DescriptionPresetCatalog,
+            runtimeSettings: DescriptionRuntimeSettings,
+        ): ActivePresetResolver = ActivePresetResolver(catalog, runtimeSettings)
+
         @Bean
         fun descriptionAgent(
-            catalog: DescriptionPresetCatalog,
+            resolver: ActivePresetResolver,
             descriptionProperties: DescriptionProperties,
             eventPublisher: ApplicationEventPublisher,
-        ): DescriptionAgent = DefaultDescriptionAgent(catalog, descriptionProperties, eventPublisher)
+        ): DescriptionAgent = DefaultDescriptionAgent(resolver, descriptionProperties, eventPublisher)
 
         /**
          * Пустая карта означает деплой, настроенный старым способом: один пресет из `provider` и

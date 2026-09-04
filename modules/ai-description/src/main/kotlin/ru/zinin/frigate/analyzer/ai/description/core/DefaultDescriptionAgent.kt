@@ -29,6 +29,12 @@ private val logger = KotlinLogging.logger {}
  * `Transport` (через [TRANSPORT_RETRY_DELAY]) с проверкой остатка бюджета. `Timeout`, `RateLimited`
  * и `Unauthorized` не повторяются.
  *
+ * Пресет резолвится один раз на вызов и ДО семафора: повторы обязаны идти в тот же пресет, что и
+ * первая попытка (иначе лог одной записи назвал бы двух разных провайдеров), а чтение настроек —
+ * ввод-вывод, которому нельзя ни удерживать пермит, ни съедать бюджет, отпущенный модели. Принятая
+ * плата: вызов, простоявший в очереди, применит пресет, актуальный на момент постановки в очередь;
+ * окно ограничено сверху `queueTimeout`.
+ *
  * Состояние авторизации провайдера: первый `Unauthorized` после успеха или старта публикует
  * [DescriptionProviderAuthEvent] LOST, первый успех после него RESTORED. Переход делается через
  * `compareAndSet`, поэтому параллельные вызовы дают ровно одно событие, а сам переход и его
@@ -38,7 +44,7 @@ private val logger = KotlinLogging.logger {}
  * Не `@Component`: бин создаёт `AiDescriptionAutoConfiguration`, когда есть каталог пресетов.
  */
 class DefaultDescriptionAgent(
-    private val catalog: DescriptionPresetCatalog,
+    private val resolver: ActivePresetResolver,
     descriptionProperties: DescriptionProperties,
     private val eventPublisher: ApplicationEventPublisher,
     // Wall-clock по умолчанию; тесты подставляют TestTimeSource из runTest, чтобы проверка
@@ -60,6 +66,12 @@ class DefaultDescriptionAgent(
     private enum class AuthState { HEALTHY, LOST }
 
     override suspend fun describe(request: DescriptionRequest): DescriptionResult {
+        // Один раз на вызов и до захвата пермита: чтение настроек — ввод-вывод. Под пермитом при
+        // maxConcurrent=2 и зависшем пуле R2DBC оба слота заняли бы корутины, ждущие одно и то же
+        // чтение, а внешний withTimeout ещё не начался и не помог бы.
+        val entry = resolver.resolve()
+        val backend = requireNotNull(entry.backend) { "resolved preset '${entry.view.id}' has no backend" }
+
         try {
             withTimeout(commonSection.queueTimeout.toMillis()) {
                 semaphore.acquire()
@@ -83,9 +95,6 @@ class DefaultDescriptionAgent(
                     logger.warn(e) { "Cannot downscale frames of recording ${request.recordingId}; sending them unchanged" }
                     request
                 }
-            // В Task 4 это станет resolver.resolve(): пока пресет всегда один и тот же.
-            val entry = catalog.fallback()
-            val backend = requireNotNull(entry.backend) { "fallback preset has no backend" }
             return try {
                 withTimeout(commonSection.timeout.toMillis()) {
                     executeWithRetry(backend, prepared)
@@ -94,8 +103,10 @@ class DefaultDescriptionAgent(
                 throw DescriptionException.Timeout(cause = e)
             }
         } finally {
+            // Строка остаётся в finally: в теле try она пропадала бы ровно на путях с исключением,
+            // а именно они и интересны при разборе.
             logger.debug {
-                "Description via preset '${catalog.fallbackId}' completed in ${callStart.elapsedNow()} " +
+                "Description via preset '${entry.view.id}' completed in ${callStart.elapsedNow()} " +
                     "for recording ${request.recordingId}"
             }
             semaphore.release()

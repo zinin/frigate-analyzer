@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.ai.description.config
 
 import io.mockk.mockk
+import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.io.TempDir
 import org.springframework.boot.autoconfigure.AutoConfigurations
@@ -9,7 +10,9 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.util.unit.DataSize
+import ru.zinin.frigate.analyzer.ai.description.api.ActiveDescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeBackend
@@ -21,11 +24,13 @@ import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import tools.jackson.databind.json.JsonMapper
 import java.nio.file.Path
 import java.time.Clock
+import java.util.function.Supplier
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 
 class AiDescriptionAutoConfigurationTest {
     @TempDir
@@ -279,6 +284,52 @@ class AiDescriptionAutoConfigurationTest {
                 val catalog = catalog(context)
                 assertEquals(listOf("claude"), catalog.all().map { it.id })
                 assertIs<ClaudeBackend>(assertNotNull(catalog.byId("claude")).backend)
+            }
+    }
+
+    /**
+     * `core` регистрирует реализацию поверх `app_settings`; in-memory-дефолт обязан уступить, иначе
+     * выбор владельца молча пропадал бы на каждом рестарте. Заодно проверяется, что резолвер виден
+     * по интерфейсу из `api` — именно его инжектит экран `/ai`.
+     */
+    @Test
+    fun `a supplied runtime settings implementation wins and drives the resolver`() {
+        val stored =
+            object : DescriptionRuntimeSettings {
+                override val sourceName = "test settings"
+
+                override suspend fun activePresetId(): String = "grok-deep"
+
+                override suspend fun setActivePresetId(
+                    id: String,
+                    changedBy: String?,
+                ) = Unit
+
+                override suspend fun descriptionsEnabled(): Boolean = true
+
+                override suspend fun setDescriptionsEnabled(
+                    value: Boolean,
+                    changedBy: String?,
+                ) = Unit
+            }
+
+        runner
+            .withBean(DescriptionRuntimeSettings::class.java, Supplier { stored })
+            .withPropertyValues(
+                *properties(enabled = true, provider = "grok"),
+                "application.ai.description.default-preset=grok-fast",
+                "application.ai.description.presets.grok-fast.provider=grok",
+                "application.ai.description.presets.grok-fast.model=grok-4.6",
+                "application.ai.description.presets.grok-fast.effort=low",
+                "application.ai.description.presets.grok-deep.provider=grok",
+                "application.ai.description.presets.grok-deep.model=grok-4.6",
+                "application.ai.description.presets.grok-deep.effort=xhigh",
+            ).run { context ->
+                assertSame(stored, context.getBean(DescriptionRuntimeSettings::class.java))
+                assertEquals("grok-fast", catalog(context).fallbackId)
+                val active = context.getBean(ActiveDescriptionPreset::class.java)
+                assertEquals("grok-deep", runBlocking { active.effective().id })
+                assertEquals("grok-deep", runBlocking { active.storedId() })
             }
     }
 

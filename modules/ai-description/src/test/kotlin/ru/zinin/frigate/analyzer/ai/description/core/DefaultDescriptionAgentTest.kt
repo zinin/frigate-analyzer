@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.testTimeSource
 import org.springframework.context.ApplicationEventPublisher
@@ -20,6 +21,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionProviderAuthEvent
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import java.awt.Color
 import java.awt.image.BufferedImage
@@ -82,36 +84,68 @@ class DefaultDescriptionAgentTest {
         }
     }
 
+    /**
+     * Первое чтение настроек ждёт ворот, остальные мгновенны: так видно, держит ли вызов пермит,
+     * пока читает настройки.
+     */
+    private class GatedSettings(
+        private val firstRead: CompletableDeferred<Unit>,
+    ) : DescriptionRuntimeSettings {
+        private val reads = AtomicInteger()
+
+        override val sourceName = "gated settings"
+
+        override suspend fun activePresetId(): String? {
+            if (reads.incrementAndGet() == 1) firstRead.await()
+            return null
+        }
+
+        override suspend fun setActivePresetId(
+            id: String,
+            changedBy: String?,
+        ) = Unit
+
+        override suspend fun descriptionsEnabled(): Boolean = true
+
+        override suspend fun setDescriptionsEnabled(
+            value: Boolean,
+            changedBy: String?,
+        ) = Unit
+    }
+
     private fun build(
         backend: FakeBackend,
         customCommon: DescriptionProperties.CommonSection = common,
         timeSource: TimeSource = TimeSource.Monotonic,
         eventPublisher: ApplicationEventPublisher = publisher,
+        // Пресет по умолчанию — "test" с этим backend; остальные нужны только тестам про резолюцию.
+        extraPresets: List<Pair<String, DescriptionBackend>> = emptyList(),
+        settings: DescriptionRuntimeSettings = InMemoryDescriptionRuntimeSettings(),
     ) = DefaultDescriptionAgent(
-        catalog = catalogOf(backend),
+        resolver = ActivePresetResolver(catalogOf("test" to backend, *extraPresets.toTypedArray()), settings),
         descriptionProperties = DescriptionProperties(enabled = true, provider = "fake", common = customCommon),
         eventPublisher = eventPublisher,
         timeSource = timeSource,
     )
 
-    /** Каталог из одного пресета: агент всегда берёт `fallback()`, пока в Task 4 не появится resolver. */
-    private fun catalogOf(backend: DescriptionBackend): DescriptionPresetCatalog =
+    /** По пресету на backend; первый объявленный — пресет по умолчанию, он же fallback каталога. */
+    private fun catalogOf(vararg backends: Pair<String, DescriptionBackend>): DescriptionPresetCatalog =
         DescriptionPresetCatalog(
-            listOf(
+            backends.map { (id, backend) ->
                 DescriptionPresetCatalog.Entry(
                     DescriptionPreset(
-                        id = "test",
+                        id = id,
                         provider = backend.providerId,
-                        model = "test-model",
-                        effectiveModel = "test-model",
+                        model = "$id-model",
+                        effectiveModel = "$id-model",
                         effort = "",
                         authScopeId = backend.providerId,
                         unavailableReason = null,
                     ),
                     backend,
-                ),
-            ),
-            fallbackId = "test",
+                )
+            },
+            fallbackId = backends.first().first,
         )
 
     private fun jpeg(
@@ -461,6 +495,104 @@ class DefaultDescriptionAgentTest {
         runTest {
             val agent = build(FakeBackend { throw CancellationException("cancelled by caller") })
             assertFailsWith<CancellationException> { agent.describe(request) }
+        }
+
+    /**
+     * Резолюция — один раз на вызов: повтор обязан идти в тот же пресет, что и первая попытка,
+     * иначе лог одной записи назвал бы двух разных провайдеров, а стоимость вызова стала бы
+     * непредсказуемой. Смена действует со следующего `describe`, а не задним числом.
+     */
+    @Test
+    fun `the preset is resolved once per call, not per attempt`() =
+        runTest {
+            val settings = InMemoryDescriptionRuntimeSettings()
+            val other = FakeBackend { ok }
+            var first = true
+            val backend =
+                FakeBackend {
+                    if (first) {
+                        first = false
+                        // Владелец переключает пресет ровно между попытками одного вызова.
+                        settings.setActivePresetId("other", changedBy = "owner")
+                        throw DescriptionException.InvalidResponse()
+                    }
+                    ok
+                }
+            val agent = build(backend, extraPresets = listOf("other" to other), settings = settings)
+
+            assertEquals(ok, agent.describe(request))
+
+            assertEquals(2, backend.calls.get(), "the retry must stay on the preset the call started with")
+            assertEquals(0, other.calls.get(), "a mid-call switch must not move the retry to another provider")
+
+            agent.describe(request)
+            assertEquals(1, other.calls.get(), "the next call does pick the new preset up")
+        }
+
+    /**
+     * Чтение настроек — ввод-вывод, и оно обязано случиться ДО захвата пермита: иначе при
+     * maxConcurrent=2 и зависшем пуле R2DBC оба слота заняли бы корутины, ждущие одно чтение, а
+     * внешний withTimeout, который начинается позже, ничем бы не помог.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a slow settings read does not hold a permit`() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            val backend = FakeBackend { ok }
+            val agent = build(backend, customCommon = common.copy(maxConcurrent = 1), settings = GatedSettings(gate))
+
+            val stuck = async { agent.describe(request) }
+            runCurrent()
+            val overtaking = async { agent.describe(request) }
+            runCurrent()
+
+            assertEquals(1, backend.calls.get(), "a call stuck reading the settings must not occupy the only permit")
+
+            gate.complete(Unit)
+            overtaking.await()
+            stuck.await()
+            assertEquals(2, backend.calls.get())
+        }
+
+    /**
+     * Семафор ограничивает машину и расходы, а не пресет: два пресета делят те же пермиты, иначе
+     * переключение множило бы число одновременных процессов провайдера.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `the semaphore is shared across presets`() =
+        runTest {
+            val settings = InMemoryDescriptionRuntimeSettings()
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val holder =
+                FakeBackend {
+                    entered.complete(Unit)
+                    release.await()
+                    ok
+                }
+            val other = FakeBackend { ok }
+            val agent =
+                build(
+                    holder,
+                    customCommon = common.copy(maxConcurrent = 1),
+                    extraPresets = listOf("other" to other),
+                    settings = settings,
+                )
+
+            val first = async { agent.describe(request) }
+            entered.await()
+            settings.setActivePresetId("other", changedBy = "owner")
+            val second = async { agent.describe(request) }
+            runCurrent()
+
+            assertEquals(0, other.calls.get(), "the single permit belongs to the machine, not to a preset")
+
+            release.complete(Unit)
+            first.await()
+            second.await()
+            assertEquals(1, other.calls.get())
         }
 
     @Test
