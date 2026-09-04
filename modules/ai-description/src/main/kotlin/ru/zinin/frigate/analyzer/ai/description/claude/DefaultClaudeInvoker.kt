@@ -36,7 +36,7 @@ class DefaultClaudeInvoker(
         prompt: String,
         model: String,
     ): String {
-        logger.debug { "Claude prompt for model $model (${prompt.length} chars):\n$prompt" }
+        logger.debug { "Claude prompt (${prompt.length} chars):\n$prompt" }
         val client = clientFactory.create(workTimeout, model)
         try {
             // We send the prompt as the FIRST user message via `connect(prompt)`.
