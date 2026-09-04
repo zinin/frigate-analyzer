@@ -8,12 +8,14 @@ import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionProviderAuthEvent
 import ru.zinin.frigate.analyzer.telegram.i18n.MessageResolver
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
+import java.time.Duration
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -90,6 +92,50 @@ class DescriptionAuthAlertNotifierTest {
 
         assertEquals("🟢 grok ok", builder.captured.invoke("en"))
         assertFalse(builder.captured.invoke("en").contains("\n"))
+    }
+
+    /** Таймаут и паузы в миллисекундах: в проде это 5 с и паузы в 30 и 120 с. */
+    private fun fastNotifier() =
+        DescriptionAuthAlertNotifier(
+            telegramNotificationService,
+            messageResolver,
+            alertTimeout = Duration.ofMillis(50),
+            retryBackoff = listOf(Duration.ofMillis(10), Duration.ofMillis(10)),
+        )
+
+    @Test
+    fun `an alert whose enqueue timed out is retried, not dropped`() {
+        // Забитая очередь уведомлений: enqueue висит дольше таймаута, потом место появляется.
+        var attempts = 0
+        coEvery { telegramNotificationService.sendOwnerMessage(any()) } coAnswers {
+            attempts++
+            if (attempts == 1) delay(10_000)
+        }
+        val notifier = fastNotifier()
+
+        try {
+            notifier.onAuthEvent(lost())
+            runBlocking { notifier.waitUntilIdle() }
+
+            assertEquals(2, attempts)
+        } finally {
+            notifier.shutdown()
+        }
+    }
+
+    @Test
+    fun `an alert is given up only after the backoff is exhausted`() {
+        coEvery { telegramNotificationService.sendOwnerMessage(any()) } coAnswers { delay(10_000) }
+        val notifier = fastNotifier()
+
+        try {
+            notifier.onAuthEvent(lost())
+            runBlocking { notifier.waitUntilIdle() }
+
+            coVerify(exactly = 3) { telegramNotificationService.sendOwnerMessage(any()) }
+        } finally {
+            notifier.shutdown()
+        }
     }
 
     @Test
