@@ -2414,11 +2414,41 @@ class AppSettingsDescriptionRuntimeSettings(
         // DescriptionState.Absent, плейсхолдеров нет, слот rate limiter не тратится, потому что
         // TelegramNotificationServiceImpl отсекает null-supplier ДО tryAcquire().
         val runtimeSettings = runtimeSettingsProvider.getIfAvailable()
-        if (runtimeSettings != null && !runtimeSettings.descriptionsEnabled()) {
+        // fail-open к дефолту ключа, дословно по образцу
+        // TelegramNotificationServiceImpl.signalNotificationsGloballyEnabled (:262-275).
+        // Гейт вызывается ПОСЛЕ saveProcessingResult, поэтому пробрасывать исключение нельзя:
+        // запись уже помечена обработанной, и уведомление было бы потеряно без повтора.
+        val descriptionsEnabled =
+            try {
+                runtimeSettings?.descriptionsEnabled() ?: true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warn(e) {
+                    "Failed to read the AI description switch for $recordingId; failing open"
+                }
+                true
+            }
+        if (!descriptionsEnabled) {
             logger.debug { "AI descriptions switched off at runtime; skipping describe-job for $recordingId" }
             return null
         }
 ```
+
+**Почему fail-open, а не чтение до `saveProcessingResult`.** В фасаде уже есть два разных
+механизма, и этот флаг относится ко второму. Глобальный флаг уведомлений **решает, слать ли
+уведомление вообще**, поэтому читается до сохранения и его отказ оставляет запись retryable
+(`RecordingProcessingFacade.kt:49-57` и тест `:198`). Выключатель описаний решает лишь, обогащать
+ли уведомление; блокировать основное уведомление из-за нечитаемого ключа необязательной фичи
+неверно. Значение по умолчанию — `true`, как у самого ключа («отсутствует = true») и как у
+signal-флага: нечитаемый ключ трактуется так же, как отсутствующий.
+
+Расход при этом ограничен почти нулём: `AppSettingsServiceImpl` кэширует успешные чтения на всё
+время жизни процесса, поэтому окно отказа — от старта до первого удачного чтения (и момент после
+записи из `/ai`). Если же БД недоступна настолько, что чтение падает постоянно, то и
+`saveProcessingResult` упадёт раньше.
+
+Тест на fail-open обязателен: «чтение настроек бросает → supplier не null, уведомление уходит».
 
 - [ ] **Step 6: Написать тест на гейт**
 

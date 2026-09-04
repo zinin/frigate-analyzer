@@ -410,7 +410,13 @@ relaxed binding из окружения, bracket-форма `presets[id]` и п�
 - `AppSettingsDescriptionRuntimeSettings` — реализация SPI поверх `AppSettingsService`, ключи из
   таблицы выше, `updatedBy` прокидывается в `app_settings`.
 - `RecordingProcessingFacade.buildDescriptionSupplier` становится `suspend` и возвращает `null`,
-  когда `descriptionsEnabled()` равно `false`. Это уже существующая ветка «агента нет»:
+  когда `descriptionsEnabled()` равно `false`. Чтение **fail-open к `true`** с WARN — дословно как
+  `TelegramNotificationServiceImpl.signalNotificationsGloballyEnabled`. Гейт стоит после
+  `saveProcessingResult`, поэтому исключение оттуда потеряло бы уведомление без повтора: запись уже
+  помечена обработанной. Глобальный флаг уведомлений читается до сохранения по обратной причине —
+  он решает, слать ли уведомление вообще, и не прочитав его, решение принять нельзя. Выключатель
+  описаний решает лишь, обогащать ли уведомление, поэтому блокировать им основное сообщение
+  неверно, а нечитаемый ключ трактуется так же, как отсутствующий. Это уже существующая ветка «агента нет»:
   `TelegramNotificationServiceImpl` отсекает `descriptionSupplier == null` **до** `limiter.tryAcquire()`,
   поэтому слот rate limiter не тратится, плейсхолдеров нет, edit-job не создаётся, уведомление
   уходит с `DescriptionState.Absent`.
