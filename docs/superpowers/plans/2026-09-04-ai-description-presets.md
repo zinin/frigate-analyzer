@@ -2931,13 +2931,18 @@ ai.settings.auth.note=Состояние показано на момент по
 ai.settings.button.enable=Включить описания
 ai.settings.button.disable=Выключить описания
 ai.settings.button.close=Закрыть
-ai.settings.alert.switched=Активен пресет {0}
-ai.settings.alert.enabled=Описания включены
-ai.settings.alert.disabled=Описания выключены
 ai.settings.alert.unavailable=Пресет недоступен: {0}
 ```
 
-`messages_en.properties` — те же ключи с английскими значениями (`AI descriptions`, `State: {0}`, `enabled`, `disabled`, `Active preset: {0} ({1} / {2} / {3})`, `No presets configured`, `⚠️ Selected {0} ({1}) — running {2}. The choice is kept and applies again once the preset becomes available.`, `Auth state is shown as of the last description call.`, `{0} credentials work`, `{0} rejected the credentials`, `{0} not called yet`, `{0} not configured: {1}`, `Enable descriptions`, `Disable descriptions`, `Close`, `Preset {0} is active`, `Descriptions enabled`, `Descriptions disabled`, `Preset unavailable: {0}`).
+`messages_en.properties` — те же ключи с английскими значениями (`AI descriptions`, `State: {0}`, `enabled`, `disabled`, `Active preset: {0} ({1} / {2} / {3})`, `No presets configured`, `⚠️ Selected {0} ({1}) — running {2}. The choice is kept and applies again once the preset becomes available.`, `Auth state is shown as of the last description call.`, `{0} credentials work`, `{0} rejected the credentials`, `{0} not called yet`, `{0} not configured: {1}`, `Enable descriptions`, `Disable descriptions`, `Close`, `Preset unavailable: {0}`).
+
+**Ключей `ai.settings.alert.switched` / `.enabled` / `.disabled` нет сознательно.** Ответ на коллбэк
+уходит ДО записи (Task 8), поэтому тост «Активен пресет X» был бы обещанием, данным до факта:
+упади запись — и владелец получил бы подтверждение операции, которой не произошло. Подтверждает
+успех перерисовка (переезд `✅`), как у переключателей `/notifications`. Единственный оставшийся
+ключ алерта — `.unavailable`, и он относится к исходу, который записи не требует.
+`MessageKeyParityTest` сверяет бандлы между собой, а не с использованием, поэтому мёртвые ключи он
+бы не поймал.
 
 - [ ] **Step 5: Запустить тест рендера**
 

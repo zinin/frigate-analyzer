@@ -532,6 +532,11 @@ Owner-only команда, устройство повторяет `/notificatio
 | `aip:on` / `aip:off` | Включить или выключить описания (значение явное, не toggle) |
 | `aip:close` | Закрыть клавиатуру |
 
+Тоста на успешное переключение нет: ответ уходит до записи (см. порядок выше), поэтому текст
+«Активен пресет X» был бы обещанием, данным до факта. Подтверждением служит перерисовка — переезд
+`✅` на другую строку, — как у переключателей `/notifications`. Отсюда и единственный оставшийся
+ключ алерта: `.unavailable` относится к исходу, который записи не требует.
+
 Клик по недоступному пресету ничего не пишет и отвечает причиной через `answerCallbackQuery` с
 `showAlert = true`: это единственное место, где владелец узнаёт причину недоступности, а тост в углу
 легко пропустить. Клик по исчезнувшему из конфига id (экран открыт до рестарта) обрабатывается так же. Состояние после
@@ -551,7 +556,7 @@ ai.settings.state / ai.settings.state.on / ai.settings.state.off
 ai.settings.active / ai.settings.active.none / ai.settings.active.mismatch
 ai.settings.auth.healthy / .lost / .unknown / .unavailable
 ai.settings.button.enable / .disable / .close
-ai.settings.alert.switched / .enabled / .disabled / .unavailable
+ai.settings.alert.unavailable
 ```
 
 `ai.description.auth.lost` получает третью строку — «Переключить пресет: /ai» и её английский
