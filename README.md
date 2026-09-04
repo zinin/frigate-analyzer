@@ -190,6 +190,7 @@ them into the notification. Two providers: the Claude Code CLI (`claude`) and th
 | `CLAUDE_MAX_BUFFER_SIZE` | `16MB` | Max size of one JSON message from the Claude CLI. Frames the model reads are echoed back as base64, so raise it for cameras with frames above ~12 MB |
 | `GROK_MODEL` | `grok-4.6` | Model id, or a BYOK model name from `grok-home/config.toml` |
 | `GROK_EFFORT` | `low` | Reasoning effort; empty = not passed |
+| `GROK_PASS_THROUGH_ENV` | *(empty)* | Extra env variable names handed to `grok` verbatim; needed for a BYOK `env_key` outside `GROK_*`/`XAI_*` |
 
 **Grok sign-in.** Grok uses your SuperGrok subscription, no API key. Once, on the host:
 
@@ -204,8 +205,10 @@ another machine, the refresh token rotates and only one copy survives. If the cr
 working, the bot owner receives a Telegram message with the command to run.
 
 **Custom models (BYOK).** Put a `[model.<name>]` section with `model`, `base_url` and `env_key` into
-`grok-home/config.toml`, pass the key through `.env`, set `GROK_MODEL=<name>` and an empty
-`GROK_EFFORT`.
+`grok-home/config.toml`, put the key into `.env`, set `GROK_MODEL=<name>` and an empty
+`GROK_EFFORT`. The `grok` process starts from an empty environment and inherits only PATH/HOME/locale
+and `GROK_*`/`XAI_*`, so a key named outside those prefixes also needs
+`GROK_PASS_THROUGH_ENV=MY_GATEWAY_KEY`; naming it `GROK_MY_GATEWAY_KEY` works without the list.
 
 Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
 [`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.
