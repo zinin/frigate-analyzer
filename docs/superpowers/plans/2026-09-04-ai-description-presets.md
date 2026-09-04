@@ -1865,7 +1865,18 @@ class ActivePresetResolver(
     private val lastWarning = AtomicReference<String?>(null)
 
     suspend fun resolve(): DescriptionPresetCatalog.Entry {
-        val storedId = runtimeSettings.activePresetId()
+        // fail-open: ключ ai.description.* — про удобство, а не про безопасность. AppSettingsService
+        // намеренно НЕ кэширует неудачные чтения, поэтому отказ БД бил бы по каждой записи подряд,
+        // а сырое исключение R2DBC покинуло бы контракт DescriptionException.
+        val storedId =
+            try {
+                runtimeSettings.activePresetId()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                warnOnce("Failed to read the active description preset; using '${catalog.fallbackId}': ${e.message}")
+                null
+            }
         if (storedId != null) {
             val stored = catalog.byId(storedId)
             if (stored?.backend != null) return stored
@@ -1917,6 +1928,20 @@ class ActivePresetResolver(
             // попытка, иначе лог одной записи назвал бы два разных провайдера.
             val entry = resolver.resolve()
 ```
+
+**Место вызова: ДО `semaphore.acquire()`, а не между захватом пермита и `withTimeout`.** Сегодня в
+этом промежутке нет ни одной операции ввода-вывода (downscale — чистый CPU под
+`Dispatchers.Default`), и класть туда поход в БД нельзя по двум причинам:
+
+1. пермит удерживается на время чтения. При `maxConcurrent=2` и зависшем пуле R2DBC оба пермита
+   оказываются заняты корутинами, ждущими один `cacheMutex` в `AppSettingsServiceImpl`, остальные
+   вызовы уходят по `queueTimeout`, а `withTimeout` не спасает — он начинается позже;
+2. чтение съедает бюджет, отведённый работе модели. При пресете с `effort: xhigh` (≈ 48 с из 60 с)
+   это прямо повышает шанс `Timeout` вместо результата.
+
+Принятая плата: вызов, простоявший в очереди, применит пресет, актуальный на момент постановки в
+очередь. Окно ограничено сверху `queueTimeout` (30 с по умолчанию) и согласовано с семантикой
+рантайм-выключателя — изменение действует со следующего вызова, а не задним числом.
 
 и печатать в DEBUG `entry.view.id` вместо `catalog.fallbackId`. **Переносить `logger.debug` из `finally` в тело нельзя** — тогда DEBUG-строка пропадёт на всех путях с исключением, а именно они и интересны при разборе. `finally` не видит `entry`, объявленный внутри `try`, поэтому объявить `var presetId: String? = null` ДО `try` и присвоить его сразу после резолюции.
 
