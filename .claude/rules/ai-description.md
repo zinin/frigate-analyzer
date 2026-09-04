@@ -31,7 +31,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Claude | `ClaudeImageStager`, `ClaudePromptBuilder`, `ClaudeInvoker`/`DefaultClaudeInvoker`, `ClaudeAsyncClientFactory`, `ClaudeResponseParser`, `ClaudeExceptionMapper` | `claude/` | Claude specifics; all gated on `provider=claude` |
 | Grok | `GrokBackend` | `grok/` | prompt.json → process → `structuredOutput` |
 | Grok | `GrokPromptBuilder`, `GrokPromptFileWriter` | `grok/` | Prompt text, ACP content blocks with inline base64 frames |
-| Grok | `GrokCommandBuilder`, `GrokProcessRunner`/`DefaultGrokProcessRunner` | `grok/` | argv + isolated env; `ProcessBuilder` with cancellation-safe kill |
+| Grok | `GrokCommandBuilder`, `GrokProcessRunner`/`DefaultGrokProcessRunner` | `grok/` | argv + isolated env; `ProcessBuilder` with stdout/stderr redirected to temp files and a cancellation-safe kill |
 | Grok | `GrokOutputParser`, `GrokExceptionMapper` | `grok/` | JSON stdout, error envelope, classification |
 | Grok | `GrokHomeGuard`, `GrokHomeSweeper` | `grok/` | shared/exclusive lock on `GROK_HOME`; hourly cleanup of `sessions/` and `logs/` |
 | Config | `AiDescriptionAutoConfiguration` | `config/` | Registers properties; creates the agent `@Bean` when a `DescriptionBackend` exists |
@@ -115,6 +115,15 @@ together with invalid/expired/rejected/failed/revoked, or `401` with HTTP/status
 with the stderr tail. Exit 0 with both description fields (from `structuredOutput` or from the text JSON) → result; exit 0 with `stopReason`
 `max_tokens` / `refusal` / `max_turn_requests` or a partial object → `InvalidResponse`; `cancelled` →
 `Transport`. Token usage and cost are logged at DEBUG.
+
+**Output goes to files, not pipes.** `grok` can leave a descendant that inherited the pipe ends and
+keeps them open after `grok` itself exits; a blocking `InputStream.read` is interrupted by neither
+coroutine cancellation nor `close()` on the stream, so a pipe reader would keep a `Dispatchers.IO`
+thread and two descriptors alive for as long as that descendant lives, and the already-paid-for
+response with it. `DefaultGrokProcessRunner` therefore redirects stdout and stderr to temp files
+through `TempFileWriter` and reads them after `onExit()`: stdout whole (up to `STDOUT_MAX_BYTES`,
+above which it is `Transport`), stderr as its last `STDERR_TAIL_BYTES`. The files are deleted under
+`NonCancellable`, and a descendant still holding them changes nothing.
 
 **GROK_HOME hygiene.** Every headless run persists a session under `GROK_HOME/sessions/<cwd>/<id>/`
 with the base64 frames, and `sessions/session_search.sqlite` grows ~9 KB per run without shrinking.

@@ -1,146 +1,123 @@
 package ru.zinin.frigate.analyzer.ai.description.grok
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import jakarta.annotation.PreDestroy
-import kotlinx.coroutines.CoroutineName
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
-import java.io.ByteArrayOutputStream
+import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import java.io.IOException
-import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import java.util.concurrent.TimeUnit
 
 private val logger = KotlinLogging.logger {}
 
 /**
- * Запуск `grok` через ProcessBuilder. stdin закрывается сразу. stdout читается потоком до
- * [STDOUT_MAX_BYTES], превышение — [DescriptionException.Transport]. От stderr остаётся хвост
- * [STDERR_TAIL_BYTES] в кольцевом буфере. Отмена корутины (таймаут агента) убивает процесс в
- * `finally` и ждёт [KILL_WAIT_TIMEOUT_MS]; если child не уходит, слот агента всё равно
- * освобождается.
+ * Запуск `grok` через ProcessBuilder. stdin закрывается сразу. stdout и stderr идут не в pipe, а во
+ * временные файлы, которые читаются после выхода процесса: stdout целиком, но не больше
+ * [STDOUT_MAX_BYTES] (превышение — [DescriptionException.Transport]), от stderr берётся хвост
+ * [STDERR_TAIL_BYTES]. Отмена корутины (таймаут агента) убивает процесс в `finally` и ждёт
+ * [KILL_WAIT_TIMEOUT_MS]; файлы удаляются под `NonCancellable`.
  *
- * Чтение потоков идёт в собственном scope, а не в дочерних корутинах вызова, и ограничено
- * [drainTimeoutMs] после выхода процесса. Причина: внук, унаследовавший конец pipe, держит
- * `read` открытым и после смерти самого `grok`, а блокирующее чтение отмену корутины не
- * замечает — структурная иерархия не дала бы `withContext` вернуться, и слот семафора агента
- * пропал бы до перезапуска JVM.
+ * Файлы вместо pipe именно из-за внуков. Процесс `grok` может оставить потомка, унаследовавшего
+ * концы pipe: он держит их открытыми и после выхода самого `grok`, а блокирующий `InputStream.read`
+ * не прерывается ни отменой корутины, ни `close()` на потоке — проверено, читатель остаётся висеть.
+ * С pipe это стоило бы потока `Dispatchers.IO`, пары дескрипторов и, в худшем случае, готового
+ * ответа модели. Файл же читается после `onExit()` независимо от того, держит ли его кто-то ещё.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
 @ConditionalOnProperty("application.ai.description.provider", havingValue = "grok")
 class DefaultGrokProcessRunner(
-    /** Сколько ждать закрытия stdout/stderr после выхода процесса; параметром — ради тестов. */
-    private val drainTimeoutMs: Long = STREAM_DRAIN_TIMEOUT_MS,
+    private val tempFileWriter: TempFileWriter,
 ) : GrokProcessRunner {
-    private val readerScope =
-        CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("grok-stream-reader"))
-
-    @PreDestroy
-    fun shutdown() {
-        readerScope.cancel()
-    }
-
-    override suspend fun run(command: GrokCommand): GrokProcessResult =
-        withContext(Dispatchers.IO) {
-            val process =
+    override suspend fun run(command: GrokCommand): GrokProcessResult {
+        val stdoutFile = tempFileWriter.createTempFile("grok-stdout-", ".log", EMPTY_CONTENT)
+        val stderrFile = tempFileWriter.createTempFile("grok-stderr-", ".log", EMPTY_CONTENT)
+        try {
+            return withContext(Dispatchers.IO) {
+                val process =
+                    try {
+                        ProcessBuilder(command.argv)
+                            .directory(command.workingDirectory.toFile())
+                            .redirectOutput(stdoutFile.toFile())
+                            .redirectError(stderrFile.toFile())
+                            .also { builder ->
+                                val env = builder.environment()
+                                env.keys.toList().forEach { env.remove(it) }
+                                env.putAll(isolatedEnvironment(command.environment))
+                            }.start()
+                    } catch (e: IOException) {
+                        throw DescriptionException.Transport(e, "cannot start ${command.argv.first()}: ${e.message}")
+                    }
                 try {
-                    ProcessBuilder(command.argv)
-                        .directory(command.workingDirectory.toFile())
-                        .also { builder ->
-                            val env = builder.environment()
-                            env.keys.toList().forEach { env.remove(it) }
-                            env.putAll(isolatedEnvironment(command.environment))
-                        }.start()
-                } catch (e: IOException) {
-                    throw DescriptionException.Transport(e, "cannot start ${command.argv.first()}: ${e.message}")
-                }
-            try {
-                process.outputStream.close()
-                val stdout = readerScope.async { process.inputStream.use { readAtMost(it, STDOUT_MAX_BYTES) } }
-                val stderr = readerScope.async { process.errorStream.use { readTail(it, STDERR_TAIL_BYTES) } }
-                val exitCode = process.onExit().await().exitValue()
-                val streams = withTimeoutOrNull(drainTimeoutMs) { stdout.await() to stderr.await() }
-                if (streams == null) {
-                    stdout.cancel()
-                    stderr.cancel()
-                    throw DescriptionException.Transport(
-                        detail = "grok exited with code $exitCode but left its output pipe open for ${drainTimeoutMs}ms",
+                    process.outputStream.close()
+                    val exitCode = process.onExit().await().exitValue()
+                    GrokProcessResult(
+                        exitCode = exitCode,
+                        stdout = readAtMost(stdoutFile, STDOUT_MAX_BYTES),
+                        stderrTail = readTail(stderrFile, STDERR_TAIL_BYTES),
                     )
-                }
-                GrokProcessResult(exitCode, streams.first, streams.second)
-            } finally {
-                if (process.isAlive) {
-                    logger.debug { "Killing grok process ${process.pid()} after cancellation" }
-                    process.destroyForcibly()
-                    if (!process.waitFor(KILL_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                        logger.warn {
-                            "grok process ${process.pid()} still alive after ${KILL_WAIT_TIMEOUT_MS}ms SIGKILL"
+                } finally {
+                    if (process.isAlive) {
+                        logger.debug { "Killing grok process ${process.pid()} after cancellation" }
+                        process.destroyForcibly()
+                        if (!process.waitFor(KILL_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                            logger.warn {
+                                "grok process ${process.pid()} still alive after ${KILL_WAIT_TIMEOUT_MS}ms SIGKILL"
+                            }
                         }
                     }
                 }
             }
+        } finally {
+            withContext(NonCancellable) { tempFileWriter.deleteFiles(listOf(stdoutFile, stderrFile)) }
         }
+    }
 
     companion object {
         const val STDERR_TAIL_BYTES = 8 * 1024
         const val STDOUT_MAX_BYTES = 16 * 1024 * 1024
         const val KILL_WAIT_TIMEOUT_MS = 5_000L
 
-        /** Процесс уже вышел: свои буферы дочитываются мгновенно, ждать дольше нечего. */
-        const val STREAM_DRAIN_TIMEOUT_MS = 5_000L
+        private val EMPTY_CONTENT = ByteArray(0)
 
+        /** Размер известен заранее, поэтому переросший ответ отвергается до чтения. */
         fun readAtMost(
-            stream: InputStream,
+            file: Path,
             maxBytes: Int,
         ): String {
-            val out = ByteArrayOutputStream()
-            val chunk = ByteArray(8192)
-            var total = 0
-            while (true) {
-                val n = stream.read(chunk)
-                if (n < 0) break
-                if (total + n > maxBytes) {
-                    throw DescriptionException.Transport(detail = "grok stdout exceeded $maxBytes bytes")
-                }
-                out.write(chunk, 0, n)
-                total += n
+            val size = Files.size(file)
+            if (size > maxBytes) {
+                throw DescriptionException.Transport(detail = "grok stdout exceeded $maxBytes bytes")
             }
-            return out.toString(Charsets.UTF_8)
+            // Не Files.readString: битый UTF-8 должен дать U+FFFD, а не исключение поверх ответа.
+            return String(Files.readAllBytes(file), Charsets.UTF_8)
         }
 
+        /** Хвост файла; разрезанный по границе байт символ становится U+FFFD, как и раньше. */
         fun readTail(
-            stream: InputStream,
+            file: Path,
             maxBytes: Int,
         ): String {
-            val ring = ByteArray(maxBytes)
-            var filled = 0
-            var pos = 0
-            val chunk = ByteArray(8192)
-            while (true) {
-                val n = stream.read(chunk)
-                if (n < 0) break
-                for (i in 0 until n) {
-                    ring[pos] = chunk[i]
-                    pos = (pos + 1) % maxBytes
-                    if (filled < maxBytes) filled++
+            val size = Files.size(file)
+            val from = maxOf(0, size - maxBytes)
+            val length = (size - from).toInt()
+            if (length == 0) return ""
+            val buffer = ByteBuffer.allocate(length)
+            Files.newByteChannel(file, StandardOpenOption.READ).use { channel ->
+                channel.position(from)
+                while (buffer.hasRemaining() && channel.read(buffer) >= 0) {
+                    // читаем до заполнения буфера или конца файла
                 }
             }
-            if (filled < maxBytes) {
-                return String(ring, 0, filled, Charsets.UTF_8)
-            }
-            val result = ByteArray(maxBytes)
-            System.arraycopy(ring, pos, result, 0, maxBytes - pos)
-            System.arraycopy(ring, 0, result, maxBytes - pos, pos)
-            return String(result, Charsets.UTF_8)
+            return String(buffer.array(), 0, buffer.position(), Charsets.UTF_8)
         }
 
         private val INHERITED_KEYS = listOf("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "USER", "LOGNAME", "TERM")

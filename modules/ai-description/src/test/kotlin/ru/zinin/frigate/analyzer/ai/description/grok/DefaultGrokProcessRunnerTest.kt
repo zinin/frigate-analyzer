@@ -8,7 +8,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
-import java.io.ByteArrayInputStream
+import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
@@ -19,13 +19,27 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.measureTime
 
 @EnabledOnOs(OS.LINUX, OS.MAC)
 class DefaultGrokProcessRunnerTest {
     @TempDir
     lateinit var tempDir: Path
 
-    private val runner = DefaultGrokProcessRunner()
+    /** stdout/stderr процесса и prompt-файлы в проде пишет core-адаптер; здесь хватает @TempDir. */
+    private val tempFileWriter =
+        object : TempFileWriter {
+            override suspend fun createTempFile(
+                prefix: String,
+                suffix: String,
+                content: ByteArray,
+            ): Path = Files.createTempFile(tempDir, prefix, suffix).also { Files.write(it, content) }
+
+            override suspend fun deleteFiles(files: List<Path>): Int = files.count { Files.deleteIfExists(it) }
+        }
+
+    private val runner = DefaultGrokProcessRunner(tempFileWriter)
 
     private fun stub(script: String): Path {
         val file = tempDir.resolve("grok")
@@ -102,19 +116,21 @@ class DefaultGrokProcessRunnerTest {
 
     @Test
     fun `stdout above the cap is Transport without loading the rest`() {
-        val payload = ByteArray(32) { 'x'.code.toByte() }
+        val oversized = Files.write(tempDir.resolve("big"), ByteArray(32) { 'x'.code.toByte() })
         assertFailsWith<DescriptionException.Transport> {
-            DefaultGrokProcessRunner.readAtMost(ByteArrayInputStream(payload), maxBytes = 16)
+            DefaultGrokProcessRunner.readAtMost(oversized, maxBytes = 16)
         }
-        assertEquals("ok", DefaultGrokProcessRunner.readAtMost(ByteArrayInputStream("ok".toByteArray()), maxBytes = 16))
+        val small = Files.write(tempDir.resolve("small"), "ok".toByteArray())
+        assertEquals("ok", DefaultGrokProcessRunner.readAtMost(small, maxBytes = 16))
     }
 
     @Test
-    fun `stderr ring keeps the tail`() {
-        val payload = ("a".repeat(20) + "END").toByteArray()
-        val tail = DefaultGrokProcessRunner.readTail(ByteArrayInputStream(payload), maxBytes = 8)
+    fun `stderr tail is read from the end of the file`() {
+        val file = Files.write(tempDir.resolve("err"), ("a".repeat(20) + "END").toByteArray())
+        val tail = DefaultGrokProcessRunner.readTail(file, maxBytes = 8)
         assertEquals(8, tail.length)
         assertTrue(tail.endsWith("END"))
+        assertEquals("", DefaultGrokProcessRunner.readTail(Files.write(tempDir.resolve("empty"), ByteArray(0)), 8))
     }
 
     @Test
@@ -142,20 +158,20 @@ class DefaultGrokProcessRunnerTest {
     }
 
     @Test
-    fun `a grandchild holding the pipe open cannot hang the call`() =
+    fun `a grandchild holding the streams open neither delays nor truncates the result`() =
         runBlocking {
-            // `grok` вышел, но внук унаследовал конец pipe: блокирующее чтение отмену не замечает,
-            // и без верхней границы вызов держал бы слот семафора агента до перезапуска JVM.
-            // Порядок в стабе важен: JDK при выходе процесса дочитывает доступные байты и закрывает
-            // поток сам, поэтому висит только читатель, уже вошедший в блокирующий read, — вывод
-            // идёт первым, внук форкается после, и лишняя секунда даёт читателю дойти до блокировки.
-            val e =
-                assertFailsWith<DescriptionException.Transport> {
-                    DefaultGrokProcessRunner(drainTimeoutMs = 300).run(
-                        command(stub("""printf '%s' '{"text":"ok"}'; (sleep 3) & sleep 1; exit 0""")),
-                    )
+            // Худший случай для pipe: внук наследует stdout/stderr и живёт дольше самого `grok`.
+            // Через pipe его блокирующее чтение не прерывалось ни отменой, ни close(), и вызов либо
+            // висел, либо терял готовый ответ. Файл читается после onExit, и кто его ещё держит —
+            // неважно.
+            val elapsed =
+                measureTime {
+                    val result = runner.run(command(stub("""printf '%s' '{"text":"ok"}'; (sleep 3) & exit 0""")))
+
+                    assertEquals(0, result.exitCode)
+                    assertEquals("""{"text":"ok"}""", result.stdout)
                 }
 
-            assertTrue(e.message!!.contains("left its output pipe open"))
+            assertTrue(elapsed < 2.seconds, "the call must not wait for the grandchild, took $elapsed")
         }
 }
