@@ -66,7 +66,11 @@ class DefaultDescriptionAgentTest {
         private val handler: suspend (DescriptionRequest) -> DescriptionResult,
     ) : DescriptionBackend {
         override val providerId = "fake"
-        override val authScopeId = "fake"
+
+        // Намеренно НЕ равен providerId: агент обязан отдавать трекеру область, а не провайдера, и
+        // при совпадающих строках подмена одного другим осталась бы незамеченной — а это ровно тот
+        // дефект, из-за которого успех BYOK-пресета снимал бы LOST у пресета на протухшем OAuth.
+        override val authScopeId = "fake:model"
         override val authRecoveryHint = "run fake-login"
         val calls = AtomicInteger()
 
@@ -320,7 +324,7 @@ class DefaultDescriptionAgentTest {
             val lost = authEvents()
             assertEquals(1, lost.size)
             assertEquals(DescriptionProviderAuthEvent.State.LOST, lost.single().state)
-            assertEquals("fake", lost.single().authScopeId)
+            assertEquals("fake:model", lost.single().authScopeId)
             assertEquals("Not signed in", lost.single().detail)
             assertEquals("run fake-login", lost.single().recoveryHint)
         }
