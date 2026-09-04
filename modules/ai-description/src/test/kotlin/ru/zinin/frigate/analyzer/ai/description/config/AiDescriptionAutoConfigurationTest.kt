@@ -128,15 +128,25 @@ class AiDescriptionAutoConfigurationTest {
     @Test
     fun `autoconfig activates beans when enabled=true, provider=claude`() {
         runner
-            .withPropertyValues(*properties(enabled = true, provider = "claude"))
-            .run { ctx ->
+            .withPropertyValues(
+                *properties(enabled = true, provider = "claude"),
+                // Модель непохожа ни на дефолт, ни на модель grok-секции: подстановка чужого поля
+                // или потеря синтеза тогда не пройдёт мимо ассерта.
+                "application.ai.description.claude.model=claude-legacy-model",
+            ).run { ctx ->
                 assert(ctx.getBean(DescriptionAgent::class.java) is DefaultDescriptionAgent) {
                     "the agent must be the provider-neutral DefaultDescriptionAgent"
                 }
                 // Backend больше не бин: он живёт в каталоге, по одному на пресет.
                 val catalog = catalog(ctx)
-                assertEquals(listOf("claude"), catalog.all().map { it.id })
                 assertIs<ClaudeBackend>(assertNotNull(catalog.byId("claude")).backend)
+                // Legacy-путь синтезирует пресет из секции провайдера — здесь живёт обещание
+                // обратной совместимости, поэтому проверяются значения, а не только id.
+                val preset = catalog.all().single()
+                assertEquals("claude", preset.id)
+                assertEquals("claude", preset.provider)
+                assertEquals("claude-legacy-model", preset.model)
+                assertEquals("", preset.effort, "claude has no effort; a non-empty one would be a configuration error")
                 // Строка в стиле application.yaml должна привязаться к DataSize: это единственное
                 // место, где реальный старт может упасть, а полный build в CI его не проверяет.
                 assertEquals(DataSize.ofMegabytes(32), ctx.getBean(ClaudeProperties::class.java).maxBufferSize)
@@ -146,15 +156,25 @@ class AiDescriptionAutoConfigurationTest {
     @Test
     fun `autoconfig builds a grok preset when provider=grok`() {
         runner
-            .withPropertyValues(*properties(enabled = true, provider = "grok"))
-            .run { ctx ->
+            .withPropertyValues(
+                *properties(enabled = true, provider = "grok"),
+                // Модель и effort намеренно не равны ни дефолтам, ни друг другу: потерянное или
+                // перепутанное поле синтеза тогда не пройдёт мимо ассерта.
+                "application.ai.description.grok.model=grok-code-fast",
+                "application.ai.description.grok.effort=xhigh",
+            ).run { ctx ->
                 assert(ctx.startupFailure == null) { "grok context must start: ${ctx.startupFailure}" }
                 assert(ctx.getBean(DescriptionAgent::class.java) is DefaultDescriptionAgent)
                 // Коллаборанты обоих провайдеров теперь существуют при enabled=true; изоляция
                 // провайдеров переехала на уровень каталога — в нём только объявленные пресеты.
                 val catalog = catalog(ctx)
-                assertEquals(listOf("grok"), catalog.all().map { it.id })
                 assertIs<GrokBackend>(assertNotNull(catalog.byId("grok")).backend)
+                // Legacy-путь переносит в пресет обе настройки grok-секции, а не только модель.
+                val preset = catalog.all().single()
+                assertEquals("grok", preset.id)
+                assertEquals("grok", preset.provider)
+                assertEquals("grok-code-fast", preset.model)
+                assertEquals("xhigh", preset.effort)
             }
     }
 
