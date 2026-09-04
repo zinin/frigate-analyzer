@@ -2043,11 +2043,24 @@ class ProviderAuthTrackerTest {
     }
 
     @Test
-    fun `two presets of one provider share the state`() {
-        tracker.onUnauthorized("grok", unauthorized, "hint")
-        tracker.onUnauthorized("grok", unauthorized, "hint")
+    fun `two presets of one model share the state`() {
+        // grok-fast и grok-deep: разный effort, одна модель — одни учётные данные, одна область.
+        tracker.onUnauthorized("grok:grok-4.6", unauthorized, "hint")
+        tracker.onUnauthorized("grok:grok-4.6", unauthorized, "hint")
 
         assertEquals(1, events.size)
+    }
+
+    @Test
+    fun `byok and oauth scopes of one provider do not share the state`() {
+        // Ключевой сценарий: OAuth сломан, BYOK работает. При ключе по провайдеру успех BYOK
+        // опубликовал бы RESTORED и показал весь grok здоровым, хотя auth.json протух.
+        tracker.onUnauthorized("grok:grok-4.6", unauthorized, "hint")
+        tracker.onSuccess("grok:codex-luna", "hint")
+
+        assertEquals(ProviderAuthStates.Health.LOST, tracker.byScope().getValue("grok:grok-4.6"))
+        assertEquals(ProviderAuthStates.Health.HEALTHY, tracker.byScope().getValue("grok:codex-luna"))
+        assertEquals(listOf(DescriptionProviderAuthEvent.State.LOST), events.map { it.state })
     }
 
     @Test

@@ -67,10 +67,23 @@ BYOK-эндпоинт и ключ уже привязаны к имени мод
 экземпляру backend-а на пресет. `model` и `effort` при этом уезжают из свойств в параметры вызова
 `GrokCommandBuilder.build(...)` и `ClaudeInvoker.invoke(...)`.
 
-**Агент остаётся один, семафор глобальный, состояние авторизации по провайдеру.** `maxConcurrent`
-ограничивает нагрузку на машину и расход денег — это свойство всей фичи, а не пресета. Авторизация,
-наоборот, принадлежит провайдеру: два grok-пресета делят один `auth.json`, и отказ должен дать одно
-событие на двоих, а не два.
+**Агент остаётся один, семафор глобальный, состояние авторизации — по области учётных данных.**
+`maxConcurrent` ограничивает нагрузку на машину и расход денег — это свойство всей фичи, а не
+пресета. Авторизация же принадлежит не провайдеру, а **набору учётных данных**, и это не одно и то
+же: `grok-fast` и `grok-deep` действительно делят `auth.json`, но `byok-luna` (`codex-luna`) ходит
+по собственному ключу из `config.toml`, и `GrokExceptionMapper` уже классифицирует `invalid api key`
+как `Unauthorized`. При ключе по провайдеру получается ложь: OAuth-пресет ловит отказ →
+`grok=LOST`; владелец переключается на рабочий BYOK → успех публикует `RESTORED`; экран показывает
+весь Grok здоровым, хотя OAuth по-прежнему сломан. И протухшему BYOK-ключу предлагается
+`grok login`, который его не чинит.
+
+Область вычисляется **без нового знания**: приложение не разбирает `config.toml` и не должно
+начинать. Достаточно того, что одна модель — одни учётные данные по построению. Поэтому
+`authScopeId` это `claude` для claude (токен один на все его модели) и `grok:<model>` для grok.
+Мотивирующий случай сохраняется точно: `grok-fast` и `grok-deep` делят модель `grok-4.6`, значит и
+область, и одно событие на двоих. Расходятся только разные модели, где общность учётных данных и
+так не гарантирована; плата — два события вместо одного, если оба OAuth-пресета на разных моделях
+получат отказ.
 
 **Активный пресет хранится в `app_settings` и читается на каждый вызов.** Ровно так живут
 глобальные флаги `/notifications`. Чтение дёшево: `AppSettingsService` кэширует значение на процесс
@@ -194,7 +207,12 @@ interface ActiveDescriptionPreset {
 
 interface ProviderAuthStates {
     enum class Health { UNKNOWN, HEALTHY, LOST }
-    fun byProvider(): Map<String, Health>
+
+    /**
+     * Ключ — `authScopeId`, область учётных данных, а не провайдер: `claude`, `grok:grok-4.6`,
+     * `grok:codex-luna`. См. решение про авторизацию выше.
+     */
+    fun byScope(): Map<String, Health>
 }
 
 /** Реализуется в `core` поверх `AppSettingsService`; шов такой же, как у `TempFileWriter`. */
@@ -326,12 +344,19 @@ WARN однократный на изменение текста сообщен�
 
 ```kotlin
 class ProviderAuthTracker(private val eventPublisher: ApplicationEventPublisher) : ProviderAuthStates {
-    fun onSuccess(providerId: String, recoveryHint: String)
-    fun onUnauthorized(providerId: String, e: DescriptionException.Unauthorized, recoveryHint: String)
+    fun onSuccess(authScopeId: String, recoveryHint: String)
+    fun onUnauthorized(authScopeId: String, e: DescriptionException.Unauthorized, recoveryHint: String)
 }
 ```
 
-Внутри — `ConcurrentHashMap<String, AtomicReference<Health>>` и замок на провайдера. Переходы,
+`authScopeId` приходит от backend-а (его заполняет фабрика), `recoveryHint` пишется под область: для
+grok он покрывает оба пути — `grok login --device-code` либо `api_key`/`env_key` для этой модели в
+`config.toml`, — потому что различить их без разбора `config.toml` нельзя, а предлагать заведомо
+неподходящее действие хуже, чем назвать оба. Формулировка в дереве уже есть
+(`GrokBackend.kt:67-68`). `DescriptionProviderAuthEvent` несёт `authScopeId` вместо `provider`, и
+текст владельцу называет область.
+
+Внутри — `ConcurrentHashMap<String, AtomicReference<Health>>` и замок на область. Переходы,
 публикация события под тем же замком, откат состояния при исключении слушателя и `compareAndSet`
 переносятся из агента без изменения семантики. Стартовое значение — `UNKNOWN`; для переходов оно
 ведёт себя как сегодняшний `HEALTHY` (первый `Unauthorized` публикует `LOST`, первый успех события
