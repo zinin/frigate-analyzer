@@ -3482,7 +3482,11 @@ home (provider=grok)», строка 25) — после перехода на п
 - [ ] **Step 3a: Логировать значение, а не только факт**
 
 Переключение пресета и стартовая строка каталога пишутся на INFO **со значением** —
-`id (provider/model/effort)`. Сегодня на INFO уходит лишь `AppSettings: 'ai.description.preset.active' set by owner`,
+`id (provider/model/effort)`. Стартовая строка вдобавок называет **источник** активного пресета:
+`active preset 'grok-deep' (grok/grok-4.6/xhigh) from app_settings, overriding default-preset='grok-fast'`
+либо `… from default-preset`. Без этого `default-preset` после первого клика владельца перестаёт
+действовать молча, и оператор, поправивший его в yaml и перезапустивший контейнер, не получает
+никакого сигнала (`default-preset` действует только до первого явного выбора). Сегодня на INFO уходит лишь `AppSettings: 'ai.description.preset.active' set by owner`,
 а само значение на DEBUG, чего для вопроса «какая модель сейчас работает» мало. Стартовая строка
 заодно возвращает правду формулировке `.claude/rules/ai-description.md` про «logs model and effort
 at INFO once at startup»: её источник, INFO-строка в `GrokBackend.init`, удаляется в Task 3.
