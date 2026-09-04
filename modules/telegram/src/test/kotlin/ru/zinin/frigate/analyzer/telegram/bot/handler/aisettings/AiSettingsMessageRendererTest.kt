@@ -260,4 +260,41 @@ class AiSettingsMessageRendererTest {
     fun `without a slow preset there is no legend`() {
         assertFalse(renderer.render(state()).text.contains("ai.settings.slow.note"))
     }
+
+    /**
+     * R23: причина отказа в модалке проходит через тот же единственный `when` по
+     * [UnavailableReason], что и экран. Второй `when` где-то ещё показал бы владельцу
+     * `toString()` варианта — с путём или куском ключа — и молча пропустил бы четвёртый вариант.
+     */
+    @Test
+    fun `the alert names the reason through the localized keys of the screen`() {
+        renderer.alertText("ai.settings.alert.unavailable", AiSettingsAlertCause.Unavailable(UnavailableReason.NoToken), "ru")
+
+        verify { msg.get("ai.settings.alert.unavailable", "ru", "ai.settings.reason.noToken") }
+    }
+
+    @Test
+    fun `the alert argument of a reason with a parameter is resolved too`() {
+        val cause = AiSettingsAlertCause.Unavailable(UnavailableReason.HomeUnwritable("/home/grok"))
+
+        renderer.alertText("ai.settings.alert.unavailable", cause, "ru")
+
+        verify { msg.get("ai.settings.reason.homeUnwritable", "ru", "/home/grok") }
+        verify { msg.get("ai.settings.alert.unavailable", "ru", "ai.settings.reason.homeUnwritable") }
+    }
+
+    @Test
+    fun `an id gone from the config is named by its own reason`() {
+        renderer.alertText("ai.settings.alert.unavailable", AiSettingsAlertCause.Gone, "ru")
+
+        verify { msg.get("ai.settings.alert.unavailable", "ru", "ai.settings.reason.gone") }
+    }
+
+    /** Исход без причины (клик не-владельца) несёт ключ без аргументов. */
+    @Test
+    fun `an alert without a cause is resolved as a plain key`() {
+        assertEquals("common.error.owner.only", renderer.alertText("common.error.owner.only", null, "ru"))
+
+        verify { msg.get("common.error.owner.only", "ru") }
+    }
 }

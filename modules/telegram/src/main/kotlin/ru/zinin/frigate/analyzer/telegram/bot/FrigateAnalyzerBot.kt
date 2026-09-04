@@ -20,6 +20,7 @@ import dev.inmo.tgbotapi.types.message.abstracts.ChatContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.ContentMessage
 import dev.inmo.tgbotapi.types.message.abstracts.PrivateContentMessage
 import dev.inmo.tgbotapi.types.message.content.TextContent
+import dev.inmo.tgbotapi.types.queries.callback.DataCallbackQuery
 import dev.inmo.tgbotapi.types.queries.callback.MessageDataCallbackQuery
 import io.github.oshai.kotlinlogging.KotlinLogging
 import jakarta.annotation.PreDestroy
@@ -29,12 +30,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.telegram.bot.handler.CommandHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.OwnerActivatedEvent
 import ru.zinin.frigate.analyzer.telegram.bot.handler.StartCommandHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.aisettings.AiSettingsCallbackHandler
+import ru.zinin.frigate.analyzer.telegram.bot.handler.aisettings.AiSettingsCallbacks
+import ru.zinin.frigate.analyzer.telegram.bot.handler.aisettings.AiSettingsMessageRenderer
+import ru.zinin.frigate.analyzer.telegram.bot.handler.aisettings.AiSettingsViewStateFactory
 import ru.zinin.frigate.analyzer.telegram.bot.handler.cancel.CancelExportHandler
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsMessageRenderer
 import ru.zinin.frigate.analyzer.telegram.bot.handler.notifications.NotificationsSettingsCallbackHandler
@@ -71,6 +77,11 @@ class FrigateAnalyzerBot(
     private val notificationsMessageRenderer: NotificationsMessageRenderer,
     private val notificationsViewStateFactory: NotificationsViewStateFactory,
     private val scheduleSettingsFlow: ScheduleSettingsFlow,
+    // Экран `/ai` — через ObjectProvider: он вырезается вместе с фичей описаний, а бот обязан
+    // стартовать и без него. Отсутствие любого из трёх гасит спиннер и ничего не меняет.
+    private val aiSettingsCallbackHandler: ObjectProvider<AiSettingsCallbackHandler>,
+    private val aiSettingsMessageRenderer: ObjectProvider<AiSettingsMessageRenderer>,
+    private val aiSettingsViewStateFactory: ObjectProvider<AiSettingsViewStateFactory>,
     private val msg: MessageResolver,
 ) {
     private val eventScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -262,6 +273,15 @@ class FrigateAnalyzerBot(
                 }
             }
 
+            // Дефолтный markerFactory, в отличие от блока nfs: выше: waiter-а здесь нет, а
+            // сериализация кликов одного пользователя бесплатно защищает от двойного нажатия —
+            // ровно по этой причине её сохранили quick-export и cancel.
+            onDataCallbackQuery(
+                initialFilter = { it.data.startsWith(AiSettingsCallbacks.PREFIX) },
+            ) { callback ->
+                handleAiSettingsCallback(callback)
+            }
+
             onContentMessage { message ->
                 val textContent = message.content as? TextContent
                 if (textContent?.text?.startsWith("/") == true) {
@@ -275,6 +295,132 @@ class FrigateAnalyzerBot(
                     is AuthResult.Active -> Unit
                 }
             }
+        }
+
+    /**
+     * Один клик по экрану `/ai`. Регистрация выше остаётся тонкой намеренно: всё, что решает,
+     * ЧЕМ ответить, живёт в [AiSettingsCallbackHandler.classify] и потому проверяется тестами, а
+     * не поведенческим билдером ktgbotapi.
+     *
+     * Инвариант: ответ на коллбэк уходит ровно один раз на КАЖДОМ исходе, включая отсутствие
+     * бинов и отказ БД. Неотвеченный коллбэк снимет только таймаут Telegram, а спиннер до тех пор
+     * висит на кнопке. Порядок «ответ → запись → перерисовка» держит
+     * [AiSettingsCallbackHandler.handle]; его обоснование — там же.
+     */
+    private suspend fun handleAiSettingsCallback(callback: DataCallbackQuery) {
+        val handler = aiSettingsCallbackHandler.getIfAvailable()
+        val renderer = aiSettingsMessageRenderer.getIfAvailable()
+        val sender = resolveAiSettingsSender(callback)
+        // Язык неизвестного отправителя не важен: ему отвечают без текста.
+        val lang = sender?.languageCode ?: "en"
+        try {
+            if (sender == null || handler == null) {
+                val outcome =
+                    if (sender == null) {
+                        AiSettingsCallbackHandler.DispatchOutcome.UNAUTHORIZED
+                    } else {
+                        AiSettingsCallbackHandler.DispatchOutcome.IGNORE
+                    }
+                answerAiSettingsCallback(callback, AiSettingsCallbackHandler.Dispatched(outcome), renderer, lang)
+                return
+            }
+            val dispatched =
+                handler.handle(callback.data, userService.isOwner(sender.username), sender.username) { dispatched ->
+                    answerAiSettingsCallback(callback, dispatched, renderer, lang)
+                }
+
+            @Suppress("UNCHECKED_CAST")
+            val screen = (callback as? MessageDataCallbackQuery)?.message as? ContentMessage<TextContent> ?: return
+            when (dispatched.outcome) {
+                // ALERT, UNAUTHORIZED и IGNORE экрана не трогают: ответ им уже ушёл.
+                AiSettingsCallbackHandler.DispatchOutcome.RERENDER -> rerenderAiSettings(screen, lang, callback)
+
+                AiSettingsCallbackHandler.DispatchOutcome.CLOSE -> closeAiSettingsKeyboard(screen)
+
+                else -> Unit
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to handle aip callback data=${callback.data}" }
+        }
+    }
+
+    /**
+     * Перерисовка после записи — единственное подтверждение переключения, поэтому состояние
+     * читается заново: две открытые копии экрана сходятся к одной картине.
+     */
+    private suspend fun rerenderAiSettings(
+        screen: ContentMessage<TextContent>,
+        lang: String,
+        callback: DataCallbackQuery,
+    ) {
+        val renderer = aiSettingsMessageRenderer.getIfAvailable() ?: return
+        val viewStateFactory = aiSettingsViewStateFactory.getIfAvailable() ?: return
+        val rendered = renderer.render(viewStateFactory.build(lang))
+        try {
+            bot.editMessageText(screen, rendered.text, replyMarkup = rendered.keyboard)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val isNotModified = e.message?.contains("message is not modified", ignoreCase = true) == true
+            if (isNotModified) {
+                logger.debug { "aip edit no-op (message not modified): ${callback.data}" }
+            } else {
+                logger.warn(e) { "Failed to edit /ai message for callback=${callback.data}" }
+            }
+        }
+    }
+
+    private suspend fun closeAiSettingsKeyboard(screen: ContentMessage<TextContent>) {
+        try {
+            bot.editMessageReplyMarkup(screen, replyMarkup = null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to close /ai keyboard" }
+        }
+    }
+
+    /**
+     * Единственный ответ на `aip:`-коллбэк. Не бросает: отказ Telegram на ответе не повод отменять
+     * выбор владельца, который в этот момент ещё не записан.
+     *
+     * Модалка, а не тост, только у ALERT: причина недоступности пресета — единственное место, где
+     * владелец её узнаёт, а тост в углу легко пропустить. У успешного переключения текста нет
+     * вовсе: ответ уходит до записи, поэтому «пресет X активен» было бы обещанием, данным до
+     * факта; подтверждает его перерисовка.
+     */
+    private suspend fun answerAiSettingsCallback(
+        callback: DataCallbackQuery,
+        dispatched: AiSettingsCallbackHandler.Dispatched,
+        renderer: AiSettingsMessageRenderer?,
+        lang: String,
+    ) {
+        try {
+            bot.answer(
+                callback,
+                text = dispatched.alertKey?.let { key -> renderer?.alertText(key, dispatched.alertCause, lang) },
+                showAlert = dispatched.outcome == AiSettingsCallbackHandler.DispatchOutcome.ALERT,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to answer aip callback id=${callback.id}" }
+        }
+    }
+
+    /** null = отправителя нет среди активных пользователей или БД не ответила. */
+    private suspend fun resolveAiSettingsSender(callback: DataCallbackQuery): TelegramUserDto? =
+        try {
+            callback.user.username
+                ?.withoutAt
+                ?.let { userService.findActiveByUsername(it) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to resolve the sender of aip callback data=${callback.data}" }
+            null
         }
 
     @EventListener

@@ -44,6 +44,9 @@ class AiSettingsMessagesTest {
             "ai.settings.button.disable" to 0,
             "ai.settings.button.close" to 0,
             "ai.settings.alert.unavailable" to 1,
+            // Не строка экрана, а описание команды: его подставляет регистрация команд владельца
+            // (`registerOwnerCommands`) и раздел `/help` для владельца.
+            "command.ai.description" to 0,
         )
 
     @Test

@@ -22,6 +22,24 @@ class AiSettingsMessageRenderer(
 ) {
     fun render(state: AiSettingsViewState): RenderedAiSettings = RenderedAiSettings(renderText(state), renderKeyboard(state))
 
+    /**
+     * Текст модалки на отказанный клик. Живёт здесь, а не в диспетчере коллбэков, ровно потому,
+     * что причина обязана пройти через тот же единственный `when` по [UnavailableReason], что и
+     * экран: второй такой `when` где-то ещё молча пропустил бы новый вариант причины.
+     *
+     * [cause] == null у ключей без аргументов (клик не-владельца).
+     */
+    fun alertText(
+        key: String,
+        cause: AiSettingsAlertCause?,
+        lang: String,
+    ): String =
+        when (cause) {
+            null -> msg.get(key, lang)
+            is AiSettingsAlertCause.Unavailable -> msg.get(key, lang, reasonText(cause.reason, lang))
+            AiSettingsAlertCause.Gone -> msg.get(key, lang, msg.get("ai.settings.reason.gone", lang))
+        }
+
     private fun renderText(state: AiSettingsViewState): String {
         val lang = state.language
         val active = state.presets.firstOrNull { it.id == state.effectivePresetId }
