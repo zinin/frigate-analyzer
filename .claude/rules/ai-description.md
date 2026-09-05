@@ -384,10 +384,15 @@ anyway.
 
 **Cancellation (shutdown).** A candidate cancelled *before* the fan-out started is recorded as
 `FAILOVER` / `TRANSPORT` and sent under `NonCancellable` before the cancellation is rethrown — the
-facade has already marked the recording processed, so nothing would retry it. A candidate cancelled
-*inside* `sendRecordingNotification` is neither resent nor given a second verdict row: recipients
-already accepted by `TelegramNotificationQueue` would otherwise get a duplicate message, and the
-recording would be counted twice in `/status` and listed twice in `/verdicts`.
+facade has already marked the recording processed, so nothing would retry it. The fan-out itself is
+indivisible: `send()` arms its `handedOver` flag and then calls `sendRecordingNotification` under
+`NonCancellable`, so a cancellation arriving mid-send neither truncates it nor triggers a second
+one. Both halves matter. Without `NonCancellable` a shutdown could land while the call is still
+suspended *before* its first `TelegramNotificationQueue.enqueue` (it reads the subscribers from the
+database first), and the armed flag would then skip the fallback send and lose the recording
+outright. Without the flag the fallback would repeat a fan-out that already reached the queue:
+recipients would get a duplicate message and the recording a second verdict row, counted twice in
+`/status` and listed twice in `/verdicts`.
 
 **`/status` snapshot.** `snapshotSnoozes()` returns only snoozes still active on the wall clock. The
 registry itself is never pruned by the clock: `covers` measures the window from the *recording*
@@ -397,7 +402,11 @@ time.
 ### Snooze
 
 `SnoozeRegistry` is process memory only (restart clears it). `set(camId, anchor, minutes, classes)`
-with `minutes == 0` or empty classes removes the camera's snooze. `minutes` is capped by
+with `minutes == 0` or empty classes removes the camera's snooze — unless the update is older than
+the camera's current anchor, in which case it changes nothing at all. The backlog is drained
+newest-first (`findUnprocessedForUpdate` orders by `file_creation_timestamp DESC`), so a verdict on
+an older recording would otherwise drag the window backwards, or clear it, and leave the live
+duplicates it was armed against uncovered. `minutes` is capped by
 `APP_AI_JUDGE_MAX_SNOOZE` in `JudgeResponseParser`. Coverage is class-and-count: a person walking
 through a yard that already has a parked car does not stay silent if `person` was not in `covered`,
 and a second person (`person:2` vs `person:1`) breaks it.

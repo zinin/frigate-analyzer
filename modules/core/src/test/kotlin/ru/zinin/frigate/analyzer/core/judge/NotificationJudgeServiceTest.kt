@@ -45,6 +45,7 @@ import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class NotificationJudgeServiceTest {
@@ -371,9 +372,35 @@ class NotificationJudgeServiceTest {
             val job = s.submit(candidate())
             runCurrent()
             job.cancel()
+            gate.complete(Unit)
             job.join()
             // Часть получателей уже в очереди Telegram, вердикт уже записан: повтор дал бы им второе
             // сообщение, а базе — вторую строку на ту же запись.
+            assertEquals(VerdictStage.JUDGE, recorded.single().stage)
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
+    fun `cancellation before the fan-out reaches the queue still delivers the notification`() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            var enqueued = false
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            // Гейт стоит там же, где реальная рассылка приостанавливается ДО первого enqueue:
+            // на чтении подписчиков из базы. Отмена, пойманная здесь, не должна терять запись —
+            // фасад уже пометил её обработанной, и пайплайн её не повторит.
+            coEvery { telegram.sendRecordingNotification(any(), any(), any()) } coAnswers {
+                gate.await()
+                enqueued = true
+            }
+            val s = service()
+            val job = s.submit(candidate())
+            runCurrent()
+            job.cancel()
+            gate.complete(Unit)
+            job.join()
+            assertTrue(enqueued, "the fan-out must finish once it has started")
             assertEquals(VerdictStage.JUDGE, recorded.single().stage)
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
         }

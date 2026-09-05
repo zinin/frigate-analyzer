@@ -77,8 +77,9 @@ class NotificationJudgeService(
         val camId = candidate.recording.camId
         val waiting = queued.computeIfAbsent(camId) { AtomicInteger() }
         val depth = waiting.incrementAndGet()
-        // Ставится ВНУТРИ send() до вызова Telegram: отмена, пойманная внутри рассылки, означает,
-        // что часть получателей уже в очереди, а вердикт уже записан.
+        // Ставится ВНУТРИ send() до вызова Telegram, который идёт под NonCancellable: рассылка
+        // неделима, поэтому флаг означает «рассылка отработала целиком», а не «могла оборваться
+        // посередине».
         val handedOver = AtomicBoolean(false)
         if (depth == QUEUE_WARN_THRESHOLD + 1) {
             logger.warn { "Judge queue for cam=$camId holds $depth candidates; the model is slower than the camera" }
@@ -97,14 +98,14 @@ class NotificationJudgeService(
             // Фасад уже пометил запись обработанной. Без отправки под NonCancellable docker stop
             // (cancelAndJoin 10 с) молча теряет очередь камеры: пайплайн запись не повторит.
             //
-            // Но повторять рассылку, которая уже началась, нельзя: получатели, попавшие в очередь
-            // Telegram до отмены, получили бы второе сообщение, а в notification_verdicts легла бы
-            // вторая строка на ту же запись — и счётчики /status, и /verdicts считали бы её дважды.
+            // Но повторять рассылку, которая уже началась, нельзя: она под NonCancellable дошла до
+            // конца, и второй заход дал бы получателям второе сообщение, а notification_verdicts —
+            // вторую строку на ту же запись; и счётчики /status, и /verdicts считали бы её дважды.
             withContext(NonCancellable) {
                 if (handedOver.get()) {
                     logger.warn {
-                        "Judge cancelled inside the send for recording=${candidate.recording.id} cam=$camId; " +
-                            "the verdict is already recorded and the fan-out is not repeated"
+                        "Judge cancelled around the send for recording=${candidate.recording.id} cam=$camId; " +
+                            "the verdict is already recorded and the fan-out has finished"
                     }
                 } else {
                     logger.warn {
@@ -299,21 +300,32 @@ class NotificationJudgeService(
         }
     }
 
+    /**
+     * Рассылка неделима: [handedOver] взводится до вызова, а сам вызов идёт под [NonCancellable].
+     * Без этого отмена при остановке приложения могла застать `sendRecordingNotification` на
+     * приостановке ДО первой постановки в очередь (чтение подписчиков из базы) — флаг уже стоял бы,
+     * ветка отмены в [process] пропустила бы досылку, и запись пропала бы совсем: фасад пометил её
+     * обработанной, пайплайн её не повторит. Ставить флаг «по факту первого enqueue» нечем: очередь
+     * скрыта за `TelegramNotificationService`. Плата — та же, что уже принята для досылки в ветке
+     * отмены: остановка ждёт конца рассылки в пределах 10 с, отпущенных [JudgeCoroutineScope].
+     */
     private suspend fun send(
         candidate: JudgeCandidate,
         handedOver: AtomicBoolean,
     ) {
         handedOver.set(true)
-        try {
-            telegram.sendRecordingNotification(
-                candidate.recording,
-                candidate.visualizedFrames,
-                candidate.descriptionSupplier,
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            logger.error(e) { "Failed to send telegram notification for recording ${candidate.recording.id}" }
+        withContext(NonCancellable) {
+            try {
+                telegram.sendRecordingNotification(
+                    candidate.recording,
+                    candidate.visualizedFrames,
+                    candidate.descriptionSupplier,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to send telegram notification for recording ${candidate.recording.id}" }
+            }
         }
     }
 
