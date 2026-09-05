@@ -71,6 +71,14 @@ class NotificationJudgeService(
             logger.warn { "Judge queue for cam=$camId holds $depth candidates; the model is slower than the camera" }
         }
         try {
+            if (depth > QUEUE_WARN_THRESHOLD) {
+                logger.warn {
+                    "Judge queue for cam=$camId is full (depth=$depth); sending recording=${candidate.recording.id} unjudged"
+                }
+                record(unexpectedFailover(candidate, IllegalStateException("judge queue depth $depth")))
+                send(candidate)
+                return
+            }
             perCameraMutex.computeIfAbsent(camId) { Mutex() }.withLock { judgeLocked(candidate) }
         } catch (e: CancellationException) {
             // Фасад уже пометил запись обработанной. Без отправки под NonCancellable docker stop

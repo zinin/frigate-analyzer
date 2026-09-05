@@ -305,6 +305,25 @@ class NotificationJudgeServiceTest {
         }
 
     @Test
+    fun `a camera queue deeper than 20 sends the overflow unjudged`() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            coEvery { agent.judge(any()) } coAnswers {
+                gate.await()
+                outcome(JudgeVerdict.Decision.SUPPRESS, JudgeVerdict.Reason.DUPLICATE)
+            }
+            val s = service()
+            val jobs = (1..21).map { i -> s.submit(candidate(at = ts.plusSeconds(i.toLong()))) }
+            runCurrent()
+            assertEquals(VerdictStage.FAILOVER, recorded.single().stage)
+            assertEquals(VerdictReason.TRANSPORT, recorded.single().reason)
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+            gate.complete(Unit)
+            jobs.joinAll()
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
     fun `candidates of one camera are judged in order, different cameras in parallel`() =
         runTest {
             val gate = CompletableDeferred<Unit>()
