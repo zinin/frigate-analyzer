@@ -46,6 +46,13 @@ class AiSettingsMessagesTest {
             "ai.settings.button.disable" to 0,
             "ai.settings.button.close" to 0,
             "ai.settings.alert.unavailable" to 1,
+            "ai.settings.judge.title" to 0,
+            "ai.settings.judge.state" to 1,
+            "ai.settings.judge.active" to 4,
+            "ai.settings.judge.active.none" to 0,
+            "ai.settings.judge.mismatch" to 2,
+            "ai.settings.judge.button.enable" to 0,
+            "ai.settings.judge.button.disable" to 0,
             // Не строка экрана, а описание команды: его подставляет регистрация команд владельца
             // (`registerOwnerCommands`) и раздел `/help` для владельца.
             "command.ai.description" to 0,

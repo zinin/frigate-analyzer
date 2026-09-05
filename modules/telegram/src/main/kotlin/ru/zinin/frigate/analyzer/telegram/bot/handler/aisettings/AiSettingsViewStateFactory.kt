@@ -8,8 +8,10 @@ import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.ActiveDescriptionPreset
+import ru.zinin.frigate.analyzer.ai.description.api.ActiveJudgePreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.ProviderAuthStates
 import ru.zinin.frigate.analyzer.telegram.dto.AiSettingsViewState
 import kotlin.time.Duration.Companion.seconds
@@ -41,6 +43,8 @@ class AiSettingsViewStateFactory(
     private val activePresetProvider: ObjectProvider<ActiveDescriptionPreset>,
     private val runtimeSettingsProvider: ObjectProvider<DescriptionRuntimeSettings>,
     private val authStatesProvider: ObjectProvider<ProviderAuthStates>,
+    private val judgeRuntimeSettingsProvider: ObjectProvider<JudgeRuntimeSettings>,
+    private val activeJudgePresetProvider: ObjectProvider<ActiveJudgePreset>,
 ) {
     /**
      * Шов, оставленный сознательно: [ActiveDescriptionPreset.storedId] и
@@ -58,6 +62,7 @@ class AiSettingsViewStateFactory(
     suspend fun build(language: String): AiSettingsViewState {
         val presets = presetsProvider.getIfAvailable()?.all().orEmpty()
         val active = activePresetProvider.getIfAvailable()
+        val activeJudge = activeJudgePresetProvider.getIfAvailable()
         return AiSettingsViewState(
             descriptionsEnabled = descriptionsEnabled(),
             storedPresetId = active?.storedId(),
@@ -67,6 +72,10 @@ class AiSettingsViewStateFactory(
             // Один раз на сборку состояния: byScope() строит карту заново на каждый вызов.
             authByScope = authStatesProvider.getIfAvailable()?.byScope().orEmpty(),
             language = language,
+            judgeAvailable = judgeRuntimeSettingsProvider.getIfAvailable() != null,
+            judgeEnabled = judgeEnabled(),
+            judgeStoredPresetId = activeJudge?.storedId(),
+            judgeEffectivePresetId = if (presets.isEmpty()) null else activeJudge?.effective()?.id,
         )
     }
 
@@ -77,19 +86,30 @@ class AiSettingsViewStateFactory(
      * закрывало бы `/ai` целиком — экран, который и открывают, чтобы разобраться в таком отказе.
      */
     private suspend fun descriptionsEnabled(): Boolean =
+        flagFailOpen("AI description switch") {
+            runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true
+        }
+
+    private suspend fun judgeEnabled(): Boolean =
+        flagFailOpen("AI judge switch") {
+            judgeRuntimeSettingsProvider.getIfAvailable()?.judgeEnabled() ?: true
+        }
+
+    private suspend fun flagFailOpen(
+        label: String,
+        read: suspend () -> Boolean,
+    ): Boolean =
         try {
-            withTimeout(SETTINGS_READ_TIMEOUT) {
-                runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true
-            }
+            withTimeout(SETTINGS_READ_TIMEOUT) { read() }
         } catch (e: TimeoutCancellationException) {
             logger.warn {
-                "Reading the AI description switch for the /ai screen timed out after $SETTINGS_READ_TIMEOUT; failing open"
+                "Reading the $label for the /ai screen timed out after $SETTINGS_READ_TIMEOUT; failing open"
             }
             true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.warn(e) { "Failed to read the AI description switch for the /ai screen; failing open" }
+            logger.warn(e) { "Failed to read the $label for the /ai screen; failing open" }
             true
         }
 

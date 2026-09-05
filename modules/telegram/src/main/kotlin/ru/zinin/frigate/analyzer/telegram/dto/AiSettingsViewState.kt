@@ -18,6 +18,10 @@ data class AiSettingsViewState(
      */
     val authByScope: Map<String, ProviderAuthStates.Health>,
     val language: String,
+    val judgeAvailable: Boolean = false,
+    val judgeEnabled: Boolean = true,
+    val judgeStoredPresetId: String? = null,
+    val judgeEffectivePresetId: String? = null,
 ) {
     /**
      * Сохранённый пресет существует, но работает не он: рендер печатает строку
@@ -26,4 +30,8 @@ data class AiSettingsViewState(
      */
     val hasMismatch: Boolean
         get() = storedPresetId != null && effectivePresetId != null && storedPresetId != effectivePresetId
+
+    /** То же для судьи: сохранённый id и тот, что применит следующий вызов, разошлись. */
+    val hasJudgeMismatch: Boolean
+        get() = judgeStoredPresetId != null && judgeEffectivePresetId != null && judgeStoredPresetId != judgeEffectivePresetId
 }
