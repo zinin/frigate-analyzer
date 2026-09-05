@@ -113,9 +113,11 @@ open class AiDescriptionAutoConfiguration {
             grokProperties: GrokProperties,
         ): Map<String, DescriptionProperties.Preset> {
             if (descriptionProperties.presets.isNotEmpty()) {
-                // По контракту переменная перестаёт действовать; без этой строки опечатка в ней
-                // осталась бы невидимой.
-                if (descriptionProperties.provider.isNotBlank()) {
+                // yaml-дефолт `claude` биндится всегда, даже если оператор переменную не ставил.
+                // WARN только на leftover, который не этот дефолт: опечатка остаётся видимой,
+                // а штатный деплой с картой пресетов не учит игнорировать WARN.
+                val leftover = DescriptionPresetDeclarations.normalize(descriptionProperties.provider)
+                if (leftover.isNotEmpty() && leftover != YAML_DEFAULT_PROVIDER) {
                     logger.warn {
                         "${DescriptionPresetDeclarations.PROVIDER_PROPERTY}='${descriptionProperties.provider}' " +
                             "ignored: presets are declared"
@@ -139,5 +141,10 @@ open class AiDescriptionAutoConfiguration {
                 model = grokProperties.model,
                 effort = grokProperties.effort,
             )
+
+        private companion object {
+            /** Совпадает с дефолтом `application.ai.description.provider` в application.yaml. */
+            const val YAML_DEFAULT_PROVIDER = "claude"
+        }
     }
 }
