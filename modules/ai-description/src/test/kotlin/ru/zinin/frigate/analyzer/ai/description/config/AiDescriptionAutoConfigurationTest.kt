@@ -21,9 +21,12 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeBackend
+import ru.zinin.frigate.analyzer.ai.description.core.ActivePresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser
+import ru.zinin.frigate.analyzer.ai.description.core.VisionCallExecutor
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokBackend
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
@@ -400,9 +403,14 @@ class AiDescriptionAutoConfigurationTest {
             ).run { context ->
                 assertSame(stored, context.getBean(DescriptionRuntimeSettings::class.java))
                 assertEquals("grok-fast", catalog(context).fallbackId)
+                val activeBeans = context.getBeansOfType(ActiveDescriptionPreset::class.java)
+                assertEquals(1, activeBeans.size, "a second ActiveDescriptionPreset would break ObjectProvider.getIfAvailable()")
                 val active = context.getBean(ActiveDescriptionPreset::class.java)
+                assertIs<DescriptionPresetResolver>(active)
                 assertEquals("grok-deep", runBlocking { active.effective().id })
                 assertEquals("grok-deep", runBlocking { active.storedId() })
+                assertThat(context.getBeansOfType(ActivePresetResolver::class.java)).isEmpty()
+                assertNotNull(context.getBean("descriptionVisionCallExecutor", VisionCallExecutor::class.java))
             }
     }
 

@@ -119,7 +119,7 @@ application:
         max-concurrent: ${APP_AI_DESCRIPTION_MAX_CONCURRENT:2}
         rate-limit:
           enabled: ${APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED:true}
-          max-requests: ${APP_AI_DESCRIPTION_RATE_LIMIT_MAX:10}
+          max-requests: ${APP_AI_DESCRIPTION_RATE_LIMIT_MAX:30}
           window: ${APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW:1h}
       claude:
         oauth-token: ${CLAUDE_CODE_OAUTH_TOKEN:}

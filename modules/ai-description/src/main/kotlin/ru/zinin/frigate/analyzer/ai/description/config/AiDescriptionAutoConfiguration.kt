@@ -17,10 +17,13 @@ import ru.zinin.frigate.analyzer.ai.description.core.ActivePresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalogBuilder
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser
 import ru.zinin.frigate.analyzer.ai.description.core.InMemoryDescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.core.ProviderAuthTracker
 import ru.zinin.frigate.analyzer.ai.description.core.VisionBackendFactory
+import ru.zinin.frigate.analyzer.ai.description.core.VisionCallExecutor
+import ru.zinin.frigate.analyzer.ai.description.core.VisionLimits
 
 private val logger = KotlinLogging.logger {}
 
@@ -80,14 +83,16 @@ open class AiDescriptionAutoConfiguration {
         fun inMemoryDescriptionRuntimeSettings(): DescriptionRuntimeSettings = InMemoryDescriptionRuntimeSettings()
 
         /**
-         * Резолвер, а не каталог: он же отдаёт `telegram` реализацию `ActiveDescriptionPreset` —
-         * бин виден и по конкретному типу, и по интерфейсу из `api`.
+         * Адаптер описаний как `ActiveDescriptionPreset`. Сам [ActivePresetResolver] бином не
+         * является: второй резолвер (судья) делит каталог, но не fallback, и два бина одного типа
+         * ломают `ObjectProvider.getIfAvailable()` у экрана `/ai`.
          */
         @Bean
-        fun activePresetResolver(
+        fun descriptionPresetResolver(
             catalog: DescriptionPresetCatalog,
             runtimeSettings: DescriptionRuntimeSettings,
-        ): ActivePresetResolver = ActivePresetResolver(catalog, runtimeSettings)
+        ): DescriptionPresetResolver =
+            DescriptionPresetResolver(ActivePresetResolver(catalog, runtimeSettings, catalog.fallbackId, label = "description"))
 
         /**
          * Виден и по конкретному типу — агенту, — и по `ProviderAuthStates`: экран `/ai` читает
@@ -97,12 +102,25 @@ open class AiDescriptionAutoConfiguration {
         fun providerAuthTracker(eventPublisher: ApplicationEventPublisher): ProviderAuthTracker = ProviderAuthTracker(eventPublisher)
 
         @Bean
-        fun descriptionAgent(
-            resolver: ActivePresetResolver,
+        fun descriptionVisionCallExecutor(
+            resolver: DescriptionPresetResolver,
             authTracker: ProviderAuthTracker,
             descriptionProperties: DescriptionProperties,
+        ): VisionCallExecutor {
+            val common = descriptionProperties.common
+            return VisionCallExecutor(
+                resolver = resolver.resolver,
+                authTracker = authTracker,
+                limits = VisionLimits(common.queueTimeout, common.timeout, common.maxConcurrent, common.maxImageSide),
+                label = "description",
+            )
+        }
+
+        @Bean
+        fun descriptionAgent(
+            descriptionVisionCallExecutor: VisionCallExecutor,
             parser: DescriptionResponseParser,
-        ): DescriptionAgent = DefaultDescriptionAgent(resolver, authTracker, descriptionProperties, parser)
+        ): DescriptionAgent = DefaultDescriptionAgent(descriptionVisionCallExecutor, parser)
 
         /**
          * Пустая карта означает деплой, настроенный старым способом: один пресет из `provider` и

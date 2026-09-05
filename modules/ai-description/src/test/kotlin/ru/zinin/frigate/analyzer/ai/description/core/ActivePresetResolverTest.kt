@@ -47,6 +47,13 @@ class ActivePresetResolverTest {
 
     private val catalog = DescriptionPresetCatalog(listOf(entry("fast"), entry("deep"), entry("broken", false)), "fast")
 
+    private fun resolver(
+        settings: DescriptionRuntimeSettings = InMemoryDescriptionRuntimeSettings(),
+        catalog: DescriptionPresetCatalog = this.catalog,
+        fallbackId: String = catalog.fallbackId,
+        label: String = "description",
+    ) = ActivePresetResolver(catalog, settings, fallbackId, label)
+
     /** Настройки, чьё чтение всегда падает: проверка fail-open и проброса отмены. */
     private class FailingSettings(
         private val failure: () -> Throwable,
@@ -110,7 +117,7 @@ class ActivePresetResolverTest {
     @Test
     fun `an absent setting resolves to the fallback`() =
         runTest {
-            val resolver = ActivePresetResolver(catalog, InMemoryDescriptionRuntimeSettings())
+            val resolver = resolver()
 
             assertEquals("fast", resolver.resolve().view.id)
         }
@@ -121,7 +128,7 @@ class ActivePresetResolverTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("deep", changedBy = "owner")
 
-            assertEquals("deep", ActivePresetResolver(catalog, settings).resolve().view.id)
+            assertEquals("deep", resolver(settings).resolve().view.id)
         }
 
     @Test
@@ -130,7 +137,7 @@ class ActivePresetResolverTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("gone", changedBy = null)
 
-            assertEquals("fast", ActivePresetResolver(catalog, settings).resolve().view.id)
+            assertEquals("fast", resolver(settings).resolve().view.id)
         }
 
     @Test
@@ -139,7 +146,7 @@ class ActivePresetResolverTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("broken", changedBy = null)
 
-            assertEquals("fast", ActivePresetResolver(catalog, settings).resolve().view.id)
+            assertEquals("fast", resolver(settings).resolve().view.id)
         }
 
     @Test
@@ -147,7 +154,7 @@ class ActivePresetResolverTest {
         runTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("  ", changedBy = null)
-            val resolver = ActivePresetResolver(catalog, settings)
+            val resolver = resolver(settings)
 
             assertEquals("fast", resolver.resolve().view.id)
             assertNull(resolver.storedId(), "a blank value means 'nothing chosen', not a broken preset id")
@@ -158,7 +165,7 @@ class ActivePresetResolverTest {
         runTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("gone", changedBy = null)
-            val resolver = ActivePresetResolver(catalog, settings)
+            val resolver = resolver(settings)
 
             assertEquals(resolver.resolve().view.id, resolver.resolve().view.id)
             assertEquals("fast", resolver.effective().id)
@@ -173,7 +180,7 @@ class ActivePresetResolverTest {
         runTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("gone", changedBy = "owner")
-            val resolver = ActivePresetResolver(catalog, settings)
+            val resolver = resolver(settings)
 
             assertEquals("gone", resolver.storedId())
             assertEquals("fast", resolver.effective().id)
@@ -182,7 +189,7 @@ class ActivePresetResolverTest {
     @Test
     fun `a failing read falls back instead of propagating`() =
         runTest {
-            val resolver = ActivePresetResolver(catalog, FailingSettings { IllegalStateException("pool is down") })
+            val resolver = resolver(FailingSettings { IllegalStateException("pool is down") })
 
             val warnings = logsFrom(Level.WARN) { assertEquals("fast", resolver.resolve().view.id) }
 
@@ -192,7 +199,7 @@ class ActivePresetResolverTest {
     @Test
     fun `a failing read leaves the stored id unknown instead of propagating`() =
         runTest {
-            val resolver = ActivePresetResolver(catalog, FailingSettings { IllegalStateException("pool is down") })
+            val resolver = resolver(FailingSettings { IllegalStateException("pool is down") })
 
             assertNull(resolver.storedId())
         }
@@ -200,7 +207,7 @@ class ActivePresetResolverTest {
     @Test
     fun `cancellation is rethrown, not swallowed`() =
         runTest {
-            val resolver = ActivePresetResolver(catalog, FailingSettings { CancellationException("shutting down") })
+            val resolver = resolver(FailingSettings { CancellationException("shutting down") })
 
             assertFailsWith<CancellationException> { resolver.resolve() }
             assertFailsWith<CancellationException> { resolver.storedId() }
@@ -211,7 +218,7 @@ class ActivePresetResolverTest {
         runTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("gone", changedBy = null)
-            val resolver = ActivePresetResolver(catalog, settings)
+            val resolver = resolver(settings)
 
             val warnings =
                 logsFrom(Level.WARN) {
@@ -227,7 +234,7 @@ class ActivePresetResolverTest {
         runTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("deep", changedBy = "owner")
-            val resolver = ActivePresetResolver(catalog, settings)
+            val resolver = resolver(settings)
 
             val lines =
                 logsFrom(Level.INFO) {
@@ -251,7 +258,7 @@ class ActivePresetResolverTest {
         runTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("deep", changedBy = "owner")
-            val resolver = ActivePresetResolver(catalog, settings)
+            val resolver = resolver(settings)
 
             val lines =
                 logsFrom(Level.INFO) {
@@ -271,7 +278,7 @@ class ActivePresetResolverTest {
         runTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("deep", changedBy = "owner")
-            val resolver = ActivePresetResolver(catalog, settings)
+            val resolver = resolver(settings)
 
             val lines =
                 logsFrom(Level.INFO) {
@@ -284,7 +291,7 @@ class ActivePresetResolverTest {
     @Test
     fun `the default preset is named as the source when nothing is stored`() =
         runTest {
-            val resolver = ActivePresetResolver(catalog, InMemoryDescriptionRuntimeSettings())
+            val resolver = resolver()
 
             val lines =
                 logsFrom(Level.INFO) { resolver.resolve() }.filter { it.startsWith("Active description preset") }
@@ -302,7 +309,7 @@ class ActivePresetResolverTest {
     @Test
     fun `a read that never returns falls back on the bound`() =
         runTest {
-            val resolver = ActivePresetResolver(catalog, HangingSettings())
+            val resolver = resolver(HangingSettings())
             val startedAt = testScheduler.currentTime
 
             val warnings =
@@ -326,8 +333,37 @@ class ActivePresetResolverTest {
             val settings = InMemoryDescriptionRuntimeSettings()
             settings.setActivePresetId("deep", changedBy = null)
 
-            val entry = ActivePresetResolver(catalog, settings).resolve()
+            val entry = resolver(settings).resolve()
 
             assertSame(catalog.byId("deep")?.backend, entry.backend)
         }
+
+    /**
+     * Два резолвера делят один каталог, но не fallback: судья не должен падать на default-preset
+     * описаний. Неизвестный сохранённый id идёт в [ActivePresetResolver.fallbackId], а не в
+     * [DescriptionPresetCatalog.fallbackId].
+     */
+    @Test
+    fun `an unknown stored id falls back to the injected fallback, not the catalog default`() =
+        runTest {
+            val settings = InMemoryDescriptionRuntimeSettings()
+            settings.setActivePresetId("gone", changedBy = null)
+
+            assertEquals("deep", resolver(settings, fallbackId = "deep").resolve().view.id)
+        }
+
+    @Test
+    fun `construction fails when the fallback is missing or unavailable`() {
+        val settings = InMemoryDescriptionRuntimeSettings()
+        val missing =
+            assertFailsWith<IllegalArgumentException> {
+                ActivePresetResolver(catalog, settings, fallbackId = "missing", label = "description")
+            }
+        assertTrue(missing.message!!.contains("missing"), missing.message)
+        val unavailable =
+            assertFailsWith<IllegalArgumentException> {
+                ActivePresetResolver(catalog, settings, fallbackId = "broken", label = "description")
+            }
+        assertTrue(unavailable.message!!.contains("unavailable"), unavailable.message)
+    }
 }
