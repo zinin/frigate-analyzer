@@ -1,0 +1,41 @@
+package ru.zinin.frigate.analyzer.ai.description.core
+
+import io.github.oshai.kotlinlogging.KotlinLogging
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
+private val logger = KotlinLogging.logger {}
+
+/** Дефолт на случай отсутствия реализации из `core`: выбор судьи живёт до перезапуска процесса. */
+class InMemoryJudgeRuntimeSettings : JudgeRuntimeSettings {
+    private val presetId = AtomicReference<String?>(null)
+    private val enabled = AtomicBoolean(true)
+
+    override val sourceName = "in-memory"
+
+    init {
+        // Строка при создании: без неё in-memory-дефолт может незаметно оказаться в проде (бин
+        // `core` не зарегистрировался) — приложение стартует, `/ai` работает, а выбор владельца
+        // молча пропадает на каждом рестарте.
+        logger.info { "Judge runtime settings: in-memory (the choice does not survive a restart)" }
+    }
+
+    override suspend fun activePresetId(): String? = presetId.get()
+
+    override suspend fun setActivePresetId(
+        id: String,
+        changedBy: String?,
+    ) {
+        presetId.set(id)
+    }
+
+    override suspend fun judgeEnabled(): Boolean = enabled.get()
+
+    override suspend fun setJudgeEnabled(
+        value: Boolean,
+        changedBy: String?,
+    ) {
+        enabled.set(value)
+    }
+}
