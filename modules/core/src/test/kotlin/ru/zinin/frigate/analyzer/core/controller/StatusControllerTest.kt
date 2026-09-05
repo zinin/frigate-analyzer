@@ -61,6 +61,8 @@ class StatusControllerTest : IntegrationTestBase() {
             .isArray
             .jsonPath("$.detectServers")
             .isArray
+            .jsonPath("$.judge.enabled")
+            .isEqualTo(false)
     }
 
     @Test
