@@ -140,7 +140,17 @@ class NotificationJudgeService(
         }
         val context =
             try {
-                contextBuilder.build(candidate, objects, zoneResolver.resolve())
+                withTimeout(CONTEXT_BUILD_TIMEOUT) {
+                    contextBuilder.build(candidate, objects, zoneResolver.resolve())
+                }
+            } catch (e: TimeoutCancellationException) {
+                logger.warn { "Judge context timed out for recording=${recording.id}; sending without a verdict" }
+                record(
+                    base(VerdictStage.FAILOVER, VerdictDecision.PUBLISH, VerdictReason.CONTEXT_ERROR)
+                        .copy(error = e.describe()),
+                )
+                send(candidate)
+                return
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -328,6 +338,7 @@ class NotificationJudgeService(
 
     private companion object {
         val SETTINGS_READ_TIMEOUT = 5.seconds
+        val CONTEXT_BUILD_TIMEOUT = 10.seconds
         const val QUEUE_WARN_THRESHOLD = 20
         const val ERROR_MAX = 1024
     }
