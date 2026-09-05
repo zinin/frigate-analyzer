@@ -6,6 +6,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import ru.zinin.frigate.analyzer.ai.description.config.JudgeProperties
 import ru.zinin.frigate.analyzer.core.testsupport.TestObjectMappers
+import ru.zinin.frigate.analyzer.model.dto.BboxCluster
 import ru.zinin.frigate.analyzer.model.dto.DetectionDelta
 import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecision
@@ -76,19 +77,23 @@ class JudgeContextBuilderTest {
                 "yolo26x.pt",
             ),
         )
-    private val objects = listOf(RepresentativeBbox("motorcycle", 151f, 1387f, 441f, 1651f))
+    private val motorcycle = detection("motorcycle", 0.628f)
+    private val objects =
+        listOf(BboxCluster(RepresentativeBbox("motorcycle", 151f, 1387f, 441f, 1651f), listOf(motorcycle)))
     private val decision =
         NotificationDecision(
             true,
             NotificationDecisionReason.NEW_OBJECTS,
             DetectionDelta(newTracksCount = 1, matchedTracksCount = 0, staleTracksCount = 0, newClasses = listOf("motorcycle")),
         )
-    private val candidate = JudgeCandidate(recording, listOf(detection("motorcycle", 0.628f)), decision, listOf(frame), emptyList(), null)
+    private val candidate = JudgeCandidate(recording, listOf(motorcycle), decision, listOf(frame), emptyList(), null)
 
     private fun detection(
         cls: String,
         conf: Float,
-    ) = DetectionEntity(UUID.randomUUID(), ts, recordingId, ts, 0, "yolo26x.pt", 3, cls, conf, 151f, 1387f, 441f, 1651f)
+        frameIndex: Int = 0,
+        x1: Float = 151f,
+    ) = DetectionEntity(UUID.randomUUID(), ts, recordingId, ts, frameIndex, "yolo26x.pt", 3, cls, conf, x1, 1387f, x1 + 290f, 1651f)
 
     private fun happyStubs() {
         coEvery {
@@ -156,11 +161,36 @@ class JudgeContextBuilderTest {
             } returns StaticScore(1, 1, ts, ts)
             val two =
                 listOf(
-                    RepresentativeBbox("motorcycle", 151f, 1387f, 441f, 1651f),
-                    RepresentativeBbox("person", 10f, 10f, 20f, 20f),
+                    BboxCluster(RepresentativeBbox("motorcycle", 151f, 1387f, 441f, 1651f), listOf(motorcycle)),
+                    BboxCluster(RepresentativeBbox("person", 10f, 10f, 20f, 20f), listOf(detection("person", 0.5f))),
                 )
             builder.build(candidate, two, zone)
             coVerify(exactly = 1) { stats.recordingsInWindow("cam4", ts.minus(Duration.ofDays(7)), ts) }
+        }
+
+    @Test
+    fun `same-class objects in different places keep their own confidence and frame count`() =
+        runTest {
+            happyStubs()
+            coEvery {
+                stats.staticScore("cam4", "person", any(), any(), any(), any(), any(), any(), any(), any(), any())
+            } returns StaticScore(1, 1, ts, ts)
+            val near = detection("person", 0.75f, frameIndex = 0, x1 = 10f)
+            val nearAgain = detection("person", 0.5f, frameIndex = 1, x1 = 10f)
+            val far = detection("person", 0.25f, frameIndex = 0, x1 = 1000f)
+            val clusters =
+                listOf(
+                    BboxCluster(RepresentativeBbox("person", 10f, 1387f, 300f, 1651f), listOf(near, nearAgain)),
+                    BboxCluster(RepresentativeBbox("person", 1000f, 1387f, 1290f, 1651f), listOf(far)),
+                )
+
+            val result = builder.build(candidate.copy(detections = listOf(near, nearAgain, far)), clusters, zone)
+
+            val objects = mapper.readTree(result.json)["objects"]
+            assertEquals(0.75, objects[0]["confidence"].asDouble())
+            assertEquals(2, objects[0]["frames_seen"].asInt())
+            assertEquals(0.25, objects[1]["confidence"].asDouble())
+            assertEquals(1, objects[1]["frames_seen"].asInt())
         }
 
     @Test

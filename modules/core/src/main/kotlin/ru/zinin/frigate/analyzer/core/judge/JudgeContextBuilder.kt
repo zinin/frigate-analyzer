@@ -4,10 +4,10 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.config.JudgeProperties
+import ru.zinin.frigate.analyzer.model.dto.BboxCluster
 import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecision
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
-import ru.zinin.frigate.analyzer.model.dto.RepresentativeBbox
 import ru.zinin.frigate.analyzer.model.persistent.NotificationVerdictEntity
 import ru.zinin.frigate.analyzer.model.response.BBox
 import ru.zinin.frigate.analyzer.service.NotificationVerdictService
@@ -38,7 +38,7 @@ class JudgeContextBuilder(
 ) {
     suspend fun build(
         candidate: JudgeCandidate,
-        objects: List<RepresentativeBbox>,
+        objects: List<BboxCluster>,
         zone: ZoneId,
     ): JudgeContextResult {
         val errors = mutableListOf<String>()
@@ -84,15 +84,19 @@ class JudgeContextBuilder(
 
     private suspend fun objectBlock(
         candidate: JudgeCandidate,
-        obj: RepresentativeBbox,
+        cluster: BboxCluster,
         zone: ZoneId,
         errors: MutableList<String>,
         recordingsInWindow: suspend (Instant, Instant) -> Long,
     ): ObjectBlock {
+        val obj = cluster.representative
         val ts = candidate.recording.recordTimestamp
-        val ofClass = candidate.detections.filter { it.className == obj.className }
-        val confidence = ofClass.maxOfOrNull { it.confidence.toDouble() } ?: 0.0
-        val framesSeen = ofClass.map { it.frameIndex }.distinct().size
+        // Детекции ЭТОГО объекта, а не всего класса: два человека в разных углах кадра — это два
+        // кластера, и общий по классу максимум подарил бы мелькнувшему уверенность и число кадров
+        // соседа. Именно на «рамка не меняется между кадрами» опирается STATIC_OBJECT.
+        val members = cluster.detections
+        val confidence = members.maxOfOrNull { it.confidence.toDouble() } ?: 0.0
+        val framesSeen = members.map { it.frameIndex }.distinct().size
         val static =
             try {
                 val from = ts.minus(properties.staticWindow)

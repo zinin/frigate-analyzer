@@ -4,6 +4,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +25,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.JudgeVerdict
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.ai.description.config.JudgeProperties
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.JudgeRateLimiter
+import ru.zinin.frigate.analyzer.model.dto.BboxCluster
 import ru.zinin.frigate.analyzer.model.dto.NewNotificationVerdict
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecision
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecisionReason
@@ -179,6 +181,23 @@ class NotificationJudgeServiceTest {
             assertEquals("claude-sonnet", v.presetId)
             assertEquals(3000, v.latencyMs)
             coVerify(exactly = 1) { telegram.sendRecordingNotification(c.recording, c.visualizedFrames, null) }
+        }
+
+    @Test
+    fun `the context builder gets the detections of each object, not of the whole class`() =
+        runTest {
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            val s = service()
+            val clusters = slot<List<BboxCluster>>()
+            coEvery { contextBuilder.build(any(), capture(clusters), any()) } returns
+                JudgeContextResult("{}", emptyList())
+
+            s.process(candidate(classes = listOf("person", "person")))
+
+            // Два человека в 500 px друг от друга — два кластера по одной детекции. Одинаковые
+            // размеры здесь и означают, что членство доехало до билдера настоящим.
+            assertEquals(listOf(1, 1), clusters.captured.map { it.detections.size })
         }
 
     @Test

@@ -133,12 +133,12 @@ class NotificationJudgeService(
     ) {
         val recording = candidate.recording
         val objects =
-            BboxClusteringHelper.cluster(
+            BboxClusteringHelper.clusterWithMembers(
                 candidate.detections,
                 trackerProperties.innerIou,
                 trackerProperties.confidenceFloor,
             )
-        val classCounts = objects.groupingBy { it.className }.eachCount().toSortedMap()
+        val classCounts = objects.groupingBy { it.representative.className }.eachCount().toSortedMap()
         val classes = classCounts.entries.joinToString(",") { "${it.key}:${it.value}" }
         val base = { stage: VerdictStage, decision: VerdictDecision, reason: VerdictReason ->
             NewNotificationVerdict(
