@@ -103,7 +103,9 @@ class RecordingProcessingFacade(
                     recording = recording,
                     detections = savedResult.detections,
                     decision = decision,
-                    // Контекст судьи читает индекс и detectResponse; JPEG на очереди камеры не нужен.
+                    // Контекст судьи читает индекс и detectResponse; исходные JPEG в frames обнулены.
+                    // Визуализированные JPEG всё равно едут — они нужны модели и Telegram.
+                    // descriptionSupplier замыкает исходные кадры для describe после PUBLISH.
                     frames = request.frames.map { it.copy(frameBytes = ByteArray(0)) },
                     visualizedFrames = visualizedFrames,
                     descriptionSupplier = descriptionSupplier,

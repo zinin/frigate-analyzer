@@ -57,7 +57,20 @@ class JudgeContextBuilder(
             ),
         )
         root.set("frames", mapper.valueToTree(framesBlock(candidate.frames)))
-        root.set("objects", mapper.valueToTree(objects.map { objectBlock(candidate, it, zone, errors) }))
+
+        var cachedWindow: Long? = null
+
+        suspend fun recordingsInWindow(
+            from: Instant,
+            until: Instant,
+        ): Long {
+            cachedWindow?.let { return it }
+            return stats.recordingsInWindow(recording.camId, from, until).also { cachedWindow = it }
+        }
+        root.set(
+            "objects",
+            mapper.valueToTree(objects.map { objectBlock(candidate, it, zone, errors, ::recordingsInWindow) }),
+        )
         root.set("tracker", mapper.valueToTree(trackerBlock(candidate.decision)))
         root.set("active_tracks", block("active_tracks", errors) { activeTracks(candidate, zone) })
         root.set("recent_verdicts", block("recent_verdicts", errors) { recentVerdicts(recording, zone) })
@@ -74,6 +87,7 @@ class JudgeContextBuilder(
         obj: RepresentativeBbox,
         zone: ZoneId,
         errors: MutableList<String>,
+        recordingsInWindow: suspend (Instant, Instant) -> Long,
     ): ObjectBlock {
         val ts = candidate.recording.recordTimestamp
         val ofClass = candidate.detections.filter { it.className == obj.className }
@@ -101,7 +115,7 @@ class JudgeContextBuilder(
                     score.days,
                     score.firstSeen?.let { format(it, zone) },
                     score.lastSeen?.let { format(it, zone) },
-                    stats.recordingsInWindow(candidate.recording.camId, from, ts),
+                    recordingsInWindow(from, ts),
                 )
             } catch (e: CancellationException) {
                 throw e

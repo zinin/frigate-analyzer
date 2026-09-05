@@ -64,8 +64,9 @@ class NotificationJudgeService(
     internal suspend fun process(candidate: JudgeCandidate) {
         val camId = candidate.recording.camId
         val waiting = queued.computeIfAbsent(camId) { AtomicInteger() }
-        if (waiting.incrementAndGet() > QUEUE_WARN_THRESHOLD) {
-            logger.warn { "Judge queue for cam=$camId holds ${waiting.get()} candidates; the model is slower than the camera" }
+        val depth = waiting.incrementAndGet()
+        if (depth == QUEUE_WARN_THRESHOLD + 1) {
+            logger.warn { "Judge queue for cam=$camId holds $depth candidates; the model is slower than the camera" }
         }
         try {
             perCameraMutex.computeIfAbsent(camId) { Mutex() }.withLock { judgeLocked(candidate) }
@@ -132,6 +133,11 @@ class NotificationJudgeService(
                 send(candidate)
                 return
             }
+        if (context.errors.isNotEmpty()) {
+            logger.warn {
+                "Judge context for recording=${recording.id} cam=${recording.camId} degraded: ${context.errors.joinToString()}"
+            }
+        }
         val limiter = rateLimiterProvider.getIfAvailable()
         if (limiter != null && !limiter.tryAcquire()) {
             logger.warn { "Judge rate limit reached; sending recording=${recording.id} (cam=${recording.camId}) unjudged" }

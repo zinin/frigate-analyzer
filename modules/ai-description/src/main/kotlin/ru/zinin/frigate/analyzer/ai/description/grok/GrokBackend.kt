@@ -9,7 +9,7 @@ private val logger = KotlinLogging.logger {}
 
 /**
  * Одна попытка через headless Grok Build: `prompt.json` → процесс → сырой текст модели.
- * Семафор, таймауты, повторы и разбор ответа живут в `DefaultDescriptionAgent`; отмена корутины
+ * Семафор, таймауты, повторы и разбор ответа живут в `VisionCallExecutor`; отмена корутины
  * по таймауту убивает процесс в runner-е, а prompt-файл удаляется в `finally` под NonCancellable.
  *
  * Не бин: экземпляр создаёт [GrokBackendFactory] на каждый grok-пресет, поэтому [model], [effort]

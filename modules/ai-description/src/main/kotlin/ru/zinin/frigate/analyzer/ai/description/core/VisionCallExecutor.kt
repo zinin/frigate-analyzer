@@ -46,8 +46,8 @@ data class VisionOutcome<T>(
  * публикацию событий делает трекер. Одного состояния на executor и не хватило бы: пресетов за вызов
  * теперь несколько, и успех BYOK-пресета снимал бы LOST, поднятый пресетом на протухшем OAuth.
  *
- * Не `@Component`: бин создаёт `AiDescriptionAutoConfiguration` по имени (`descriptionVisionCallExecutor`);
- * второй экземпляр для судьи появится позже и отличается именем параметра, не типом.
+ * Не `@Component`: бин создаёт `AiDescriptionAutoConfiguration` по имени
+ * (`descriptionVisionCallExecutor` / `judgeVisionCallExecutor`); экземпляры отличаются именем параметра, не типом.
  */
 class VisionCallExecutor(
     private val resolver: ActivePresetResolver,

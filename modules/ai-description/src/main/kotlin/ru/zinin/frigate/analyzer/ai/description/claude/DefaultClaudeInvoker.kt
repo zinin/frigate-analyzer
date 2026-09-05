@@ -77,7 +77,7 @@ class DefaultClaudeInvoker(
         } finally {
             // ClaudeAsyncClient is NOT AutoCloseable — .use not usable. Close explicitly.
             // NonCancellable required: invoke() runs under withTimeout in
-            // DefaultDescriptionAgent.describe(); on timeout the finally runs with Job
+            // VisionCallExecutor; on timeout the finally runs with Job
             // already cancelled, and a bare awaitSingleOrNull() would throw
             // CancellationException before subscribing — skipping the close and leaking
             // the Claude CLI subprocess.

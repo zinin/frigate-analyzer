@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.core.judge
 
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import ru.zinin.frigate.analyzer.ai.description.config.JudgeProperties
@@ -132,6 +133,34 @@ class JudgeContextBuilderTest {
             assertTrue(root["recent_verdicts"].isEmpty)
             assertTrue(root["last_published"].isNull)
             assertEquals("Огород за домом", root["camera_notes"].asString())
+        }
+
+    @Test
+    fun `recordingsInWindow is queried once for the camera not once per object`() =
+        runTest {
+            happyStubs()
+            coEvery {
+                stats.staticScore(
+                    "cam4",
+                    "person",
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                )
+            } returns StaticScore(1, 1, ts, ts)
+            val two =
+                listOf(
+                    RepresentativeBbox("motorcycle", 151f, 1387f, 441f, 1651f),
+                    RepresentativeBbox("person", 10f, 10f, 20f, 20f),
+                )
+            builder.build(candidate, two, zone)
+            coVerify(exactly = 1) { stats.recordingsInWindow("cam4", ts.minus(Duration.ofDays(7)), ts) }
         }
 
     @Test
