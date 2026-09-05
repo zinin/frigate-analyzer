@@ -71,7 +71,8 @@ class GrokBackend(
             val output = outputParser.parse(result.stdout)
             logger.debug {
                 "Grok call ${request.requestId}: model=$model, effort=${effortForLog()}, " +
-                    "payload=${if (output.fromText) "text" else "structuredOutput"}, ${output.usageSummary}, " +
+                    "primary=${if (output.fromText) "text" else "structuredOutput"}, " +
+                    "fallback=${if (output.fallback != null) "text" else "none"}, ${output.usageSummary}, " +
                     "stopReason=${output.stopReason}, session=${output.sessionId}"
             }
             val payload =

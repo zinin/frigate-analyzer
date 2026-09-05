@@ -82,7 +82,7 @@ class GrokBackendTest {
             val stdout = """{"stopReason":"end_turn","sessionId":"s","structuredOutput":{"short":"Car","detailed":"A car."}}"""
             val backend = backend(GrokProcessRunner { result(0, stdout) })
 
-            assertEquals("""{"short":"Car","detailed":"A car."}""", backend.complete(request, budget).text)
+            assertEquals("""{"short":"Car","detailed":"A car."}""", backend.complete(request, budget).primary)
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
         }
 
@@ -96,7 +96,7 @@ class GrokBackendTest {
 
             val response = backend.complete(request, budget)
 
-            assertEquals("""{"short":"Bike"}""", response.text)
+            assertEquals("""{"short":"Bike"}""", response.primary)
             assertEquals("""{"short":"Bike","detailed":"A bike."}""", response.fallback)
         }
 
@@ -175,7 +175,7 @@ class GrokBackendTest {
                     },
                 )
 
-            assertEquals("""{"short":"Bike","detailed":"A bike."}""", backend.complete(request, budget).text)
+            assertEquals("""{"short":"Bike","detailed":"A bike."}""", backend.complete(request, budget).primary)
             assertEquals(2, commands.size)
             assertTrue(commands[0].argv.contains("--json-schema"))
             assertFalse(commands[1].argv.contains("--json-schema"))

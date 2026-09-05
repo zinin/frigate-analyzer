@@ -234,8 +234,11 @@ class NotificationJudgeService(
         snoozes.set(recording.camId, recording.recordTimestamp, verdict.snoozeMinutes, classCounts)
         val until = snoozes.covers(recording.camId, recording.recordTimestamp, classCounts)?.until
         logger.info {
-            "Judge: cam=${recording.camId} verdict=${verdict.decision} reason=${verdict.reason} snooze=${verdict.snoozeMinutes}m " +
-                "latency=${outcome.latency.toMillis()}ms preset=${outcome.presetId} recording=${recording.id}"
+            // snoozeUntil, а не только запрошенные минуты: реестр отбрасывает вердикт по записи
+            // старше своего якоря, и тогда в строке вердикта и в /status укрытия не будет.
+            "Judge: cam=${recording.camId} verdict=${verdict.decision} reason=${verdict.reason} " +
+                "snooze=${verdict.snoozeMinutes}m snoozeUntil=$until latency=${outcome.latency.toMillis()}ms " +
+                "preset=${outcome.presetId} recording=${recording.id}"
         }
         record(
             base(VerdictStage.JUDGE, decision, VerdictReason.valueOf(verdict.reason.name)).copy(
@@ -307,7 +310,9 @@ class NotificationJudgeService(
      * ветка отмены в [process] пропустила бы досылку, и запись пропала бы совсем: фасад пометил её
      * обработанной, пайплайн её не повторит. Ставить флаг «по факту первого enqueue» нечем: очередь
      * скрыта за `TelegramNotificationService`. Плата — та же, что уже принята для досылки в ветке
-     * отмены: остановка ждёт конца рассылки в пределах 10 с, отпущенных [JudgeCoroutineScope].
+     * отмены: остановка ждёт рассылку до 10 с, отпущенных [JudgeCoroutineScope], а дальше пишет
+     * предупреждение и идёт дальше — рассылка доработает уже на фоне закрывающихся бинов. Повиснуть
+     * она не может: `enqueue` пишет в ограниченный канал, который закрывается вместе с очередью.
      */
     private suspend fun send(
         candidate: JudgeCandidate,

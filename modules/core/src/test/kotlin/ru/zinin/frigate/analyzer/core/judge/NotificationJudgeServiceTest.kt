@@ -4,6 +4,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -45,6 +46,7 @@ import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -362,22 +364,25 @@ class NotificationJudgeServiceTest {
         }
 
     @Test
-    fun `cancellation inside the send neither resends nor writes a second verdict`() =
+    fun `a cancellation escaping the send neither resends nor writes a second verdict`() =
         runTest {
-            val gate = CompletableDeferred<Unit>()
+            var sends = 0
             coEvery { agent.judge(any()) } returns
                 outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
-            coEvery { telegram.sendRecordingNotification(any(), any(), any()) } coAnswers { gate.await() }
+            // Рассылка идёт под NonCancellable, поэтому отмена снаружи её не прерывает; до обработчика
+            // отмены доходит только та, что родилась ВНУТРИ рассылки — например, отменённая очередь.
+            coEvery { telegram.sendRecordingNotification(any(), any(), any()) } coAnswers {
+                sends++
+                throw CancellationException("the telegram queue was cancelled")
+            }
             val s = service()
-            val job = s.submit(candidate())
-            runCurrent()
-            job.cancel()
-            gate.complete(Unit)
-            job.join()
-            // Часть получателей уже в очереди Telegram, вердикт уже записан: повтор дал бы им второе
-            // сообщение, а базе — вторую строку на ту же запись.
+
+            assertFailsWith<CancellationException> { s.process(candidate()) }
+
+            // Получатели, принятые очередью до отмены, получили бы второе сообщение, а база — вторую
+            // строку на ту же запись: и счётчики /status, и /verdicts считали бы её дважды.
             assertEquals(VerdictStage.JUDGE, recorded.single().stage)
-            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+            assertEquals(1, sends)
         }
 
     @Test

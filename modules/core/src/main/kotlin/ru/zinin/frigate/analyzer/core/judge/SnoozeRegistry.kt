@@ -37,9 +37,11 @@ class SnoozeRegistry {
     /**
      * Вердикт кандидата, который СТАРШЕ текущего якоря камеры, не меняет ничего — ни окна, ни
      * покрытия, ни снятия при `minutes == 0`. Бэклог разбирается от новых к старым
-     * (`findUnprocessedForUpdate` сортирует по `file_creation_timestamp DESC`), и вердикт по более
-     * старой записи сдвинул бы окно назад или снял бы его совсем, оставив живые дубли без укрытия,
-     * ради которого snooze и сделан.
+     * (`findUnprocessedForUpdate` сортирует по `file_creation_timestamp`, а якорь берётся из
+     * `record_timestamp` — колонки разные, но идут рука об руку), и вердикт по более старой записи
+     * сдвинул бы окно назад или снял бы его совсем, оставив живые дубли без укрытия, ради которого
+     * snooze и сделан. Сравнение якорей заодно делает результат независимым от порядка: какой из
+     * двух вердиктов дойдёт до реестра первым, неважно.
      */
     fun set(
         camId: String,
@@ -54,10 +56,6 @@ class SnoozeRegistry {
                 else -> CameraSnooze(camId, anchor, anchor.plus(Duration.ofMinutes(minutes.toLong())), classes.toMap())
             }
         }
-    }
-
-    fun clear(camId: String) {
-        byCamera.remove(camId)
     }
 
     fun snapshot(): List<CameraSnooze> = byCamera.values.sortedBy { it.camId }

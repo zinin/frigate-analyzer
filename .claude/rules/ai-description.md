@@ -39,7 +39,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | API | `JudgeRuntimeSettings` | `api/` | Same seam for the judge: `activePresetId`/`setActivePresetId`, `judgeEnabled`/`setJudgeEnabled` (absent = `true`) |
 | API | `ProviderAuthStates` | `api/` | `byScope(): Map<String, Health>` (`UNKNOWN`/`HEALTHY`/`LOST`) for the `/ai` screen |
 | API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
-| Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns `VisionResponse` (primary text plus the provider's fallback representation, when it has one); takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
+| Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns `VisionResponse` (`primary` plus the provider's `fallback` representation, when it has one); takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
 | Core | `VisionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
 | Core | `VisionRequest` / `VisionInstructions` | `core/` | One vision call: frames plus `systemPrompt` / `preamble` / `epilogue` / optional `jsonSchema`; the provider inserts frames between preamble and epilogue |
 | Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, frame downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
@@ -394,7 +394,9 @@ anyway.
 facade has already marked the recording processed, so nothing would retry it. The fan-out itself is
 indivisible: `send()` arms its `handedOver` flag and then calls `sendRecordingNotification` under
 `NonCancellable`, so a cancellation arriving mid-send neither truncates it nor triggers a second
-one. Both halves matter. Without `NonCancellable` a shutdown could land while the call is still
+one. Shutdown waits for it up to the 10s `JudgeCoroutineScope` budget and then proceeds, leaving
+the fan-out to finish against beans that are already closing; it cannot hang, because `enqueue`
+writes to a bounded channel that `TelegramNotificationQueue.stop()` closes. Both halves matter. Without `NonCancellable` a shutdown could land while the call is still
 suspended *before* its first `TelegramNotificationQueue.enqueue` (it reads the subscribers from the
 database first), and the armed flag would then skip the fallback send and lose the recording
 outright. Without the flag the fallback would repeat a fan-out that already reached the queue:
@@ -410,7 +412,8 @@ time.
 
 `SnoozeRegistry` is process memory only (restart clears it). `set(camId, anchor, minutes, classes)`
 with `minutes == 0` or empty classes removes the camera's snooze — unless the update is older than
-the camera's current anchor, in which case it changes nothing at all. The backlog is drained
+the camera's current anchor, in which case it changes nothing at all, which also makes the registry
+independent of the order two verdicts reach it. The backlog is drained
 newest-first (`findUnprocessedForUpdate` orders by `file_creation_timestamp DESC`), so a verdict on
 an older recording would otherwise drag the window backwards, or clear it, and leave the live
 duplicates it was armed against uncovered. `minutes` is capped by

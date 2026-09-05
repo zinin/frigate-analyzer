@@ -227,18 +227,21 @@ class VisionCallExecutor(
         parse: (String) -> T,
     ): T =
         try {
-            parse(response.text)
-        } catch (primary: DescriptionException.InvalidResponse) {
-            val fallback = response.fallback ?: throw primary
+            parse(response.primary)
+        } catch (rejected: DescriptionException.InvalidResponse) {
+            val fallback = response.fallback ?: throw rejected
             val value =
                 try {
                     parse(fallback)
-                } catch (_: DescriptionException.InvalidResponse) {
-                    throw primary
+                } catch (alsoRejected: DescriptionException.InvalidResponse) {
+                    // Иначе в логе осталась бы только причина по основному представлению, а
+                    // разбирать пришлось бы как раз случай, когда негодны оба.
+                    rejected.addSuppressed(alsoRejected)
+                    throw rejected
                 }
-            logger.warn(primary) {
-                "$label could not parse the primary payload; used the fallback representation of the same answer"
-            }
+            // Без стектрейса: у эндпоинта, который всегда применяет схему частично, это штатный путь
+            // на каждый вызов, и причина целиком укладывается в сообщение.
+            logger.warn { "$label rejected the primary payload (${rejected.message}); used the fallback representation" }
             value
         }
 
