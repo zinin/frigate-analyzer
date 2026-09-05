@@ -97,8 +97,12 @@ deployment must not create or inspect the grok volume. `GrokHomeSweeper` takes a
 **Unavailability.** `UnavailableReason` has exactly three variants: `NoToken`,
 `HomeUnwritable(path)`, `NoFactory(provider)`. A missing CLI is deliberately **not** one of them — it
 is a WARN from the factory, because losing the binary of an optional feature must not stop camera
-monitoring; those calls fall back instead. An unavailable preset stays in the catalog (listed and
-marked in `/ai`) with `backend == null` and cannot be selected. Startup fails only when *every*
+monitoring; those calls fall back instead. `HomeUnwritable` is likewise narrower than its name: it is
+raised only when `Files.createDirectories` throws, so an **existing** `GROK_HOME` that is merely not
+writable by uid 1000 — the case the README's `chown` instruction is about — produces a WARN, keeps the
+preset selectable and fails later, at call time, when `grok` cannot refresh its token. An unavailable
+preset stays in the catalog (listed and marked in `/ai`) with `backend == null` and cannot be
+selected. Startup fails only when *every*
 declared preset is unusable (`Result.NoneUsable` → `error(...)` in the auto-configuration).
 
 **The catalog.** `DescriptionPresetCatalogBuilder.build(presets, defaultPreset, factories, timeout)`
@@ -118,12 +122,19 @@ call — cheap, because the `app_settings` implementation caches per process —
 directions: a failed read and a read exceeding its own 5 s bound both yield the fallback preset plus a
 `warnOnce` line, never an exception (`describe` calls the resolver outside both of its `withTimeout`
 blocks, so an unbounded read would hang the whole call). A stored id that is unknown or unavailable
-also falls back, with its own warning. On the **first** resolution — not at startup, since naming the
-source means a suspend R2DBC read that must not happen during context refresh — it logs one INFO
-line: `Active description preset 'grok-deep' (grok/grok-4.6/xhigh) from app_settings, overriding
-default-preset='grok-fast'`, or `… from default-preset`. A resolution whose read failed logs only the
-warning: the source is genuinely unknown then, and "from default-preset" would claim the owner's
-choice was consulted. The source string comes from
+also falls back, with its own warning. Resolution — never startup, since naming the source means a
+suspend R2DBC read that must not happen during context refresh — logs one INFO line:
+`Active description preset 'grok-deep' (grok/grok-4.6/xhigh) from app_settings, overriding
+default-preset='grok-fast'`, or `… from default-preset`. It is written **whenever that line differs
+from the last one written**, not once per process: the owner switches presets in `/ai` without a
+restart and the settings write logs only the id, at DEBUG, so a log that reported the first
+resolution only would stop answering "which model is running" exactly when the question is asked.
+Change-detection keeps it quiet in steady state, covers a change nobody clicked (a fallback taking
+over when the stored preset becomes unavailable) and compares the whole line, so a changed *source*
+under an unchanged preset is reported too. The accepted cost: a switch appears at the next resolution
+— the following description call, or the `/ai` screen — not at the moment of the click. A resolution
+whose read failed logs only the warning: the source is genuinely unknown then, and "from
+default-preset" would claim the owner's choice was consulted. The source string comes from
 `DescriptionRuntimeSettings.sourceName`, which is abstract precisely so a new implementation cannot
 forget to name itself.
 
@@ -191,9 +202,9 @@ model-agnostic:
 
 `GrokBackend` logs per recording at DEBUG: `model=…, effort=…, json-schema=on|off, frames=N` before
 the run and `model=…, effort=…, fields=structuredOutput|text, input_tokens=…` after it. It has no
-startup line of its own — one instance exists per grok preset now; the values are named at INFO once
-by the catalog line and once by the resolver's active-preset line (see "Presets, catalog and
-resolution").
+startup line of its own — one instance exists per grok preset now; the values are named at INFO by the
+catalog line once at startup and by the resolver's active-preset line on every change (see "Presets,
+catalog and resolution").
 
 Output classification (`GrokExceptionMapper`): `{"type":"error","message":…}` on stdout, regardless of
 exit code → `Unauthorized` when the message mentions `not signed in`, `grok login`, `not authenticated`,
@@ -377,8 +388,9 @@ for the catalog builder, `DescriptionRuntimeSettings` for the resolver, `ClaudeI
 (POSIX only) and covers stdout/stderr capture, environment, and the kill on cancellation.
 `DescriptionPresetCatalogBuilderTest` pins declaration order, the fallback choice, typed
 unavailability, one backend per preset and the slow-effort WARN/mark; `ActivePresetResolverTest` pins
-fail-open resolution, the bounded read and the one-line-per-problem logging (it asserts on the log
-text, so the two INFO lines about presets are contract). `AiDescriptionAutoConfigurationTest` covers
+fail-open resolution, the bounded read, the one-line-per-problem logging and the active-preset line —
+`a switched preset is logged again` and `an unchanged preset is logged once however often it
+resolves` (it asserts on the log text, so both INFO lines about presets are contract). `AiDescriptionAutoConfigurationTest` covers
 the legacy paths (`provider=claude`, `provider=grok`, mixed case, unknown), a declared map with a
 partially unusable catalog, the "all unusable fails startup" rule and a supplied runtime-settings
 implementation.

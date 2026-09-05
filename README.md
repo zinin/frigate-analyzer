@@ -211,12 +211,13 @@ application:
 The owner switches the active preset in `/ai`, one tap, no restart — the screen also turns
 descriptions off and back on, and shows the authorization state of every credential scope in use.
 The choice is stored in the database, so it survives a restart; `default-preset` decides only until
-that first tap and stops mattering afterwards. A preset whose provider is not configured (no token,
-an unwritable directory) stays on the screen, marked, and cannot be selected. The startup log names
-the whole catalog with values — `Description presets: grok-fast (grok/grok-4.6/low), claude-opus
-(claude/opus); default 'grok-fast'` — and the first time a preset is actually resolved (a
-description, or opening `/ai`) one more INFO line names the running preset and whether the choice
-came from the owner or from `default-preset`.
+that first tap and stops mattering afterwards. A preset whose provider is not configured (no token, a
+directory that could not be created) stays on the screen, marked, and cannot be selected. The startup
+log names the whole catalog with values — `Description presets: grok-fast (grok/grok-4.6/low),
+claude-opus (claude/opus); default 'grok-fast'` — and one more INFO line names the preset that is
+actually running and where the choice came from, repeated whenever that changes, so a switch is
+visible in the log too. That line is written when a preset is next resolved (the following
+description, or opening `/ai`), not at the moment of the tap.
 
 The `presets` map replaces `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EFFORT` and
 `CLAUDE_MODEL`: while the map is empty those four still describe a single preset, and declaring the

@@ -169,12 +169,18 @@ application:
 
 `default-preset` decides only **until the owner's first pick in `/ai`**; after that the stored id
 wins and changing `default-preset` in yaml has no effect. The startup log names the whole catalog
-with values, and the first resolution names the active preset and its source, so "which model is
-running" is answerable from the log alone.
+with values, and `ActivePresetResolver` logs the active preset and its source again **every time that
+line changes** — a switch in `/ai`, or a fallback taking over — so "which model is running" stays
+answerable from the log. The catch to know: that line is written when a preset is next resolved (the
+following description call, or opening `/ai`), not at the moment of the click, and the write itself
+only reaches the log as `AppSettings: 'ai.description.preset.active' set by <owner>` at INFO with the
+value at DEBUG.
 
-A preset whose provider is not configured (no token, an unwritable directory, no factory for that
-provider) stays in the catalog, is marked in `/ai` and cannot be selected; startup fails only when
-**every** declared preset is unusable. `ANTHROPIC_MODEL`, when set, displaces the declared `model` of
+A preset whose provider is not configured (no token, a directory that could not be created, no
+factory for that provider) stays in the catalog, is marked in `/ai` and cannot be selected; startup
+fails only when **every** declared preset is unusable. An existing directory that is merely not
+writable — the root-owned `grok-home` the README warns about — is **not** in that set: creation
+succeeds, the factory only WARNs, and the preset stays selectable and fails later at call time. `ANTHROPIC_MODEL`, when set, displaces the declared `model` of
 every claude preset — the catalog logs a WARN naming the displaced pair, and `/ai` shows the model
 that will actually be used.
 
