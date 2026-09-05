@@ -61,29 +61,48 @@ class NotificationJudgeService(
     private val snoozes = SnoozeRegistry()
     private val perCameraMutex = ConcurrentHashMap<String, Mutex>()
     private val queued = ConcurrentHashMap<String, AtomicInteger>()
-    private val inFlight = Semaphore(MAX_IN_FLIGHT)
+    private val inFlight = Semaphore(properties.maxInFlight)
 
     /**
      * Точка входа фасада: работа идёт в [JudgeCoroutineScope], и в норме вызов возвращается сразу.
      *
-     * Приостановиться он может ровно в одном случае — когда в работе уже [MAX_IN_FLIGHT] кандидатов.
-     * Это намеренно возвращает то давление, которое было до судьи: тогда фасад звал рассылку прямо в
-     * корутине consumer-а, и забитый канал очереди Telegram останавливал пайплайн. Теперь вместо
-     * этого ждёт [inFlight], пайплайн перестаёт разбирать записи, они остаются необработанными и
-     * будут взяты позже — задержка, а не потеря.
+     * Сверх `maxInFlight` кандидатов в памяти вызов не ждёт освобождения, а сам отправляет запись
+     * неосуждённой — ровно как переполнение очереди камеры. Ожидание было бы хуже вдвойне: оно
+     * глушило бы поканальный клапан [QUEUE_WARN_THRESHOLD] (при нескольких камерах общий потолок
+     * упирается раньше, чем любая из них дойдёт до своей глубины) и добавляло бы в корутине
+     * consumer-а точку приостановки, отмена в которой теряет запись — фасад уже вызвал
+     * `saveProcessingResult`. Рассылка при этом идёт в корутине вызывающего: новых корутин с ещё
+     * одним комплектом кадров не появляется, а пайплайн получает то самое давление, которое было
+     * до судьи, когда фасад звал рассылку сам.
      *
      * Старт [CoroutineStart.ATOMIC] — не оптимизация, а единственный способ довести кандидата до
      * обработчика отмены в [process]. При обычном старте scope, погашенный мгновением раньше, вернул
      * бы уже отменённую задачу, чьё тело не выполняется вовсе: ни строки вердикта, ни отправки.
      * Окно открыто на всей остановке — `FrameAnalysisPipeline.stop()` отменяет consumer-ов без
-     * join, — а фасад к этому моменту уже вызвал `saveProcessingResult`, так что пайплайн запись не
-     * повторит. С ATOMIC тело стартует, отмену поднимает первая же точка приостановки, и досылку
-     * делает та же ветка, что и для кандидата, отменённого уже в работе. Он же делает безопасным
+     * join. С ATOMIC тело стартует, отмену поднимает первая же точка приостановки, и досылку делает
+     * та же ветка, что и для кандидата, отменённого уже в работе. Он же делает безопасным
      * освобождение разрешения в `finally`: тело, которое не стартовало, его бы не вернуло.
      */
     @OptIn(DelicateCoroutinesApi::class)
     suspend fun submit(candidate: JudgeCandidate): Job {
-        inFlight.acquire()
+        if (!inFlight.tryAcquire()) {
+            logger.warn {
+                "Judge already holds ${properties.maxInFlight} candidates; sending " +
+                    "recording=${candidate.recording.id} (cam=${candidate.recording.camId}) unjudged"
+            }
+            // Неделимо: запись помечена обработанной, и отмена между строкой вердикта и рассылкой
+            // потеряла бы её совсем — тот же довод, что и в ветке отмены [process].
+            withContext(NonCancellable) {
+                record(
+                    unexpectedFailover(
+                        candidate,
+                        IllegalStateException("judge in-flight limit ${properties.maxInFlight}"),
+                    ),
+                )
+                send(candidate, AtomicBoolean(false))
+            }
+            return Job().apply { complete() }
+        }
         return try {
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
@@ -93,6 +112,9 @@ class NotificationJudgeService(
                 }
             }
         } catch (e: Throwable) {
+            // Защитная: `launch` тело синхронно не исполняет, так что сюда попадём, только если он
+            // не смог создать задачу вовсе — тогда `finally` выше не отработает и вернуть
+            // разрешение больше некому.
             inFlight.release()
             throw e
         }
@@ -206,7 +228,7 @@ class NotificationJudgeService(
         // это ради неё snooze и сделан, — а всё платное ниже (SQL контекста, слот лимита, модель)
         // защищено. Тот же фильтр применяет и сама рассылка, только уже после вердикта.
         if (!hasRecipients(recording.id)) {
-            record(base(VerdictStage.BYPASS, VerdictDecision.PUBLISH, VerdictReason.NO_RECIPIENTS))
+            record(base(VerdictStage.BYPASS, VerdictDecision.SUPPRESS, VerdictReason.NO_RECIPIENTS))
             return
         }
         val context =
@@ -337,12 +359,21 @@ class NotificationJudgeService(
     /**
      * Есть ли кому доставить. Fail-open к «есть»: пропустить настоящее уведомление из-за
      * недоступной базы хуже, чем заплатить за вердикт, который никто не увидит.
+     *
+     * Граница по времени обязательна, как у [judgeEnabled]: это запрос к базе, а пул R2DBC не
+     * задаёт `max-acquire-time`, так что исчерпанный пул подвесил бы его навсегда — держа при этом
+     * и мьютекс камеры, и разрешение in-flight, то есть в итоге и приём записей.
      */
     private suspend fun hasRecipients(recordingId: UUID): Boolean =
         try {
-            telegram.hasRecordingRecipients()
+            withTimeout(SETTINGS_READ_TIMEOUT) { telegram.hasRecordingRecipients() }
         } catch (e: CancellationException) {
-            throw e
+            if (e is TimeoutCancellationException) {
+                logger.warn { "Reading the subscriber list for $recordingId timed out; judging anyway" }
+                true
+            } else {
+                throw e
+            }
         } catch (e: Exception) {
             logger.warn(e) { "Failed to read the subscriber list for $recordingId; judging anyway" }
             true
@@ -441,20 +472,10 @@ class NotificationJudgeService(
     /** Класс и сообщение без стека и без чужих строк — в колонке 1024 символа и никаких секретов. */
     private fun Throwable.describe(): String = "${this::class.simpleName}: ${message.orEmpty()}".take(ERROR_MAX)
 
-    internal companion object {
+    private companion object {
         val SETTINGS_READ_TIMEOUT = 5.seconds
         val CONTEXT_BUILD_TIMEOUT = 10.seconds
         const val QUEUE_WARN_THRESHOLD = 20
         const val ERROR_MAX = 1024
-
-        /**
-         * Потолок кандидатов «в работе» на все камеры сразу — предохранитель памяти, а не регулятор
-         * пропускной способности. [QUEUE_WARN_THRESHOLD] памяти никогда не ограничивал: он считает
-         * глубину очереди камеры, а счётчик уменьшается только когда [process] дошёл до конца, то
-         * есть кандидат, застрявший в рассылке, держит и своё место, и свои визуализированные кадры.
-         * Каждый кандидат — порядка 2 МБ кадров, так что 48 ограничивают худший случай примерно
-         * сотней мегабайт.
-         */
-        const val MAX_IN_FLIGHT = 48
     }
 }

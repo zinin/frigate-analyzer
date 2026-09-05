@@ -367,12 +367,20 @@ run in parallel. A queue deeper than 20 on one camera logs a WARN and sends the 
 
 **Two different limits, often confused.** The per-camera threshold of 20 governs *waiting for the
 model*; it never bounded memory and cannot, because its counter only drops when `process` finishes —
-a candidate suspended inside the fan-out keeps both its slot and its visualized frames. Memory is
-bounded by `MAX_IN_FLIGHT` (48) permits taken in `submit` and released when the job ends. That is the
-one case where `submit` suspends, and it deliberately restores the backpressure that existed before
-the judge: back then the facade called `sendRecordingNotification` inline, so a full
-`TelegramNotificationQueue` channel stalled the pipeline. Under a Telegram outage the consumer now
-waits again, recordings stay unprocessed and are picked up later — a delay, not a loss.
+a candidate suspended inside the fan-out keeps both its slot and its frames. Memory is bounded
+instead by `APP_AI_JUDGE_MAX_IN_FLIGHT` (32) permits taken in `submit` and released when the job
+ends. Beyond that ceiling `submit` does **not** wait: it records `FAILOVER` / `TRANSPORT` and sends
+the recording unjudged, from the caller's own coroutine. Both halves of that matter. Waiting would
+silence the per-camera valve — with several cameras the global ceiling is reached before any single
+one reaches depth 21, so a model slowdown would stop notifications instead of letting them through
+unjudged — and it would add a cancellable suspension point to the pipeline consumer, where a
+shutdown loses the recording outright (the facade has already called `saveProcessingResult`).
+Sending from the caller creates no second coroutine holding another set of frames, and it restores
+the back-pressure that existed before the judge, when the facade called `sendRecordingNotification`
+inline and a full `TelegramNotificationQueue` channel stalled the pipeline.
+
+Size the ceiling by camera resolution: a candidate pins its annotated frames **and** the originals
+held by the description supplier's closure, so it is several megabytes on a 4K camera, not two.
 
 `submit` launches with `CoroutineStart.ATOMIC`. The default mode returns an already-cancelled job
 whose body never runs, so a candidate submitted into a scope cancelled a moment earlier would never
@@ -394,9 +402,14 @@ the owner's `/timezone`, then the JVM zone (UTC in the container).
    Hit → record `SNOOZE` / `SUPPRESS` / `SNOOZED` and return without sending or calling the model.
 3. **Recipients.** `TelegramNotificationService.hasRecordingRecipients()` — the same filter the
    fan-out applies, only asked before the money is spent. Nobody → record
-   `BYPASS` / `PUBLISH` / `NO_RECIPIENTS` and return. It sits **after** the snooze check on purpose:
-   a suppressed series must stay free of database work, and everything below this line is paid for
-   (context SQL, a rate-limit slot, the model). Fail-open to "there are recipients".
+   `BYPASS` / `SUPPRESS` / `NO_RECIPIENTS` and return. `SUPPRESS`, not `PUBLISH`: `StatusService`
+   counts `published` from the verdict column alone, and a row that by construction went nowhere
+   would mislead exactly the operator asking why no notifications arrive; `suppressedByReason` only
+   counts stage `JUDGE`, so the reason breakdown stays clean too. It sits **after** the snooze check
+   on purpose: a suppressed series must stay free of database work, and everything below this line
+   is paid for (context SQL, a rate-limit slot, the model). Bounded by the same 5 s as the runtime
+   switch — it is a database read holding both the camera mutex and an in-flight permit — and
+   fail-open to "there are recipients".
 4. **Context.** `JudgeContextBuilder` assembles JSON (recording, frames, clustered objects with
    static score, tracker reason, active tracks, recent verdicts, last published, camera notes).
    `confidence` and `frames_seen` come from the detections of that one cluster — `BboxCluster` keeps
@@ -467,7 +480,7 @@ Any judge failure sends the notification as today. Reasons by exception:
 | `JUDGE` | `SUPPRESS` | `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE` | no | yes |
 | `SNOOZE` | `SUPPRESS` | `SNOOZED` | no | no |
 | `BYPASS` | `PUBLISH` | `JUDGE_OFF` | yes | no |
-| `BYPASS` | `PUBLISH` | `NO_RECIPIENTS` | no — nobody to send to | no |
+| `BYPASS` | `SUPPRESS` | `NO_RECIPIENTS` | no — nobody to send to | no |
 | `FAILOVER` | `PUBLISH` | `TIMEOUT`, `RATE_LIMITED`, `UNAUTHORIZED`, `INVALID_RESPONSE`, `TRANSPORT`, `CONTEXT_ERROR` | yes | maybe (failed) |
 
 ### `/ai` and `app_settings`

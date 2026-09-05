@@ -169,6 +169,8 @@ application:
       queue-timeout: ${APP_AI_JUDGE_QUEUE_TIMEOUT:30s}
       timeout: ${APP_AI_JUDGE_TIMEOUT:60s}
       max-concurrent: ${APP_AI_JUDGE_MAX_CONCURRENT:2}
+      # Потолок кандидатов в памяти судьи на все камеры сразу; сверх него запись уходит неосуждённой.
+      max-in-flight: ${APP_AI_JUDGE_MAX_IN_FLIGHT:32}
       # Кадры с рамками, первые N по ранжированию визуализации, в хронологическом порядке.
       max-frames: ${APP_AI_JUDGE_MAX_FRAMES:4}
       max-image-side: ${APP_AI_JUDGE_MAX_IMAGE_SIDE:1280}

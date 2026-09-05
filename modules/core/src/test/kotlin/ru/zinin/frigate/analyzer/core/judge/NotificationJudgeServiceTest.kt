@@ -52,9 +52,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class NotificationJudgeServiceTest {
+    /** Потолок in-flight в тестах про сам потолок; остальным он не должен мешать. */
+    private val cap = 4
+
     private val agent = mockk<JudgeAgent>()
     private val runtimeSettings = mockk<JudgeRuntimeSettings>()
     private val contextBuilder = mockk<JudgeContextBuilder>()
@@ -137,7 +141,10 @@ class NotificationJudgeServiceTest {
         Duration.ofSeconds(3),
     )
 
-    private fun TestScope.service(scopeJob: Job = SupervisorJob()): NotificationJudgeService {
+    private fun TestScope.service(
+        scopeJob: Job = SupervisorJob(),
+        maxInFlight: Int = 64,
+    ): NotificationJudgeService {
         val agentProvider =
             mockk<ObjectProvider<JudgeAgent>>().also {
                 every { it.getIfAvailable() } returns agent
@@ -160,7 +167,7 @@ class NotificationJudgeServiceTest {
             verdicts,
             limiterProvider,
             telegram,
-            JudgeProperties(enabled = true),
+            JudgeProperties(enabled = true, maxInFlight = maxInFlight),
             ObjectTrackerProperties(),
             DescriptionProperties(enabled = true, provider = "claude", common = commonSection()),
             JudgeCoroutineScope(CoroutineScope(UnconfinedTestDispatcher(testScheduler) + scopeJob)),
@@ -196,11 +203,15 @@ class NotificationJudgeServiceTest {
             coEvery { contextBuilder.build(any(), capture(clusters), any()) } returns
                 JudgeContextResult("{}", emptyList())
 
-            s.process(candidate(classes = listOf("person", "person")))
+            val c = candidate(classes = listOf("person", "person"))
+            s.process(c)
 
-            // Два человека в 500 px друг от друга — два кластера по одной детекции. Одинаковые
-            // размеры здесь и означают, что членство доехало до билдера настоящим.
-            assertEquals(listOf(1, 1), clusters.captured.map { it.detections.size })
+            // Два человека в 500 px друг от друга — два кластера по одной детекции, и каждый несёт
+            // СВОЮ: по размерам это было бы не отличить от произвольной раздачи детекций кластерам.
+            assertEquals(
+                c.detections.map { listOf(it.id) }.toSet(),
+                clusters.captured.map { cluster -> cluster.detections.map { it.id } }.toSet(),
+            )
         }
 
     @Test
@@ -239,6 +250,10 @@ class NotificationJudgeServiceTest {
             val v = recorded.single()
             assertEquals(VerdictStage.BYPASS, v.stage)
             assertEquals(VerdictReason.NO_RECIPIENTS, v.reason)
+            // Не PUBLISH: StatusService считает published по одному только verdict, и строка,
+            // которая по построению никуда не ушла, врала бы ровно тому, кто выясняет, почему
+            // уведомлений нет.
+            assertEquals(VerdictDecision.SUPPRESS, v.verdict)
             coVerify(exactly = 0) { agent.judge(any()) }
             coVerify(exactly = 0) { limiter.tryAcquire() }
             coVerify(exactly = 0) { telegram.sendRecordingNotification(any(), any(), any()) }
@@ -256,6 +271,21 @@ class NotificationJudgeServiceTest {
 
             assertEquals(VerdictStage.JUDGE, recorded.single().stage)
             coVerify(exactly = 1) { agent.judge(any()) }
+        }
+
+    @Test
+    fun `a hanging subscriber query does not stall the judge`() =
+        runTest(timeout = 10.seconds) {
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            val s = service()
+            // Запрос подписчиков — единственная точка приостановки судьи, у которой не было границы,
+            // а держит она и мьютекс камеры, и разрешение in-flight.
+            coEvery { telegram.hasRecordingRecipients() } coAnswers { CompletableDeferred<Boolean>().await() }
+
+            s.process(candidate())
+
+            assertEquals(VerdictStage.JUDGE, recorded.single().stage)
         }
 
     @Test
@@ -373,6 +403,7 @@ class NotificationJudgeServiceTest {
 
             s.submit(candidate()).join()
 
+            assertEquals(VerdictStage.FAILOVER, recorded.single().stage)
             assertEquals(VerdictDecision.PUBLISH, recorded.single().verdict)
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
         }
@@ -397,28 +428,55 @@ class NotificationJudgeServiceTest {
         }
 
     @Test
-    fun `a stalled fan-out makes submit wait instead of piling candidates up`() =
+    fun `beyond the in-flight cap the caller sends the candidate unjudged`() =
         runTest {
             val gate = CompletableDeferred<Unit>()
-            val s = service()
-            // Судья выключен: каждый кандидат идёт коротким путём record + send, так что все они
-            // застревают именно в рассылке — так и выглядит затык очереди Telegram.
+            val s = service(maxInFlight = cap)
+            // Судья выключен: каждый кандидат идёт коротким путём record + send и застревает именно
+            // в рассылке — так выглядит забитая очередь Telegram.
             coEvery { runtimeSettings.judgeEnabled() } returns false
             coEvery { telegram.sendRecordingNotification(any(), any(), any()) } coAnswers { gate.await() }
-            repeat(NotificationJudgeService.MAX_IN_FLIGHT) { s.submit(candidate(at = ts.plusSeconds(it.toLong()))) }
+            repeat(cap) { s.submit(candidate(at = ts.plusSeconds(it.toLong()))) }
             runCurrent()
 
             val extra = candidate(camId = "cam9")
             val waiting = launch { s.submit(extra) }
             runCurrent()
 
-            // Без ограничителя фасад получил бы управление сразу, а кандидат — свою корутину,
-            // удерживающую визуализированные кадры, и так до OOM.
-            assertTrue(waiting.isActive, "submit must wait for a free in-flight slot")
-            assertTrue(recorded.none { it.recordingId == extra.recording.id }, "the waiting candidate must do no work")
+            // Потолок не останавливает уведомления, а снимает с них судью: иначе затык Telegram
+            // вместе с медленной моделью копил бы кандидатов с их кадрами без границы.
+            val v = recorded.single { it.recordingId == extra.recording.id }
+            assertEquals(VerdictStage.FAILOVER, v.stage)
+            assertEquals(VerdictDecision.PUBLISH, v.verdict)
+            // Рассылку несёт корутина вызывающего — это и есть давление на пайплайн, вернувшееся на
+            // место того, что было до судьи.
+            assertTrue(waiting.isActive, "the caller carries the fan-out itself")
 
             gate.complete(Unit)
             waiting.join()
+        }
+
+    @Test
+    fun `a caller cancelled at the in-flight cap does not lose the candidate`() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            val s = service(maxInFlight = cap)
+            coEvery { runtimeSettings.judgeEnabled() } returns false
+            coEvery { telegram.sendRecordingNotification(any(), any(), any()) } coAnswers { gate.await() }
+            repeat(cap) { s.submit(candidate(at = ts.plusSeconds(it.toLong()))) }
+            runCurrent()
+
+            val extra = candidate(camId = "cam9")
+            val waiting = launch { s.submit(extra) }
+            runCurrent()
+            // docker stop под завалом: consumer пайплайна отменён, а запись фасад уже пометил
+            // обработанной — повторить её некому.
+            waiting.cancel()
+            gate.complete(Unit)
+            waiting.join()
+
+            assertTrue(recorded.any { it.recordingId == extra.recording.id }, "the cancelled caller must still record")
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(extra.recording, any(), any()) }
         }
 
     @Test

@@ -251,6 +251,7 @@ failure sends the notification unjudged.
 | `APP_AI_JUDGE_QUEUE_TIMEOUT` | 30s | Max wait for a free judge concurrency slot. |
 | `APP_AI_JUDGE_TIMEOUT` | 60s | Per-call judge timeout including the executor's retries. Size it for the **judge** preset, not the slowest description preset. |
 | `APP_AI_JUDGE_MAX_CONCURRENT` | 2 | Max simultaneous judge calls. Separate semaphore from descriptions. Validated `1..10`. |
+| `APP_AI_JUDGE_MAX_IN_FLIGHT` | 32 | Candidates the judge may hold at once across all cameras — a memory ceiling, not a throughput knob. Each candidate pins its annotated frames **and** the originals held by the description supplier, so size it by camera resolution. Beyond the ceiling the recording is sent unjudged (`FAILOVER` / `TRANSPORT`) by the calling coroutine, which is also what back-pressures the pipeline. Validated `1..512`. |
 | `APP_AI_JUDGE_MAX_FRAMES` | 4 | Annotated frames forwarded to the judge, first N of the visualization ranking then chronological. Validated `1..10`. |
 | `APP_AI_JUDGE_MAX_IMAGE_SIDE` | 1280 | Longest frame side before the judge call; `0` = as-is. Validated `0` or `256..8192`. |
 | `APP_AI_JUDGE_RATE_LIMIT_ENABLED` | true | Sliding-window throttle on judge invocations. |

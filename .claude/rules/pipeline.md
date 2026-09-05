@@ -55,9 +55,10 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 - When `application.ai.judge.enabled=true`, hands the candidate to `NotificationJudgeService.submit`
   and returns (the pipeline consumer does not wait for the model; send-or-not happens inside the
   judge on `JudgeCoroutineScope`). Without that bean, sends the Telegram notification itself.
-  `submit` suspends in exactly one case — the judge already holds `MAX_IN_FLIGHT` candidates — which
-  intentionally stalls the consumer instead of letting stuck candidates accumulate frames without a
-  ceiling. See "Two different limits" in `ai-description.md`.
+  Beyond `APP_AI_JUDGE_MAX_IN_FLIGHT` candidates in memory, `submit` sends the recording unjudged
+  from the consumer's own coroutine rather than queueing another one — that bounds memory and puts
+  the back-pressure back where it was before the judge. See "Two different limits" in
+  `ai-description.md`.
 
 ## File Watching & Startup
 
