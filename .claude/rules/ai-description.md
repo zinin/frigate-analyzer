@@ -363,25 +363,49 @@ When the bean exists, `RecordingProcessingFacade` hands a `JudgeCandidate` to
 `NotificationJudgeService.submit` and returns; the pipeline consumer does not wait for the model.
 `JudgeCoroutineScope` (IO + `SupervisorJob`, `@PreDestroy` cancel) runs the work. Without the bean
 the facade sends as today. Candidates of one camera are serialized on a per-camera mutex; cameras
-run in parallel. A queue deeper than 20 on one camera logs a WARN.
+run in parallel. A queue deeper than 20 on one camera logs a WARN and sends the overflow unjudged.
+
+**Two different limits, often confused.** The per-camera threshold of 20 governs *waiting for the
+model*; it never bounded memory and cannot, because its counter only drops when `process` finishes —
+a candidate suspended inside the fan-out keeps both its slot and its visualized frames. Memory is
+bounded by `MAX_IN_FLIGHT` (48) permits taken in `submit` and released when the job ends. That is the
+one case where `submit` suspends, and it deliberately restores the backpressure that existed before
+the judge: back then the facade called `sendRecordingNotification` inline, so a full
+`TelegramNotificationQueue` channel stalled the pipeline. Under a Telegram outage the consumer now
+waits again, recordings stay unprocessed and are picked up later — a delay, not a loss.
+
+`submit` launches with `CoroutineStart.ATOMIC`. The default mode returns an already-cancelled job
+whose body never runs, so a candidate submitted into a scope cancelled a moment earlier would never
+reach the cancellation fallback below — and the facade has already called `saveProcessingResult`,
+so nothing would retry it (`FrameAnalysisPipeline.stop()` cancels its consumers without joining
+them, which is what opens that window). ATOMIC also makes releasing the in-flight permit in a
+`finally` safe: a body that never started would never release it.
 
 Frames sent to the model are the first `APP_AI_JUDGE_MAX_FRAMES` visualized frames (the same ranking
 as Telegram) re-ordered by `frameIndex`. Local times in the prompt use `APP_AI_JUDGE_ZONE`; empty =
 the owner's `/timezone`, then the JVM zone (UTC in the container).
 
-### Five steps (`NotificationJudgeService.judgeLocked`)
+### Six steps (`NotificationJudgeService.judgeLocked`)
 
 1. **Runtime switch.** `JudgeRuntimeSettings.judgeEnabled()`, fail-open to on, 5 s bound. Off →
    record `BYPASS` / `PUBLISH` / `JUDGE_OFF` and send.
 2. **Snooze.** In-memory `SnoozeRegistry.covers` (window by absolute distance from the anchor, so a
    newest-first backlog still matches; a new class or a higher count of a covered class breaks it).
    Hit → record `SNOOZE` / `SUPPRESS` / `SNOOZED` and return without sending or calling the model.
-3. **Context.** `JudgeContextBuilder` assembles JSON (recording, frames, clustered objects with
+3. **Recipients.** `TelegramNotificationService.hasRecordingRecipients()` — the same filter the
+   fan-out applies, only asked before the money is spent. Nobody → record
+   `BYPASS` / `PUBLISH` / `NO_RECIPIENTS` and return. It sits **after** the snooze check on purpose:
+   a suppressed series must stay free of database work, and everything below this line is paid for
+   (context SQL, a rate-limit slot, the model). Fail-open to "there are recipients".
+4. **Context.** `JudgeContextBuilder` assembles JSON (recording, frames, clustered objects with
    static score, tracker reason, active tracks, recent verdicts, last published, camera notes).
+   `confidence` and `frames_seen` come from the detections of that one cluster — `BboxCluster` keeps
+   them — because a class-wide filter would give two people standing apart one shared confidence and
+   the union of their frames, contradicting the `STATIC_OBJECT` evidence in the same block.
    Failure → `FAILOVER` / `PUBLISH` / `CONTEXT_ERROR` and send.
-4. **Rate limit.** `JudgeRateLimiter.tryAcquire()`. Miss → `FAILOVER` / `PUBLISH` / `RATE_LIMITED`
+5. **Rate limit.** `JudgeRateLimiter.tryAcquire()`. Miss → `FAILOVER` / `PUBLISH` / `RATE_LIMITED`
    and send unjudged. The slot is not refunded on a later model failure.
-5. **Model.** `JudgeAgent.judge`. Success → `JUDGE` plus the model's decision/reason; `SnoozeRegistry.set`
+6. **Model.** `JudgeAgent.judge`. Success → `JUDGE` plus the model's decision/reason; `SnoozeRegistry.set`
    runs **only on this branch** (`FAILOVER` / `BYPASS` / `SNOOZE` do not arm or extend snooze).
    `PUBLISH` sends, `SUPPRESS` does not. Agent failure → `FAILOVER` / `PUBLISH` with the reason
    below, and send.
@@ -443,6 +467,7 @@ Any judge failure sends the notification as today. Reasons by exception:
 | `JUDGE` | `SUPPRESS` | `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE` | no | yes |
 | `SNOOZE` | `SUPPRESS` | `SNOOZED` | no | no |
 | `BYPASS` | `PUBLISH` | `JUDGE_OFF` | yes | no |
+| `BYPASS` | `PUBLISH` | `NO_RECIPIENTS` | no — nobody to send to | no |
 | `FAILOVER` | `PUBLISH` | `TIMEOUT`, `RATE_LIMITED`, `UNAUTHORIZED`, `INVALID_RESPONSE`, `TRANSPORT`, `CONTEXT_ERROR` | yes | maybe (failed) |
 
 ### `/ai` and `app_settings`
