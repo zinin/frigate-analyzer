@@ -39,7 +39,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | API | `JudgeRuntimeSettings` | `api/` | Same seam for the judge: `activePresetId`/`setActivePresetId`, `judgeEnabled`/`setJudgeEnabled` (absent = `true`) |
 | API | `ProviderAuthStates` | `api/` | `byScope(): Map<String, Health>` (`UNKNOWN`/`HEALTHY`/`LOST`) for the `/ai` screen |
 | API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
-| Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns raw model text; takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
+| Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns `VisionResponse` (primary text plus the provider's fallback representation, when it has one); takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
 | Core | `VisionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
 | Core | `VisionRequest` / `VisionInstructions` | `core/` | One vision call: frames plus `systemPrompt` / `preamble` / `epilogue` / optional `jsonSchema`; the provider inserts frames between preamble and epilogue |
 | Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, frame downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
@@ -206,9 +206,16 @@ model-agnostic:
 
 - the prompt rules always ask for `{"short": …, "detailed": …}` as text, so an unconstrained model
   still answers in the expected shape;
-- `GrokOutputParser` falls back to the JSON found in `text` (via `core/JsonBlockExtractor`, shared
-  with `ClaudeResponseParser`) whenever `structuredOutput` is missing or partial, and reports which
-  source was used through `GrokOutput.fromText`;
+- `GrokOutputParser` keeps both representations of one answer — `structuredOutput` as
+  `GrokOutput.payload` and the response text as `GrokOutput.fallback` (dropped when it repeats the
+  structured object verbatim) — and `GrokBackend` hands both to the executor in `VisionResponse`.
+  The task parses the primary payload; only if it rejects it as `InvalidResponse` does
+  `VisionCallExecutor` parse the fallback, inside the same attempt. That is what covers an endpoint
+  which applies the schema only partially while the text already carries the complete object:
+  without it the paid answer would be thrown away, the call repeated, and a second partial reply
+  would leave the recording with no description or no verdict. `GrokOutput.fromText` still reports
+  which source the primary payload came from (the text JSON is read via `core/JsonBlockExtractor`,
+  shared with `ClaudeResponseParser`);
 - on an error whose message matches `GrokExceptionMapper.isStructuredOutputUnsupported`
   (`response_format`, `json_schema`, `parse grammar`, …) `GrokBackend` re-runs the same prompt file
   once without `--json-schema` and keeps the flag off for the rest of the process lifetime

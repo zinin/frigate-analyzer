@@ -126,10 +126,11 @@ JSON
             )
 
         val raw =
-            backend.complete(
-                VisionRequest(request.recordingId, request.frames, DescriptionTask.instructions(request)),
-                Duration.ofSeconds(120),
-            )
+            backend
+                .complete(
+                    VisionRequest(request.recordingId, request.frames, DescriptionTask.instructions(request)),
+                    Duration.ofSeconds(120),
+                ).text
         val result = DescriptionResponseParser(mapper).parse(raw, request.shortMaxLength, request.detailedMaxLength)
         assertEquals("stub-s", result.short)
         assertEquals("stub-d", result.detailed)

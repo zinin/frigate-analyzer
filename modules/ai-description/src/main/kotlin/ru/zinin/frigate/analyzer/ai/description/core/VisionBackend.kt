@@ -3,8 +3,19 @@ package ru.zinin.frigate.analyzer.ai.description.core
 import java.time.Duration
 
 /**
+ * Ответ одной попытки. [text] — то, что провайдер считает ответом. [fallback] — второе
+ * представление того же ответа, если провайдер вернул оба (Grok кладёт объект по схеме в
+ * `structuredOutput`, а его же текстом в `text`): [VisionCallExecutor] разбирает его, только если
+ * задача отвергла [text], и делает это в пределах той же попытки — без второго вызова модели.
+ */
+data class VisionResponse(
+    val text: String,
+    val fallback: String? = null,
+)
+
+/**
  * SPI провайдера: одна попытка без семафора, таймаутов и повторов — всё это делает
- * [VisionCallExecutor]. Возвращает сырой текст модели; разбор — дело задачи. Реализация обязана
+ * [VisionCallExecutor]. Возвращает сырой ответ модели; разбор — дело задачи. Реализация обязана
  * бросать только `DescriptionException` или `CancellationException`; остальное executor оборачивает
  * в `Transport`.
  */
@@ -26,5 +37,5 @@ interface VisionBackend {
     suspend fun complete(
         request: VisionRequest,
         timeout: Duration,
-    ): String
+    ): VisionResponse
 }

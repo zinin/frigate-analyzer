@@ -30,7 +30,7 @@ class ActivePresetResolverTest {
             override suspend fun complete(
                 request: VisionRequest,
                 timeout: Duration,
-            ) = id
+            ) = VisionResponse(id)
         }
 
     private fun entry(

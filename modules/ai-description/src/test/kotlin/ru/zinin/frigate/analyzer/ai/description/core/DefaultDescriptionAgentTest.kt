@@ -34,9 +34,9 @@ class DefaultDescriptionAgentTest {
         override suspend fun complete(
             request: VisionRequest,
             timeout: Duration,
-        ): String {
+        ): VisionResponse {
             calls.incrementAndGet()
-            return handler(request)
+            return VisionResponse(handler(request))
         }
     }
 

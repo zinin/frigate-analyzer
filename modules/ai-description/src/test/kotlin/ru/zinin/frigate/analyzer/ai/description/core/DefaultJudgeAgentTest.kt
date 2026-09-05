@@ -26,9 +26,9 @@ class DefaultJudgeAgentTest {
         override suspend fun complete(
             request: VisionRequest,
             timeout: Duration,
-        ): String {
+        ): VisionResponse {
             lastRequest = request
-            return answer
+            return VisionResponse(answer)
         }
     }
 

@@ -3,6 +3,7 @@ package ru.zinin.frigate.analyzer.ai.description.grok
 import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.zinin.frigate.analyzer.ai.description.core.VisionBackend
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
+import ru.zinin.frigate.analyzer.ai.description.core.VisionResponse
 import java.nio.file.Path
 import java.time.Duration
 
@@ -46,7 +47,7 @@ class GrokBackend(
     override suspend fun complete(
         request: VisionRequest,
         timeout: Duration,
-    ): String {
+    ): VisionResponse {
         var promptFile: Path? = null
         try {
             val file = promptFileWriter.write(request)
@@ -73,7 +74,10 @@ class GrokBackend(
                     "payload=${if (output.fromText) "text" else "structuredOutput"}, ${output.usageSummary}, " +
                     "stopReason=${output.stopReason}, session=${output.sessionId}"
             }
-            return output.payload?.takeUnless { it.isBlank() } ?: throw exceptionMapper.fromStopReason(output.stopReason)
+            val payload =
+                output.payload?.takeUnless { it.isBlank() }
+                    ?: throw exceptionMapper.fromStopReason(output.stopReason)
+            return VisionResponse(payload, output.fallback?.takeUnless { it.isBlank() })
         } finally {
             promptFile?.let { promptFileWriter.delete(it) }
         }

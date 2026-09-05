@@ -55,7 +55,7 @@ class DescriptionPresetCatalogBuilderTest {
                 override suspend fun complete(
                     request: VisionRequest,
                     timeout: Duration,
-                ) = preset.model
+                ) = VisionResponse(preset.model)
             }
         }
     }

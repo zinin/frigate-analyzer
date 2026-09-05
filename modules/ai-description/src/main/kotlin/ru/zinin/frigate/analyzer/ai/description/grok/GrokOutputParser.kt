@@ -7,15 +7,28 @@ import tools.jackson.core.JacksonException
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 
-/** Разобранный stdout `grok --output-format json`. Поля описания могут отсутствовать. */
+/** Разобранный stdout `grok --output-format json`. Оба представления ответа могут отсутствовать. */
 data class GrokOutput(
     val stopReason: String?,
     val sessionId: String?,
-    /** JSON structured output целиком или текст ответа; null = модель ничего не вернула. */
-    val payload: String?,
+    /** Объект `structuredOutput` целиком, если эндпоинт применил `--json-schema`. */
+    val structured: String?,
+    /** Текст ответа; у моделей, игнорирующих схему, тот же объект лежит здесь, иногда в фенсе. */
+    val text: String?,
     val usageSummary: String,
-    val fromText: Boolean = false,
-)
+) {
+    /** Что задача разбирает первым: объект по схеме авторитетнее свободного текста. */
+    val payload: String? get() = structured ?: text
+
+    /**
+     * Запасной разбор той же попытки. Структура бывает неполной там, где текст уже несёт готовый
+     * объект (модель ответила, но схему применила частично), и держаться за неё значило бы
+     * выбросить оплаченный ответ и заплатить за повтор.
+     */
+    val fallback: String? get() = text?.takeIf { structured != null && it != structured }
+
+    val fromText: Boolean get() = structured == null && text != null
+}
 
 /**
  * `--output-format json` даёт один объект: `text`, `stopReason`, `sessionId`, `usage`,
@@ -24,7 +37,8 @@ data class GrokOutput(
  *
  * `structuredOutput` заполняют только эндпоинты, которые применяют `--json-schema`. BYOK-модели
  * из `config.toml` схему часто игнорируют и кладут тот же объект в `text`, иногда в markdown-фенс,
- * поэтому при пустом structured output в [payload] уходит текст, а разбор JSON — дело задачи.
+ * поэтому парсер отдаёт оба представления: [GrokOutput.payload] задача разбирает первым,
+ * [GrokOutput.fallback] — если первое она отвергла. Сам разбор JSON — дело задачи.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -40,9 +54,9 @@ class GrokOutputParser(
         return GrokOutput(
             stopReason = node["stopReason"]?.textOrNull(),
             sessionId = node["sessionId"]?.textOrNull(),
-            payload = structured?.let { objectMapper.writeValueAsString(it) } ?: text,
+            structured = structured?.let { objectMapper.writeValueAsString(it) },
+            text = text,
             usageSummary = usageSummary(node),
-            fromText = structured == null && text != null,
         )
     }
 

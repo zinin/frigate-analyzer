@@ -53,6 +53,8 @@ class VisionCallExecutorTest {
     private val publisher = ApplicationEventPublisher { event -> events.add(event) }
 
     private class FakeBackend(
+        /** Второе представление того же ответа, как у Grok; null = провайдер отдаёт одно. */
+        private val fallback: String? = null,
         private val handler: suspend (VisionRequest) -> String,
     ) : VisionBackend {
         override val providerId = "fake"
@@ -67,9 +69,9 @@ class VisionCallExecutorTest {
         override suspend fun complete(
             request: VisionRequest,
             timeout: Duration,
-        ): String {
+        ): VisionResponse {
             calls.incrementAndGet()
-            return handler(request)
+            return VisionResponse(handler(request), fallback)
         }
     }
 
@@ -158,6 +160,23 @@ class VisionCallExecutorTest {
     }
 
     private fun authEvents() = events.filterIsInstance<DescriptionProviderAuthEvent>()
+
+    @Test
+    fun `a payload the task rejects is re-parsed from the fallback of the same attempt`() =
+        runTest {
+            val backend = FakeBackend(fallback = "ok") { "invalid" }
+            assertEquals("ok", build(backend).call())
+            // Одна попытка: ответ уже оплачен, второй вызов модели за него платить не должен.
+            assertEquals(1, backend.calls.get())
+        }
+
+    @Test
+    fun `a fallback the task rejects too leaves the ordinary retry in place`() =
+        runTest {
+            val backend = FakeBackend(fallback = "not json") { "invalid" }
+            assertFailsWith<DescriptionException.InvalidResponse> { build(backend).call() }
+            assertEquals(2, backend.calls.get())
+        }
 
     @Test
     fun `happy path returns the parsed value with the preset and the elapsed time`() =

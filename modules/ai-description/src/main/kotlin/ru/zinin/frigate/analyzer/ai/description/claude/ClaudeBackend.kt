@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.ai.description.claude
 
 import ru.zinin.frigate.analyzer.ai.description.core.VisionBackend
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
+import ru.zinin.frigate.analyzer.ai.description.core.VisionResponse
 import java.time.Duration
 
 /**
@@ -25,12 +26,13 @@ class ClaudeBackend(
     override suspend fun complete(
         request: VisionRequest,
         timeout: Duration,
-    ): String {
+    ): VisionResponse {
         val stagedPaths = imageStager.stage(request)
         try {
             val prompt = promptBuilder.build(request, stagedPaths)
             return try {
-                invoker.invoke(prompt, model, request.instructions.systemPrompt, timeout)
+                // Второго представления у Claude нет: SDK отдаёт один текст.
+                VisionResponse(invoker.invoke(prompt, model, request.instructions.systemPrompt, timeout))
             } catch (e: Throwable) {
                 throw exceptionMapper.map(e)
             }

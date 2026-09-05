@@ -30,6 +30,8 @@ class GrokOutputParserTest {
         assertEquals("end_turn", output.stopReason)
         assertEquals("01a06332-cee4-7a82-ac73-8556a6ea21c4", output.sessionId)
         assertEquals("""{"short":"Car","detailed":"A car in the yard."}""", output.payload)
+        // Текст слово в слово повторяет структуру — разбирать его вторым нечего.
+        assertNull(output.fallback)
         assertFalse(output.fromText)
         assertTrue(output.usageSummary.contains("input_tokens=3048"))
         assertTrue(output.usageSummary.contains("output_tokens=120"))
@@ -81,24 +83,26 @@ class GrokOutputParserTest {
     }
 
     @Test
-    fun `partial structured output is kept as the structured payload`() {
+    fun `a partial structured output keeps the response text as the fallback`() {
         val stdout =
             """{"text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}","structuredOutput":{"short":"Bike"},"stopReason":"end_turn"}"""
 
         val output = parser.parse(stdout)
 
         assertEquals("""{"short":"Bike"}""", output.payload)
+        assertEquals("""{"short":"Bike","detailed":"A bike."}""", output.fallback)
         assertFalse(output.fromText)
     }
 
     @Test
-    fun `blank structured fields stay on the structured payload instead of falling back to text`() {
+    fun `blank structured fields keep the response text as the fallback`() {
         val stdout =
             """{"text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}","structuredOutput":{"short":"","detailed":"  "},"stopReason":"end_turn"}"""
 
         val output = parser.parse(stdout)
 
         assertEquals("""{"short":"","detailed":"  "}""", output.payload)
+        assertEquals("""{"short":"Bike","detailed":"A bike."}""", output.fallback)
         assertFalse(output.fromText)
     }
 
@@ -107,6 +111,7 @@ class GrokOutputParserTest {
         val output = parser.parse("""{"text":"sorry","stopReason":"max_tokens","sessionId":"s"}""")
 
         assertEquals("sorry", output.payload)
+        assertNull(output.fallback)
         assertTrue(output.fromText)
         assertEquals("max_tokens", output.stopReason)
         assertTrue(output.usageSummary.contains("usage=absent"))

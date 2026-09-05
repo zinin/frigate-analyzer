@@ -82,8 +82,22 @@ class GrokBackendTest {
             val stdout = """{"stopReason":"end_turn","sessionId":"s","structuredOutput":{"short":"Car","detailed":"A car."}}"""
             val backend = backend(GrokProcessRunner { result(0, stdout) })
 
-            assertEquals("""{"short":"Car","detailed":"A car."}""", backend.complete(request, budget))
+            assertEquals("""{"short":"Car","detailed":"A car."}""", backend.complete(request, budget).text)
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
+    fun `both representations of the answer reach the executor`() =
+        runTest {
+            val stdout =
+                """{"stopReason":"end_turn","structuredOutput":{"short":"Bike"},""" +
+                    """"text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}"}"""
+            val backend = backend(GrokProcessRunner { result(0, stdout) })
+
+            val response = backend.complete(request, budget)
+
+            assertEquals("""{"short":"Bike"}""", response.text)
+            assertEquals("""{"short":"Bike","detailed":"A bike."}""", response.fallback)
         }
 
     @Test
@@ -161,7 +175,7 @@ class GrokBackendTest {
                     },
                 )
 
-            assertEquals("""{"short":"Bike","detailed":"A bike."}""", backend.complete(request, budget))
+            assertEquals("""{"short":"Bike","detailed":"A bike."}""", backend.complete(request, budget).text)
             assertEquals(2, commands.size)
             assertTrue(commands[0].argv.contains("--json-schema"))
             assertFalse(commands[1].argv.contains("--json-schema"))

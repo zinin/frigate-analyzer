@@ -60,7 +60,7 @@ class ClaudeBackendTest {
     fun `happy path stages, invokes, parses and cleans up`() =
         runTest {
             val backend = build(ClaudeInvoker { _, _, _, _ -> """{"short": "s", "detailed": "d"}""" })
-            assertEquals("""{"short": "s", "detailed": "d"}""", backend.complete(request, budget))
+            assertEquals("""{"short": "s", "detailed": "d"}""", backend.complete(request, budget).text)
             coVerify(exactly = 1) { imageStager.cleanup(stagedPaths) }
         }
 

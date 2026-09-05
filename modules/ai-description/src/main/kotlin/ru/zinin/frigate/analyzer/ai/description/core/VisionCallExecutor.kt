@@ -205,13 +205,41 @@ class VisionCallExecutor(
         parse: (String) -> T,
     ): T =
         try {
-            parse(backend.complete(request, limits.timeout))
+            parseAnswer(backend.complete(request, limits.timeout), parse)
         } catch (e: CancellationException) {
             throw e
         } catch (e: DescriptionException) {
             throw e
         } catch (e: Throwable) {
             throw DescriptionException.Transport(e)
+        }
+
+    /**
+     * Провайдер может вернуть два представления одного ответа: Grok кладёт объект по `--json-schema`
+     * в `structuredOutput`, а тот же объект текстом — в `text`, и эндпоинт, применивший схему лишь
+     * частично, оставляет годным именно текст. Задача разбирает основное представление; если оно
+     * негодно, запасное разбирается в той же попытке — ответ уже оплачен, и повтор вызова модели за
+     * него платил бы второй раз, а при таком же частичном ответе оставил бы запись без описания или
+     * без вердикта. Негодны оба — наружу уходит ошибка основного: провайдер считает основным его.
+     */
+    private fun <T> parseAnswer(
+        response: VisionResponse,
+        parse: (String) -> T,
+    ): T =
+        try {
+            parse(response.text)
+        } catch (primary: DescriptionException.InvalidResponse) {
+            val fallback = response.fallback ?: throw primary
+            val value =
+                try {
+                    parse(fallback)
+                } catch (_: DescriptionException.InvalidResponse) {
+                    throw primary
+                }
+            logger.warn(primary) {
+                "$label could not parse the primary payload; used the fallback representation of the same answer"
+            }
+            value
         }
 
     companion object {
