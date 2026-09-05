@@ -14,6 +14,8 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
+import ru.zinin.frigate.analyzer.core.judge.JudgeCandidate
+import ru.zinin.frigate.analyzer.core.judge.NotificationJudgeService
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
 import ru.zinin.frigate.analyzer.service.NotificationDecisionService
@@ -36,6 +38,8 @@ class RecordingProcessingFacade(
     // ObjectProvider, а не прямая зависимость: при application.ai.description.enabled=false бина
     // настроек нет вовсе, и обязательная инъекция сломала бы старт с выключенными описаниями.
     private val runtimeSettingsProvider: ObjectProvider<DescriptionRuntimeSettings>,
+    // ObjectProvider: бина нет при application.ai.judge.enabled=false, и фасад тогда отправляет сам.
+    private val judgeProvider: ObjectProvider<NotificationJudgeService>,
 ) {
     suspend fun processAndNotify(
         request: SaveProcessingResultRequest,
@@ -89,6 +93,23 @@ class RecordingProcessingFacade(
         // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
         // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
         val descriptionSupplier = buildDescriptionSupplier(recordingId, request)
+        val judge = judgeProvider.getIfAvailable()
+        if (judge != null) {
+            // Судья держит кандидата на время ответа модели, поэтому уходит в свой scope: consumer
+            // pipeline возвращается к кадрам сразу. Отправка при PUBLISH — внутри судьи, тем же
+            // supplier-ом описания, что построен выше.
+            judge.submit(
+                JudgeCandidate(
+                    recording = recording,
+                    detections = savedResult.detections,
+                    decision = decision,
+                    frames = request.frames,
+                    visualizedFrames = visualizedFrames,
+                    descriptionSupplier = descriptionSupplier,
+                ),
+            )
+            return
+        }
         try {
             telegramNotificationService.sendRecordingNotification(
                 recording,
