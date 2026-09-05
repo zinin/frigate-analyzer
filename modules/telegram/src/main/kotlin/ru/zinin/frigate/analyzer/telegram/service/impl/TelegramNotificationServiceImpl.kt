@@ -42,6 +42,9 @@ class TelegramNotificationServiceImpl(
     private val appSettings: AppSettingsService,
     private val telegramProperties: TelegramProperties,
 ) : TelegramNotificationService {
+    override suspend fun hasRecordingRecipients(): Boolean =
+        userService.getAuthorizedUsersWithZones().any { it.notificationsRecordingEnabled }
+
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
         visualizedFrames: List<VisualizedFrameData>,

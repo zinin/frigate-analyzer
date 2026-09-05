@@ -166,6 +166,13 @@ class NotificationJudgeService(
             )
             return
         }
+        // Строго после snooze и строго до контекста. Подавленная серия так и остаётся бесплатной —
+        // это ради неё snooze и сделан, — а всё платное ниже (SQL контекста, слот лимита, модель)
+        // защищено. Тот же фильтр применяет и сама рассылка, только уже после вердикта.
+        if (!hasRecipients(recording.id)) {
+            record(base(VerdictStage.BYPASS, VerdictDecision.PUBLISH, VerdictReason.NO_RECIPIENTS))
+            return
+        }
         val context =
             try {
                 withTimeout(CONTEXT_BUILD_TIMEOUT) {
@@ -288,6 +295,20 @@ class NotificationJudgeService(
             }
         } catch (e: Exception) {
             logger.warn(e) { "Failed to read the judge switch for $recordingId; failing open" }
+            true
+        }
+
+    /**
+     * Есть ли кому доставить. Fail-open к «есть»: пропустить настоящее уведомление из-за
+     * недоступной базы хуже, чем заплатить за вердикт, который никто не увидит.
+     */
+    private suspend fun hasRecipients(recordingId: UUID): Boolean =
+        try {
+            telegram.hasRecordingRecipients()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to read the subscriber list for $recordingId; judging anyway" }
             true
         }
 

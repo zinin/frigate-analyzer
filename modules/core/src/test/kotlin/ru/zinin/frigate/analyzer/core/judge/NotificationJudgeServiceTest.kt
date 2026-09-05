@@ -147,6 +147,7 @@ class NotificationJudgeServiceTest {
         coEvery { runtimeSettings.judgeEnabled() } returns true
         coEvery { limiter.tryAcquire() } returns true
         coEvery { zoneResolver.resolve() } returns ZoneId.of("UTC")
+        coEvery { telegram.hasRecordingRecipients() } returns true
         coEvery { contextBuilder.build(any(), any(), any()) } returns JudgeContextResult("{}", emptyList())
         coEvery { verdicts.record(capture(recorded)) } answers { mockk() }
         return NotificationJudgeService(
@@ -223,6 +224,36 @@ class NotificationJudgeServiceTest {
             coVerify(exactly = 1) { agent.judge(any()) }
             s.process(candidate(classes = listOf("person", "person"), at = ts.plusSeconds(120)))
             coVerify(exactly = 2) { agent.judge(any()) }
+        }
+
+    @Test
+    fun `a recording nobody will receive costs no model call and no rate-limit slot`() =
+        runTest {
+            val s = service()
+            coEvery { telegram.hasRecordingRecipients() } returns false
+
+            s.process(candidate())
+
+            val v = recorded.single()
+            assertEquals(VerdictStage.BYPASS, v.stage)
+            assertEquals(VerdictReason.NO_RECIPIENTS, v.reason)
+            coVerify(exactly = 0) { agent.judge(any()) }
+            coVerify(exactly = 0) { limiter.tryAcquire() }
+            coVerify(exactly = 0) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
+    fun `an unreadable subscriber list judges anyway`() =
+        runTest {
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            val s = service()
+            coEvery { telegram.hasRecordingRecipients() } throws IllegalStateException("db down")
+
+            s.process(candidate())
+
+            assertEquals(VerdictStage.JUDGE, recorded.single().stage)
+            coVerify(exactly = 1) { agent.judge(any()) }
         }
 
     @Test

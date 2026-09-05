@@ -16,6 +16,9 @@ private val logger = KotlinLogging.logger {}
 @Service
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "false", matchIfMissing = true)
 class NoOpTelegramNotificationService : TelegramNotificationService {
+    /** Nothing is delivered with telegram off, so nobody is a recipient. */
+    override suspend fun hasRecordingRecipients(): Boolean = false
+
     override suspend fun sendRecordingNotification(
         recording: RecordingDto,
         visualizedFrames: List<VisualizedFrameData>,

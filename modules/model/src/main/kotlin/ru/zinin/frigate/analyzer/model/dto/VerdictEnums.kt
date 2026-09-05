@@ -12,6 +12,7 @@ enum class VerdictReason {
     DUPLICATE,
     SNOOZED,
     JUDGE_OFF,
+    NO_RECIPIENTS,
     TIMEOUT,
     RATE_LIMITED,
     UNAUTHORIZED,
