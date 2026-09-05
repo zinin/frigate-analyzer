@@ -13,6 +13,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import java.nio.file.Path
+import java.time.Duration
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -23,6 +24,7 @@ class ClaudeBackendTest {
     private val imageStager = mockk<ClaudeImageStager>()
     private val exceptionMapper = ClaudeExceptionMapper()
     private val stagedPaths: List<Path> = listOf(Path.of("/tmp/f.jpg"))
+    private val budget: Duration = Duration.ofSeconds(90)
     private val descriptionRequest =
         DescriptionRequest(
             recordingId = UUID.randomUUID(),
@@ -57,8 +59,8 @@ class ClaudeBackendTest {
     @Test
     fun `happy path stages, invokes, parses and cleans up`() =
         runTest {
-            val backend = build(ClaudeInvoker { _, _, _ -> """{"short": "s", "detailed": "d"}""" })
-            assertEquals("""{"short": "s", "detailed": "d"}""", backend.complete(request))
+            val backend = build(ClaudeInvoker { _, _, _, _ -> """{"short": "s", "detailed": "d"}""" })
+            assertEquals("""{"short": "s", "detailed": "d"}""", backend.complete(request, budget))
             coVerify(exactly = 1) { imageStager.cleanup(stagedPaths) }
         }
 
@@ -68,25 +70,40 @@ class ClaudeBackendTest {
             var seenModel: String? = null
             val backend =
                 build(
-                    ClaudeInvoker { _, model, _ ->
+                    ClaudeInvoker { _, model, _, _ ->
                         seenModel = model
                         """{"short": "s", "detailed": "d"}"""
                     },
                 )
-            backend.complete(request)
+            backend.complete(request, budget)
             assertEquals("opus", seenModel)
+        }
+
+    @Test
+    fun `the call budget is handed to the invoker`() =
+        runTest {
+            var seenTimeout: Duration? = null
+            val backend =
+                build(
+                    ClaudeInvoker { _, _, _, timeout ->
+                        seenTimeout = timeout
+                        """{"short": "s", "detailed": "d"}"""
+                    },
+                )
+            backend.complete(request, budget)
+            assertEquals(budget, seenTimeout)
         }
 
     @Test
     fun `SDK exceptions go through the exception mapper`() =
         runTest {
-            val backend = build(ClaudeInvoker { _, _, _ -> throw ClaudeSDKException("request was rate limited") })
-            assertFailsWith<DescriptionException.RateLimited> { backend.complete(request) }
+            val backend = build(ClaudeInvoker { _, _, _, _ -> throw ClaudeSDKException("request was rate limited") })
+            assertFailsWith<DescriptionException.RateLimited> { backend.complete(request, budget) }
         }
 
     @Test
     fun `identifies itself as claude`() {
-        val backend = build(ClaudeInvoker { _, _, _ -> "" })
+        val backend = build(ClaudeInvoker { _, _, _, _ -> "" })
         assertEquals("claude", backend.providerId)
         assert(backend.authRecoveryHint.contains("CLAUDE_CODE_OAUTH_TOKEN"))
     }

@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.zinin.frigate.analyzer.ai.description.core.VisionBackend
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import java.nio.file.Path
+import java.time.Duration
 
 private val logger = KotlinLogging.logger {}
 
@@ -38,7 +39,14 @@ class GrokBackend(
     @Volatile
     private var schemaSupported: Boolean = true
 
-    override suspend fun complete(request: VisionRequest): String {
+    /**
+     * [timeout] не используется: у процесса grok нет собственного таймаута, его снимает отмена
+     * корутины из `withTimeout` executor-а, и runner убивает процесс.
+     */
+    override suspend fun complete(
+        request: VisionRequest,
+        timeout: Duration,
+    ): String {
         var promptFile: Path? = null
         try {
             val file = promptFileWriter.write(request)

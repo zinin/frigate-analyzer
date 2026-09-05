@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -26,7 +27,10 @@ class ActivePresetResolverTest {
             override val authScopeId = "grok:grok-4.6"
             override val authRecoveryHint = "hint"
 
-            override suspend fun complete(request: VisionRequest) = id
+            override suspend fun complete(
+                request: VisionRequest,
+                timeout: Duration,
+            ) = id
         }
 
     private fun entry(

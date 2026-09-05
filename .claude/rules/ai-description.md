@@ -39,7 +39,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | API | `JudgeRuntimeSettings` | `api/` | Same seam for the judge: `activePresetId`/`setActivePresetId`, `judgeEnabled`/`setJudgeEnabled` (absent = `true`) |
 | API | `ProviderAuthStates` | `api/` | `byScope(): Map<String, Health>` (`UNKNOWN`/`HEALTHY`/`LOST`) for the `/ai` screen |
 | API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
-| Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns raw model text; carries `providerId`, `authScopeId`, `authRecoveryHint` |
+| Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns raw model text; takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
 | Core | `VisionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
 | Core | `VisionRequest` / `VisionInstructions` | `core/` | One vision call: frames plus `systemPrompt` / `preamble` / `epilogue` / optional `jsonSchema`; the provider inserts frames between preamble and epilogue |
 | Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, frame downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |

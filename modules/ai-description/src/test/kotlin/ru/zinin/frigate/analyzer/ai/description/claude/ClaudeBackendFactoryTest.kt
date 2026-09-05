@@ -18,7 +18,7 @@ class ClaudeBackendFactoryTest {
         claudeProperties = properties(oauthToken, anthropicToken, modelOverride),
         promptBuilder = mockk(relaxed = true),
         imageStager = mockk(relaxed = true),
-        invoker = { _, _, _ -> "{}" },
+        invoker = { _, _, _, _ -> "{}" },
         exceptionMapper = mockk(relaxed = true),
     )
 

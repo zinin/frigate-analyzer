@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.ai.description.claude
 
 import ru.zinin.frigate.analyzer.ai.description.core.VisionBackend
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
+import java.time.Duration
 
 /**
  * Одна попытка через Claude Code CLI: кадры во временные jpg, промпт со ссылками `@/abs/path`,
@@ -21,12 +22,15 @@ class ClaudeBackend(
     override val providerId: String = "claude"
     override val authRecoveryHint: String = AUTH_RECOVERY_HINT
 
-    override suspend fun complete(request: VisionRequest): String {
+    override suspend fun complete(
+        request: VisionRequest,
+        timeout: Duration,
+    ): String {
         val stagedPaths = imageStager.stage(request)
         try {
             val prompt = promptBuilder.build(request, stagedPaths)
             return try {
-                invoker.invoke(prompt, model, request.instructions.systemPrompt)
+                invoker.invoke(prompt, model, request.instructions.systemPrompt, timeout)
             } catch (e: Throwable) {
                 throw exceptionMapper.map(e)
             }

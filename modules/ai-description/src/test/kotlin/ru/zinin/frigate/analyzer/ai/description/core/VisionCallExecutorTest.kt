@@ -64,7 +64,10 @@ class VisionCallExecutorTest {
         override val authRecoveryHint = "run fake-login"
         val calls = AtomicInteger()
 
-        override suspend fun complete(request: VisionRequest): String {
+        override suspend fun complete(
+            request: VisionRequest,
+            timeout: Duration,
+        ): String {
             calls.incrementAndGet()
             return handler(request)
         }

@@ -23,7 +23,10 @@ class DefaultJudgeAgentTest {
         override val authRecoveryHint = "hint"
         var lastRequest: VisionRequest? = null
 
-        override suspend fun complete(request: VisionRequest): String {
+        override suspend fun complete(
+            request: VisionRequest,
+            timeout: Duration,
+        ): String {
             lastRequest = request
             return answer
         }

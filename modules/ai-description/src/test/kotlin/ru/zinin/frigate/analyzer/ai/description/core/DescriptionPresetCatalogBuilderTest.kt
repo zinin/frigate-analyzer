@@ -52,7 +52,10 @@ class DescriptionPresetCatalogBuilderTest {
                 override val authScopeId = this@FakeFactory.authScopeId(preset)
                 override val authRecoveryHint = "hint"
 
-                override suspend fun complete(request: VisionRequest) = preset.model
+                override suspend fun complete(
+                    request: VisionRequest,
+                    timeout: Duration,
+                ) = preset.model
             }
         }
     }
@@ -344,7 +347,7 @@ class DescriptionPresetCatalogBuilderTest {
                 ),
             promptBuilder = mockk(relaxed = true),
             imageStager = mockk(relaxed = true),
-            invoker = { _, _, _ -> "{}" },
+            invoker = { _, _, _, _ -> "{}" },
             exceptionMapper = mockk(relaxed = true),
         )
 

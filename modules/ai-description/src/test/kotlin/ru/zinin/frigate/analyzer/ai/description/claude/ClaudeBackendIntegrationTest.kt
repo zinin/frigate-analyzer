@@ -7,7 +7,6 @@ import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
-import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
@@ -86,20 +85,8 @@ JSON
                 proxy = ClaudeProperties.ProxySection("", "", ""),
                 anthropic = ClaudeProperties.AnthropicSection(),
             )
-        val common =
-            DescriptionProperties.CommonSection(
-                language = "en",
-                shortMaxLength = 200,
-                detailedMaxLength = 1500,
-                maxFrames = 10,
-                queueTimeout = Duration.ofSeconds(30),
-                timeout = Duration.ofSeconds(30),
-                maxConcurrent = 1,
-            )
-        val descriptionProps = DescriptionProperties(enabled = true, provider = "claude", common = common)
-
         val factory = ClaudeAsyncClientFactory(claudeProps)
-        val invoker = DefaultClaudeInvoker(factory, descriptionProps)
+        val invoker = DefaultClaudeInvoker(factory)
 
         val mapper = TestObjectMappers.internalMapper()
         val tempFileWriter =
@@ -141,6 +128,7 @@ JSON
         val raw =
             backend.complete(
                 VisionRequest(request.recordingId, request.frames, DescriptionTask.instructions(request)),
+                Duration.ofSeconds(120),
             )
         val result = DescriptionResponseParser(mapper).parse(raw, request.shortMaxLength, request.detailedMaxLength)
         assertEquals("stub-s", result.short)

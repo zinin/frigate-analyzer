@@ -205,7 +205,7 @@ class VisionCallExecutor(
         parse: (String) -> T,
     ): T =
         try {
-            parse(backend.complete(request))
+            parse(backend.complete(request, limits.timeout))
         } catch (e: CancellationException) {
             throw e
         } catch (e: DescriptionException) {
