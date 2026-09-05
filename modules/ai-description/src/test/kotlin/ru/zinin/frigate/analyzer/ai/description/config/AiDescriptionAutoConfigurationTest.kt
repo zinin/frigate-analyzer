@@ -1,9 +1,14 @@
 package ru.zinin.frigate.analyzer.ai.description.config
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.io.TempDir
+import org.slf4j.LoggerFactory
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
@@ -285,6 +290,72 @@ class AiDescriptionAutoConfigurationTest {
                 assertEquals(listOf("claude"), catalog.all().map { it.id })
                 assertIs<ClaudeBackend>(assertNotNull(catalog.byId("claude")).backend)
             }
+    }
+
+    /**
+     * Переменная перестаёт действовать при объявленной карте, и молчание об этом прячет опечатку в
+     * ней. Тест держит обе стороны решения: leftover предупреждает, yaml-дефолт `claude` — нет.
+     */
+    @Test
+    fun `a leftover provider warns when presets are declared`() {
+        assertThat(leftoverWarningsFor("grok"))
+            .contains("application.ai.description.provider='grok' ignored: presets are declared")
+    }
+
+    /**
+     * Дефолт `claude` биндится всегда, даже если оператор переменную не ставил, и предупреждать о
+     * нём значит учить игнорировать WARN. Регистр при сравнении не важен: деплой с
+     * `APP_AI_DESCRIPTION_PROVIDER=CLAUDE` работал до пресетов и не должен начать шуметь после.
+     */
+    @Test
+    fun `the yaml default provider stays silent when presets are declared`() {
+        for (provider in listOf("claude", "ClAuDe")) {
+            assertThat(leftoverWarningsFor(provider))
+                .describedAs("provider='%s'", provider)
+                .isEmpty()
+        }
+    }
+
+    /**
+     * Опечатка — главная причина, по которой WARN вообще существует, а она не входит в набор
+     * известных провайдеров. Сравнение поэтому идёт по нормализованной строке, а не по результату
+     * `DescriptionPresetDeclarations.normalize`, который на неизвестном значении отдаёт null.
+     */
+    @Test
+    fun `a misspelled leftover provider still warns when presets are declared`() {
+        assertThat(leftoverWarningsFor("gemini"))
+            .contains("application.ai.description.provider='gemini' ignored: presets are declared")
+    }
+
+    /**
+     * WARN печатается при сборке каталога, то есть внутри refresh, поэтому аппендер стоит вокруг
+     * `run`, а не внутри его лямбды. Возвращаются только строки про leftover: осмотр окружения grok
+     * в этом же контексте пишет свои предупреждения (нет CLI, нет auth.json), и они здесь шум.
+     */
+    private fun leftoverWarningsFor(provider: String): List<String> {
+        val root = LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as Logger
+        val appender = ListAppender<ILoggingEvent>()
+        appender.start()
+        root.addAppender(appender)
+        try {
+            runner
+                .withPropertyValues(
+                    *properties(enabled = true, provider = provider),
+                    "application.ai.description.presets.grok-fast.provider=grok",
+                    "application.ai.description.presets.grok-fast.model=grok-4.6",
+                ).run { context -> assertThat(context).hasNotFailed() }
+        } finally {
+            root.detachAppender(appender)
+            appender.stop()
+        }
+        return appender.list
+            .filter { it.level == Level.WARN }
+            .map { it.formattedMessage }
+            .filter { LEFTOVER_MARK in it }
+    }
+
+    private companion object {
+        const val LEFTOVER_MARK = "ignored: presets are declared"
     }
 
     /**

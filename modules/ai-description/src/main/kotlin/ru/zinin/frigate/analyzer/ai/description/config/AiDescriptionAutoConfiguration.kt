@@ -116,7 +116,10 @@ open class AiDescriptionAutoConfiguration {
                 // yaml-дефолт `claude` биндится всегда, даже если оператор переменную не ставил.
                 // WARN только на leftover, который не этот дефолт: опечатка остаётся видимой,
                 // а штатный деплой с картой пресетов не учит игнорировать WARN.
-                val leftover = DescriptionPresetDeclarations.normalize(descriptionProperties.provider)
+                // Нормализуем так же, как условие (trim + lowercase), но без фильтра по известным
+                // провайдерам: опечатка вроде `gemini` тоже обязана остаться видимой, а
+                // DescriptionPresetDeclarations.normalize отдаёт на ней null.
+                val leftover = descriptionProperties.provider.trim().lowercase()
                 if (leftover.isNotEmpty() && leftover != YAML_DEFAULT_PROVIDER) {
                     logger.warn {
                         "${DescriptionPresetDeclarations.PROVIDER_PROPERTY}='${descriptionProperties.provider}' " +
