@@ -46,6 +46,17 @@ class SnoozeRegistryTest {
     }
 
     @Test
+    fun `an older backlog anchor neither replaces nor clears a newer snooze`() {
+        registry.set("cam2", anchor, 15, mapOf("person" to 1))
+        // Бэклог разбирается от новых к старым: следующий кандидат старше и вне окна, поэтому идёт
+        // к модели. Его вердикт не должен сдвигать окно назад — живые дубли остались бы без укрытия.
+        registry.set("cam2", anchor.minusSeconds(3600), 30, mapOf("car" to 1))
+        assertNotNull(registry.covers("cam2", anchor.plusSeconds(300), mapOf("person" to 1)))
+        registry.set("cam2", anchor.minusSeconds(3600), 0, mapOf("car" to 1))
+        assertNotNull(registry.covers("cam2", anchor.plusSeconds(300), mapOf("person" to 1)))
+    }
+
+    @Test
     fun `empty class map is never covered`() {
         registry.set("cam2", anchor, 15, mapOf("person" to 1))
         assertNull(registry.covers("cam2", anchor, emptyMap()))

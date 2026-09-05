@@ -34,17 +34,26 @@ class SnoozeRegistry {
         return if (escalated) null else snooze
     }
 
+    /**
+     * Вердикт кандидата, который СТАРШЕ текущего якоря камеры, не меняет ничего — ни окна, ни
+     * покрытия, ни снятия при `minutes == 0`. Бэклог разбирается от новых к старым
+     * (`findUnprocessedForUpdate` сортирует по `file_creation_timestamp DESC`), и вердикт по более
+     * старой записи сдвинул бы окно назад или снял бы его совсем, оставив живые дубли без укрытия,
+     * ради которого snooze и сделан.
+     */
     fun set(
         camId: String,
         anchor: Instant,
         minutes: Int,
         classes: Map<String, Int>,
     ) {
-        if (minutes <= 0 || classes.isEmpty()) {
-            byCamera.remove(camId)
-            return
+        byCamera.compute(camId) { _, current ->
+            when {
+                current != null && current.anchor.isAfter(anchor) -> current
+                minutes <= 0 || classes.isEmpty() -> null
+                else -> CameraSnooze(camId, anchor, anchor.plus(Duration.ofMinutes(minutes.toLong())), classes.toMap())
+            }
         }
-        byCamera[camId] = CameraSnooze(camId, anchor, anchor.plus(Duration.ofMinutes(minutes.toLong())), classes.toMap())
     }
 
     fun clear(camId: String) {
