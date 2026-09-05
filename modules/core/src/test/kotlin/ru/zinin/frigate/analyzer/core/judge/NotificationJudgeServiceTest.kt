@@ -260,6 +260,20 @@ class NotificationJudgeServiceTest {
         }
 
     @Test
+    fun `an unexpected exception outside inner catches still sends and records FAILOVER TRANSPORT`() =
+        runTest {
+            val s = service()
+            coEvery { limiter.tryAcquire() } throws IllegalStateException("limiter exploded")
+            s.process(candidate())
+            val v = recorded.single()
+            assertEquals(VerdictStage.FAILOVER, v.stage)
+            assertEquals(VerdictReason.TRANSPORT, v.reason)
+            assertEquals(VerdictDecision.PUBLISH, v.verdict)
+            coVerify(exactly = 0) { agent.judge(any()) }
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
     fun `a failing verdict write does not lose the decision`() =
         runTest {
             coEvery { agent.judge(any()) } returns

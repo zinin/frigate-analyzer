@@ -479,7 +479,12 @@ class RecordingProcessingFacadeTest {
 
             assertEquals(recording, captured.captured.recording)
             assertEquals(NotificationDecisionReason.NEW_OBJECTS, captured.captured.decision.reason)
-            assertEquals(request.frames, captured.captured.frames)
+            assertEquals(request.frames.size, captured.captured.frames.size)
+            captured.captured.frames.forEachIndexed { i, frame ->
+                assertEquals(request.frames[i].frameIndex, frame.frameIndex)
+                assertEquals(request.frames[i].detectResponse, frame.detectResponse)
+                assertTrue(frame.frameBytes.isEmpty())
+            }
             assertEquals(1, captured.captured.visualizedFrames.size)
             coVerify(exactly = 0) { telegramNotificationService.sendRecordingNotification(any(), any(), any()) }
         }

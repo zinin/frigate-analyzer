@@ -70,51 +70,59 @@ class VisionCallExecutor(
 
         // Флаг, а не «acquire последним выражением withTimeout»: если дедлайн истекает в момент
         // между возвратом acquire() и завершением блока, kotlinx отбрасывает результат и бросает
-        // TimeoutCancellationException — пермит уже взят, а release жил бы только в следующем try.
+        // TimeoutCancellationException — пермит уже взят. Один внешний finally отпускает его и
+        // на TCE очереди, и на отмену родителя после acquire: раньше второй try начинался позже,
+        // и обычный CancellationException утекал с занятым слотом.
         var acquired = false
         try {
-            withTimeout(limits.queueTimeout.toMillis()) {
-                semaphore.acquire()
-                acquired = true
-            }
-        } catch (e: TimeoutCancellationException) {
-            if (acquired) {
-                semaphore.release()
-                acquired = false
-            }
-            throw DescriptionException.Timeout(cause = e)
-        }
-
-        val callStart = timeSource.markNow()
-        try {
-            // Уменьшение кадров держим под семафором, но вне withTimeout: это CPU-работа, чей
-            // размер известен заранее, и она не должна съедать бюджет, отпущенный модели. Отсюда
-            // же и перехват: вне attempt() исключение ушло бы из execute() сырым, мимо контракта
-            // DescriptionException, а описание важнее уменьшения — кадры пойдут как есть.
-            val prepared =
-                try {
-                    downscaleFrames(request)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    logger.warn(e) { "Cannot downscale frames of ${request.requestId}; sending them unchanged" }
-                    request
+            try {
+                withTimeout(limits.queueTimeout.toMillis()) {
+                    semaphore.acquire()
+                    acquired = true
                 }
-            val value =
-                try {
-                    withTimeout(limits.timeout.toMillis()) {
-                        executeWithRetry(backend, prepared, parse)
-                    }
-                } catch (e: TimeoutCancellationException) {
+            } catch (e: CancellationException) {
+                if (acquired) {
+                    semaphore.release()
+                    acquired = false
+                }
+                if (e is TimeoutCancellationException) {
                     throw DescriptionException.Timeout(cause = e)
                 }
-            return VisionOutcome(value, entry.view, callStart.elapsedNow())
-        } finally {
-            // Строка остаётся в finally: в теле try она пропадала бы ровно на путях с исключением,
-            // а именно они и интересны при разборе.
-            logger.debug {
-                "$label via preset '${entry.view.id}' completed in ${callStart.elapsedNow()} for ${request.requestId}"
+                throw e
             }
+
+            val callStart = timeSource.markNow()
+            try {
+                // Уменьшение кадров держим под семафором, но вне withTimeout: это CPU-работа, чей
+                // размер известен заранее, и она не должна съедать бюджет, отпущенный модели. Отсюда
+                // же и перехват: вне attempt() исключение ушло бы из execute() сырым, мимо контракта
+                // DescriptionException, а описание важнее уменьшения — кадры пойдут как есть.
+                val prepared =
+                    try {
+                        downscaleFrames(request)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        logger.warn(e) { "Cannot downscale frames of ${request.requestId}; sending them unchanged" }
+                        request
+                    }
+                val value =
+                    try {
+                        withTimeout(limits.timeout.toMillis()) {
+                            executeWithRetry(backend, prepared, parse)
+                        }
+                    } catch (e: TimeoutCancellationException) {
+                        throw DescriptionException.Timeout(cause = e)
+                    }
+                return VisionOutcome(value, entry.view, callStart.elapsedNow())
+            } finally {
+                // Строка остаётся в finally: в теле try она пропадала бы ровно на путях с исключением,
+                // а именно они и интересны при разборе.
+                logger.debug {
+                    "$label via preset '${entry.view.id}' completed in ${callStart.elapsedNow()} for ${request.requestId}"
+                }
+            }
+        } finally {
             if (acquired) semaphore.release()
         }
     }

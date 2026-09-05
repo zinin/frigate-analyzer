@@ -12,7 +12,7 @@ data class JudgeCandidate(
     val recording: RecordingDto,
     val detections: List<DetectionEntity>,
     val decision: NotificationDecision,
-    /** Сырые кадры с ответами детектора: размеры и детекции по кадрам. */
+    /** Кадры с ответами детектора (индекс, размер, детекции). JPEG на очереди не удерживается. */
     val frames: List<FrameData>,
     /** Кадры с рамками в порядке ранжирования визуализации — те же, что уйдут в Telegram. */
     val visualizedFrames: List<VisualizedFrameData>,

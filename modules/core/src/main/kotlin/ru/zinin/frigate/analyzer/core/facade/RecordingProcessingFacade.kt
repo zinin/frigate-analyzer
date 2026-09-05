@@ -103,7 +103,8 @@ class RecordingProcessingFacade(
                     recording = recording,
                     detections = savedResult.detections,
                     decision = decision,
-                    frames = request.frames,
+                    // Контекст судьи читает индекс и detectResponse; JPEG на очереди камеры не нужен.
+                    frames = request.frames.map { it.copy(frameBytes = ByteArray(0)) },
                     visualizedFrames = visualizedFrames,
                     descriptionSupplier = descriptionSupplier,
                 ),

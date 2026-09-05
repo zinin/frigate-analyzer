@@ -69,6 +69,14 @@ class NotificationJudgeService(
         }
         try {
             perCameraMutex.computeIfAbsent(camId) { Mutex() }.withLock { judgeLocked(candidate) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) {
+                "Judge failed unexpectedly for recording=${candidate.recording.id} cam=$camId; sending unjudged"
+            }
+            record(unexpectedFailover(candidate, e))
+            send(candidate)
         } finally {
             waiting.decrementAndGet()
         }
@@ -251,6 +259,44 @@ class NotificationJudgeService(
             is DescriptionException.InvalidResponse -> VerdictReason.INVALID_RESPONSE
             else -> VerdictReason.TRANSPORT
         }
+
+    /**
+     * FAILOVER/TRANSPORT вне внутренних catch [judgeLocked]: кластеризация, лимитер, `valueOf`.
+     * Классы считаем отдельно — до `base` в [judgeLocked] их ещё нет, а сама кластеризация может
+     * быть тем, что упало.
+     */
+    private fun unexpectedFailover(
+        candidate: JudgeCandidate,
+        error: Exception,
+    ): NewNotificationVerdict {
+        val recording = candidate.recording
+        val classes =
+            try {
+                BboxClusteringHelper
+                    .cluster(
+                        candidate.detections,
+                        trackerProperties.innerIou,
+                        trackerProperties.confidenceFloor,
+                    ).groupingBy { it.className }
+                    .eachCount()
+                    .toSortedMap()
+                    .entries
+                    .joinToString(",") { "${it.key}:${it.value}" }
+            } catch (_: Exception) {
+                ""
+            }
+        return NewNotificationVerdict(
+            recording.id,
+            recording.camId,
+            recording.recordTimestamp,
+            VerdictStage.FAILOVER,
+            VerdictDecision.PUBLISH,
+            VerdictReason.TRANSPORT,
+            candidate.decision.reason.name,
+            classes,
+            error = error.describe(),
+        )
+    }
 
     /** Класс и сообщение без стека и без чужих строк — в колонке 1024 символа и никаких секретов. */
     private fun Throwable.describe(): String = "${this::class.simpleName}: ${message.orEmpty()}".take(ERROR_MAX)

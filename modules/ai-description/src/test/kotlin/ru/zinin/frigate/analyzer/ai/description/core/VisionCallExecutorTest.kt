@@ -416,6 +416,66 @@ class VisionCallExecutorTest {
         }
 
     /**
+     * Пермит отпускается и когда отмена приходит уже после acquire (работа), не только по TCE
+     * очереди. Иначе maxConcurrent слотов залипает навсегда.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `cancelling a caller that holds the permit releases it for the next call`() =
+        runTest {
+            val entered = CompletableDeferred<Unit>()
+            var blocking = true
+            val executor =
+                build(
+                    FakeBackend {
+                        if (blocking) {
+                            entered.complete(Unit)
+                            delay(60_000)
+                        }
+                        "ok"
+                    },
+                    customLimits =
+                        limits.copy(
+                            maxConcurrent = 1,
+                            queueTimeout = Duration.ofSeconds(5),
+                        ),
+                )
+            val holder = launch { executor.call() }
+            entered.await()
+            holder.cancel()
+            holder.join()
+            blocking = false
+            assertEquals("ok", executor.call())
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `cancelling a queued waiter does not leak a permit`() =
+        runTest {
+            val releaseHolder = CompletableDeferred<Unit>()
+            val entered = CompletableDeferred<Unit>()
+            val executor =
+                build(
+                    FakeBackend {
+                        if (entered.complete(Unit)) {
+                            releaseHolder.await()
+                        }
+                        "ok"
+                    },
+                    customLimits = limits.copy(maxConcurrent = 1),
+                )
+            val holder = async { executor.call() }
+            entered.await()
+            val waiter = launch { executor.call() }
+            runCurrent()
+            waiter.cancel()
+            waiter.join()
+            releaseHolder.complete(Unit)
+            assertEquals("ok", holder.await())
+            assertEquals("ok", executor.call())
+        }
+
+    /**
      * Резолюция — один раз на вызов: повтор обязан идти в тот же пресет, что и первая попытка,
      * иначе лог одной записи назвал бы двух разных провайдеров, а стоимость вызова стала бы
      * непредсказуемой. Смена действует со следующего `execute`, а не задним числом.
