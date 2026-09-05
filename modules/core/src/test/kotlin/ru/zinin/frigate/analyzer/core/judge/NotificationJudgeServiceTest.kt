@@ -12,6 +12,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
@@ -393,6 +394,31 @@ class NotificationJudgeServiceTest {
             gate.complete(Unit)
             jobs.joinAll()
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
+    fun `a stalled fan-out makes submit wait instead of piling candidates up`() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            val s = service()
+            // Судья выключен: каждый кандидат идёт коротким путём record + send, так что все они
+            // застревают именно в рассылке — так и выглядит затык очереди Telegram.
+            coEvery { runtimeSettings.judgeEnabled() } returns false
+            coEvery { telegram.sendRecordingNotification(any(), any(), any()) } coAnswers { gate.await() }
+            repeat(NotificationJudgeService.MAX_IN_FLIGHT) { s.submit(candidate(at = ts.plusSeconds(it.toLong()))) }
+            runCurrent()
+
+            val extra = candidate(camId = "cam9")
+            val waiting = launch { s.submit(extra) }
+            runCurrent()
+
+            // Без ограничителя фасад получил бы управление сразу, а кандидат — свою корутину,
+            // удерживающую визуализированные кадры, и так до OOM.
+            assertTrue(waiting.isActive, "submit must wait for a free in-flight slot")
+            assertTrue(recorded.none { it.recordingId == extra.recording.id }, "the waiting candidate must do no work")
+
+            gate.complete(Unit)
+            waiting.join()
         }
 
     @Test

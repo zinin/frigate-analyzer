@@ -9,6 +9,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -60,9 +61,16 @@ class NotificationJudgeService(
     private val snoozes = SnoozeRegistry()
     private val perCameraMutex = ConcurrentHashMap<String, Mutex>()
     private val queued = ConcurrentHashMap<String, AtomicInteger>()
+    private val inFlight = Semaphore(MAX_IN_FLIGHT)
 
     /**
-     * Точка входа фасада: возвращается сразу, работа идёт в [JudgeCoroutineScope].
+     * Точка входа фасада: работа идёт в [JudgeCoroutineScope], и в норме вызов возвращается сразу.
+     *
+     * Приостановиться он может ровно в одном случае — когда в работе уже [MAX_IN_FLIGHT] кандидатов.
+     * Это намеренно возвращает то давление, которое было до судьи: тогда фасад звал рассылку прямо в
+     * корутине consumer-а, и забитый канал очереди Telegram останавливал пайплайн. Теперь вместо
+     * этого ждёт [inFlight], пайплайн перестаёт разбирать записи, они остаются необработанными и
+     * будут взяты позже — задержка, а не потеря.
      *
      * Старт [CoroutineStart.ATOMIC] — не оптимизация, а единственный способ довести кандидата до
      * обработчика отмены в [process]. При обычном старте scope, погашенный мгновением раньше, вернул
@@ -70,10 +78,25 @@ class NotificationJudgeService(
      * Окно открыто на всей остановке — `FrameAnalysisPipeline.stop()` отменяет consumer-ов без
      * join, — а фасад к этому моменту уже вызвал `saveProcessingResult`, так что пайплайн запись не
      * повторит. С ATOMIC тело стартует, отмену поднимает первая же точка приостановки, и досылку
-     * делает та же ветка, что и для кандидата, отменённого уже в работе.
+     * делает та же ветка, что и для кандидата, отменённого уже в работе. Он же делает безопасным
+     * освобождение разрешения в `finally`: тело, которое не стартовало, его бы не вернуло.
      */
     @OptIn(DelicateCoroutinesApi::class)
-    fun submit(candidate: JudgeCandidate): Job = scope.launch(start = CoroutineStart.ATOMIC) { process(candidate) }
+    suspend fun submit(candidate: JudgeCandidate): Job {
+        inFlight.acquire()
+        return try {
+            scope.launch(start = CoroutineStart.ATOMIC) {
+                try {
+                    process(candidate)
+                } finally {
+                    inFlight.release()
+                }
+            }
+        } catch (e: Throwable) {
+            inFlight.release()
+            throw e
+        }
+    }
 
     /**
      * Снимок для `/status`: только активные по стенным часам. Сам реестр при этом не чистим —
@@ -418,10 +441,20 @@ class NotificationJudgeService(
     /** Класс и сообщение без стека и без чужих строк — в колонке 1024 символа и никаких секретов. */
     private fun Throwable.describe(): String = "${this::class.simpleName}: ${message.orEmpty()}".take(ERROR_MAX)
 
-    private companion object {
+    internal companion object {
         val SETTINGS_READ_TIMEOUT = 5.seconds
         val CONTEXT_BUILD_TIMEOUT = 10.seconds
         const val QUEUE_WARN_THRESHOLD = 20
         const val ERROR_MAX = 1024
+
+        /**
+         * Потолок кандидатов «в работе» на все камеры сразу — предохранитель памяти, а не регулятор
+         * пропускной способности. [QUEUE_WARN_THRESHOLD] памяти никогда не ограничивал: он считает
+         * глубину очереди камеры, а счётчик уменьшается только когда [process] дошёл до конца, то
+         * есть кандидат, застрявший в рассылке, держит и своё место, и свои визуализированные кадры.
+         * Каждый кандидат — порядка 2 МБ кадров, так что 48 ограничивают худший случай примерно
+         * сотней мегабайт.
+         */
+        const val MAX_IN_FLIGHT = 48
     }
 }

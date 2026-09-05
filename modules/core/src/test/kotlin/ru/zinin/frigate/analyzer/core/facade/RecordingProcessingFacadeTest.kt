@@ -472,7 +472,7 @@ class RecordingProcessingFacadeTest {
         runTest {
             val judge = mockk<NotificationJudgeService>()
             val captured = slot<JudgeCandidate>()
-            every { judge.submit(capture(captured)) } returns Job()
+            coEvery { judge.submit(capture(captured)) } returns Job()
             val (facade, request) = facade(agent = null, judge = judge)
 
             facade.processAndNotify(request)
@@ -494,7 +494,7 @@ class RecordingProcessingFacadeTest {
         runTest {
             val judge = mockk<NotificationJudgeService>()
             val captured = slot<JudgeCandidate>()
-            every { judge.submit(capture(captured)) } returns Job()
+            coEvery { judge.submit(capture(captured)) } returns Job()
             val agent = mockk<DescriptionAgent>()
             val (facade, request) = facade(agent = agent, judge = judge)
 
@@ -513,6 +513,6 @@ class RecordingProcessingFacadeTest {
 
             facade.processAndNotify(request)
 
-            verify(exactly = 0) { judge.submit(any()) }
+            coVerify(exactly = 0) { judge.submit(any()) }
         }
 }
