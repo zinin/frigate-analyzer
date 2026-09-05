@@ -31,11 +31,12 @@ private val logger = KotlinLogging.logger {}
  * Channel и обрабатываются одним consumer-ом, чтобы RESTORED не обгонял LOST. Таймаут на enqueue
  * как у [StartupTelegramNotifier], чтобы забитая очередь уведомлений не держала consumer вечно.
  *
- * Истёкший таймаут не выбрасывает событие: `TelegramNotificationQueue.enqueue` это `channel.send`
- * с backpressure, и забитая очередь на пять секунд не значит, что она забита навсегда. Ядро
- * ai-description фиксирует переход до публикации и дедуплицирует следующие отказы, поэтому
- * потерянный здесь LOST означал бы, что владелец не узнает об отказе вообще. Попытка повторяется
- * по [RETRY_BACKOFF], и только исчерпав его, событие снимается с ERROR.
+ * Истёкший таймаут и любой другой отказ доставки не выбрасывают событие: `TelegramNotificationQueue.enqueue`
+ * это `channel.send` с backpressure, и забитая очередь на пять секунд не значит, что она забита
+ * навсегда; то же про транзиентный отказ `findByUsernameIgnoreCase`. Ядро ai-description фиксирует
+ * переход до публикации и дедуплицирует следующие отказы, поэтому потерянный здесь LOST означал бы,
+ * что владелец не узнает об отказе вообще. Попытка повторяется по [RETRY_BACKOFF], и только исчерпав
+ * его, событие снимается с ERROR.
  */
 @Component
 @ConditionalOnProperty(prefix = "application.telegram", name = ["enabled"], havingValue = "true")
@@ -68,7 +69,7 @@ class DescriptionAuthAlertNotifier(
         }
     }
 
-    /** Кладёт событие в очередь уведомлений, повторяя, пока в ней нет места. */
+    /** Кладёт событие в очередь уведомлений, повторяя отказ очереди и прочие сбои отправки. */
     private suspend fun deliver(event: DescriptionProviderAuthEvent) {
         var attempt = 0
         while (true) {
@@ -77,21 +78,13 @@ class DescriptionAuthAlertNotifier(
                     telegramNotificationService.sendOwnerMessage { language -> render(event, language) }
                 }
                 return
-            } catch (e: TimeoutCancellationException) {
-                if (attempt >= retryBackoff.size) {
-                    logger.error {
-                        "Description auth alert (${event.authScopeId}, ${event.state}) dropped: the notification " +
-                            "queue stayed full through ${attempt + 1} attempts of $alertTimeout"
-                    }
-                    return
-                }
-                val backoff = retryBackoff[attempt]
+            } catch (e: CancellationException) {
+                if (e !is TimeoutCancellationException) throw e
+                if (!retryDeliver(event, attempt, e)) return
                 attempt++
-                logger.warn {
-                    "Description auth alert (${event.authScopeId}, ${event.state}) could not be queued within " +
-                        "$alertTimeout; retrying in $backoff (attempt ${attempt + 1})"
-                }
-                delay(backoff.toMillis())
+            } catch (e: Exception) {
+                if (!retryDeliver(event, attempt, e)) return
+                attempt++
             }
         }
     }
@@ -131,6 +124,28 @@ class DescriptionAuthAlertNotifier(
                 messageResolver.get("ai.description.auth.restored", language, event.authScopeId)
             }
         }
+
+    /** false — попытки исчерпаны, событие снимается. */
+    private suspend fun retryDeliver(
+        event: DescriptionProviderAuthEvent,
+        attempt: Int,
+        cause: Exception,
+    ): Boolean {
+        if (attempt >= retryBackoff.size) {
+            logger.error(cause) {
+                "Description auth alert (${event.authScopeId}, ${event.state}) dropped after " +
+                    "${attempt + 1} attempts of $alertTimeout"
+            }
+            return false
+        }
+        val backoff = retryBackoff[attempt]
+        logger.warn(cause) {
+            "Description auth alert (${event.authScopeId}, ${event.state}) failed to deliver; " +
+                "retrying in $backoff (attempt ${attempt + 2})"
+        }
+        delay(backoff.toMillis())
+        return true
+    }
 
     @PreDestroy
     fun shutdown() {

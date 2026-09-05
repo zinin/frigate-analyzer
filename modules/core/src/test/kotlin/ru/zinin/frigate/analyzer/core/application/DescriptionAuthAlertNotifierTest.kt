@@ -139,13 +139,18 @@ class DescriptionAuthAlertNotifierTest {
     }
 
     @Test
-    fun `delivery failures are swallowed`() {
+    fun `non-timeout delivery failures are retried then dropped`() {
         coEvery { telegramNotificationService.sendOwnerMessage(any()) } throws RuntimeException("boom")
+        val notifier = fastNotifier()
 
-        notifier.onAuthEvent(lost())
-        awaitAlert()
+        try {
+            notifier.onAuthEvent(lost())
+            runBlocking { notifier.waitUntilIdle() }
 
-        coVerify(exactly = 1) { telegramNotificationService.sendOwnerMessage(any()) }
+            coVerify(exactly = 3) { telegramNotificationService.sendOwnerMessage(any()) }
+        } finally {
+            notifier.shutdown()
+        }
     }
 
     @Test
