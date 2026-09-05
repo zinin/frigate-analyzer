@@ -17,8 +17,12 @@ data class VerdictsArguments(
                 }
 
                 1 -> {
-                    tokens[0].toIntOrNull()?.let { limit(it)?.let { n -> VerdictsArguments(null, n) } }
-                        ?: VerdictsArguments(tokens[0], DEFAULT_LIMIT)
+                    val token = tokens[0]
+                    val asInt = token.toIntOrNull()
+                    when {
+                        asInt == null -> VerdictsArguments(token, DEFAULT_LIMIT)
+                        else -> limit(asInt)?.let { VerdictsArguments(null, it) }
+                    }
                 }
 
                 2 -> {

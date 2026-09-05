@@ -26,5 +26,7 @@ class VerdictsArgumentsTest {
         assertNull(VerdictsArguments.parse("/verdicts cam2 0"))
         assertNull(VerdictsArguments.parse("/verdicts cam2 31"))
         assertNull(VerdictsArguments.parse("/verdicts cam2 20 extra"))
+        assertNull(VerdictsArguments.parse("/verdicts 0"))
+        assertNull(VerdictsArguments.parse("/verdicts 31"))
     }
 }
