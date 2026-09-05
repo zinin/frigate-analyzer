@@ -1626,7 +1626,38 @@ data class VerdictCountRow(
 )
 ```
 
-`model/persistent/NotificationVerdictEntity.kt` — по образцу `ObjectTrackEntity` (`@Table("notification_verdicts")`, `Persistable<UUID>`, `isNew() = true`), колонки один к одному с миграцией; `stage`/`verdict`/`reason` хранятся как `String` (имена enum), `confidence: Float?`, `latencyMs: Int?`, `contextJson: String?`.
+`model/persistent/NotificationVerdictEntity.kt` — порядок полей фиксирован, на него опираются позиционные вызовы в тестах Task 10:
+
+```kotlin
+@Table(name = "notification_verdicts")
+data class NotificationVerdictEntity(
+    @JvmField @Id var id: UUID?,
+    @Column("created_at") var createdAt: Instant,
+    @Column("recording_id") var recordingId: UUID,
+    @Column("cam_id") var camId: String,
+    @Column("record_timestamp") var recordTimestamp: Instant,
+    @Column("stage") var stage: String,
+    @Column("verdict") var verdict: String,
+    @Column("reason") var reason: String,
+    @Column("tracker_reason") var trackerReason: String,
+    @Column("classes") var classes: String,
+    @Column("confidence") var confidence: Float?,
+    @Column("summary") var summary: String?,
+    @Column("wanted") var wanted: String?,
+    @Column("snooze_until") var snoozeUntil: Instant?,
+    @Column("preset_id") var presetId: String?,
+    @Column("model") var model: String?,
+    @Column("latency_ms") var latencyMs: Int?,
+    @Column("context_json") var contextJson: String?,
+    @Column("error") var error: String?,
+) : Persistable<UUID> {
+    override fun getId(): UUID? = id
+
+    override fun isNew(): Boolean = true
+}
+```
+
+`stage`/`verdict`/`reason` хранятся как имена enum (`String`), конвертация — в сервисе.
 
 - [ ] **Step 3: Падающий тест сервиса**
 
@@ -2289,7 +2320,8 @@ class JudgeContextBuilder(
     // trackerBlock: reason.name, delta?.newClasses ?: [], delta?.reappearedClasses ?: [], delta?.maxAbsence?.toString().
     // activeTracks: tracks.findActive(cam, ts - ttl, ts + ttl) → ActiveTrackBlock(matchedNow = lastRecordingId == recording.id).
     // recentVerdicts: verdicts.recentForCamera(cam, ts - historyWindow, ts + historyWindow, historyLimit) → VerdictBlock.
-    // block(name, errors) { … }: valueToTree(result) либо valueToTree(ErrorBlock) + errors += name; CancellationException пробрасывается.
+    // block(name, errors) { … }: valueToTree(result), для null — NullNode.instance (tools.jackson.databind.node.NullNode),
+    //   при исключении valueToTree(ErrorBlock(e::class.simpleName)) + errors += name; CancellationException пробрасывается.
     // format(instant, zone) = instant.atZone(zone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME).
 }
 ```
@@ -2338,12 +2370,14 @@ class NotificationJudgeServiceTest {
     private fun recording(camId: String = "cam2", id: UUID = UUID.randomUUID(), at: Instant = ts) =
         RecordingDto(id, at, "/r/$camId/x.mp4", at, camId, LocalDate.of(2026, 9, 5), LocalTime.of(9, 59), at, at, at, 1, 1, 5, 2, null)
 
-    private fun detection(recordingId: UUID, cls: String = "person") =
-        DetectionEntity(UUID.randomUUID(), ts, recordingId, ts, 0, "yolo26x.pt", 0, cls, 0.9f, 10f, 10f, 100f, 200f)
+    // x1 сдвигается на 500 px на каждый объект: одинаковые bbox BboxClusteringHelper склеил бы в один
+    // объект, и тест эскалации «второй человек» проверял бы не то.
+    private fun detection(recordingId: UUID, cls: String = "person", x1: Float = 10f) =
+        DetectionEntity(UUID.randomUUID(), ts, recordingId, ts, 0, "yolo26x.pt", 0, cls, 0.9f, x1, 10f, x1 + 90f, 200f)
 
     private fun candidate(camId: String = "cam2", classes: List<String> = listOf("person"), at: Instant = ts): JudgeCandidate {
         val rec = recording(camId, at = at)
-        return JudgeCandidate(rec, classes.map { detection(rec.id, it) },
+        return JudgeCandidate(rec, classes.mapIndexed { i, cls -> detection(rec.id, cls, x1 = 10f + i * 500f) },
             NotificationDecision(true, NotificationDecisionReason.NEW_OBJECTS),
             emptyList(), listOf(VisualizedFrameData(0, ByteArray(1), 1)), null)
     }
