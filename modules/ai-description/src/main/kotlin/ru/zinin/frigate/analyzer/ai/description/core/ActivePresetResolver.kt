@@ -7,7 +7,6 @@ import kotlinx.coroutines.withTimeout
 import ru.zinin.frigate.analyzer.ai.description.api.ActiveDescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration.Companion.seconds
 
@@ -30,8 +29,8 @@ class ActivePresetResolver(
     /** Последнее залогированное предупреждение: иначе каждая запись повторяла бы одну строку. */
     private val lastWarning = AtomicReference<String?>(null)
 
-    /** Строка об источнике активного пресета печатается один раз за процесс. */
-    private val sourceLogged = AtomicBoolean(false)
+    /** Последняя залогированная строка об активном пресете: см. [logActiveOnChange]. */
+    private val lastActive = AtomicReference<String?>(null)
 
     /** Результат чтения: отказ и «ничего не выбрано» ведут себя одинаково, кроме INFO-строки. */
     private class StoredRead(
@@ -44,7 +43,7 @@ class ActivePresetResolver(
         if (read.id != null) {
             val stored = catalog.byId(read.id)
             if (stored?.backend != null) {
-                logSourceOnce(stored.view, source = runtimeSettings.sourceName)
+                logActiveOnChange(stored.view, source = runtimeSettings.sourceName)
                 return stored
             }
             warnOnce(
@@ -59,7 +58,7 @@ class ActivePresetResolver(
         val fallback = catalog.fallback()
         // При отказе чтения источник неизвестен: предупреждение выше уже сказало правду, а INFO
         // «from default-preset» соврала бы про выбор владельца, который так и не был прочитан.
-        if (!read.failed) logSourceOnce(fallback.view, source = DEFAULT_PRESET_SOURCE)
+        if (!read.failed) logActiveOnChange(fallback.view, source = DEFAULT_PRESET_SOURCE)
         return fallback
     }
 
@@ -96,17 +95,29 @@ class ActivePresetResolver(
         }
 
     /**
-     * Источник активного пресета — на INFO и один раз, лениво. Строка обязана назвать источник:
-     * `default-preset` после первого выбора владельца перестаёт действовать, и оператор, поправивший
-     * его в yaml и перезапустивший контейнер, иначе не получает никакого сигнала. На старте её
-     * печатать нельзя: назвать источник — значит прочитать настройки, то есть сходить в БД из
-     * контекста обновления Spring.
+     * Активный пресет — на INFO и лениво, при КАЖДОЙ смене строки, а не один раз за процесс. Один раз
+     * не хватает: владелец переключает пресет в `/ai` без рестарта, запись настроек кладёт в лог
+     * только id и только на DEBUG, и после переключения ни одна строка не называет работающую модель —
+     * то есть на вопрос «что работает сейчас» лог перестаёт отвечать ровно тогда, когда его задают.
+     *
+     * Место — резолвер, а не обработчик клика: сюда попадает и смена, которую никто не выбирал
+     * (сохранённый пресет стал непригоден и его подменил fallback), и [logSignature] остаётся
+     * `internal` — из `telegram` он не виден. Принятая плата: переключение видно в логе не в момент
+     * клика, а на ближайшем вызове описания (или на открытии `/ai`, которое тоже резолвит).
+     *
+     * Строка обязана называть источник: `default-preset` после первого выбора владельца перестаёт
+     * действовать, и оператор, поправивший его в yaml и перезапустивший контейнер, иначе не получает
+     * никакого сигнала. На старте её печатать нельзя: назвать источник — значит прочитать настройки,
+     * то есть сходить в БД из контекста обновления Spring.
+     *
+     * Сравнивается вся строка, а не один id: сменившийся источник при том же пресете — это тоже
+     * событие (владелец явно выбрал то, что и так работало по умолчанию), а в установившемся режиме
+     * строка неизменна, и лог молчит.
      */
-    private fun logSourceOnce(
+    private fun logActiveOnChange(
         preset: DescriptionPreset,
         source: String,
     ) {
-        if (!sourceLogged.compareAndSet(false, true)) return
         val overridden =
             if (source != DEFAULT_PRESET_SOURCE && preset.id != catalog.fallbackId) {
                 ", overriding default-preset='${catalog.fallbackId}'"
@@ -114,7 +125,10 @@ class ActivePresetResolver(
                 ""
             }
         // Та же форма, что у стартовой строки каталога: оператор сверяет эти строки между собой.
-        logger.info { "Active description preset '${preset.id}' (${preset.logSignature()}) from $source$overridden" }
+        val message = "Active description preset '${preset.id}' (${preset.logSignature()}) from $source$overridden"
+        if (lastActive.getAndSet(message) != message) {
+            logger.info { message }
+        }
     }
 
     private fun warnOnce(message: String) {

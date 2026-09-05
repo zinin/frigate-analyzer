@@ -242,6 +242,47 @@ class ActivePresetResolverTest {
             assertTrue(lines.single().contains("overriding default-preset='fast'"), lines.single())
         }
 
+    /**
+     * Переключение пресета в `/ai` рестарта не требует, а запись настроек кладёт в лог только id и
+     * только на DEBUG. Без этой строки после переключения ни одна строка лога не называет работающую
+     * модель — то есть лог перестаёт отвечать на вопрос «что работает сейчас» ровно тогда, когда его
+     * задают.
+     */
+    @Test
+    fun `a switched preset is logged again`() =
+        runTest {
+            val settings = InMemoryDescriptionRuntimeSettings()
+            settings.setActivePresetId("deep", changedBy = "owner")
+            val resolver = ActivePresetResolver(catalog, settings)
+
+            val lines =
+                logsFrom(Level.INFO) {
+                    resolver.resolve()
+                    settings.setActivePresetId("fast", changedBy = "owner")
+                    resolver.resolve()
+                }.filter { it.startsWith("Active description preset") }
+
+            assertEquals(2, lines.size, "the switch must leave a trace: $lines")
+            assertTrue(lines[0].contains("'deep' (grok/grok-4.6/low)"), lines[0])
+            assertTrue(lines[1].contains("'fast' (grok/grok-4.6/low)"), lines[1])
+        }
+
+    /** Строка на КАЖДУЮ запись превратила бы INFO в шум: она печатается на смену, а не на вызов. */
+    @Test
+    fun `an unchanged preset is logged once however often it resolves`() =
+        runTest {
+            val settings = InMemoryDescriptionRuntimeSettings()
+            settings.setActivePresetId("deep", changedBy = "owner")
+            val resolver = ActivePresetResolver(catalog, settings)
+
+            val lines =
+                logsFrom(Level.INFO) {
+                    repeat(5) { resolver.resolve() }
+                }.filter { it.startsWith("Active description preset") }
+
+            assertEquals(1, lines.size, "one line per change, not per resolution: $lines")
+        }
+
     @Test
     fun `the default preset is named as the source when nothing is stored`() =
         runTest {
