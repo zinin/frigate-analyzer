@@ -33,6 +33,7 @@ import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.time.Clock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.seconds
 
@@ -61,12 +62,24 @@ class NotificationJudgeService(
     /** Точка входа фасада: возвращается сразу, работа идёт в [JudgeCoroutineScope]. */
     fun submit(candidate: JudgeCandidate): Job = scope.launch { process(candidate) }
 
-    fun snapshotSnoozes(): List<CameraSnooze> = snoozes.snapshot()
+    /**
+     * Снимок для `/status`: только активные по стенным часам. Сам реестр при этом не чистим —
+     * [SnoozeRegistry.covers] меряет окно от времени ЗАПИСИ, а не от стены, и при разборе бэклога
+     * от новых к старым кандидат с меткой внутри окна приходит уже после того, как `until` по
+     * стенным часам прошёл. Чистка по часам выключила бы snooze ровно там, ради чего он сделан.
+     */
+    fun snapshotSnoozes(): List<CameraSnooze> {
+        val now = clock.instant()
+        return snoozes.snapshot().filter { it.until.isAfter(now) }
+    }
 
     internal suspend fun process(candidate: JudgeCandidate) {
         val camId = candidate.recording.camId
         val waiting = queued.computeIfAbsent(camId) { AtomicInteger() }
         val depth = waiting.incrementAndGet()
+        // Ставится ВНУТРИ send() до вызова Telegram: отмена, пойманная внутри рассылки, означает,
+        // что часть получателей уже в очереди, а вердикт уже записан.
+        val handedOver = AtomicBoolean(false)
         if (depth == QUEUE_WARN_THRESHOLD + 1) {
             logger.warn { "Judge queue for cam=$camId holds $depth candidates; the model is slower than the camera" }
         }
@@ -76,19 +89,30 @@ class NotificationJudgeService(
                     "Judge queue for cam=$camId is full (depth=$depth); sending recording=${candidate.recording.id} unjudged"
                 }
                 record(unexpectedFailover(candidate, IllegalStateException("judge queue depth $depth")))
-                send(candidate)
+                send(candidate, handedOver)
                 return
             }
-            perCameraMutex.computeIfAbsent(camId) { Mutex() }.withLock { judgeLocked(candidate) }
+            perCameraMutex.computeIfAbsent(camId) { Mutex() }.withLock { judgeLocked(candidate, handedOver) }
         } catch (e: CancellationException) {
             // Фасад уже пометил запись обработанной. Без отправки под NonCancellable docker stop
             // (cancelAndJoin 10 с) молча теряет очередь камеры: пайплайн запись не повторит.
+            //
+            // Но повторять рассылку, которая уже началась, нельзя: получатели, попавшие в очередь
+            // Telegram до отмены, получили бы второе сообщение, а в notification_verdicts легла бы
+            // вторая строка на ту же запись — и счётчики /status, и /verdicts считали бы её дважды.
             withContext(NonCancellable) {
-                logger.warn {
-                    "Judge cancelled for recording=${candidate.recording.id} cam=$camId; sending unjudged"
+                if (handedOver.get()) {
+                    logger.warn {
+                        "Judge cancelled inside the send for recording=${candidate.recording.id} cam=$camId; " +
+                            "the verdict is already recorded and the fan-out is not repeated"
+                    }
+                } else {
+                    logger.warn {
+                        "Judge cancelled for recording=${candidate.recording.id} cam=$camId; sending unjudged"
+                    }
+                    record(unexpectedFailover(candidate, e))
+                    send(candidate, handedOver)
                 }
-                record(unexpectedFailover(candidate, e))
-                send(candidate)
             }
             throw e
         } catch (e: Exception) {
@@ -96,13 +120,16 @@ class NotificationJudgeService(
                 "Judge failed unexpectedly for recording=${candidate.recording.id} cam=$camId; sending unjudged"
             }
             record(unexpectedFailover(candidate, e))
-            send(candidate)
+            send(candidate, handedOver)
         } finally {
             waiting.decrementAndGet()
         }
     }
 
-    private suspend fun judgeLocked(candidate: JudgeCandidate) {
+    private suspend fun judgeLocked(
+        candidate: JudgeCandidate,
+        handedOver: AtomicBoolean,
+    ) {
         val recording = candidate.recording
         val objects =
             BboxClusteringHelper.cluster(
@@ -127,7 +154,7 @@ class NotificationJudgeService(
 
         if (!judgeEnabled(recording.id)) {
             record(base(VerdictStage.BYPASS, VerdictDecision.PUBLISH, VerdictReason.JUDGE_OFF))
-            send(candidate)
+            send(candidate, handedOver)
             return
         }
         val snooze = snoozes.covers(recording.camId, recording.recordTimestamp, classCounts)
@@ -149,7 +176,7 @@ class NotificationJudgeService(
                     base(VerdictStage.FAILOVER, VerdictDecision.PUBLISH, VerdictReason.CONTEXT_ERROR)
                         .copy(error = e.describe()),
                 )
-                send(candidate)
+                send(candidate, handedOver)
                 return
             } catch (e: CancellationException) {
                 throw e
@@ -159,7 +186,7 @@ class NotificationJudgeService(
                     base(VerdictStage.FAILOVER, VerdictDecision.PUBLISH, VerdictReason.CONTEXT_ERROR)
                         .copy(error = e.describe()),
                 )
-                send(candidate)
+                send(candidate, handedOver)
                 return
             }
         if (context.errors.isNotEmpty()) {
@@ -174,7 +201,7 @@ class NotificationJudgeService(
                 base(VerdictStage.FAILOVER, VerdictDecision.PUBLISH, VerdictReason.RATE_LIMITED)
                     .copy(contextJson = context.json, error = "local rate limit"),
             )
-            send(candidate)
+            send(candidate, handedOver)
             return
         }
         val agent = agentProvider.getIfAvailable()
@@ -193,7 +220,7 @@ class NotificationJudgeService(
                     base(VerdictStage.FAILOVER, VerdictDecision.PUBLISH, reason)
                         .copy(contextJson = context.json, error = e.describe()),
                 )
-                send(candidate)
+                send(candidate, handedOver)
                 return
             }
         val verdict = outcome.verdict
@@ -225,7 +252,7 @@ class NotificationJudgeService(
                 contextJson = context.json,
             ),
         )
-        if (decision == VerdictDecision.PUBLISH) send(candidate)
+        if (decision == VerdictDecision.PUBLISH) send(candidate, handedOver)
     }
 
     private fun judgeRequest(
@@ -272,7 +299,11 @@ class NotificationJudgeService(
         }
     }
 
-    private suspend fun send(candidate: JudgeCandidate) {
+    private suspend fun send(
+        candidate: JudgeCandidate,
+        handedOver: AtomicBoolean,
+    ) {
+        handedOver.set(true)
         try {
             telegram.sendRecordingNotification(
                 candidate.recording,

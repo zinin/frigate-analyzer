@@ -382,6 +382,18 @@ the owner's `/timezone`, then the JVM zone (UTC in the container).
 A failed write to `notification_verdicts` is logged at ERROR; the decision (send or not) is applied
 anyway.
 
+**Cancellation (shutdown).** A candidate cancelled *before* the fan-out started is recorded as
+`FAILOVER` / `TRANSPORT` and sent under `NonCancellable` before the cancellation is rethrown — the
+facade has already marked the recording processed, so nothing would retry it. A candidate cancelled
+*inside* `sendRecordingNotification` is neither resent nor given a second verdict row: recipients
+already accepted by `TelegramNotificationQueue` would otherwise get a duplicate message, and the
+recording would be counted twice in `/status` and listed twice in `/verdicts`.
+
+**`/status` snapshot.** `snapshotSnoozes()` returns only snoozes still active on the wall clock. The
+registry itself is never pruned by the clock: `covers` measures the window from the *recording*
+timestamp, so a newest-first backlog still matches entries whose `until` has passed in wall-clock
+time.
+
 ### Snooze
 
 `SnoozeRegistry` is process memory only (restart clears it). `set(camId, anchor, minutes, classes)`

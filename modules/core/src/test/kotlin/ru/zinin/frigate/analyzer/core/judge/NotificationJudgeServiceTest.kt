@@ -345,6 +345,39 @@ class NotificationJudgeServiceTest {
             assertEquals(listOf("cam2", "cam3", "cam2"), order)
         }
 
+    @Test
+    fun `the status snapshot keeps live snoozes and hides the expired ones`() =
+        runTest {
+            val s = service()
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT, snooze = 1)
+            s.process(candidate(camId = "cam2", at = ts.minusSeconds(600))) // until 09:49+1m, часы 10:00
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT, snooze = 15)
+            s.process(candidate(camId = "cam3")) // until 10:14
+            // Реестр держит обе камеры — covers() меряет окно от времени записи и нужен для бэклога;
+            // на экран уходит только та, что активна по стенным часам.
+            assertEquals(listOf("cam3"), s.snapshotSnoozes().map { it.camId })
+        }
+
+    @Test
+    fun `cancellation inside the send neither resends nor writes a second verdict`() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            coEvery { telegram.sendRecordingNotification(any(), any(), any()) } coAnswers { gate.await() }
+            val s = service()
+            val job = s.submit(candidate())
+            runCurrent()
+            job.cancel()
+            job.join()
+            // Часть получателей уже в очереди Telegram, вердикт уже записан: повтор дал бы им второе
+            // сообщение, а базе — вторую строку на ту же запись.
+            assertEquals(VerdictStage.JUDGE, recorded.single().stage)
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
     private fun commonSection() =
         DescriptionProperties.CommonSection(
             language = "ru",
