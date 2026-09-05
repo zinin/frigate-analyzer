@@ -206,12 +206,12 @@ that will actually be used.
 | `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (the `<p>` above the frames). |
 | `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (the `<details>` body). |
 | `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. Validated `1..50`, but the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. |
-| `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | 0 | Longest frame side in pixels before the model call; `0` sends frames at camera resolution. Validated `0` or `256..8192`. Vision endpoints bill by image area, and some gateways drop an image above their own limit without saying so — the LiteLLM gateway in front of DKS-Vision ignores anything wider than 1568 px and the model answers "frame unavailable". Resizing happens once per request in `DefaultDescriptionAgent`, before the provider attempt, so both providers get it. |
+| `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | 0 | Longest frame side in pixels before the model call; `0` sends frames at camera resolution. Validated `0` or `256..8192`. Vision endpoints bill by image area, and some gateways drop an image above their own limit without saying so — the LiteLLM gateway in front of DKS-Vision ignores anything wider than 1568 px and the model answers "frame unavailable". Resizing happens once per request in `VisionCallExecutor`, before the provider attempt, so both providers get it. |
 | `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | 30s | Max wait for a free concurrency slot. |
 | `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). Must cover the slowest **declared** preset: `grok-4.6` at `effort=xhigh` takes ~48 s, leaving nothing for either retry (transport needs 10 s of budget plus a 5 s pause, invalid-response 5 s — the latter starts and then dies on the outer timeout, reporting `Timeout` instead of `InvalidResponse`). Such a preset gets a startup WARN recommending `120s` and a 🐢 mark in `/ai`. |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous description requests. Two `xhigh` calls hold both default slots for ~48 s, after which a third recording gives up on `APP_AI_DESCRIPTION_QUEUE_TIMEOUT`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED` | true | Enable sliding-window throttle on AI description invocations. When `false`, every recording with AI enabled gets a description request. |
-| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 10 | Max invocations within the sliding window. Counter increments when a slot is granted; failed model calls (transport errors, retries) do not refund the slot. |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 30 | Max invocations within the sliding window. Counter increments when a slot is granted; failed model calls (transport errors, retries) do not refund the slot. Raised from 10 so descriptions still have budget once the judge sits in front. |
 | `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
 
@@ -231,6 +231,47 @@ First sign-in: `mkdir -p grok-home && sudo chown 1000:1000 grok-home`, `docker c
 `docker compose exec frigate-analyzer grok login --device-code`. Never copy `auth.json` from another
 machine. When the credentials stop working the owner receives one Telegram message per outage with
 the command to run, and another when descriptions work again.
+
+## AI Judge
+
+Settings under `application.ai.judge` in `application.yaml` — a **sibling** of
+`application.ai.description`, not nested inside it. The judge reuses the description preset catalog
+(`application.ai.description.presets`); it does not declare a catalog of its own. Requires
+`APP_AI_DESCRIPTION_ENABLED=true` (`AiJudgeGuard` fails startup otherwise). When `false`, none of
+the judge beans exist and `RecordingProcessingFacade` sends as today.
+
+A fast, cheap preset is the point (`claude-sonnet` or `grok-fast`, not opus). Every candidate that
+reaches the judge is written to `notification_verdicts` (no cleanup). Fail-open: a model or context
+failure sends the notification unjudged.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `APP_AI_JUDGE_ENABLED` | false | Master flag. When `false`, no judge beans, no `/ai` judge block, the facade sends itself. |
+| `APP_AI_JUDGE_DEFAULT_PRESET` | empty | Preset used until the owner picks one in `/ai`. Empty = the descriptions `default-preset` (or the catalog fallback). Must be a declared, usable id when set. |
+| `APP_AI_JUDGE_QUEUE_TIMEOUT` | 30s | Max wait for a free judge concurrency slot. |
+| `APP_AI_JUDGE_TIMEOUT` | 60s | Per-call judge timeout including the executor's retries. Size it for the **judge** preset, not the slowest description preset. |
+| `APP_AI_JUDGE_MAX_CONCURRENT` | 2 | Max simultaneous judge calls. Separate semaphore from descriptions. Validated `1..10`. |
+| `APP_AI_JUDGE_MAX_FRAMES` | 4 | Annotated frames forwarded to the judge, first N of the visualization ranking then chronological. Validated `1..10`. |
+| `APP_AI_JUDGE_MAX_IMAGE_SIDE` | 1280 | Longest frame side before the judge call; `0` = as-is. Validated `0` or `256..8192`. |
+| `APP_AI_JUDGE_RATE_LIMIT_ENABLED` | true | Sliding-window throttle on judge invocations. |
+| `APP_AI_JUDGE_RATE_LIMIT_MAX` | 200 | Protective ceiling. Beyond it candidates are sent unjudged (`FAILOVER` / `RATE_LIMITED`). |
+| `APP_AI_JUDGE_RATE_LIMIT_WINDOW` | 1h | Sliding-window length (same Duration syntax as descriptions). |
+| `APP_AI_JUDGE_MAX_SNOOZE` | PT30M | Ceiling on `snooze_minutes` from the model. Positive duration. |
+| `APP_AI_JUDGE_STATIC_WINDOW` | P7D | How far back the static-score query looks for the same class in the same place. |
+| `APP_AI_JUDGE_STATIC_IOU` | 0.4 | IoU threshold of that query, `0..1`. |
+| `APP_AI_JUDGE_HISTORY_WINDOW` | PT6H | `±` window of `notification_verdicts` included in the prompt context. |
+| `APP_AI_JUDGE_HISTORY_LIMIT` | 10 | Max verdict rows in that context, `1..50`. |
+| `APP_AI_JUDGE_ZONE` | empty | IANA zone for local times in the prompt. Empty = the owner's zone from `/timezone`, then the JVM zone. The container runs in UTC, so leaving this empty without `/timezone` puts UTC into the prompt. An invalid id fails startup. |
+| `application.ai.judge.cameras.<cam>.notes` | empty | Owner notes about a camera's scene, yaml only (`application-docker.yaml`). Passed into the context as-is; no env var. |
+
+**Runtime keys in `app_settings`** (written by `/ai`, `updated_by` = the owner's username):
+
+| Key | Type | Absent means |
+|-----|------|--------------|
+| `ai.judge.preset.active` | string, a preset id | `APP_AI_JUDGE_DEFAULT_PRESET`, else the descriptions fallback |
+| `ai.judge.enabled` | boolean | `true` — runtime off-switch; `APP_AI_JUDGE_ENABLED=false` still wins |
+
+Same per-process cache as the description keys — see `database.md`.
 
 ## Video Export
 

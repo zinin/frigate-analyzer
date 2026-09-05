@@ -159,6 +159,37 @@ application:
         # Нужно для BYOK-модели, чей [model.<name>] в config.toml ссылается на env_key с именем
         # вне префиксов GROK_ и XAI_ — иначе ключ до grok не доедет.
         pass-through-env: ${GROK_PASS_THROUGH_ENV:}
+    # LLM-судья уведомлений: третья ступень между трекером и отправкой в Telegram. Работает на
+    # общем каталоге пресетов описаний (application.ai.description.presets), но со своим пресетом,
+    # лимитами и выключателем в /ai. Требует application.ai.description.enabled=true.
+    judge:
+      enabled: ${APP_AI_JUDGE_ENABLED:false}
+      # Пресет судьи до первого выбора владельца в /ai; пусто = default-preset описаний.
+      default-preset: ${APP_AI_JUDGE_DEFAULT_PRESET:}
+      queue-timeout: ${APP_AI_JUDGE_QUEUE_TIMEOUT:30s}
+      timeout: ${APP_AI_JUDGE_TIMEOUT:60s}
+      max-concurrent: ${APP_AI_JUDGE_MAX_CONCURRENT:2}
+      # Кадры с рамками, первые N по ранжированию визуализации, в хронологическом порядке.
+      max-frames: ${APP_AI_JUDGE_MAX_FRAMES:4}
+      max-image-side: ${APP_AI_JUDGE_MAX_IMAGE_SIDE:1280}
+      rate-limit:
+        enabled: ${APP_AI_JUDGE_RATE_LIMIT_ENABLED:true}
+        max-requests: ${APP_AI_JUDGE_RATE_LIMIT_MAX:200}
+        window: ${APP_AI_JUDGE_RATE_LIMIT_WINDOW:1h}
+      # Потолок snooze_minutes из ответа модели.
+      max-snooze: ${APP_AI_JUDGE_MAX_SNOOZE:PT30M}
+      # Static score: сколько записей за окно содержали тот же класс в том же месте (IoU >= порога).
+      static-window: ${APP_AI_JUDGE_STATIC_WINDOW:P7D}
+      static-iou: ${APP_AI_JUDGE_STATIC_IOU:0.4}
+      # История вердиктов камеры в контексте: ± окно вокруг записи и число строк.
+      history-window: ${APP_AI_JUDGE_HISTORY_WINDOW:PT6H}
+      history-limit: ${APP_AI_JUDGE_HISTORY_LIMIT:10}
+      # Зона локальных времён в промпте; пусто = зона владельца из /timezone, затем зона JVM.
+      zone: ${APP_AI_JUDGE_ZONE:}
+      # Заметки владельца о сценах камер, только yaml (application-docker.yaml):
+      # cameras:
+      #   cam4: { notes: "Огород за домом: грядки под сеткой, куча земли, поленница слева внизу." }
+      cameras: {}
   detection-filter:
     enabled: ${DETECTION_FILTER_ENABLED:true}
     allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe}
