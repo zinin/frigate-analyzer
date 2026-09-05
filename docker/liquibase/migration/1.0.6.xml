@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-5.0.xsd">
+    <changeSet author="zinin" id="20260905-01-create-notification-verdicts">
+        <comment>One row per notification candidate judged by the LLM gate (or bypassed / snoozed / failed over)</comment>
+        <sql>
+            CREATE TABLE notification_verdicts (
+              id                UUID          PRIMARY KEY,
+              created_at        TIMESTAMPTZ   NOT NULL,
+              recording_id      UUID          NOT NULL,
+              cam_id            VARCHAR(255)  NOT NULL,
+              record_timestamp  TIMESTAMPTZ   NOT NULL,
+              stage             VARCHAR(16)   NOT NULL,
+              verdict           VARCHAR(8)    NOT NULL,
+              reason            VARCHAR(32)   NOT NULL,
+              tracker_reason    VARCHAR(32)   NOT NULL,
+              classes           VARCHAR(255)  NOT NULL,
+              confidence        REAL          NULL,
+              summary           VARCHAR(512)  NULL,
+              wanted            VARCHAR(512)  NULL,
+              snooze_until      TIMESTAMPTZ   NULL,
+              preset_id         VARCHAR(32)   NULL,
+              model             VARCHAR(255)  NULL,
+              latency_ms        INT           NULL,
+              context_json      TEXT          NULL,
+              error             VARCHAR(1024) NULL,
+              CONSTRAINT fk_notification_verdicts_recording
+                FOREIGN KEY (recording_id) REFERENCES recordings(id)
+                ON DELETE CASCADE
+            );
+            CREATE INDEX idx_notification_verdicts_cam_record
+              ON notification_verdicts (cam_id, record_timestamp DESC);
+            CREATE INDEX idx_notification_verdicts_created
+              ON notification_verdicts (created_at);
+        </sql>
+        <rollback>
+            DROP INDEX IF EXISTS idx_notification_verdicts_created;
+            DROP INDEX IF EXISTS idx_notification_verdicts_cam_record;
+            DROP TABLE IF EXISTS notification_verdicts;
+        </rollback>
+    </changeSet>
+</databaseChangeLog>
