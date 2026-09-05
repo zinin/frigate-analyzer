@@ -3,10 +3,12 @@ package ru.zinin.frigate.analyzer.core.judge
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -71,6 +73,15 @@ class NotificationJudgeService(
         try {
             perCameraMutex.computeIfAbsent(camId) { Mutex() }.withLock { judgeLocked(candidate) }
         } catch (e: CancellationException) {
+            // Фасад уже пометил запись обработанной. Без отправки под NonCancellable docker stop
+            // (cancelAndJoin 10 с) молча теряет очередь камеры: пайплайн запись не повторит.
+            withContext(NonCancellable) {
+                logger.warn {
+                    "Judge cancelled for recording=${candidate.recording.id} cam=$camId; sending unjudged"
+                }
+                record(unexpectedFailover(candidate, e))
+                send(candidate)
+            }
             throw e
         } catch (e: Exception) {
             logger.warn(e) {

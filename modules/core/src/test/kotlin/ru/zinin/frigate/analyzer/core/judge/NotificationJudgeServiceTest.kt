@@ -285,6 +285,26 @@ class NotificationJudgeServiceTest {
         }
 
     @Test
+    fun `cancellation after submit still sends unjudged`() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            coEvery { agent.judge(any()) } coAnswers {
+                gate.await()
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            }
+            val s = service()
+            val job = s.submit(candidate())
+            runCurrent()
+            job.cancel()
+            job.join()
+            val v = recorded.single()
+            assertEquals(VerdictStage.FAILOVER, v.stage)
+            assertEquals(VerdictReason.TRANSPORT, v.reason)
+            assertEquals(VerdictDecision.PUBLISH, v.verdict)
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
     fun `candidates of one camera are judged in order, different cameras in parallel`() =
         runTest {
             val gate = CompletableDeferred<Unit>()
