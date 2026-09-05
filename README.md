@@ -53,7 +53,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 | PostgreSQL 15+ | Stores recordings, detections, and user data |
 | Telegram Bot Token | Obtain from [@BotFather](https://t.me/BotFather) |
 | Docker + Docker Compose | For deployment |
-| Claude Code CLI or Grok Build CLI *(optional)* | Required only if `APP_AI_DESCRIPTION_ENABLED=true`; the image installs both, pick one with `APP_AI_DESCRIPTION_PROVIDER`. Locally: `claude setup-token` or `grok login --device-code` |
+| Claude Code CLI or Grok Build CLI *(optional)* | Required only if `APP_AI_DESCRIPTION_ENABLED=true`; the image installs both, and each declared preset picks one. Locally: `claude setup-token` or `grok login --device-code` |
 
 ## Quick Start
 
@@ -175,22 +175,67 @@ All settings use environment variables with sensible defaults. Key variables:
 
 When enabled, generates a short and a detailed natural-language description of detections and edits
 them into the notification. Two providers: the Claude Code CLI (`claude`) and the xAI Grok Build CLI
-(`grok`). Both binaries ship in the image; pick one with `APP_AI_DESCRIPTION_PROVIDER`.
+(`grok`). Both binaries ship in the image.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APP_AI_DESCRIPTION_ENABLED` | `false` | Master switch |
-| `APP_AI_DESCRIPTION_PROVIDER` | `claude` | `claude` or `grok` |
+| `APP_AI_DESCRIPTION_DEFAULT_PRESET` | *(empty)* | Preset that is active until the owner picks one in `/ai`; empty = the first usable preset |
+| `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Single-preset path only — `claude` or `grok`, used while no `presets` map is declared |
 | `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
+| `APP_AI_DESCRIPTION_TIMEOUT` | `60s` | Per-call budget for the model and the agent's retries — see "Timeout ceiling" below |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous model requests |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `10` | Max invocations per sliding window |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
 | `CLAUDE_CODE_OAUTH_TOKEN` | *(required for claude)* | Token from `claude setup-token` |
-| `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku` |
+| `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku`; single-preset path only |
 | `CLAUDE_MAX_BUFFER_SIZE` | `16MB` | Max size of one JSON message from the Claude CLI. Frames the model reads are echoed back as base64, so raise it for cameras with frames above ~12 MB |
-| `GROK_MODEL` | `grok-4.6` | Model id, or a BYOK model name from `grok-home/config.toml` |
-| `GROK_EFFORT` | `low` | Reasoning effort; empty = not passed |
+| `GROK_MODEL` | `grok-4.6` | Model id, or a BYOK model name from `grok-home/config.toml`; single-preset path only |
+| `GROK_EFFORT` | `low` | Reasoning effort; empty = not passed; single-preset path only |
 | `GROK_PASS_THROUGH_ENV` | *(empty)* | Extra env variable names handed to `grok` verbatim; needed for a BYOK `env_key` outside `GROK_*`/`XAI_*` |
+
+**Presets.** Declare as many named presets as you like in `application-docker.yaml`; each one is a
+provider, a model and (for `grok`) a reasoning effort:
+
+```yaml
+application:
+  ai:
+    description:
+      default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:grok-fast}
+      presets:
+        grok-fast:   { provider: grok,   model: grok-4.6,   effort: low }
+        grok-deep:   { provider: grok,   model: grok-4.6,   effort: xhigh }
+        claude-opus: { provider: claude, model: opus }
+```
+
+The owner switches the active preset in `/ai`, one tap, no restart — the screen also turns
+descriptions off and back on, and shows the authorization state of every credential scope in use.
+The choice is stored in the database, so it survives a restart; `default-preset` decides only until
+that first tap and stops mattering afterwards. A preset whose provider is not configured (no token,
+an unwritable directory) stays on the screen, marked, and cannot be selected. The startup log names
+the whole catalog with values — `Description presets: grok-fast (grok/grok-4.6/low), claude-opus
+(claude/opus); default 'grok-fast'` — and the first time a preset is actually resolved (a
+description, or opening `/ai`) one more INFO line names the running preset and whether the choice
+came from the owner or from `default-preset`.
+
+The `presets` map replaces `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EFFORT` and
+`CLAUDE_MODEL`: while the map is empty those four still describe a single preset, and declaring the
+map turns them off. `ANTHROPIC_MODEL`, when set, still displaces the model of every `claude` preset —
+`/ai` shows the model that will actually be used.
+
+**Timeout ceiling.** `APP_AI_DESCRIPTION_TIMEOUT` has to cover the *slowest* declared preset, not the
+typical one. `grok-4.6` at `effort: xhigh` takes ~48 s, which leaves nothing inside the default 60 s
+for a retry: the transport retry (10 s of budget plus a 5 s pause) never starts, and the
+invalid-response retry (5 s) starts and then dies on the outer timeout, turning an honest
+`InvalidResponse` into a misleading `Timeout`. Startup logs a WARN for such a preset recommending
+`APP_AI_DESCRIPTION_TIMEOUT=120s`, and `/ai` marks it with 🐢. The timeout is a give-up point, not a
+duration, so 120 s does not slow `grok-fast` (~9 s) down; the only cost is that a hung call is
+noticed later. Pick it once, when you declare the presets — switching between them afterwards needs
+no restart.
+
+Capacity is the other side of that: two `xhigh` calls occupy both slots of the default
+`APP_AI_DESCRIPTION_MAX_CONCURRENT=2` for ~48 s, and a third recording gives up on
+`APP_AI_DESCRIPTION_QUEUE_TIMEOUT` and goes out without a description.
 
 **Grok sign-in.** Grok uses your SuperGrok subscription, no API key. Once, on the host:
 
@@ -253,6 +298,7 @@ You can define multiple servers — the load balancer distributes requests based
 | `/notifications` | Toggle recording / signal-loss notifications (per-user; OWNER also toggles global) | Authorized users |
 | `/version` | Show build and version info | Authorized users |
 | `/status` | Snapshot of recordings, cameras, and detect-servers state | Owner only |
+| `/ai` | Switch the active AI-description preset; turn descriptions on and off | Owner only |
 | `/adduser` | Invite a user (by @username) | Owner only |
 | `/removeuser` | Remove a user | Owner only |
 | `/users` | List all registered users | Owner only |

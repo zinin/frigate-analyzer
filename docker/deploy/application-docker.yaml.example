@@ -17,3 +17,17 @@ application:
       video-visualize-requests:
         simultaneous-count: 1
         priority: 1
+
+  # AI-описания: сколько угодно пресетов, активный выбирается владельцем в /ai и переживает
+  # рестарт. effort только у grok; пустой effort = флаг --effort не передаётся.
+  #
+  # ВНИМАНИЕ: раскомментированный блок presets ОТКЛЮЧАЕТ APP_AI_DESCRIPTION_PROVIDER,
+  # GROK_MODEL, GROK_EFFORT и CLAUDE_MODEL из .env — они применяются только при пустой карте.
+  #
+  # ai:
+  #   description:
+  #     default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:grok-fast}
+  #     presets:
+  #       grok-fast:   { provider: grok,   model: grok-4.6,   effort: low }
+  #       grok-deep:   { provider: grok,   model: grok-4.6,   effort: xhigh }
+  #       claude-opus: { provider: claude, model: opus }

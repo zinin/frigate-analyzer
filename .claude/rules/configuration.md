@@ -141,34 +141,83 @@ The reference form (`${FIRST_SCAN_PERIOD:${application.records-watcher.watch-per
 
 ## AI Description
 
-Settings under `application.ai.description` in `application.yaml`. Enables AI-generated short and detailed descriptions of detections via Claude Code CLI or Grok Build CLI. Requires `APP_AI_DESCRIPTION_ENABLED=true`. Both provider sections bind on every deployment, so their defaults must stay valid regardless of `APP_AI_DESCRIPTION_PROVIDER`.
+Settings under `application.ai.description` in `application.yaml`. Enables AI-generated short and detailed descriptions of detections via Claude Code CLI or Grok Build CLI. Requires `APP_AI_DESCRIPTION_ENABLED=true`. Both provider sections bind on every deployment, so their defaults must stay valid whatever the presets declare.
+
+### Presets
+
+Which model runs is decided by a **preset**, not by `APP_AI_DESCRIPTION_PROVIDER`. Presets are a map under `application.ai.description.presets`, declared in the mounted `application-docker.yaml` (see `docker/deploy/application-docker.yaml.example`); the map in `modules/core/src/main/resources/application.yaml` is empty, and it is the one setting with no `APP_…` placeholder of its own. `DescriptionPresetDeclarations` reads it through the same `Binder` Spring binds `@ConfigurationProperties` with, so relaxed-bound environment variables, the `presets[id]` bracket form and placeholders are all seen — the bean condition and the catalog can never disagree about what is declared.
+
+| Property | Env | Default | Validation |
+|----------|-----|---------|------------|
+| `presets.<id>` | — | empty map | id matches `[a-z0-9][a-z0-9-]{0,31}` — it travels in Telegram `callback_data`, which holds 64 bytes for everything |
+| `presets.<id>.provider` | — | — | `claude` or `grok`; anything else fails startup |
+| `presets.<id>.model` | — | — | must not be blank |
+| `presets.<id>.effort` | — | empty | empty, or `low`/`medium`/`high`/`xhigh`/`max`; non-empty only for `provider: grok` |
+| `default-preset` | `APP_AI_DESCRIPTION_DEFAULT_PRESET` | empty | must be a declared id when the map is non-empty; with an **empty** map only a startup WARN, so it can be set in `.env` before the map exists in yaml |
+
+```yaml
+application:
+  ai:
+    description:
+      default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:}
+      presets:
+        grok-fast:   { provider: grok,   model: grok-4.6,   effort: low }
+        grok-deep:   { provider: grok,   model: grok-4.6,   effort: xhigh }
+        byok-luna:   { provider: grok,   model: codex-luna, effort: "" }
+        claude-opus: { provider: claude, model: opus }
+```
+
+`default-preset` decides only **until the owner's first pick in `/ai`**; after that the stored id
+wins and changing `default-preset` in yaml has no effect. The startup log names the whole catalog
+with values, and the first resolution names the active preset and its source, so "which model is
+running" is answerable from the log alone.
+
+A preset whose provider is not configured (no token, an unwritable directory, no factory for that
+provider) stays in the catalog, is marked in `/ai` and cannot be selected; startup fails only when
+**every** declared preset is unusable. `ANTHROPIC_MODEL`, when set, displaces the declared `model` of
+every claude preset — the catalog logs a WARN naming the displaced pair, and `/ai` shows the model
+that will actually be used.
+
+**Legacy single-preset path.** While the map is empty, `APP_AI_DESCRIPTION_PROVIDER` plus that provider's own section synthesizes exactly one preset (id = provider name, `model`/`effort` from `claude.model`, `grok.model`, `grok.effort`), so an existing `.env` keeps working unchanged. The value is normalized (`trim().lowercase()`), matching the case-insensitive `@ConditionalOnProperty` it replaced. With a non-empty map `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EFFORT` and `CLAUDE_MODEL` are unused, and a non-blank `APP_AI_DESCRIPTION_PROVIDER` is logged as a WARN so a typo in a variable that stopped mattering stays visible.
+
+**Runtime keys in `app_settings`** (written by `/ai`, `updated_by` = the owner's username):
+
+| Key | Type | Absent means | Notes |
+|-----|------|--------------|-------|
+| `ai.description.preset.active` | string, a preset id | `default-preset`, else the first usable preset | An id that is unknown or unavailable falls back with a WARN and stays stored |
+| `ai.description.enabled` | boolean | `true` | Runtime off-switch; `APP_AI_DESCRIPTION_ENABLED=false` still wins, the feature beans do not exist then |
+
+`AppSettingsService` caches per process, so direct SQL on these two keys is invisible until a restart, and a write invalidates only the writing process's cache — see `database.md`.
+
+### Variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `APP_AI_DESCRIPTION_ENABLED` | false | Master flag for AI description. When `false`, no Claude calls, no placeholders, no edit jobs. |
-| `APP_AI_DESCRIPTION_PROVIDER` | claude | Provider implementation: `claude` or `grok`. An unknown value logs a WARN at startup and every recording goes out without description blocks. |
+| `APP_AI_DESCRIPTION_ENABLED` | false | Master flag for AI description. When `false`, no model calls, no placeholders, no edit jobs, and none of the feature beans exist. |
+| `APP_AI_DESCRIPTION_DEFAULT_PRESET` | empty | `default-preset` — see above. |
+| `APP_AI_DESCRIPTION_PROVIDER` | claude | **Legacy**, single-preset path only: `claude` or `grok`, used while the `presets` map is empty. An unknown value then leaves the deployment without an agent — a WARN at startup and every recording goes out without description blocks. |
 | `APP_AI_DESCRIPTION_LANGUAGE` | en | Reply language. `ru` or `en`. |
 | `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (the `<p>` above the frames). |
 | `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (the `<details>` body). |
 | `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. Validated `1..50`, but the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. |
 | `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | 0 | Longest frame side in pixels before the model call; `0` sends frames at camera resolution. Validated `0` or `256..8192`. Vision endpoints bill by image area, and some gateways drop an image above their own limit without saying so — the LiteLLM gateway in front of DKS-Vision ignores anything wider than 1568 px and the model answers "frame unavailable". Resizing happens once per request in `DefaultDescriptionAgent`, before the provider attempt, so both providers get it. |
 | `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | 30s | Max wait for a free concurrency slot. |
-| `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). |
-| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous description requests. |
+| `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). Must cover the slowest **declared** preset: `grok-4.6` at `effort=xhigh` takes ~48 s, leaving nothing for either retry (transport needs 10 s of budget plus a 5 s pause, invalid-response 5 s — the latter starts and then dies on the outer timeout, reporting `Timeout` instead of `InvalidResponse`). Such a preset gets a startup WARN recommending `120s` and a 🐢 mark in `/ai`. |
+| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous description requests. Two `xhigh` calls hold both default slots for ~48 s, after which a third recording gives up on `APP_AI_DESCRIPTION_QUEUE_TIMEOUT`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED` | true | Enable sliding-window throttle on AI description invocations. When `false`, every recording with AI enabled gets a description request. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 10 | Max invocations within the sliding window. Counter increments when a slot is granted; failed model calls (transport errors, retries) do not refund the slot. |
 | `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
 
-### Grok provider (`APP_AI_DESCRIPTION_PROVIDER=grok`)
+### Grok provider (any preset with `provider: grok`, or the legacy `APP_AI_DESCRIPTION_PROVIDER=grok`)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GROK_MODEL` | grok-4.6 | Model id, or the name of a `[model.<name>]` BYOK entry from `GROK_HOME/config.toml`. Must not be blank even when the provider is `claude`. |
+| `GROK_MODEL` | grok-4.6 | **Legacy**, single-preset path only: a declared grok preset carries its own `model`. Model id, or the name of a `[model.<name>]` BYOK entry from `GROK_HOME/config.toml`. Must not be blank even on a claude-only deployment — the Grok section always binds. |
 | `GROK_PASS_THROUGH_ENV` | empty | Comma-separated names of JVM environment variables handed to the child `grok` verbatim. The child environment is built from scratch and inherits only PATH/HOME/locale and `GROK_*`/`XAI_*`, so a BYOK `env_key` named outside those prefixes (`MY_GATEWAY_KEY`) reaches `grok` only when listed here. Everything unlisted stays out, `DB_PASS` and `TELEGRAM_BOT_TOKEN` included. |
-| `GROK_EFFORT` | low | Reasoning effort passed as `--effort`. Empty = the flag is not passed, which BYOK models without reasoning levels need. grok-4.6 accepts `low`, `medium`, `high`, `xhigh` and rejects anything else before calling the model (exit 1); BYOK models may also accept `max` when their `config.toml` declares it. `high` costs ~5x the wall-clock of `low` on grok-4.6 for a frame description and adds little. |
+| `GROK_EFFORT` | low | **Legacy**, single-preset path only: a declared grok preset carries its own `effort`. Reasoning effort passed as `--effort`. Empty = the flag is not passed, which BYOK models without reasoning levels need. grok-4.6 accepts `low`, `medium`, `high`, `xhigh` and rejects anything else before calling the model (exit 1); BYOK models may also accept `max` when their `config.toml` declares it. `high` costs ~5x the wall-clock of `low` on grok-4.6 for a frame description and adds little. |
 | `GROK_CLI_PATH` | (empty) | Explicit binary; empty = `grok` from `PATH`. |
-| `GROK_HOME` | `<TEMP_FOLDER>/grok-home` | Grok's own directory: `auth.json`, optional `config.toml`, sessions. The same variable drives a manual `grok login` inside `docker compose exec`, so `docker-compose.yml` sets it to the mounted `./grok-home`. Must be writable by uid 1000: the refresh token rotates and is written back. `GrokHomeSweeper` empties `sessions/` and `logs/` hourly. |
+| `GROK_HOME` | `<TEMP_FOLDER>/grok-home` | Grok's own directory: `auth.json`, optional `config.toml`, sessions. Inspected and swept only when a declared preset uses grok — compose sets the variable and mounts the volume unconditionally. The same variable drives a manual `grok login` inside `docker compose exec`, so `docker-compose.yml` sets it to the mounted `./grok-home`. Must be writable by uid 1000: the refresh token rotates and is written back. `GrokHomeSweeper` empties `sessions/` and `logs/` hourly. |
 | `GROK_WORKING_DIR` | `<TEMP_FOLDER>/grok-cwd` | Empty directory passed as `--cwd`; Grok reads `AGENTS.md`, `CLAUDE.md`, `.claude/rules` and `.grok` from there, so keep it empty. |
 | `GROK_HTTP_PROXY` / `GROK_HTTPS_PROXY` / `GROK_NO_PROXY` | (empty) | Passed to the `grok` process as `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` when set. |
 

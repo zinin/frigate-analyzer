@@ -37,8 +37,8 @@ Use `/build` command for automated build with error handling.
 | common | Utilities (UUID, clock) |
 | model | Entities, DTOs, requests/responses |
 | service | Business logic, repositories, MapStruct mappers |
-| ai-description | AI-generated detection descriptions; providers: Claude Code SDK, Grok Build CLI |
-| telegram | Bot, notifications, authorization, AI description editing |
+| ai-description | AI-generated detection descriptions; named presets (provider + model + effort) over Claude Code SDK and Grok Build CLI |
+| telegram | Bot, notifications, authorization, AI description editing, `/ai` preset dialog |
 | core | Spring Boot app, controllers, pipeline, tasks, signal-loss monitor |
 
 Main chain: `core` → `telegram` → `service` → `model` → `common`. Cross-cutting: `core` and `telegram` both depend on `ai-description`.
@@ -50,6 +50,7 @@ Main chain: `core` → `telegram` → `service` → `model` → `common`. Cross-
 - **Signal-loss monitor:** Polls latest recording per camera, alerts on gap > threshold
 - **Object tracking:** Cross-recording IoU matching to suppress duplicate notifications
 - **AI description:** Provider-neutral agent (semaphore, retry, auth-loss alert to owner) over `DescriptionBackend`; Claude Code SDK or headless Grok Build CLI; edits the notification message
+- **Description presets:** yaml declares named presets (provider + model + effort), one backend per preset; the owner switches the active one and turns descriptions off from `/ai`, stored in `app_settings` and surviving a restart
 - **Database:** R2DBC reactive, Liquibase migrations in `docker/liquibase/migration/`
 - **Mapping:** MapStruct with KAPT (`unmappedTargetPolicy=error`)
 - **Logging:** kotlin-logging with Log4j2
@@ -76,7 +77,7 @@ Detailed docs in `.claude/rules/` with conditional loading via `paths:` frontmat
 | telegram.md | Bot core: components, queue, auth, ktgbotapi waiter API | `modules/telegram/**` |
 | telegram-export.md | `/export` + Quick Export, size limit (`core.video`), cancellation, lock-ordering invariant | `**/handler/export/**`, `**/handler/quickexport/**`, `**/handler/cancel/**`, `core/**/video/**` |
 | telegram-notifications.md | `/notifications` dialog, `nfs:*` callbacks, per-user/global flag storage | `**/handler/notifications/**` |
-| ai-description.md | Provider SPI, Claude and Grok backends, auth alerts, rate limiter | `modules/ai-description/**` |
+| ai-description.md | Presets and catalog, provider SPI and factories, Claude and Grok backends, `/ai` dialog, auth alerts, rate limiter | `modules/ai-description/**`, `**/handler/aisettings/**` |
 | configuration.md | All environment variables | `**/application.yaml` |
 | database.md | Schema, migrations | `**/liquibase/**`, `**/repository/**`, `**/entity/**`, `**/persistent/**` |
 | telegram-timeout-bug.md | ktgbotapi long-polling timeout workaround status | `**/TelegramAutoConfiguration*` |

@@ -98,8 +98,23 @@ Seeded with `notifications.recording.global_enabled=true` and `notifications.sig
 Schedule keys `notifications.recording.schedule.{enabled,window,zone}` are NOT seeded — they are
 created on first configuration via `/notifications`; absent keys mean "schedule disabled".
 
+AI-description keys are not seeded either — both are written by `/ai`
+(`AppSettingsDescriptionRuntimeSettings` in core, `application/`):
+
+| Key | Type | Absent means |
+|-----|------|--------------|
+| `ai.description.preset.active` | string, a preset id | nothing chosen: `default-preset`, else the first usable preset of the catalog |
+| `ai.description.enabled` | boolean | `true` — descriptions are on; `APP_AI_DESCRIPTION_ENABLED=false` still wins, as the feature beans do not exist then |
+
 `AppSettingsService` caches keys per-process without TTL, absence included, so direct SQL edits to
 this table need an application restart — see "Operational Notes" in `telegram-notifications.md`.
+
+**This cache makes the feature single-instance.** A write invalidates only the cache of the process
+that performed it, so with two application containers behind one database the preset choice and the
+runtime description switch diverge: the container that did not serve the `/ai` tap keeps serving the
+previous value until it restarts. The deployment is designed for one instance
+(`docker/deploy/docker-compose.yml` runs a single `frigate-analyzer` service); nothing detects or
+repairs the split.
 
 ## Patterns
 
