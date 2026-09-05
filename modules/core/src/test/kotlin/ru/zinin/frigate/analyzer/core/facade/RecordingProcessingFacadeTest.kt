@@ -6,9 +6,11 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.spyk
+import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -26,6 +28,8 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
 import ru.zinin.frigate.analyzer.core.config.properties.LocalVisualizationProperties
+import ru.zinin.frigate.analyzer.core.judge.JudgeCandidate
+import ru.zinin.frigate.analyzer.core.judge.NotificationJudgeService
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
 import ru.zinin.frigate.analyzer.core.service.LocalVisualizationService
 import ru.zinin.frigate.analyzer.model.dto.FrameData
@@ -163,6 +167,7 @@ class RecordingProcessingFacadeTest {
         framesForRequest: List<FrameData> = listOf(frameWithDetection(0)),
         maxFrames: Int = 10,
         runtimeSettings: DescriptionRuntimeSettings = runtimeSettings(true),
+        judge: NotificationJudgeService? = null,
     ): Pair<RecordingProcessingFacade, SaveProcessingResultRequest> {
         val provider = mockk<ObjectProvider<DescriptionAgent>>()
         every { provider.getIfAvailable() } returns agent
@@ -191,6 +196,8 @@ class RecordingProcessingFacadeTest {
         // бина настроек нет вовсе, и обязательная инъекция сломала бы такой старт.
         val runtimeSettingsProvider = mockk<ObjectProvider<DescriptionRuntimeSettings>>()
         every { runtimeSettingsProvider.getIfAvailable() } returns runtimeSettings
+        val judgeProvider = mockk<ObjectProvider<NotificationJudgeService>>()
+        every { judgeProvider.getIfAvailable() } returns judge
         val facade =
             RecordingProcessingFacade(
                 recordingEntityService = recordingEntityService,
@@ -201,6 +208,7 @@ class RecordingProcessingFacadeTest {
                 descriptionProperties = props,
                 notificationDecisionService = notificationDecisionService,
                 runtimeSettingsProvider = runtimeSettingsProvider,
+                judgeProvider = judgeProvider,
             )
         return facade to SaveProcessingResultRequest(recordingId = recordingId, frames = framesForRequest)
     }
@@ -457,5 +465,54 @@ class RecordingProcessingFacadeTest {
 
             assertNotNull(supplier)
             coVerify(exactly = 1) { telegramNotificationService.sendRecordingNotification(recording, any(), any()) }
+        }
+
+    @Test
+    fun `with a judge present the facade hands the candidate over and does not send itself`() =
+        runTest {
+            val judge = mockk<NotificationJudgeService>()
+            val captured = slot<JudgeCandidate>()
+            coEvery { judge.submit(capture(captured)) } returns Job()
+            val (facade, request) = facade(agent = null, judge = judge)
+
+            facade.processAndNotify(request)
+
+            assertEquals(recording, captured.captured.recording)
+            assertEquals(NotificationDecisionReason.NEW_OBJECTS, captured.captured.decision.reason)
+            assertEquals(request.frames.size, captured.captured.frames.size)
+            captured.captured.frames.forEachIndexed { i, frame ->
+                assertEquals(request.frames[i].frameIndex, frame.frameIndex)
+                assertEquals(request.frames[i].detectResponse, frame.detectResponse)
+                assertTrue(frame.frameBytes.isEmpty())
+            }
+            assertEquals(1, captured.captured.visualizedFrames.size)
+            coVerify(exactly = 0) { telegramNotificationService.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
+    fun `with a judge present the description supplier travels with the candidate`() =
+        runTest {
+            val judge = mockk<NotificationJudgeService>()
+            val captured = slot<JudgeCandidate>()
+            coEvery { judge.submit(capture(captured)) } returns Job()
+            val agent = mockk<DescriptionAgent>()
+            val (facade, request) = facade(agent = agent, judge = judge)
+
+            facade.processAndNotify(request)
+
+            assertNotNull(captured.captured.descriptionSupplier)
+        }
+
+    @Test
+    fun `a suppressed decision never reaches the judge`() =
+        runTest {
+            val judge = mockk<NotificationJudgeService>()
+            coEvery { notificationDecisionService.evaluate(any(), any(), any()) } returns
+                NotificationDecision(shouldNotify = false, reason = NotificationDecisionReason.ALL_REPEATED)
+            val (facade, request) = facade(agent = null, judge = judge)
+
+            facade.processAndNotify(request)
+
+            coVerify(exactly = 0) { judge.submit(any()) }
         }
 }

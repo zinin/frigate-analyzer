@@ -24,6 +24,16 @@ interface TelegramNotificationService {
         descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)? = null,
     )
 
+    /**
+     * `true` when at least one authorized subscriber still has recording notifications on.
+     *
+     * The same filter [sendRecordingNotification] applies, exposed so a caller can find out
+     * *before* paying for work whose only output is that call. The judge asks it for exactly the
+     * reason the `descriptionSupplier` above is lazy: a recording nobody will receive must not
+     * spend a model call or a rate-limit slot.
+     */
+    suspend fun hasRecordingRecipients(): Boolean
+
     /** Notify all active subscribers that camera [camId] has stopped writing recordings. */
     suspend fun sendCameraSignalLost(
         camId: String,

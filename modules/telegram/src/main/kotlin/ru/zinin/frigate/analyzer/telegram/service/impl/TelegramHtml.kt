@@ -10,7 +10,7 @@ package ru.zinin.frigate.analyzer.telegram.service.impl
  * Кавычка экранируется: в текстовом содержимом `&quot;` рисуется той же кавычкой, так что строже —
  * бесплатно, а значение, случайно попавшее в атрибут, уже не разорвёт его.
  */
-internal fun escapeTelegramHtml(s: String): String =
+fun escapeTelegramHtml(s: String): String =
     s
         .replace("&", "&amp;")
         .replace("<", "&lt;")

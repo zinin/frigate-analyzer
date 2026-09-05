@@ -7,6 +7,8 @@ import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
+import ru.zinin.frigate.analyzer.ai.description.core.VisionInstructions
+import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import java.nio.file.Path
 import java.util.UUID
 import kotlin.test.Test
@@ -21,17 +23,15 @@ class ClaudeImageStagerTest {
         runTest {
             val recordingId = UUID.randomUUID()
             val request =
-                DescriptionRequest(
-                    recordingId = recordingId,
+                VisionRequest(
+                    requestId = recordingId,
                     frames =
                         listOf(
                             DescriptionRequest.FrameImage(2, byteArrayOf(1, 2)),
                             DescriptionRequest.FrameImage(0, byteArrayOf(3, 4)),
                             DescriptionRequest.FrameImage(1, byteArrayOf(5, 6)),
                         ),
-                    language = "en",
-                    shortMaxLength = 200,
-                    detailedMaxLength = 1500,
+                    instructions = VisionInstructions("sys", "pre", "epi", jsonSchema = null),
                 )
 
             val prefixes = mutableListOf<String>()

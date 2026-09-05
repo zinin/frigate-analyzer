@@ -1,13 +1,13 @@
 package ru.zinin.frigate.analyzer.ai.description.claude
 
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackend
+import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
+import ru.zinin.frigate.analyzer.ai.description.core.VisionResponse
+import java.time.Duration
 
 /**
- * Одна попытка описания через Claude Code CLI: кадры во временные jpg, промпт со ссылками
- * `@/abs/path`, вызов SDK, разбор JSON. Семафор, таймауты и повторы живут в
- * `DefaultDescriptionAgent`.
+ * Одна попытка через Claude Code CLI: кадры во временные jpg, промпт со ссылками `@/abs/path`,
+ * вызов SDK. Семафор, таймауты, повторы и разбор ответа живут в `DefaultDescriptionAgent`.
  *
  * Не бин: экземпляр создаёт [ClaudeBackendFactory] на каждый claude-пресет, поэтому [model] и
  * [authScopeId] приходят из пресета, а осмотр окружения остаётся в фабрике — один раз на провайдер.
@@ -16,28 +16,27 @@ class ClaudeBackend(
     val model: String,
     override val authScopeId: String,
     private val promptBuilder: ClaudePromptBuilder,
-    private val responseParser: ClaudeResponseParser,
     private val imageStager: ClaudeImageStager,
     private val invoker: ClaudeInvoker,
     private val exceptionMapper: ClaudeExceptionMapper,
-) : DescriptionBackend {
+) : VisionBackend {
     override val providerId: String = "claude"
     override val authRecoveryHint: String = AUTH_RECOVERY_HINT
 
-    override suspend fun describe(request: DescriptionRequest): DescriptionResult {
+    override suspend fun complete(
+        request: VisionRequest,
+        timeout: Duration,
+    ): VisionResponse {
         val stagedPaths = imageStager.stage(request)
         try {
             val prompt = promptBuilder.build(request, stagedPaths)
-            val raw =
-                try {
-                    invoker.invoke(prompt, model)
-                } catch (e: Throwable) {
-                    // map() пробрасывает CancellationException как есть, см. его KDoc.
-                    throw exceptionMapper.map(e)
-                }
-            return responseParser.parse(raw, request.shortMaxLength, request.detailedMaxLength)
+            return try {
+                // Второго представления у Claude нет: SDK отдаёт один текст.
+                VisionResponse(invoker.invoke(prompt, model, request.instructions.systemPrompt, timeout))
+            } catch (e: Throwable) {
+                throw exceptionMapper.map(e)
+            }
         } finally {
-            // cleanup сам работает под NonCancellable.
             imageStager.cleanup(stagedPaths)
         }
     }

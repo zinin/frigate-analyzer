@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler.aisettings
 
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
@@ -9,6 +10,7 @@ import org.springframework.beans.factory.ObjectProvider
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.telegram.bot.handler.aisettings.AiSettingsCallbackHandler.DispatchOutcome
 import kotlin.test.Test
@@ -18,8 +20,9 @@ import kotlin.test.assertNull
 
 class AiSettingsCallbackHandlerTest {
     private val settings = mockk<DescriptionRuntimeSettings>(relaxed = true)
+    private val judgeSettings = mockk<JudgeRuntimeSettings>(relaxed = true)
     private val presets = mockk<DescriptionPresets>().also { every { it.all() } returns CATALOG }
-    private val handler = AiSettingsCallbackHandler(provider(presets), provider(settings))
+    private val handler = AiSettingsCallbackHandler(provider(presets), provider(settings), provider(judgeSettings))
 
     /** Всё, чем коллбэк ответил владельцу: длина списка и есть проверка «ответ ровно один». */
     private val answers = mutableListOf<AiSettingsCallbackHandler.Dispatched>()
@@ -51,7 +54,7 @@ class AiSettingsCallbackHandlerTest {
             val trace = mutableListOf<String>()
             val slowSettings = mockk<DescriptionRuntimeSettings>()
             coEvery { slowSettings.setActivePresetId(any(), any()) } answers { trace += "write" }
-            val slowHandler = AiSettingsCallbackHandler(provider(presets), provider(slowSettings))
+            val slowHandler = AiSettingsCallbackHandler(provider(presets), provider(slowSettings), provider(judgeSettings))
 
             slowHandler.handle("aip:set:grok-deep", isOwner = true, changedBy = "owner") { trace += "answer" }
 
@@ -136,6 +139,12 @@ class AiSettingsCallbackHandlerTest {
                     "aip:set:",
                     "aip:on",
                     "aip:off",
+                    "aip:j:set:grok-fast",
+                    "aip:j:set:claude-opus",
+                    "aip:j:set:missing",
+                    "aip:j:set:",
+                    "aip:j:on",
+                    "aip:j:off",
                     "aip:close",
                     "aip:",
                     "aip:nonsense",
@@ -178,6 +187,7 @@ class AiSettingsCallbackHandlerTest {
                 AiSettingsCallbackHandler(
                     provider<DescriptionPresets>(null),
                     provider<DescriptionRuntimeSettings>(null),
+                    provider<JudgeRuntimeSettings>(null),
                 )
             val bareAnswers = mutableListOf<AiSettingsCallbackHandler.Dispatched>()
 
@@ -187,6 +197,46 @@ class AiSettingsCallbackHandlerTest {
             assertEquals(DispatchOutcome.IGNORE, select.outcome)
             assertEquals(DispatchOutcome.RERENDER, switch.outcome)
             assertEquals(2, bareAnswers.size)
+        }
+
+    @Test
+    fun `the owner switches the judge preset`() =
+        runTest {
+            val dispatched = handle("aip:j:set:grok-fast")
+            assertEquals(DispatchOutcome.RERENDER, dispatched.outcome)
+            coVerify(exactly = 1) { judgeSettings.setActivePresetId("grok-fast", "owner") }
+            coVerify(exactly = 0) { settings.setActivePresetId(any(), any()) }
+        }
+
+    @Test
+    fun `the owner turns the judge off and on`() =
+        runTest {
+            handle("aip:j:off")
+            handle("aip:j:on")
+            coVerifyOrder {
+                judgeSettings.setJudgeEnabled(false, "owner")
+                judgeSettings.setJudgeEnabled(true, "owner")
+            }
+        }
+
+    @Test
+    fun `an unavailable preset is refused for the judge with the same alert`() =
+        runTest {
+            val dispatched = handle("aip:j:set:claude-opus")
+            assertEquals(DispatchOutcome.ALERT, dispatched.outcome)
+            assertEquals("ai.settings.alert.unavailable", dispatched.alertKey)
+            assertEquals(AiSettingsAlertCause.Unavailable(UnavailableReason.NoToken), dispatched.alertCause)
+            coVerify(exactly = 0) { judgeSettings.setActivePresetId(any(), any()) }
+        }
+
+    @Test
+    fun `judge callbacks without the judge bean change nothing and still answer`() =
+        runTest {
+            val handler = AiSettingsCallbackHandler(provider(presets), provider(settings), provider(null))
+            val dispatched = handler.handle("aip:j:on", true, "owner") { answers += it }
+            assertEquals(DispatchOutcome.RERENDER, dispatched.outcome)
+            assertEquals(1, answers.size)
+            coVerify(exactly = 0) { settings.setDescriptionsEnabled(any(), any()) }
         }
 
     private inline fun <reified T : Any> provider(value: T?): ObjectProvider<T> =

@@ -57,6 +57,9 @@ class AiSettingsMessageRenderer(
             // экран и открывают.
             if (state.presets.isEmpty()) {
                 appendLine(msg.get("ai.settings.active.none", lang))
+                if (state.judgeAvailable) {
+                    appendJudgeBlock(state, lang)
+                }
                 return@buildString
             }
             if (active == null) {
@@ -82,6 +85,49 @@ class AiSettingsMessageRenderer(
             if (state.presets.any { it.slowEffort }) {
                 appendLine(msg.get("ai.settings.slow.note", lang, SLOW_MARK))
             }
+            if (state.judgeAvailable) {
+                appendJudgeBlock(state, lang)
+            }
+        }
+    }
+
+    private fun StringBuilder.appendJudgeBlock(
+        state: AiSettingsViewState,
+        lang: String,
+    ) {
+        appendLine()
+        appendLine(msg.get("ai.settings.judge.title", lang))
+        appendLine(
+            msg.get(
+                "ai.settings.judge.state",
+                lang,
+                msg.get(if (state.judgeEnabled) "ai.settings.state.on" else "ai.settings.state.off", lang),
+            ),
+        )
+        val judgeActive = state.presets.firstOrNull { it.id == state.judgeEffectivePresetId }
+        if (judgeActive == null) {
+            appendLine(msg.get("ai.settings.judge.active.none", lang))
+        } else {
+            appendLine(
+                msg.get(
+                    "ai.settings.judge.active",
+                    lang,
+                    judgeActive.id,
+                    judgeActive.provider,
+                    judgeActive.effectiveModel,
+                    effortLabel(judgeActive),
+                ),
+            )
+        }
+        if (state.hasJudgeMismatch) {
+            appendLine(
+                msg.get(
+                    "ai.settings.judge.mismatch",
+                    lang,
+                    state.judgeStoredPresetId.orEmpty(),
+                    state.judgeEffectivePresetId.orEmpty(),
+                ),
+            )
         }
     }
 
@@ -170,7 +216,7 @@ class AiSettingsMessageRenderer(
                     state.presets.forEach { preset ->
                         row {
                             +CallbackDataInlineKeyboardButton(
-                                presetLabel(preset, state.effectivePresetId),
+                                "$DESCRIPTION_MARK " + presetLabel(preset, state.effectivePresetId),
                                 AiSettingsCallbacks.SET_PREFIX + preset.id,
                             )
                         }
@@ -187,6 +233,29 @@ class AiSettingsMessageRenderer(
                                     lang,
                                 ),
                                 if (state.descriptionsEnabled) AiSettingsCallbacks.OFF else AiSettingsCallbacks.ON,
+                            )
+                        }
+                    }
+                    if (state.judgeAvailable) {
+                        state.presets.forEach { preset ->
+                            row {
+                                +CallbackDataInlineKeyboardButton(
+                                    "$JUDGE_MARK " + presetLabel(preset, state.judgeEffectivePresetId),
+                                    AiSettingsCallbacks.JUDGE_SET_PREFIX + preset.id,
+                                )
+                            }
+                        }
+                        row {
+                            +CallbackDataInlineKeyboardButton(
+                                msg.get(
+                                    if (state.judgeEnabled) {
+                                        "ai.settings.judge.button.disable"
+                                    } else {
+                                        "ai.settings.judge.button.enable"
+                                    },
+                                    lang,
+                                ),
+                                if (state.judgeEnabled) AiSettingsCallbacks.JUDGE_OFF else AiSettingsCallbacks.JUDGE_ON,
                             )
                         }
                     }
@@ -223,6 +292,8 @@ class AiSettingsMessageRenderer(
 
         const val ACTIVE_MARK = "✅"
         const val UNAVAILABLE_MARK = "⚠️"
+        const val DESCRIPTION_MARK = "📝"
+        const val JUDGE_MARK = "⚖️"
 
         /** Отметка живёт в коде, а не в бандлах: иначе кнопка и легенда разъезжаются по языкам. */
         const val SLOW_MARK = "🐢"

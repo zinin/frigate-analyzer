@@ -6,6 +6,7 @@ import ru.zinin.frigate.analyzer.model.dto.CameraState
 import ru.zinin.frigate.analyzer.model.response.CameraStatistics
 import ru.zinin.frigate.analyzer.model.response.CamerasSection
 import ru.zinin.frigate.analyzer.model.response.DetectServerStatistics
+import ru.zinin.frigate.analyzer.model.response.JudgeSection
 import ru.zinin.frigate.analyzer.model.response.RecordingsStatistics
 import ru.zinin.frigate.analyzer.model.response.ServerStatus
 import ru.zinin.frigate.analyzer.model.response.StatusResponse
@@ -38,6 +39,8 @@ class StatusMessageFormatter(
             appendCameras(snapshot.cameras, language, zone, now)
             appendLine()
             appendServers(snapshot.detectServers, language)
+            appendLine()
+            appendJudge(snapshot.judge, language, zone)
         }.trimEnd()
 
     private fun StringBuilder.appendRecordings(
@@ -230,6 +233,60 @@ class StatusMessageFormatter(
                 val marker = if (s.status == ServerStatus.ALIVE) "🟢" else "🔴"
                 "$marker ${escape(idPadded)}  $tail"
             }
+        appendPreBlock(lines)
+    }
+
+    private fun StringBuilder.appendJudge(
+        judge: JudgeSection,
+        language: String,
+        zone: ZoneId,
+    ) {
+        appendLine("⚖️ <b>${escape(msg.get("status.section.judge", language))}</b>")
+        if (!judge.enabled) {
+            appendPreBlock(listOf(escape(msg.get("status.judge.disabled", language))))
+            return
+        }
+        val lines = mutableListOf<String>()
+        lines +=
+            escape(
+                msg.get(
+                    if (judge.runtimeEnabled) "status.judge.state.on" else "status.judge.state.off",
+                    language,
+                ),
+            )
+        lines += escape(msg.get("status.judge.preset", language, judge.presetId ?: "-"))
+        lines += escape(msg.get("status.judge.published", language, judge.last24h.published))
+        lines +=
+            escape(
+                msg.get(
+                    "status.judge.suppressed",
+                    language,
+                    judge.last24h.suppressedByReason.values
+                        .sum(),
+                ),
+            )
+        judge.last24h.suppressedByReason.entries
+            .sortedByDescending { it.value }
+            .forEach { (reason, count) -> lines += "  ${escape(reason)} $count" }
+        lines += escape(msg.get("status.judge.failover", language, judge.last24h.failover))
+        lines += escape(msg.get("status.judge.snoozed", language, judge.last24h.snoozed))
+        if (judge.snoozes.isEmpty()) {
+            lines += escape(msg.get("status.judge.snooze.none", language))
+        } else {
+            val fmt = DateTimeFormatter.ofPattern("HH:mm:ss")
+            judge.snoozes.forEach { snooze ->
+                lines +=
+                    escape(
+                        msg.get(
+                            "status.judge.snooze.line",
+                            language,
+                            snooze.camId,
+                            snooze.until.atZone(zone).format(fmt),
+                            snooze.classes,
+                        ),
+                    )
+            }
+        }
         appendPreBlock(lines)
     }
 

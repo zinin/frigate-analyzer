@@ -31,7 +31,9 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class TelegramNotificationServiceImplTest {
     private val userService = mockk<TelegramUserService>()
@@ -74,6 +76,30 @@ class TelegramNotificationServiceImplTest {
             analyzedFramesCount = 10,
             errorMessage = null,
         )
+
+    @Test
+    fun `there are no recipients when every subscriber turned recording notifications off`() =
+        runTest {
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(
+                    UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), notificationsRecordingEnabled = false),
+                    UserZoneInfo(chatId = 200L, zone = ZoneId.of("UTC"), notificationsRecordingEnabled = false),
+                )
+
+            assertFalse(service.hasRecordingRecipients())
+        }
+
+    @Test
+    fun `there are recipients when one subscriber still wants recordings`() =
+        runTest {
+            coEvery { userService.getAuthorizedUsersWithZones() } returns
+                listOf(
+                    UserZoneInfo(chatId = 100L, zone = ZoneId.of("UTC"), notificationsRecordingEnabled = false),
+                    UserZoneInfo(chatId = 200L, zone = ZoneId.of("UTC"), notificationsRecordingEnabled = true),
+                )
+
+            assertTrue(service.hasRecordingRecipients())
+        }
 
     @Test
     fun `sendRecordingNotification propagates recordingId to NotificationTask`() =

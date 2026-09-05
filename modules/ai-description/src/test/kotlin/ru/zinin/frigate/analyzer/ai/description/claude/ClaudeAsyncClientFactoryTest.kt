@@ -119,23 +119,23 @@ class ClaudeAsyncClientFactoryTest {
     @Test
     fun `create throws when no token configured`() {
         assertFailsWith<IllegalStateException> {
-            factory(props(token = "", authToken = "")).create(Duration.ofMinutes(2), model = "opus")
+            factory(props(token = "", authToken = "")).create(Duration.ofMinutes(2), model = "opus", systemPrompt = "")
         }
     }
 
     @Test
     fun `create passes validation with only oauth token`() {
-        factory(props(token = "oauth-token", authToken = "")).create(Duration.ofMinutes(2), model = "opus")
+        factory(props(token = "oauth-token", authToken = "")).create(Duration.ofMinutes(2), model = "opus", systemPrompt = "")
     }
 
     @Test
     fun `create passes validation with only anthropic auth token`() {
-        factory(props(token = "", authToken = "sk-sp-xxx")).create(Duration.ofMinutes(2), model = "opus")
+        factory(props(token = "", authToken = "sk-sp-xxx")).create(Duration.ofMinutes(2), model = "opus", systemPrompt = "")
     }
 
     @Test
     fun `options carry the model passed to the call, not the one from the properties`() {
-        val options = factory(props(model = "from-properties")).buildOptions(Duration.ofMinutes(2), model = "opus")
+        val options = factory(props(model = "from-properties")).buildOptions(Duration.ofMinutes(2), model = "opus", systemPrompt = "")
         assertEquals("opus", options.model)
     }
 
@@ -143,13 +143,13 @@ class ClaudeAsyncClientFactoryTest {
     fun `a non-blank anthropic model-override still displaces the model passed to the call`() {
         val options =
             factory(props(modelOverride = "qwen3.5-plus"))
-                .buildOptions(Duration.ofMinutes(2), model = "opus")
+                .buildOptions(Duration.ofMinutes(2), model = "opus", systemPrompt = "")
         assertNull(options.model)
     }
 
     @Test
     fun `options carry the 16 MiB message buffer by default`() {
-        val options = factory(props()).buildOptions(Duration.ofMinutes(2), model = "opus")
+        val options = factory(props()).buildOptions(Duration.ofMinutes(2), model = "opus", systemPrompt = "")
         assertEquals(16 * 1024 * 1024, options.effectiveMaxBufferSize)
     }
 
@@ -157,7 +157,13 @@ class ClaudeAsyncClientFactoryTest {
     fun `options carry the configured message buffer`() {
         val options =
             factory(props(maxBufferSize = DataSize.ofMegabytes(32)))
-                .buildOptions(Duration.ofMinutes(2), model = "opus")
+                .buildOptions(Duration.ofMinutes(2), model = "opus", systemPrompt = "")
         assertEquals(32 * 1024 * 1024, options.effectiveMaxBufferSize)
+    }
+
+    @Test
+    fun `non-blank system prompt is appended`() {
+        val options = factory(props()).buildOptions(Duration.ofMinutes(2), model = "opus", systemPrompt = "SYS")
+        assertEquals("SYS", options.appendSystemPrompt)
     }
 }

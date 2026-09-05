@@ -110,7 +110,7 @@ data class DescriptionProperties(
     data class RateLimit(
         val enabled: Boolean = false,
         @field:Min(1) @field:Max(10000)
-        val maxRequests: Int = 10,
+        val maxRequests: Int = 30,
         val window: Duration = Duration.ofHours(1),
     ) {
         init {

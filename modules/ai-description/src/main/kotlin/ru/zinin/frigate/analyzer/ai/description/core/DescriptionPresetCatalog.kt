@@ -11,7 +11,7 @@ class DescriptionPresetCatalog(
     class Entry(
         val view: DescriptionPreset,
         /** null, если пресет недоступен: провайдер не настроен. */
-        val backend: DescriptionBackend?,
+        val backend: VisionBackend?,
     )
 
     private val index = entries.associateBy { it.view.id }

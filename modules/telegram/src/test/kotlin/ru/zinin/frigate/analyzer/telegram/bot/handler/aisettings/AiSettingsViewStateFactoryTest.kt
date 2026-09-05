@@ -14,9 +14,11 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
 import ru.zinin.frigate.analyzer.ai.description.api.ActiveDescriptionPreset
+import ru.zinin.frigate.analyzer.ai.description.api.ActiveJudgePreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.ProviderAuthStates
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import kotlin.test.assertEquals
@@ -29,6 +31,8 @@ class AiSettingsViewStateFactoryTest {
     private val active = mockk<ActiveDescriptionPreset>()
     private val runtimeSettings = mockk<DescriptionRuntimeSettings>()
     private val authStates = mockk<ProviderAuthStates>()
+    private val judgeRuntimeSettings = mockk<JudgeRuntimeSettings>()
+    private val activeJudge = mockk<ActiveJudgePreset>()
 
     private fun preset(
         id: String,
@@ -58,7 +62,16 @@ class AiSettingsViewStateFactoryTest {
         active: ActiveDescriptionPreset? = this.active,
         runtimeSettings: DescriptionRuntimeSettings? = this.runtimeSettings,
         authStates: ProviderAuthStates? = this.authStates,
-    ) = AiSettingsViewStateFactory(provider(presets), provider(active), provider(runtimeSettings), provider(authStates))
+        judgeRuntimeSettings: JudgeRuntimeSettings? = null,
+        activeJudge: ActiveJudgePreset? = null,
+    ) = AiSettingsViewStateFactory(
+        provider(presets),
+        provider(active),
+        provider(runtimeSettings),
+        provider(authStates),
+        provider(judgeRuntimeSettings),
+        provider(activeJudge),
+    )
 
     @Test
     fun `the state carries both the stored and the effective id`() =
@@ -179,5 +192,62 @@ class AiSettingsViewStateFactoryTest {
             val state = job.await()
 
             assertTrue(state.descriptionsEnabled)
+        }
+
+    @Test
+    fun `judge beans fill the judge section of the state`() =
+        runTest {
+            every { presets.all() } returns listOf(fast, opus)
+            every { authStates.byScope() } returns emptyMap()
+            coEvery { runtimeSettings.descriptionsEnabled() } returns true
+            coEvery { active.storedId() } returns "grok-fast"
+            coEvery { active.effective() } returns fast
+            coEvery { judgeRuntimeSettings.judgeEnabled() } returns false
+            coEvery { activeJudge.storedId() } returns "claude-opus"
+            coEvery { activeJudge.effective() } returns fast
+
+            val state = factory(judgeRuntimeSettings = judgeRuntimeSettings, activeJudge = activeJudge).build("ru")
+
+            assertTrue(state.judgeAvailable)
+            assertFalse(state.judgeEnabled)
+            assertEquals("claude-opus", state.judgeStoredPresetId)
+            assertEquals("grok-fast", state.judgeEffectivePresetId)
+            assertTrue(state.hasJudgeMismatch)
+        }
+
+    @Test
+    fun `missing judge beans hide the judge section`() =
+        runTest {
+            every { presets.all() } returns listOf(fast)
+            every { authStates.byScope() } returns emptyMap()
+            coEvery { runtimeSettings.descriptionsEnabled() } returns true
+            coEvery { active.storedId() } returns "grok-fast"
+            coEvery { active.effective() } returns fast
+
+            val state = factory().build("ru")
+
+            assertFalse(state.judgeAvailable)
+            assertTrue(state.judgeEnabled)
+            assertNull(state.judgeStoredPresetId)
+            assertNull(state.judgeEffectivePresetId)
+            assertFalse(state.hasJudgeMismatch)
+        }
+
+    @Test
+    fun `a failing judge switch read fails open`() =
+        runTest {
+            every { presets.all() } returns listOf(fast)
+            every { authStates.byScope() } returns emptyMap()
+            coEvery { runtimeSettings.descriptionsEnabled() } returns true
+            coEvery { active.storedId() } returns "grok-fast"
+            coEvery { active.effective() } returns fast
+            coEvery { judgeRuntimeSettings.judgeEnabled() } throws IllegalStateException("app_settings is down")
+            coEvery { activeJudge.storedId() } returns "grok-fast"
+            coEvery { activeJudge.effective() } returns fast
+
+            val state = factory(judgeRuntimeSettings = judgeRuntimeSettings, activeJudge = activeJudge).build("ru")
+
+            assertTrue(state.judgeAvailable)
+            assertTrue(state.judgeEnabled)
         }
 }

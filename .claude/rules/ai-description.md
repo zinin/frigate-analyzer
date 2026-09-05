@@ -1,11 +1,12 @@
 ---
-paths: "modules/ai-description/**,**/handler/aisettings/**,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*,**/DescriptionAuthAlertNotifier*"
+paths: "modules/ai-description/**,**/handler/aisettings/**,**/judge/**,**/Verdicts*,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*,**/DescriptionAuthAlertNotifier*"
 ---
 
 # AI Description Module
 
 Optional module that generates short and detailed natural-language descriptions of detections and
-edits them into the Telegram notification. Two providers: `claude` (Claude Code CLI via
+edits them into the Telegram notification, and (when enabled separately) runs the LLM notification
+judge over the same preset catalog. Two providers: `claude` (Claude Code CLI via
 `org.springaicommunity:claude-code-sdk`) and `grok` (Grok Build CLI from xAI, headless via
 `ProcessBuilder`).
 
@@ -28,24 +29,33 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Layer | Component | Location | Purpose |
 |-------|-----------|----------|---------|
 | API | `DescriptionAgent` | `api/` | Single-method `suspend fun describe(request): DescriptionResult` |
+| API | `JudgeAgent` | `api/` | Single-method `suspend fun judge(request): JudgeOutcome` |
 | API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs; `DescriptionException` is provider-neutral: `Timeout`, `InvalidResponse`, `Transport`, `RateLimited`, `Unauthorized` |
+| API | `JudgeRequest` / `JudgeOutcome` / `JudgeVerdict` | `api/` | Judge DTOs; `JudgeVerdict.Reason` is the five model reasons (`NEW_EVENT`, `CHANGED_SITUATION`, `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE`) |
 | API | `DescriptionProviderAuthEvent` | `api/` | Spring event `LOST` / `RESTORED`, one per transition, keyed by `authScopeId` |
 | API | `DescriptionPreset` / `DescriptionPresets` / `UnavailableReason` | `api/` | One preset as its consumers see it (`id`, `provider`, `model`, `effectiveModel`, `effort`, `authScopeId`, `unavailableReason`, `slowEffort`) and the read-only catalog `all()` in declaration order |
-| API | `ActiveDescriptionPreset` | `api/` | `storedId()` (the owner's choice) and `effective()` (what the next call will use) — two methods, so `/ai` can tell them apart |
+| API | `ActiveDescriptionPreset` / `ActiveJudgePreset` | `api/` | `storedId()` (the owner's choice) and `effective()` (what the next call will use) — two methods, so `/ai` can tell them apart |
 | API | `DescriptionRuntimeSettings` | `api/` | Seam for "which preset is active" + "are descriptions on": `sourceName`, `activePresetId`/`setActivePresetId`, `descriptionsEnabled`/`setDescriptionsEnabled` |
+| API | `JudgeRuntimeSettings` | `api/` | Same seam for the judge: `activePresetId`/`setActivePresetId`, `judgeEnabled`/`setJudgeEnabled` (absent = `true`) |
 | API | `ProviderAuthStates` | `api/` | `byScope(): Map<String, Health>` (`UNKNOWN`/`HEALTHY`/`LOST`) for the `/ai` screen |
 | API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
-| Core | `DescriptionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; carries `providerId`, `authScopeId`, `authRecoveryHint` |
-| Core | `DescriptionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
+| Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns `VisionResponse` (`primary` plus the provider's `fallback` representation, when it has one); takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
+| Core | `VisionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
+| Core | `VisionRequest` / `VisionInstructions` | `core/` | One vision call: frames plus `systemPrompt` / `preamble` / `epilogue` / optional `jsonSchema`; the provider inserts frames between preamble and epilogue |
+| Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, frame downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
+| Core | `DescriptionTask` / `JudgeTask` | `core/` | Build `VisionInstructions` for descriptions and for the judge |
+| Core | `DescriptionResponseParser` / `JudgeResponseParser` | `core/` | Parse the raw model text into `DescriptionResult` / `JudgeVerdict` |
+| Core | `DefaultDescriptionAgent` | `core/` | Thin `DescriptionAgent`: `DescriptionTask` → `VisionCallExecutor` → `DescriptionResponseParser` |
+| Core | `DefaultJudgeAgent` | `core/` | Thin `JudgeAgent`: `JudgeTask` → `VisionCallExecutor` → `JudgeResponseParser` |
+| Core | `JudgePresetResolver` | `core/` | `ActiveJudgePreset` over a second `ActivePresetResolver` (label `judge`); not itself the resolver bean |
 | Core | `DescriptionPresetCatalogBuilder` | `core/` | Pure (no Spring) build of the catalog from declarations + factories; returns `Catalog` / `NoPresets` / `NoneUsable` |
 | Core | `DescriptionPresetCatalog` | `core/` | Immutable `id → (view, backend)` plus `fallbackId`; implements `DescriptionPresets` |
 | Core | `ActivePresetResolver` | `core/` | Resolves the active preset per call, fail-open; implements `ActiveDescriptionPreset` |
-| Core | `InMemoryDescriptionRuntimeSettings` | `core/` | Default used only when `core` registers no `DescriptionRuntimeSettings`; the choice dies with the process |
+| Core | `InMemoryDescriptionRuntimeSettings` / `InMemoryJudgeRuntimeSettings` | `core/` | Defaults used only when `core` registers no `*RuntimeSettings`; the choice dies with the process |
 | Core | `ProviderAuthTracker` | `core/` | Auth state machine per credential scope; publishes the events; implements `ProviderAuthStates` |
-| Core | `DefaultDescriptionAgent` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy; hands each outcome to the tracker |
 | Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form for both INFO lines about presets |
 | Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
-| Core | `FrameDownscaler` | `core/` | Optional resize to `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` (ImageIO, bilinear, JPEG q0.85), once per request in the agent; an unreadable frame is passed through with a WARN |
+| Core | `FrameDownscaler` | `core/` | Optional resize to `max-image-side` (ImageIO, bilinear, JPEG q0.85), once per request in `VisionCallExecutor`; an unreadable frame is passed through with a WARN |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
 | Claude | `ClaudeBackendFactory` | `claude/` | Token check, CLI WARN, `ANTHROPIC_MODEL` displacement, `authScopeId=claude` |
 | Claude | `ClaudeImageStager`, `ClaudePromptBuilder`, `ClaudeInvoker`/`DefaultClaudeInvoker`, `ClaudeAsyncClientFactory`, `ClaudeResponseParser`, `ClaudeExceptionMapper` | `claude/` | Claude specifics; `@Component`s gated on `enabled=true` only |
@@ -55,11 +65,15 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Grok | `GrokCommandBuilder`, `GrokProcessRunner`/`DefaultGrokProcessRunner` | `grok/` | argv + isolated env; `ProcessBuilder` with stdout/stderr redirected to temp files and a cancellation-safe kill |
 | Grok | `GrokOutputParser`, `GrokExceptionMapper` | `grok/` | JSON stdout, error envelope, classification |
 | Grok | `GrokHomeGuard`, `GrokHomeSweeper` | `grok/` | shared/exclusive lock on `GROK_HOME`; hourly cleanup of `sessions/` and `logs/`, skipped when no declared preset uses grok |
-| Config | `AiDescriptionAutoConfiguration` | `config/` | Registers properties; its nested `PresetBeans` holds every feature bean under one condition |
+| Config | `AiDescriptionAutoConfiguration` | `config/` | Registers properties; nested `PresetBeans` holds description beans; nested `JudgeBeans` holds judge beans under `application.ai.judge.enabled=true` plus the catalog |
 | Config | `DescriptionProperties` / `ClaudeProperties` / `GrokProperties` | `config/` | `@ConfigurationProperties` for `application.ai.description.*`; both provider sections bind always |
+| Config | `JudgeProperties` | `config/` | `@ConfigurationProperties` for `application.ai.judge.*` (sibling of `description`, not nested in it); binds even when the judge is off |
 | Config | `DescriptionPresetDeclarations` / `DescriptionPresetsDeclaredCondition` | `config/` | The single answer to "is anything declared?" — a `Binder` read of the `presets` map plus the normalized legacy `provider` |
 | Config | `DescriptionAgentSanityChecker` | `config/` | WARN when `enabled=true` but no agent — nothing declared, or an unknown legacy provider |
-| Limits | `DescriptionRateLimiter` | `ratelimit/` | Sliding-window throttle; `tryAcquire()` returns false when quota exceeded |
+| Config | `JudgeAgentSanityChecker` | `config/` | WARN when `application.ai.judge.enabled=true` but no `JudgeAgent` — catalog not built |
+| Limits | `SlidingWindowRateLimiter` | `ratelimit/` | Domain-agnostic sliding window; two named subclasses do not share a counter |
+| Limits | `DescriptionRateLimiter` | `ratelimit/` | Description throttle (`AI description`); default 30 / 1h |
+| Limits | `JudgeRateLimiter` | `ratelimit/` | Judge throttle (`AI judge`); default 200 / 1h; miss → send unjudged (`FAILOVER` / `RATE_LIMITED`) |
 
 ## Presets, catalog and resolution
 
@@ -86,7 +100,7 @@ guarantee. Nothing declared → no catalog, no agent, a WARN from `DescriptionAg
 notifications without placeholders. Consumers (`RecordingProcessingFacade`, telegram) use
 `ObjectProvider<DescriptionAgent>` and never see the provider.
 
-**Factories.** `DescriptionBackendFactory` (`@Component`, gated on `enabled=true` only) replaces the
+**Factories.** `VisionBackendFactory` (`@Component`, gated on `enabled=true` only) replaces the
 old per-provider backend beans; one backend is created per preset. **Factory constructors are
 strictly passive** — no filesystem, no `PATH`, no logging. All environment inspection lives in
 `availability()` behind `by lazy`, and `DescriptionPresetCatalogBuilder` asks only the providers that
@@ -121,7 +135,7 @@ the log and the 🐢 mark in `/ai` can never disagree.
 **Resolution.** `ActivePresetResolver` reads `DescriptionRuntimeSettings.activePresetId()` on every
 call — cheap, because the `app_settings` implementation caches per process — and is fail-open in both
 directions: a failed read and a read exceeding its own 5 s bound both yield the fallback preset plus a
-`warnOnce` line, never an exception (`describe` calls the resolver outside both of its `withTimeout`
+`warnOnce` line, never an exception (`VisionCallExecutor` calls the resolver outside both of its `withTimeout`
 blocks, so an unbounded read would hang the whole call). A stored id that is unknown or unavailable
 also falls back, with its own warning. Resolution — never startup, since naming the source means a
 suspend R2DBC read that must not happen during context refresh — logs one INFO line:
@@ -139,13 +153,14 @@ default-preset" would claim the owner's choice was consulted. The source string 
 `DescriptionRuntimeSettings.sourceName`, which is abstract precisely so a new implementation cannot
 forget to name itself.
 
-**Per call.** `DefaultDescriptionAgent` resolves the preset once per `describe`, **before** acquiring
+**Per call.** `VisionCallExecutor` resolves the preset once per `execute`, **before** acquiring
 the semaphore permit: retries must stay on the preset the first attempt used, and a settings read
 must neither hold a permit nor eat the model's budget. The accepted cost is that a call which waited
 in the queue runs the preset that was active when it was enqueued — a window bounded by
-`queueTimeout`.
+`queueTimeout`. Descriptions and the judge each have their own executor (and therefore their own
+semaphore and timeouts).
 
-`DefaultDescriptionAgent` retries once on `InvalidResponse` (immediately) and once on `Transport`
+`VisionCallExecutor` retries once on `InvalidResponse` (immediately) and once on `Transport`
 (after 5 s), each only if enough of `timeout` is left (5 s and 10 s respectively). `Timeout`,
 `RateLimited` and `Unauthorized` are not retried. Anything a backend throws that is not a
 `DescriptionException` becomes `Transport`.
@@ -191,9 +206,16 @@ model-agnostic:
 
 - the prompt rules always ask for `{"short": …, "detailed": …}` as text, so an unconstrained model
   still answers in the expected shape;
-- `GrokOutputParser` falls back to the JSON found in `text` (via `core/JsonBlockExtractor`, shared
-  with `ClaudeResponseParser`) whenever `structuredOutput` is missing or partial, and reports which
-  source was used through `GrokOutput.fromText`;
+- `GrokOutputParser` keeps both representations of one answer — `structuredOutput` as
+  `GrokOutput.payload` and the response text as `GrokOutput.fallback` (dropped when it repeats the
+  structured object verbatim) — and `GrokBackend` hands both to the executor in `VisionResponse`.
+  The task parses the primary payload; only if it rejects it as `InvalidResponse` does
+  `VisionCallExecutor` parse the fallback, inside the same attempt. That is what covers an endpoint
+  which applies the schema only partially while the text already carries the complete object:
+  without it the paid answer would be thrown away, the call repeated, and a second partial reply
+  would leave the recording with no description or no verdict. `GrokOutput.fromText` still reports
+  which source the primary payload came from (the text JSON is read via `core/JsonBlockExtractor`,
+  shared with `ClaudeResponseParser`);
 - on an error whose message matches `GrokExceptionMapper.isStructuredOutputUnsupported`
   (`response_format`, `json_schema`, `parse grammar`, …) `GrokBackend` re-runs the same prompt file
   once without `--json-schema` and keeps the flag off for the rest of the process lifetime
@@ -247,7 +269,7 @@ another machine. BYOK models are `[model.<name>]` entries in `GROK_HOME/config.t
 comes from the factory: `claude` for claude (one token covers every model) and `grok:<model>` for
 grok, because two grok presets on one model share `auth.json` while a BYOK model uses its own key
 from `config.toml` — its success says nothing about the xAI session, and its failure says nothing
-about the other presets. `DescriptionBackend.authScopeId` carries the same string the catalog put
+about the other presets. `VisionBackend.authScopeId` carries the same string the catalog put
 into `DescriptionPreset.authScopeId`.
 
 `ProviderAuthTracker` holds one state per scope (`UNKNOWN` → `HEALTHY`/`LOST`). The first
@@ -276,15 +298,18 @@ and storage. `AppSettingsDescriptionRuntimeSettings` (core, `application/`, gate
 naming themselves, so a deployment that silently fell back to in-memory is visible in the log.
 
 `/ai` (`telegram/bot/handler/aisettings/`, `AiSettingsCommandHandler`, owner-only, `ownerOnly = true`
-so it stays out of everyone's command menu and `/help`) shows: the on/off state, the active preset as
+so it stays out of everyone's command menu and `/help`) shows two blocks when the judge beans exist,
+one when they do not. The description block: the on/off state, the active preset as
 `id (provider / effectiveModel / effort)`, one line per **distinct credential scope** with its auth
-icon, and one keyboard button per preset (✅ effective, ⚠️ unavailable, 🐢 slow effort). A stored
-preset that is not the effective one adds a mismatch line, so the owner can see that their choice is
-overridden instead of wondering why the ✅ moved. `AiSettingsViewStateFactory` builds the state
-through `ObjectProvider`s and reads everything fail-open — the screen is opened precisely when
-something is broken.
+icon, and one keyboard button per preset (✅ effective, ⚠️ unavailable, 🐢 slow effort). The judge
+block (only if `JudgeRuntimeSettings` is present): the same catalog again with a ⚖️ prefix on each
+button, plus enable/disable. A stored preset that is not the effective one adds a mismatch line, so
+the owner can see that their choice is overridden instead of wondering why the ✅ moved.
+`AiSettingsViewStateFactory` builds the state through `ObjectProvider`s and reads everything
+fail-open — the screen is opened precisely when something is broken.
 
-`AiSettingsCallbackHandler` dispatches `aip:*` (`aip:close`, `aip:on`, `aip:off`, `aip:set:<id>`) and
+`AiSettingsCallbackHandler` dispatches `aip:*` (`aip:close`, `aip:on`, `aip:off`, `aip:set:<id>`,
+and when the judge is on `aip:j:on`, `aip:j:off`, `aip:j:set:<id>`) and
 splits into `classify` (pure: payload, catalog, role — no I/O) and `apply` (the write). **The
 callback is answered before the write**, because callback handlers are serialized per user by the
 default `markerFactory`, so waiting on a slow database would delay the owner's *next* tap too. Every
@@ -293,11 +318,14 @@ and the role alone; outcomes that write carry no text and are confirmed by the r
 the write. `FrigateAnalyzerBot.handleAiSettingsCallback` holds that order — answer, write, re-render
 (the re-render rebuilds the state from scratch, so two open copies of the screen converge) — and
 keeps the registration itself thin, so what decides the reply stays unit-testable. Payloads are
-explicit (`aip:on` / `aip:off`, never a toggle), so a repeated tap is idempotent. i18n keys are `ai.settings.*` in `messages_ru.properties` / `messages_en.properties`:
+explicit (`aip:on` / `aip:off` / `aip:j:on` / `aip:j:off`, never a toggle), so a repeated tap is
+idempotent. i18n keys are `ai.settings.*` in `messages_ru.properties` / `messages_en.properties`:
 `title`, `state`, `state.on`, `state.off`, `active`, `active.none`, `active.mismatch`,
 `mismatch.kept`, `mismatch.recheck`, `reason.noToken`, `reason.homeUnwritable`, `reason.noFactory`,
 `reason.gone`, `reason.unknown`, `auth.healthy`, `auth.lost`, `auth.unknown`, `auth.unavailable`,
-`auth.note`, `slow.note`, `button.enable`, `button.disable`, `button.close`, `alert.unavailable`.
+`auth.note`, `slow.note`, `button.enable`, `button.disable`, `button.close`, `alert.unavailable`,
+and the judge block `ai.settings.judge.title`, `state`, `active`, `active.none`, `mismatch`,
+`button.enable`, `button.disable`.
 The mismatch line takes its consequence sentence as `{3}`, picked by the same `when` that picks the
 reason: `mismatch.kept` ("applies again once the preset becomes available") for a stored preset that
 is unavailable or gone, `mismatch.recheck` for `reason.unknown`, where the stored preset *is* present
@@ -314,6 +342,160 @@ so it completes with `Result.failure`, which renders as `DescriptionState.Failed
 "description unavailable" line. **Known rough edge:** switching descriptions off mid-flight therefore
 produces that apology text rather than a clean message with no description block; recorded for
 triage, not fixed.
+
+## Judge
+
+Optional third gate between the object tracker and Telegram. A fast, cheap model looks at the
+annotated frames and a JSON context assembled from the database and answers `PUBLISH` or `SUPPRESS`.
+The verdict is **not** shown to recipients and does not change the notification text. There is no
+feedback button and no agentic access to the database: context is a fixed dump (`JudgeContextBuilder`),
+and the model's `wanted` field is stored and ignored.
+
+Gated by `application.ai.judge.enabled=true` **and** the description catalog
+(`APP_AI_DESCRIPTION_ENABLED=true` plus declared presets). `AiJudgeGuard` (core) fails startup if
+the judge is on while descriptions are off. The catalog key stays `application.ai.description.presets`;
+`application.ai.judge` is a **sibling** of `application.ai.description`, not nested in it. The judge
+picks its own active preset from that shared catalog (`APP_AI_JUDGE_DEFAULT_PRESET`, empty = the
+descriptions default). `JudgeAgentSanityChecker` WARNs when the flag is on but no `JudgeAgent` bean
+exists.
+
+When the bean exists, `RecordingProcessingFacade` hands a `JudgeCandidate` to
+`NotificationJudgeService.submit` and returns; the pipeline consumer does not wait for the model.
+`JudgeCoroutineScope` (IO + `SupervisorJob`, `@PreDestroy` cancel) runs the work. Without the bean
+the facade sends as today. Candidates of one camera are serialized on a per-camera mutex; cameras
+run in parallel. A queue deeper than 20 on one camera logs a WARN and sends the overflow unjudged.
+
+**Two different limits, often confused.** The per-camera threshold of 20 governs *waiting for the
+model*; it never bounded memory and cannot, because its counter only drops when `process` finishes —
+a candidate suspended inside the fan-out keeps both its slot and its frames. Memory is bounded
+instead by `APP_AI_JUDGE_MAX_IN_FLIGHT` (32) permits taken in `submit` and released when the job
+ends. Beyond that ceiling `submit` does **not** wait: it records `FAILOVER` / `TRANSPORT` and sends
+the recording unjudged, from the caller's own coroutine. Both halves of that matter. Waiting would
+silence the per-camera valve — with several cameras the global ceiling is reached before any single
+one reaches depth 21, so a model slowdown would stop notifications instead of letting them through
+unjudged — and it would add a cancellable suspension point to the pipeline consumer, where a
+shutdown loses the recording outright (the facade has already called `saveProcessingResult`).
+Sending from the caller creates no second coroutine holding another set of frames, and it restores
+the back-pressure that existed before the judge, when the facade called `sendRecordingNotification`
+inline and a full `TelegramNotificationQueue` channel stalled the pipeline.
+
+Size the ceiling by camera resolution: a candidate pins its annotated frames **and** the originals
+held by the description supplier's closure, so it is several megabytes on a 4K camera, not two.
+
+`submit` launches with `CoroutineStart.ATOMIC`. The default mode returns an already-cancelled job
+whose body never runs, so a candidate submitted into a scope cancelled a moment earlier would never
+reach the cancellation fallback below — and the facade has already called `saveProcessingResult`,
+so nothing would retry it (`FrameAnalysisPipeline.stop()` cancels its consumers without joining
+them, which is what opens that window). ATOMIC also makes releasing the in-flight permit in a
+`finally` safe: a body that never started would never release it.
+
+Frames sent to the model are the first `APP_AI_JUDGE_MAX_FRAMES` visualized frames (the same ranking
+as Telegram) re-ordered by `frameIndex`. Local times in the prompt use `APP_AI_JUDGE_ZONE`; empty =
+the owner's `/timezone`, then the JVM zone (UTC in the container).
+
+### Six steps (`NotificationJudgeService.judgeLocked`)
+
+1. **Runtime switch.** `JudgeRuntimeSettings.judgeEnabled()`, fail-open to on, 5 s bound. Off →
+   record `BYPASS` / `PUBLISH` / `JUDGE_OFF` and send.
+2. **Snooze.** In-memory `SnoozeRegistry.covers` (window by absolute distance from the anchor, so a
+   newest-first backlog still matches; a new class or a higher count of a covered class breaks it).
+   Hit → record `SNOOZE` / `SUPPRESS` / `SNOOZED` and return without sending or calling the model.
+3. **Recipients.** `TelegramNotificationService.hasRecordingRecipients()` — the same filter the
+   fan-out applies, only asked before the money is spent. Nobody → record
+   `BYPASS` / `SUPPRESS` / `NO_RECIPIENTS` and return. `SUPPRESS`, not `PUBLISH`: `StatusService`
+   counts `published` from the verdict column alone, and a row that by construction went nowhere
+   would mislead exactly the operator asking why no notifications arrive; `suppressedByReason` only
+   counts stage `JUDGE`, so the reason breakdown stays clean too. It sits **after** the snooze check
+   on purpose: a suppressed series must stay free of database work, and everything below this line
+   is paid for (context SQL, a rate-limit slot, the model). Bounded by the same 5 s as the runtime
+   switch — it is a database read holding both the camera mutex and an in-flight permit — and
+   fail-open to "there are recipients".
+4. **Context.** `JudgeContextBuilder` assembles JSON (recording, frames, clustered objects with
+   static score, tracker reason, active tracks, recent verdicts, last published, camera notes).
+   `confidence` and `frames_seen` come from the detections of that one cluster — `BboxCluster` keeps
+   them — because a class-wide filter would give two people standing apart one shared confidence and
+   the union of their frames, contradicting the `STATIC_OBJECT` evidence in the same block.
+   Failure → `FAILOVER` / `PUBLISH` / `CONTEXT_ERROR` and send.
+5. **Rate limit.** `JudgeRateLimiter.tryAcquire()`. Miss → `FAILOVER` / `PUBLISH` / `RATE_LIMITED`
+   and send unjudged. The slot is not refunded on a later model failure.
+6. **Model.** `JudgeAgent.judge`. Success → `JUDGE` plus the model's decision/reason; `SnoozeRegistry.set`
+   runs **only on this branch** (`FAILOVER` / `BYPASS` / `SNOOZE` do not arm or extend snooze).
+   `PUBLISH` sends, `SUPPRESS` does not. Agent failure → `FAILOVER` / `PUBLISH` with the reason
+   below, and send.
+
+A failed write to `notification_verdicts` is logged at ERROR; the decision (send or not) is applied
+anyway.
+
+**Cancellation (shutdown).** A candidate cancelled *before* the fan-out started is recorded as
+`FAILOVER` / `TRANSPORT` and sent under `NonCancellable` before the cancellation is rethrown — the
+facade has already marked the recording processed, so nothing would retry it. The fan-out itself is
+indivisible: `send()` arms its `handedOver` flag and then calls `sendRecordingNotification` under
+`NonCancellable`, so a cancellation arriving mid-send neither truncates it nor triggers a second
+one. Shutdown waits for it up to the 10s `JudgeCoroutineScope` budget and then proceeds, leaving
+the fan-out to finish against beans that are already closing; it cannot hang, because `enqueue`
+writes to a bounded channel that `TelegramNotificationQueue.stop()` closes. Both halves matter. Without `NonCancellable` a shutdown could land while the call is still
+suspended *before* its first `TelegramNotificationQueue.enqueue` (it reads the subscribers from the
+database first), and the armed flag would then skip the fallback send and lose the recording
+outright. Without the flag the fallback would repeat a fan-out that already reached the queue:
+recipients would get a duplicate message and the recording a second verdict row, counted twice in
+`/status` and listed twice in `/verdicts`.
+
+**`/status` snapshot.** `snapshotSnoozes()` returns only snoozes still active on the wall clock. The
+registry itself is never pruned by the clock: `covers` measures the window from the *recording*
+timestamp, so a newest-first backlog still matches entries whose `until` has passed in wall-clock
+time.
+
+### Snooze
+
+`SnoozeRegistry` is process memory only (restart clears it). `set(camId, anchor, minutes, classes)`
+with `minutes == 0` or empty classes removes the camera's snooze — unless the update is older than
+the camera's current anchor, in which case it changes nothing at all, which also makes the registry
+independent of the order two verdicts reach it. The backlog is drained
+newest-first (`findUnprocessedForUpdate` orders by `file_creation_timestamp DESC`), so a verdict on
+an older recording would otherwise drag the window backwards, or clear it, and leave the live
+duplicates it was armed against uncovered. `minutes` is capped by
+`APP_AI_JUDGE_MAX_SNOOZE` in `JudgeResponseParser`. Coverage is class-and-count: a person walking
+through a yard that already has a parked car does not stay silent if `person` was not in `covered`,
+and a second person (`person:2` vs `person:1`) breaks it.
+
+### Fail-open
+
+Any judge failure sends the notification as today. Reasons by exception:
+
+| Exception | `VerdictReason` |
+|-----------|-----------------|
+| `DescriptionException.Timeout` | `TIMEOUT` |
+| `DescriptionException.RateLimited` | `RATE_LIMITED` |
+| `DescriptionException.Unauthorized` | `UNAUTHORIZED` |
+| `DescriptionException.InvalidResponse` | `INVALID_RESPONSE` |
+| anything else (including a missing `JudgeAgent`) | `TRANSPORT` |
+| context builder | `CONTEXT_ERROR` |
+| local rate limiter | `RATE_LIMITED` |
+
+### Reasons by stage
+
+| `VerdictStage` | `verdict` | `reason` | Sends? | Calls the model? |
+|----------------|-----------|----------|--------|------------------|
+| `JUDGE` | `PUBLISH` | `NEW_EVENT`, `CHANGED_SITUATION` | yes | yes |
+| `JUDGE` | `SUPPRESS` | `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE` | no | yes |
+| `SNOOZE` | `SUPPRESS` | `SNOOZED` | no | no |
+| `BYPASS` | `PUBLISH` | `JUDGE_OFF` | yes | no |
+| `BYPASS` | `SUPPRESS` | `NO_RECIPIENTS` | no — nobody to send to | no |
+| `FAILOVER` | `PUBLISH` | `TIMEOUT`, `RATE_LIMITED`, `UNAUTHORIZED`, `INVALID_RESPONSE`, `TRANSPORT`, `CONTEXT_ERROR` | yes | maybe (failed) |
+
+### `/ai` and `app_settings`
+
+The judge block is omitted when there is no `JudgeRuntimeSettings` bean (`APP_AI_JUDGE_ENABLED=false`,
+or the description catalog was not built).
+Callbacks `aip:j:on` / `aip:j:off` / `aip:j:set:<id>` write:
+
+| Key | Type | Absent means |
+|-----|------|--------------|
+| `ai.judge.preset.active` | string, a preset id | `APP_AI_JUDGE_DEFAULT_PRESET`, else the descriptions fallback |
+| `ai.judge.enabled` | boolean | `true` — the runtime off-switch; `APP_AI_JUDGE_ENABLED=false` still wins, the beans do not exist then |
+
+`AppSettingsJudgeRuntimeSettings` (core) is the production implementation; `InMemoryJudgeRuntimeSettings`
+is `@ConditionalOnMissingBean`. Same per-process cache as descriptions — see `database.md`.
 
 ## Integration with Telegram
 
@@ -348,32 +530,41 @@ sense when there's a chat to edit.
 
 ## Rate Limiting
 
-- `DescriptionRateLimiter` enforces a sliding window (`max` requests per `window`).
+Two independent `SlidingWindowRateLimiter` instances; they do not share a counter.
+
+- `DescriptionRateLimiter` (`AI description`) — default **30** requests per `window` (was 10).
+  When the limit is exceeded, the recording is sent with `DescriptionState.Absent` — no
+  placeholders, no edit job, no model call. Disable with
+  `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED=false`.
+- `JudgeRateLimiter` (`AI judge`) — default **200** requests per `window`. When the limit is
+  exceeded, the candidate is sent unjudged (`FAILOVER` / `RATE_LIMITED`). Disable with
+  `APP_AI_JUDGE_RATE_LIMIT_ENABLED=false`.
 - Counter increments **when a slot is granted**; failed model calls do NOT refund the slot —
   this is intentional to keep cost predictable when the binary is misbehaving.
-- When the limit is exceeded, the recording is sent with `DescriptionState.Absent` — no
-  placeholders, no edit job, no model call.
-- Disable with `APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED=false`.
 
 ## Concurrency
 
-- `APP_AI_DESCRIPTION_MAX_CONCURRENT` (default `2`) bounds simultaneous model calls — enforced
-  inside `DefaultDescriptionAgent` via a `Semaphore`; for Grok that is also the number of `grok`
-  processes alive at once.
-- `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` (default `30s`) — max wait for a free slot before failing
-  the describe call.
-- `APP_AI_DESCRIPTION_TIMEOUT` (default `60s`) — per-call timeout including the agent's retries;
+- `APP_AI_DESCRIPTION_MAX_CONCURRENT` (default `2`) bounds simultaneous description calls —
+  enforced inside `descriptionVisionCallExecutor` via a `Semaphore`; for Grok that is also the
+  number of `grok` processes alive at once for descriptions.
+- `APP_AI_JUDGE_MAX_CONCURRENT` (default `2`) is a **separate** semaphore on
+  `judgeVisionCallExecutor`. Descriptions and the judge do not steal each other's slots.
+- `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` / `APP_AI_JUDGE_QUEUE_TIMEOUT` (default `30s`) — max wait for
+  a free slot before failing the call.
+- `APP_AI_DESCRIPTION_TIMEOUT` (default `60s`) — per-call timeout including the executor's retries;
   on expiry the Grok process is killed. Set it for the slowest **declared** preset: `grok-4.6` at
   `effort=xhigh` runs ~48 s, leaving no room for either retry, and the startup WARN plus the 🐢 mark
   in `/ai` both point at 120 s. Two such calls also hold both slots of `maxConcurrent=2` for those
   ~48 s, so a third recording gives up on `queueTimeout`. That is a *failure*, not a silent omission:
   the wait raises `DescriptionException.Timeout`, the facade's supplier folds it into `Result.failure`
   and `DescriptionEditJobRunner` renders `DescriptionState.Failed` — the notification carries
-  "⚠ Описание недоступно" where the description would have been.
+  "⚠ Описание недоступно" where the description would have been. The judge's own timeout
+  (`APP_AI_JUDGE_TIMEOUT`, default `60s`) is sized for a fast preset; on expiry the candidate is
+  sent unjudged (`FAILOVER` / `TIMEOUT`).
 
 ## Configuration
 
-All variables documented in `.claude/rules/configuration.md` under "AI Description". Key flags:
+All variables documented in `.claude/rules/configuration.md` under "AI Description" and "AI Judge". Key flags:
 
 - `APP_AI_DESCRIPTION_ENABLED` — master gate
 - `application.ai.description.presets` — the preset map; yaml only, no environment variable
@@ -389,11 +580,13 @@ All variables documented in `.claude/rules/configuration.md` under "AI Descripti
   ~800 KB frames; an oversized line is dropped with `Failed to process message (continuing)`
 - `GROK_MODEL`, `GROK_EFFORT`, `GROK_HOME`, `GROK_WORKING_DIR`, `GROK_CLI_PATH`, `GROK_*_PROXY` — Grok
   section, see `configuration.md`
+- `APP_AI_JUDGE_ENABLED` — master gate for the notification judge (requires descriptions on)
+- `APP_AI_JUDGE_DEFAULT_PRESET` — judge preset until the owner picks one in `/ai`
 
 ## Testing
 
-Unit tests use fakes at the seams: `DescriptionBackend` for the agent, `DescriptionBackendFactory`
-for the catalog builder, `DescriptionRuntimeSettings` for the resolver, `ClaudeInvoker` for Claude,
+Unit tests use fakes at the seams: `VisionBackend` for the executor, `VisionBackendFactory`
+for the catalog builder, `DescriptionRuntimeSettings` / `JudgeRuntimeSettings` for the resolvers, `ClaudeInvoker` for Claude,
 `GrokProcessRunner` for Grok. `DefaultGrokProcessRunnerTest` runs a stub `grok` shell script
 (POSIX only) and covers stdout/stderr capture, environment, and the kill on cancellation.
 `DescriptionPresetCatalogBuilderTest` pins declaration order, the fallback choice, typed

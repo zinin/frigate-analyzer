@@ -104,6 +104,40 @@ class BboxClusteringHelperTest {
     }
 
     @Test
+    fun `each cluster keeps only its own detections`() {
+        val left = det("person", 0f, 0f, 10f, 10f, confidence = 0.75f)
+        val leftAgain = det("person", 0f, 0f, 10f, 10f, confidence = 0.5f)
+        val right = det("person", 100f, 0f, 110f, 10f, confidence = 0.25f)
+
+        val result =
+            BboxClusteringHelper.clusterWithMembers(
+                listOf(left, leftAgain, right),
+                innerIou = 0.5f,
+                confidenceFloor = 0.2f,
+            )
+
+        val byX = result.sortedBy { it.representative.x1 }
+        assertEquals(2, byX.size)
+        assertEquals(setOf(left.id, leftAgain.id), byX[0].detections.map { it.id }.toSet())
+        assertEquals(setOf(right.id), byX[1].detections.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `a detection below the floor belongs to no cluster`() {
+        val strong = det("car", 0f, 0f, 10f, 10f, confidence = 0.9f)
+        val weak = det("car", 0f, 0f, 10f, 10f, confidence = 0.1f)
+
+        val result =
+            BboxClusteringHelper.clusterWithMembers(
+                listOf(strong, weak),
+                innerIou = 0.5f,
+                confidenceFloor = 0.3f,
+            )
+
+        assertEquals(listOf(strong.id), result.single().detections.map { it.id })
+    }
+
+    @Test
     fun `higher confidence detection seeds cluster center`() {
         val result =
             BboxClusteringHelper.cluster(
