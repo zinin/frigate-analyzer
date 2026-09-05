@@ -111,8 +111,9 @@ declaration order, picks `fallbackId` (the `default-preset` when usable, otherwi
 preset — a non-blank `default-preset` that lost gets a WARN naming the substitution) and logs the
 catalog with values, e.g.
 `Description presets: grok-fast (grok/grok-4.6/low), claude-opus (claude/opus); default 'grok-fast'`.
-It also emits two WARNs: one per preset whose declared model is displaced by provider configuration
-(`ANTHROPIC_MODEL`) and one per preset whose `effort` is `xhigh`/`max` while `common.timeout` is
+It also emits two kinds of WARN: **one aggregated line** listing every preset whose declared model is
+displaced by provider configuration (`ANTHROPIC_MODEL`) — the builder is the only place that sees all
+presets at once — and **one line per preset** whose `effort` is `xhigh`/`max` while `common.timeout` is
 below 120 s — `preset 'grok-deep': effort=xhigh with timeout=60s leaves no retry budget; consider
 APP_AI_DESCRIPTION_TIMEOUT=120s`. That second predicate also fills `DescriptionPreset.slowEffort`, so
 the log and the 🐢 mark in `/ai` can never disagree.
@@ -196,8 +197,9 @@ model-agnostic:
 - on an error whose message matches `GrokExceptionMapper.isStructuredOutputUnsupported`
   (`response_format`, `json_schema`, `parse grammar`, …) `GrokBackend` re-runs the same prompt file
   once without `--json-schema` and keeps the flag off for the rest of the process lifetime
-  (`@Volatile schemaSupported`; the model is fixed by properties, so probing again would just cost
-  tokens). Both attempts share the agent's single `timeout`, so the very first description after
+  (`@Volatile schemaSupported`; the model is fixed by the *preset*, which is why the flag is a field of
+  the backend instance — one per grok preset — and not a shared one: a second preset on another model
+  must not inherit this refusal). Both attempts share the agent's single `timeout`, so the very first description after
   startup may time out on a slow endpoint — the next one goes straight to the schema-less form.
 
 `GrokBackend` logs per recording at DEBUG: `model=…, effort=…, json-schema=on|off, frames=N` before
@@ -293,9 +295,14 @@ the write. `FrigateAnalyzerBot.handleAiSettingsCallback` holds that order — an
 keeps the registration itself thin, so what decides the reply stays unit-testable. Payloads are
 explicit (`aip:on` / `aip:off`, never a toggle), so a repeated tap is idempotent. i18n keys are `ai.settings.*` in `messages_ru.properties` / `messages_en.properties`:
 `title`, `state`, `state.on`, `state.off`, `active`, `active.none`, `active.mismatch`,
-`reason.noToken`, `reason.homeUnwritable`, `reason.noFactory`, `reason.gone`, `reason.unknown`,
-`auth.healthy`, `auth.lost`, `auth.unknown`, `auth.unavailable`, `auth.note`, `slow.note`,
-`button.enable`, `button.disable`, `button.close`, `alert.unavailable`.
+`mismatch.kept`, `mismatch.recheck`, `reason.noToken`, `reason.homeUnwritable`, `reason.noFactory`,
+`reason.gone`, `reason.unknown`, `auth.healthy`, `auth.lost`, `auth.unknown`, `auth.unavailable`,
+`auth.note`, `slow.note`, `button.enable`, `button.disable`, `button.close`, `alert.unavailable`.
+The mismatch line takes its consequence sentence as `{3}`, picked by the same `when` that picks the
+reason: `mismatch.kept` ("applies again once the preset becomes available") for a stored preset that
+is unavailable or gone, `mismatch.recheck` for `reason.unknown`, where the stored preset *is* present
+and usable and a "wait for it" tail would be false. A `reason.*` value therefore never carries a
+consequence of its own — the same keys are read by the auth line and the refusal alert.
 
 **The runtime switch is read twice** in `RecordingProcessingFacade`, both times fail-open to `true`:
 once while building the description supplier (off → no supplier, so the notification goes out with
@@ -359,7 +366,10 @@ sense when there's a chat to edit.
   on expiry the Grok process is killed. Set it for the slowest **declared** preset: `grok-4.6` at
   `effort=xhigh` runs ~48 s, leaving no room for either retry, and the startup WARN plus the 🐢 mark
   in `/ai` both point at 120 s. Two such calls also hold both slots of `maxConcurrent=2` for those
-  ~48 s, so a third recording gives up on `queueTimeout` and goes out without a description.
+  ~48 s, so a third recording gives up on `queueTimeout`. That is a *failure*, not a silent omission:
+  the wait raises `DescriptionException.Timeout`, the facade's supplier folds it into `Result.failure`
+  and `DescriptionEditJobRunner` renders `DescriptionState.Failed` — the notification carries
+  "⚠ Описание недоступно" where the description would have been.
 
 ## Configuration
 
@@ -387,10 +397,12 @@ for the catalog builder, `DescriptionRuntimeSettings` for the resolver, `ClaudeI
 `GrokProcessRunner` for Grok. `DefaultGrokProcessRunnerTest` runs a stub `grok` shell script
 (POSIX only) and covers stdout/stderr capture, environment, and the kill on cancellation.
 `DescriptionPresetCatalogBuilderTest` pins declaration order, the fallback choice, typed
-unavailability, one backend per preset and the slow-effort WARN/mark; `ActivePresetResolverTest` pins
-fail-open resolution, the bounded read, the one-line-per-problem logging and the active-preset line —
-`a switched preset is logged again` and `an unchanged preset is logged once however often it
-resolves` (it asserts on the log text, so both INFO lines about presets are contract). `AiDescriptionAutoConfigurationTest` covers
+unavailability, one backend per preset, the slow-effort WARN/mark and the startup catalog line
+(`the startup line names every preset with its values and the default`, an exact-string assertion);
+`ActivePresetResolverTest` pins fail-open resolution, the bounded read, the one-line-per-problem
+logging and the active-preset line — `a switched preset is logged again` and `an unchanged preset is
+logged once however often it resolves`. Both assert on the log text, so both INFO lines about presets
+are contract: change either format and a test names it. `AiDescriptionAutoConfigurationTest` covers
 the legacy paths (`provider=claude`, `provider=grok`, mixed case, unknown), a declared map with a
 partially unusable catalog, the "all unusable fails startup" rule and a supplied runtime-settings
 implementation.

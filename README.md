@@ -236,7 +236,8 @@ no restart.
 
 Capacity is the other side of that: two `xhigh` calls occupy both slots of the default
 `APP_AI_DESCRIPTION_MAX_CONCURRENT=2` for ~48 s, and a third recording gives up on
-`APP_AI_DESCRIPTION_QUEUE_TIMEOUT` and goes out without a description.
+`APP_AI_DESCRIPTION_QUEUE_TIMEOUT` — its notification arrives with "⚠ Описание недоступно" in place
+of the description, not without one.
 
 **Grok sign-in.** Grok uses your SuperGrok subscription, no API key. Once, on the host:
 
