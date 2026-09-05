@@ -2,6 +2,8 @@ package ru.zinin.frigate.analyzer.core.judge
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -59,8 +61,19 @@ class NotificationJudgeService(
     private val perCameraMutex = ConcurrentHashMap<String, Mutex>()
     private val queued = ConcurrentHashMap<String, AtomicInteger>()
 
-    /** Точка входа фасада: возвращается сразу, работа идёт в [JudgeCoroutineScope]. */
-    fun submit(candidate: JudgeCandidate): Job = scope.launch { process(candidate) }
+    /**
+     * Точка входа фасада: возвращается сразу, работа идёт в [JudgeCoroutineScope].
+     *
+     * Старт [CoroutineStart.ATOMIC] — не оптимизация, а единственный способ довести кандидата до
+     * обработчика отмены в [process]. При обычном старте scope, погашенный мгновением раньше, вернул
+     * бы уже отменённую задачу, чьё тело не выполняется вовсе: ни строки вердикта, ни отправки.
+     * Окно открыто на всей остановке — `FrameAnalysisPipeline.stop()` отменяет consumer-ов без
+     * join, — а фасад к этому моменту уже вызвал `saveProcessingResult`, так что пайплайн запись не
+     * повторит. С ATOMIC тело стартует, отмену поднимает первая же точка приостановки, и досылку
+     * делает та же ветка, что и для кандидата, отменённого уже в работе.
+     */
+    @OptIn(DelicateCoroutinesApi::class)
+    fun submit(candidate: JudgeCandidate): Job = scope.launch(start = CoroutineStart.ATOMIC) { process(candidate) }
 
     /**
      * Снимок для `/status`: только активные по стенным часам. Сам реестр при этом не чистим —

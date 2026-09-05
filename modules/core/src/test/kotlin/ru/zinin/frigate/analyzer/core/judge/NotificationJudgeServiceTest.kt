@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.test.TestScope
@@ -135,7 +136,7 @@ class NotificationJudgeServiceTest {
         Duration.ofSeconds(3),
     )
 
-    private fun TestScope.service(): NotificationJudgeService {
+    private fun TestScope.service(scopeJob: Job = SupervisorJob()): NotificationJudgeService {
         val agentProvider =
             mockk<ObjectProvider<JudgeAgent>>().also {
                 every { it.getIfAvailable() } returns agent
@@ -161,7 +162,7 @@ class NotificationJudgeServiceTest {
             JudgeProperties(enabled = true),
             ObjectTrackerProperties(),
             DescriptionProperties(enabled = true, provider = "claude", common = commonSection()),
-            JudgeCoroutineScope(CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob())),
+            JudgeCoroutineScope(CoroutineScope(UnconfinedTestDispatcher(testScheduler) + scopeJob)),
             clock,
         )
     }
@@ -354,6 +355,24 @@ class NotificationJudgeServiceTest {
             assertEquals(VerdictStage.FAILOVER, v.stage)
             assertEquals(VerdictReason.TRANSPORT, v.reason)
             assertEquals(VerdictDecision.PUBLISH, v.verdict)
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
+    fun `a submission to an already stopped scope is not dropped`() =
+        runTest {
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            val scopeJob = SupervisorJob()
+            val s = service(scopeJob)
+            // Так выглядит остановка: JudgeCoroutineScope погашен, а consumer пайплайна ещё живёт —
+            // FrameAnalysisPipeline.stop() отменяет их без join. Фасад к этому моменту уже пометил
+            // запись обработанной, и повторить её некому.
+            scopeJob.cancel()
+
+            s.submit(candidate()).join()
+
+            assertEquals(VerdictDecision.PUBLISH, recorded.single().verdict)
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
         }
 
