@@ -22,7 +22,7 @@ graph TD
     D -. "polled" .-> SL["Signal-loss Monitor"]
     SL -.-> F
 
-    F -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI)"]
+    F -. "async describe" .-> AI["AI Description<br/>(Claude Code CLI or Grok Build CLI)"]
     AI -. "edit message" .-> F
 
     F --> EX["Export / Annotate jobs<br/>(ffmpeg merge or Vision API annotate)"]
@@ -40,7 +40,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 - **Configurable object filtering** — only keep detections for classes you care about (person, car, dog, etc.)
 - **Object tracking** — cross-recording IoU matching suppresses duplicate notifications when the same object lingers across consecutive recordings
 - **Signal-loss detection** — polls the database for last recording per camera and alerts (Telegram) on signal loss / recovery
-- **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI, edited into the notification message
+- **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI or Grok Build CLI, edited into the notification message
 - **Telegram bot** — real-time notifications with annotated images, inline quick-export buttons, video export (raw or annotated), per-user and global notification toggles, timezone support, user management
 - **Reactive stack** — built on Spring WebFlux, R2DBC, and Kotlin Coroutines for non-blocking I/O throughout
 
@@ -53,7 +53,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 | PostgreSQL 15+ | Stores recordings, detections, and user data |
 | Telegram Bot Token | Obtain from [@BotFather](https://t.me/BotFather) |
 | Docker + Docker Compose | For deployment |
-| Claude Code CLI *(optional)* | Required only if `APP_AI_DESCRIPTION_ENABLED=true`; auto-installed inside the Docker image, for local runs install via `claude.ai/install.sh` and run `claude setup-token` |
+| Claude Code CLI or Grok Build CLI *(optional)* | Required only if `APP_AI_DESCRIPTION_ENABLED=true`; the image installs both, and each declared preset picks one. Locally: `claude setup-token` or `grok login --device-code` |
 
 ## Quick Start
 
@@ -173,21 +173,89 @@ All settings use environment variables with sensible defaults. Key variables:
 
 ### AI description (optional)
 
-When enabled, generates a short and a detailed natural-language description of detections via the
-Claude Code CLI and edits them into the notification. Requires `claude` on `PATH` and an OAuth
-token (`claude setup-token`).
+When enabled, generates a short and a detailed natural-language description of detections and edits
+them into the notification. Two providers: the Claude Code CLI (`claude`) and the xAI Grok Build CLI
+(`grok`). Both binaries ship in the image.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APP_AI_DESCRIPTION_ENABLED` | `false` | Master switch |
-| `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Provider (only `claude` supported) |
+| `APP_AI_DESCRIPTION_DEFAULT_PRESET` | *(empty)* | Preset that is active until the owner picks one in `/ai`; empty = the first usable preset |
+| `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Single-preset path only — `claude` or `grok`, used while no `presets` map is declared |
 | `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
-| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous Claude requests |
+| `APP_AI_DESCRIPTION_TIMEOUT` | `60s` | Per-call budget for the model and the agent's retries — see "Timeout ceiling" below |
+| `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous model requests |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `10` | Max invocations per sliding window |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
-| `CLAUDE_CODE_OAUTH_TOKEN` | *(required if enabled)* | Token from `claude setup-token` |
-| `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku` |
-| `CLAUDE_MAX_BUFFER_SIZE` | `16MB` | Max size of one JSON message from the CLI. Frames the model reads are echoed back as base64, so raise it for cameras with frames above ~12 MB |
+| `CLAUDE_CODE_OAUTH_TOKEN` | *(required for claude)* | Token from `claude setup-token` |
+| `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku`; single-preset path only |
+| `CLAUDE_MAX_BUFFER_SIZE` | `16MB` | Max size of one JSON message from the Claude CLI. Frames the model reads are echoed back as base64, so raise it for cameras with frames above ~12 MB |
+| `GROK_MODEL` | `grok-4.6` | Model id, or a BYOK model name from `grok-home/config.toml`; single-preset path only |
+| `GROK_EFFORT` | `low` | Reasoning effort; empty = not passed; single-preset path only |
+| `GROK_PASS_THROUGH_ENV` | *(empty)* | Extra env variable names handed to `grok` verbatim; needed for a BYOK `env_key` outside `GROK_*`/`XAI_*` |
+
+**Presets.** Declare as many named presets as you like in `application-docker.yaml`; each one is a
+provider, a model and (for `grok`) a reasoning effort:
+
+```yaml
+application:
+  ai:
+    description:
+      default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:grok-fast}
+      presets:
+        grok-fast:   { provider: grok,   model: grok-4.6,   effort: low }
+        grok-deep:   { provider: grok,   model: grok-4.6,   effort: xhigh }
+        claude-opus: { provider: claude, model: opus }
+```
+
+The owner switches the active preset in `/ai`, one tap, no restart — the screen also turns
+descriptions off and back on, and shows the authorization state of every credential scope in use.
+The choice is stored in the database, so it survives a restart; `default-preset` decides only until
+that first tap and stops mattering afterwards. A preset whose provider is not configured (no token, a
+directory that could not be created) stays on the screen, marked, and cannot be selected. The startup
+log names the whole catalog with values — `Description presets: grok-fast (grok/grok-4.6/low),
+claude-opus (claude/opus); default 'grok-fast'` — and one more INFO line names the preset that is
+actually running and where the choice came from, repeated whenever that changes, so a switch is
+visible in the log too. That line is written when a preset is next resolved (the following
+description, or opening `/ai`), not at the moment of the tap.
+
+The `presets` map replaces `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EFFORT` and
+`CLAUDE_MODEL`: while the map is empty those four still describe a single preset, and declaring the
+map turns them off. `ANTHROPIC_MODEL`, when set, still displaces the model of every `claude` preset —
+`/ai` shows the model that will actually be used.
+
+**Timeout ceiling.** `APP_AI_DESCRIPTION_TIMEOUT` has to cover the *slowest* declared preset, not the
+typical one. `grok-4.6` at `effort: xhigh` takes ~48 s, which leaves nothing inside the default 60 s
+for a retry: the transport retry (10 s of budget plus a 5 s pause) never starts, and the
+invalid-response retry (5 s) starts and then dies on the outer timeout, turning an honest
+`InvalidResponse` into a misleading `Timeout`. Startup logs a WARN for such a preset recommending
+`APP_AI_DESCRIPTION_TIMEOUT=120s`, and `/ai` marks it with 🐢. The timeout is a give-up point, not a
+duration, so 120 s does not slow `grok-fast` (~9 s) down; the only cost is that a hung call is
+noticed later. Pick it once, when you declare the presets — switching between them afterwards needs
+no restart.
+
+Capacity is the other side of that: two `xhigh` calls occupy both slots of the default
+`APP_AI_DESCRIPTION_MAX_CONCURRENT=2` for ~48 s, and a third recording gives up on
+`APP_AI_DESCRIPTION_QUEUE_TIMEOUT` — its notification arrives with "⚠ Описание недоступно" in place
+of the description, not without one.
+
+**Grok sign-in.** Grok uses your SuperGrok subscription, no API key. Once, on the host:
+
+```bash
+mkdir -p grok-home && sudo chown 1000:1000 grok-home   # compose would create it as root otherwise
+docker compose up -d
+docker compose exec frigate-analyzer grok login --device-code
+```
+
+Open the printed URL, enter the code. `grok-home/auth.json` then refreshes itself; never copy it from
+another machine, the refresh token rotates and only one copy survives. If the credentials stop
+working, the bot owner receives a Telegram message with the command to run.
+
+**Custom models (BYOK).** Put a `[model.<name>]` section with `model`, `base_url` and `env_key` into
+`grok-home/config.toml`, put the key into `.env`, set `GROK_MODEL=<name>` and an empty
+`GROK_EFFORT`. The `grok` process starts from an empty environment and inherits only PATH/HOME/locale
+and `GROK_*`/`XAI_*`, so a key named outside those prefixes also needs
+`GROK_PASS_THROUGH_ENV=MY_GATEWAY_KEY`; naming it `GROK_MY_GATEWAY_KEY` works without the list.
 
 Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
 [`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.
@@ -232,6 +300,7 @@ You can define multiple servers — the load balancer distributes requests based
 | `/notifications` | Toggle recording / signal-loss notifications (per-user; OWNER also toggles global) | Authorized users |
 | `/version` | Show build and version info | Authorized users |
 | `/status` | Snapshot of recordings, cameras, and detect-servers state | Owner only |
+| `/ai` | Switch the active AI-description preset; turn descriptions on and off | Owner only |
 | `/adduser` | Invite a user (by @username) | Owner only |
 | `/removeuser` | Remove a user | Owner only |
 | `/users` | List all registered users | Owner only |
@@ -260,7 +329,7 @@ When objects are detected in a recording, the bot sends a notification with:
 - Top frames annotated with bounding boxes and confidence scores
 - Inline "Original" / "Annotated" buttons for instant quick-export (±1 min around the recording)
 
-If AI description is enabled, the message first carries placeholders; once Claude responds, the short description paragraph and a collapsible detailed description (`<details>`) are edited into the same message.
+If AI description is enabled, the message first carries placeholders; once the description provider responds, the short description paragraph and a collapsible detailed description (`<details>`) are edited into the same message.
 
 ### Signal-loss alerts
 
@@ -312,7 +381,7 @@ modules/
 ├── common/         # Utilities (UUID generation, clock)
 ├── model/          # Entities, DTOs, request/response types
 ├── service/        # Business logic, repositories, MapStruct mappers
-├── ai-description/ # AI-generated detection descriptions via Claude Code SDK
+├── ai-description/ # AI-generated detection descriptions via Claude Code SDK or Grok Build CLI
 ├── telegram/       # Telegram bot, notifications, user management
 └── core/           # Spring Boot app, controllers, pipeline, detection, signal-loss
 ```
@@ -328,7 +397,7 @@ Module dependencies: main chain `core` → `telegram` → `service` → `model` 
 - **MapStruct** (entity mapping)
 - **ktgbotapi 33** (Telegram bot)
 - **Jackson 3** (`tools.jackson.*`)
-- **Claude Code SDK** (optional AI description)
+- **Claude Code SDK** or **Grok Build CLI** (optional AI description)
 - **Java 25** with AOT cache for fast startup
 
 ## License

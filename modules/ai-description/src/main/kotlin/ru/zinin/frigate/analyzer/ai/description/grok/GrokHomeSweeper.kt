@@ -1,0 +1,133 @@
+package ru.zinin.frigate.analyzer.ai.description.grok
+
+import io.github.oshai.kotlinlogging.KotlinLogging
+import jakarta.annotation.PreDestroy
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.springframework.beans.factory.ObjectProvider
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
+import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
+
+private val logger = KotlinLogging.logger {}
+
+/**
+ * Каждый headless-запуск оставляет в `GROK_HOME/sessions/<cwd>/<id>/` копию промпта с base64
+ * кадров, а `sessions/session_search.sqlite` растёт на ~9 КБ за запуск и при удалении каталогов
+ * не сжимается. Политики хранения у Grok нет. Раз в час под [GrokHomeGuard.exclusive] удаляется
+ * всё содержимое `sessions/` и файлы в `logs/`; Grok пересоздаёт индекс и логи при следующем
+ * запуске. `auth.json`, `config.toml` и остальное не трогаются. Приложение единственный
+ * пользователь этого GROK_HOME, `grok login` сессий не создаёт.
+ *
+ * Отсюда же и проверка [grokIsDeclared]: `GROK_HOME` в compose задан и смонтирован всегда, поэтому
+ * без неё claude-only деплой ежечасно подметал бы каталог, который оператор мог отдать ручному
+ * `grok` — а весь KDoc выше исходит из того, что каталог наш.
+ */
+@Component
+@ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
+class GrokHomeSweeper(
+    private val properties: GrokProperties,
+    private val guard: GrokHomeGuard,
+    /**
+     * `ObjectProvider`, а не каталог: бин появляется только при объявленных пресетах, а уборщик
+     * существует при любом `enabled=true`.
+     */
+    private val presetsProvider: ObjectProvider<DescriptionPresets>,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("grok-home-sweeper"))
+
+    @Scheduled(fixedDelayString = "PT1H", initialDelayString = "PT1M")
+    fun sweepScheduled() {
+        if (!grokIsDeclared()) return
+        scope.launch {
+            try {
+                sweep()
+            } catch (e: GrokHomeGuard.ExclusiveBusyException) {
+                logger.warn { "Grok home sweep skipped: ${e.message}" }
+            } catch (e: Exception) {
+                logger.warn(e) { "Grok home sweep failed" }
+            }
+        }
+    }
+
+    /** Провайдер не участвует ни в одном пресете — каталог не наш, не трогаем. */
+    internal fun grokIsDeclared(): Boolean =
+        presetsProvider
+            .getIfAvailable()
+            ?.all()
+            .orEmpty()
+            .any { it.provider == GrokBackend.PROVIDER_ID && it.available }
+
+    @PreDestroy
+    fun shutdown() {
+        scope.cancel()
+    }
+
+    /** Возвращает число удалённых записей верхнего уровня (каталогов сессий и файлов). */
+    suspend fun sweep(): Int =
+        guard.exclusive {
+            withContext(Dispatchers.IO) {
+                val home = properties.homePath
+                val removed =
+                    clearDirectory(home.resolve("sessions"), removeSubdirectories = true) +
+                        clearDirectory(home.resolve("logs"), removeSubdirectories = false)
+                logger.debug { "Grok home sweep removed $removed entries under $home" }
+                removed
+            }
+        }
+
+    private fun clearDirectory(
+        dir: Path,
+        removeSubdirectories: Boolean,
+    ): Int {
+        if (!Files.isDirectory(dir)) return 0
+        var removed = 0
+        try {
+            Files.list(dir).use { entries ->
+                entries.forEach { entry ->
+                    // Не только IOException: Files.walk внутри deleteRecursively заворачивает
+                    // ошибку обхода в UncheckedIOException.
+                    try {
+                        when {
+                            Files.isRegularFile(entry) -> {
+                                Files.deleteIfExists(entry)
+                                removed++
+                            }
+
+                            Files.isDirectory(entry) && removeSubdirectories -> {
+                                deleteRecursively(entry)
+                                removed++
+                            }
+                        }
+                    } catch (e: IOException) {
+                        logger.warn(e) { "Failed to remove $entry during Grok home sweep" }
+                    } catch (e: RuntimeException) {
+                        logger.warn(e) { "Failed to remove $entry during Grok home sweep" }
+                    }
+                }
+            }
+        } catch (e: RuntimeException) {
+            // Files.list бросает UncheckedIOException из терминальной операции, то есть из самого
+            // forEach, мимо перехвата по одной записи. Без этого одна нечитаемая запись отменяла бы
+            // уборку целиком — и в следующий час тоже, а sessions/ хранит base64 всех кадров.
+            logger.warn(e) { "Grok home sweep could not walk $dir to the end; removed $removed so far" }
+        }
+        return removed
+    }
+
+    private fun deleteRecursively(root: Path) {
+        Files.walk(root).use { paths ->
+            paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+        }
+    }
+}

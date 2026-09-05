@@ -17,7 +17,6 @@ private val logger = KotlinLogging.logger {}
 
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
-@ConditionalOnProperty("application.ai.description.provider", havingValue = "claude")
 class DefaultClaudeInvoker(
     private val clientFactory: ClaudeAsyncClientFactory,
     descriptionProperties: DescriptionProperties,
@@ -32,9 +31,12 @@ class DefaultClaudeInvoker(
     // non-deterministic near the budget boundary. The SDK side then acts as a safety net.
     private val workTimeout: Duration = descriptionProperties.common.timeout.plus(SDK_TIMEOUT_BUFFER)
 
-    override suspend fun invoke(prompt: String): String {
+    override suspend fun invoke(
+        prompt: String,
+        model: String,
+    ): String {
         logger.debug { "Claude prompt (${prompt.length} chars):\n$prompt" }
-        val client = clientFactory.create(workTimeout)
+        val client = clientFactory.create(workTimeout, model)
         try {
             // We send the prompt as the FIRST user message via `connect(prompt)`.
             // The no-arg `connect()` would inject a default "Hello" message before ours, and the
@@ -74,7 +76,7 @@ class DefaultClaudeInvoker(
         } finally {
             // ClaudeAsyncClient is NOT AutoCloseable — .use not usable. Close explicitly.
             // NonCancellable required: invoke() runs under withTimeout in
-            // ClaudeDescriptionAgent.describe(); on timeout the finally runs with Job
+            // DefaultDescriptionAgent.describe(); on timeout the finally runs with Job
             // already cancelled, and a bare awaitSingleOrNull() would throw
             // CancellationException before subscribing — skipping the close and leaking
             // the Claude CLI subprocess.

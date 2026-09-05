@@ -14,12 +14,15 @@ import java.time.Duration
 class ClaudeAsyncClientFactory(
     private val claudeProperties: ClaudeProperties,
 ) {
-    fun create(workTimeout: Duration): ClaudeAsyncClient {
+    fun create(
+        workTimeout: Duration,
+        model: String,
+    ): ClaudeAsyncClient {
         check(claudeProperties.oauthToken.isNotBlank() || claudeProperties.anthropic.authToken.isNotBlank()) {
             "At least one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN must be set " +
                 "when application.ai.description.enabled=true"
         }
-        val options = buildOptions(workTimeout)
+        val options = buildOptions(workTimeout, model)
 
         // workingDirectory ОБЯЗАТЕЛЕН для SDK 1.0.0 (AsyncSpec#build бросает
         // IllegalArgumentException("workingDirectory is required")).
@@ -34,8 +37,18 @@ class ClaudeAsyncClientFactory(
         return spec.build()
     }
 
-    /** Отдельно от [create] ради тестов: собранный клиент свои опции наружу не отдаёт. */
-    internal fun buildOptions(workTimeout: Duration): CLIOptions {
+    /**
+     * Отдельно от [create] ради тестов: собранный клиент свои опции наружу не отдаёт.
+     *
+     * [model] — параметр вызова, а не свойство бина: одна фабрика обслуживает несколько пресетов.
+     * Непустой `anthropic.model-override` (`ANTHROPIC_MODEL`) её вытесняет: опция `--model` не
+     * ставится вовсе, и CLI берёт модель из переменной окружения — единственный способ достучаться
+     * до Anthropic-совместимого эндпоинта.
+     */
+    internal fun buildOptions(
+        workTimeout: Duration,
+        model: String,
+    ): CLIOptions {
         val optionsBuilder =
             CLIOptions
                 .builder()
@@ -45,7 +58,7 @@ class ClaudeAsyncClientFactory(
                 .maxBufferSize(claudeProperties.maxBufferSize.toBytes().toInt())
                 .env(buildEnvMap())
         if (claudeProperties.anthropic.modelOverride.isBlank()) {
-            optionsBuilder.model(claudeProperties.model)
+            optionsBuilder.model(model)
         }
         return optionsBuilder.build()
     }

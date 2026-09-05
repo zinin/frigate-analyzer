@@ -9,11 +9,14 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 FROM azul/zulu-openjdk-alpine:25
 WORKDIR /application
 
+# Grok Build (xAI) pinned: the app depends on specific headless flags and the JSON output shape.
+ARG GROK_VERSION=1.0.13
+
 # Runtime deps: ffmpeg/fontconfig (existing) + bash/libgcc/libstdc++/ripgrep (Claude CLI on musl per Anthropic docs).
 RUN apk add --no-cache ffmpeg curl fontconfig ttf-dejavu bash libgcc libstdc++ ripgrep
 
 # Создание временных директорий и non-root user
-RUN mkdir -p /tmp/frigate-analyzer /application/logs /application/config && \
+RUN mkdir -p /tmp/frigate-analyzer /application/logs /application/config /application/grok-home && \
     addgroup -g 1000 appgroup && \
     adduser -u 1000 -G appgroup -D appuser && \
     chown -R appuser:appgroup /application /tmp/frigate-analyzer
@@ -44,12 +47,16 @@ RUN curl -fsSL https://claude.ai/install.sh | bash && \
                   '  }' \
                   '}' > /home/appuser/.claude/settings.json
 
-# Put the CLI on PATH globally so both the entrypoint probe (`command -v claude`)
-# and the JVM subprocess (ProcessBuilder) can find it. Needs root to mutate ENV;
-# drop back to appuser before the app runs.
-USER root
-ENV PATH="/home/appuser/.local/bin:${PATH}"
-USER appuser
+# Put CLI binaries on PATH before Grok install: x.ai/cli/install.sh only creates
+# ~/.local/bin/grok when that directory is already on PATH and writable. ~/.grok/bin
+# is a fallback if the symlink is skipped. ENV is image metadata — no root needed.
+# GROK_HOME at runtime points at the mounted volume, not at this ~/.grok.
+ENV PATH="/home/appuser/.local/bin:/home/appuser/.grok/bin:${PATH}"
+
+# Install Grok Build as appuser: static binary in ~/.grok/bin/grok, symlink in ~/.local/bin.
+RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "$GROK_VERSION" && \
+    grok --version 2>&1 | grep -qF "$GROK_VERSION"
+
 WORKDIR /application
 
 EXPOSE 8080

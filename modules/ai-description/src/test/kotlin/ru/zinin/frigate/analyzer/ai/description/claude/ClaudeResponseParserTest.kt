@@ -39,6 +39,24 @@ class ClaudeResponseParserTest {
     }
 
     @Test
+    fun `throws InvalidResponse when a field holds an object or an array`() {
+        // asString() на контейнере бросает JsonNodeException, а parse вызывается вне маппера:
+        // такой бросок стал бы Transport с паузой в 5 с вместо честного InvalidResponse.
+        assertFailsWith<DescriptionException.InvalidResponse> {
+            parse("""{"short": {"text": "Two cars."}, "detailed": "Two cars entering the yard."}""")
+        }
+        assertFailsWith<DescriptionException.InvalidResponse> {
+            parse("""{"short": "Two cars.", "detailed": ["Two cars", "entering the yard"]}""")
+        }
+    }
+
+    @Test
+    fun `a numeric field is still coerced to text`() {
+        val result = parse("""{"short": 42, "detailed": "Two cars entering the yard."}""")
+        assertEquals("42", result.short)
+    }
+
+    @Test
     fun `throws InvalidResponse on blank short value`() {
         assertFailsWith<DescriptionException.InvalidResponse> { parse("""{"short": "", "detailed": "foo"}""") }
     }

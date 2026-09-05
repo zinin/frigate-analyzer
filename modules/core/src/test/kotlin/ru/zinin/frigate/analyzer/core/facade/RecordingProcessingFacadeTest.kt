@@ -10,15 +10,19 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
 import ru.zinin.frigate.analyzer.core.config.properties.LocalVisualizationProperties
@@ -47,6 +51,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RecordingProcessingFacadeTest {
@@ -141,10 +146,23 @@ class RecordingProcessingFacadeTest {
             y2 = 1.0f,
         )
 
+    /**
+     * Мок рантайм-настроек, отдающий ответы по очереди; последний повторяется. Выключатель читается
+     * дважды — при сборке supplier-а и внутри него, перед вызовом модели, — поэтому одного ответа на
+     * тест мало: описание, отменённое вторым чтением, иначе не отличить от отменённого первым.
+     */
+    private fun runtimeSettings(vararg answers: Boolean): DescriptionRuntimeSettings {
+        val queue = ArrayDeque(answers.toList())
+        return mockk<DescriptionRuntimeSettings>().also { settings ->
+            coEvery { settings.descriptionsEnabled() } answers { queue.removeFirstOrNull() ?: answers.last() }
+        }
+    }
+
     private fun TestScope.facade(
         agent: DescriptionAgent?,
         framesForRequest: List<FrameData> = listOf(frameWithDetection(0)),
         maxFrames: Int = 10,
+        runtimeSettings: DescriptionRuntimeSettings = runtimeSettings(true),
     ): Pair<RecordingProcessingFacade, SaveProcessingResultRequest> {
         val provider = mockk<ObjectProvider<DescriptionAgent>>()
         every { provider.getIfAvailable() } returns agent
@@ -169,6 +187,10 @@ class RecordingProcessingFacadeTest {
                         maxConcurrent = 2,
                     ),
             )
+        // ObjectProvider, а не прямая зависимость: при application.ai.description.enabled=false
+        // бина настроек нет вовсе, и обязательная инъекция сломала бы такой старт.
+        val runtimeSettingsProvider = mockk<ObjectProvider<DescriptionRuntimeSettings>>()
+        every { runtimeSettingsProvider.getIfAvailable() } returns runtimeSettings
         val facade =
             RecordingProcessingFacade(
                 recordingEntityService = recordingEntityService,
@@ -178,6 +200,7 @@ class RecordingProcessingFacadeTest {
                 descriptionScope = scope,
                 descriptionProperties = props,
                 notificationDecisionService = notificationDecisionService,
+                runtimeSettingsProvider = runtimeSettingsProvider,
             )
         return facade to SaveProcessingResultRequest(recordingId = recordingId, frames = framesForRequest)
     }
@@ -352,5 +375,87 @@ class RecordingProcessingFacadeTest {
 
             assertEquals(2, captured.captured.frames.size)
             assertEquals(listOf(1, 3), captured.captured.frames.map { it.frameIndex })
+        }
+
+    @Test
+    fun `the runtime switch keeps the description supplier out`() =
+        runTest {
+            val (f, req) = facade(agent = mockk(relaxed = true), runtimeSettings = runtimeSettings(false))
+
+            val supplier = captureSupplierDuring { f.processAndNotify(req) }
+
+            assertNull(supplier)
+            // Уведомление обязано уйти и без описания: выключатель решает лишь, обогащать ли его.
+            // Без этой проверки assertNull прошёл бы и в случае, когда уведомления не было вовсе.
+            coVerify(exactly = 1) { telegramNotificationService.sendRecordingNotification(recording, any(), null) }
+        }
+
+    @Test
+    fun `the runtime switch on leaves the supplier in place`() =
+        runTest {
+            val (f, req) = facade(agent = mockk(relaxed = true), runtimeSettings = runtimeSettings(true))
+
+            val supplier = captureSupplierDuring { f.processAndNotify(req) }
+
+            assertNotNull(supplier)
+        }
+
+    /**
+     * Вторая проверка выключателя — внутри supplier-а. Между его сборкой и вызовом лежат фильтрация
+     * получателей и rate limiter, поэтому одной проверки хватало бы лишь на «подействует со следующей
+     * записи»; обещание дизайна — «выключение отменяет все описания, которые ещё не начались».
+     */
+    @Test
+    fun `switching off between building and invoking the supplier skips the model call`() =
+        runTest {
+            val agent = mockk<DescriptionAgent>()
+            coEvery { agent.describe(any()) } coAnswers { DescriptionResult("s", "d") }
+
+            val (f, req) = facade(agent, runtimeSettings = runtimeSettings(true, false))
+            val supplier = captureSupplierDuring { f.processAndNotify(req) }
+
+            val outcome = assertNotNull(supplier).invoke().await()
+
+            coVerify(exactly = 0) { agent.describe(any()) }
+            // Deferred обязан быть, причём завершиться: слот лимитера уже потрачен, а на той стороне
+            // сообщение уже ушло с плейсхолдером — его правит DescriptionState.Failed, а не отмена.
+            assertTrue(outcome.isFailure)
+        }
+
+    /**
+     * Гейт стоит ПОСЛЕ saveProcessingResult: запись уже помечена обработанной, поэтому исключение из
+     * чтения ключа потеряло бы уведомление без повтора. Нечитаемый ключ трактуется как отсутствующий,
+     * то есть `true`.
+     */
+    @Test
+    fun `an unreadable switch fails open and keeps the notification`() =
+        runTest {
+            val settings = mockk<DescriptionRuntimeSettings>()
+            coEvery { settings.descriptionsEnabled() } throws RuntimeException("settings db down")
+
+            val (f, req) = facade(agent = mockk(relaxed = true), runtimeSettings = settings)
+            val supplier = captureSupplierDuring { f.processAndNotify(req) }
+
+            assertNotNull(supplier)
+            coVerify(exactly = 1) { telegramNotificationService.sendRecordingNotification(recording, any(), any()) }
+        }
+
+    @Test
+    fun `a hanging switch read fails open and keeps the notification`() =
+        runTest {
+            val settings = mockk<DescriptionRuntimeSettings>()
+            coEvery { settings.descriptionsEnabled() } coAnswers {
+                delay(60_000)
+                false
+            }
+
+            val (f, req) = facade(agent = mockk(relaxed = true), runtimeSettings = settings)
+            val job = async { captureSupplierDuring { f.processAndNotify(req) } }
+            advanceTimeBy(6_000)
+            advanceUntilIdle()
+            val supplier = job.await()
+
+            assertNotNull(supplier)
+            coVerify(exactly = 1) { telegramNotificationService.sendRecordingNotification(recording, any(), any()) }
         }
 }

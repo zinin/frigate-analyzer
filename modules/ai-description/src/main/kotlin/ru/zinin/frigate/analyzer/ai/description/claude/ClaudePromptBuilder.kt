@@ -3,6 +3,7 @@ package ru.zinin.frigate.analyzer.ai.description.claude
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
+import ru.zinin.frigate.analyzer.ai.description.core.LanguageNames
 import java.nio.file.Path
 
 @Component
@@ -15,7 +16,7 @@ class ClaudePromptBuilder {
         require(framePaths.size == request.frames.size) {
             "framePaths size (${framePaths.size}) must match request.frames size (${request.frames.size})"
         }
-        val languageName = languageNameFor(request.language)
+        val languageName = LanguageNames.of(request.language)
         // Сначала сортируем frames по frameIndex, потом zip со stagedPaths.
         // stager уже возвращает пути в отсортированном порядке, но request.frames
         // приходит из ConcurrentHashMap.values() без гарантий порядка.
@@ -46,15 +47,4 @@ class ClaudePromptBuilder {
             appendLine("- No markdown, no explanations — just the JSON object.")
         }
     }
-
-    private fun languageNameFor(code: String): String =
-        when (code.lowercase()) {
-            "ru" -> "Russian"
-
-            "en" -> "English"
-
-            // @Pattern на property-уровне уже отсеивает неверные коды.
-            // Если сюда пришло что-то другое — это баг конфига/валидации.
-            else -> error("Unsupported language code: '$code' (expected 'ru' or 'en')")
-        }
 }

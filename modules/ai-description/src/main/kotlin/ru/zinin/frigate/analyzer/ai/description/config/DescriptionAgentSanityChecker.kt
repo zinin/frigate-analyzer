@@ -18,14 +18,11 @@ class DescriptionAgentSanityChecker(
         if (!descriptionProperties.enabled) return
         if (agentProvider.getIfAvailable() == null) {
             logger.warn {
-                "application.ai.description.enabled=true but no DescriptionAgent registered " +
-                    "for provider='${descriptionProperties.provider}' (known providers: ${KNOWN_PROVIDERS.joinToString()}); " +
-                    "all describe-calls will fall back."
+                "application.ai.description.enabled=true but no DescriptionAgent registered: " +
+                    "neither application.ai.description.presets nor a known " +
+                    "application.ai.description.provider='${descriptionProperties.provider}' " +
+                    "(known: ${DescriptionProperties.KNOWN_PROVIDERS.joinToString()}); all describe-calls will fall back."
             }
         }
-    }
-
-    companion object {
-        private val KNOWN_PROVIDERS = listOf("claude")
     }
 }

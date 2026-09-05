@@ -192,8 +192,11 @@ worth probing in production.
 | /help | USER, OWNER | List commands |
 | /export | USER, OWNER | Export camera video |
 | /timezone | USER, OWNER | Configure timezone |
+| /language | USER, OWNER | Configure interface language |
 | /notifications | USER, OWNER | Manage notification subscriptions |
 | /version | USER, OWNER | Show application version |
+| /status | OWNER | Recordings, cameras and detect-servers snapshot (handler lives in `core`) |
+| /ai | OWNER | Switch the active AI-description preset, turn descriptions on and off (`**/handler/aisettings/**`, see `ai-description.md`) |
 | /adduser | OWNER | Invite user |
 | /removeuser | OWNER | Remove user |
 | /users | OWNER | List all users |

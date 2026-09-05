@@ -46,6 +46,7 @@ docker/.env
 docker/deploy/.env
 docker/deploy/log4j2.yaml
 docker/deploy/logs/
+docker/deploy/grok-home/
 **/application-docker.yaml
 
 ### MCP configuration (contains API keys) ###

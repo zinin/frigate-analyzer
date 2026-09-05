@@ -99,12 +99,21 @@ application:
   ai:
     description:
       enabled: ${APP_AI_DESCRIPTION_ENABLED:false}
+      # Legacy-путь: применяется, только когда карта presets пуста. Тогда из него и из секции
+      # провайдера синтезируется единственный пресет.
       provider: ${APP_AI_DESCRIPTION_PROVIDER:claude}
+      # Активный пресет по умолчанию; пусто = первый годный из presets. Сами presets объявляются
+      # в смонтированном application-docker.yaml, пример — в application-docker.yaml.example.
+      default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:}
       common:
         language: ${APP_AI_DESCRIPTION_LANGUAGE:en}
         short-max-length: ${APP_AI_DESCRIPTION_SHORT_MAX:200}
         detailed-max-length: ${APP_AI_DESCRIPTION_DETAILED_MAX:1500}
         max-frames: ${APP_AI_DESCRIPTION_MAX_FRAMES:10}
+        # Длинная сторона кадра в пикселях перед отправкой модели; 0 = отдавать как есть.
+        # Кадры идут в разрешении камеры: токены считаются по площади, а некоторые
+        # vision-шлюзы молча выбрасывают картинку больше своего предела (1568 px у LiteLLM).
+        max-image-side: ${APP_AI_DESCRIPTION_MAX_IMAGE_SIDE:0}
         queue-timeout: ${APP_AI_DESCRIPTION_QUEUE_TIMEOUT:30s}
         timeout: ${APP_AI_DESCRIPTION_TIMEOUT:60s}
         max-concurrent: ${APP_AI_DESCRIPTION_MAX_CONCURRENT:2}
@@ -132,6 +141,24 @@ application:
           http: ${CLAUDE_HTTP_PROXY:}
           https: ${CLAUDE_HTTPS_PROXY:}
           no-proxy: ${CLAUDE_NO_PROXY:}
+      grok:
+        cli-path: ${GROK_CLI_PATH:}
+        model: ${GROK_MODEL:grok-4.6}
+        # Пусто = флаг --effort не передаётся (BYOK-модели без уровней reasoning).
+        effort: ${GROK_EFFORT:low}
+        # Собственный каталог Grok: auth.json, config.toml, сессии. В контейнере это том.
+        # Та же переменная ведёт ручной `grok login` внутри `docker compose exec`.
+        home: ${GROK_HOME:${application.temp-folder}/grok-home}
+        # Пустой каталог для --cwd: Grok читает из cwd AGENTS.md, CLAUDE.md, .claude/rules и .grok.
+        working-directory: ${GROK_WORKING_DIR:${application.temp-folder}/grok-cwd}
+        proxy:
+          http: ${GROK_HTTP_PROXY:}
+          https: ${GROK_HTTPS_PROXY:}
+          no-proxy: ${GROK_NO_PROXY:}
+        # Имена переменных окружения, которые нужно передать дочернему grok дословно, через запятую.
+        # Нужно для BYOK-модели, чей [model.<name>] в config.toml ссылается на env_key с именем
+        # вне префиксов GROK_ и XAI_ — иначе ключ до grok не доедет.
+        pass-through-env: ${GROK_PASS_THROUGH_ENV:}
   detection-filter:
     enabled: ${DETECTION_FILTER_ENABLED:true}
     allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe}

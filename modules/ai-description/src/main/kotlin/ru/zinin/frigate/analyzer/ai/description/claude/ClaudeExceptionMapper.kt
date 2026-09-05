@@ -20,7 +20,7 @@ class ClaudeExceptionMapper {
      *
      * Сигнатура обещает возврат DescriptionException, но метод может ТАК ЖЕ выбросить
      * CancellationException — см. @throws ниже. Вызывающему коду стоит писать
-     * `throw mapper.map(e)` (как в ClaudeDescriptionAgent.executeWithRetry), тогда
+     * `throw mapper.map(e)` (как в ClaudeBackend.describe), тогда
      * cancellation-path остаётся корректным, а возвращённые DescriptionException
      * ловятся штатными catch-ами.
      *
@@ -44,15 +44,25 @@ class ClaudeExceptionMapper {
                 DescriptionException.InvalidResponse(throwable)
             }
 
-            // Rate-limit check goes BEFORE the TransportException branch: CLI-side 429 errors
-            // arrive from the SDK as TransportException (which extends ClaudeSDKException), and
-            // without this order swap they would be re-tried as generic transport failures
-            // instead of surfaced as RateLimited (which skips retry).
+            // Авторизация проверяется раньше rate limit, а rate limit раньше общего Transport:
+            // Unauthorized не повторяется и поднимает событие, RateLimited не повторяется,
+            // Transport повторяется один раз.
             is ClaudeSDKException -> {
-                if (isRateLimit(throwable)) {
-                    DescriptionException.RateLimited(throwable)
-                } else {
-                    DescriptionException.Transport(throwable)
+                when {
+                    isUnauthorized(throwable) -> {
+                        DescriptionException.Unauthorized(
+                            throwable.message ?: "authentication error",
+                            throwable,
+                        )
+                    }
+
+                    isRateLimit(throwable) -> {
+                        DescriptionException.RateLimited(throwable)
+                    }
+
+                    else -> {
+                        DescriptionException.Transport(throwable)
+                    }
                 }
             }
 
@@ -60,6 +70,16 @@ class ClaudeExceptionMapper {
                 DescriptionException.Transport(throwable)
             }
         }
+    }
+
+    private fun isUnauthorized(throwable: Throwable): Boolean {
+        val message = throwable.message?.lowercase() ?: return false
+        if (AUTH_MARKERS.any { it in message }) return true
+        // "oauth token" сам по себе не про отказ: он встречается и в транспортных сбоях вроде
+        // "Failed to refresh OAuth token: connection reset". Unauthorized не повторяется и шлёт
+        // владельцу требование перелогиниться, поэтому нужен подтверждающий контекст — так же,
+        // как isRateLimit ниже требует его для "429".
+        return "oauth token" in message && OAUTH_FAILURE_CONTEXT.any { it in message }
     }
 
     private fun isRateLimit(throwable: Throwable): Boolean {
@@ -74,5 +94,10 @@ class ClaudeExceptionMapper {
             return true
         }
         return false
+    }
+
+    private companion object {
+        val AUTH_MARKERS = listOf("authentication_error", "invalid api key")
+        val OAUTH_FAILURE_CONTEXT = listOf("invalid", "expired", "revoked", "unauthorized", "401")
     }
 }

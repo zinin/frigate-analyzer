@@ -45,11 +45,13 @@ application:
     description:
       enabled: false
       provider: claude
+      default-preset: ""
       common:
         language: en
         short-max-length: 200
         detailed-max-length: 1500
         max-frames: 10
+        max-image-side: 0
         queue-timeout: 30s
         timeout: 60s
         max-concurrent: 2
@@ -69,6 +71,16 @@ application:
           default-opus-model: ""
           default-sonnet-model: ""
           default-haiku-model: ""
+        proxy:
+          http: ""
+          https: ""
+          no-proxy: ""
+      grok:
+        cli-path: ""
+        model: grok-4.6
+        effort: low
+        home: /tmp/frigate-analyzer/grok-home
+        working-directory: /tmp/frigate-analyzer/grok-cwd
         proxy:
           http: ""
           https: ""
