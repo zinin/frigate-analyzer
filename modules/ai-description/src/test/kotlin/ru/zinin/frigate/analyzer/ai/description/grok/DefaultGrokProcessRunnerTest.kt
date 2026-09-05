@@ -115,6 +115,36 @@ class DefaultGrokProcessRunnerTest {
         }
 
     @Test
+    fun `cancellation kills descendants of the child process`() =
+        runBlocking {
+            val parentFile = tempDir.resolve("parent")
+            val childFile = tempDir.resolve("child")
+            val binary =
+                stub(
+                    """
+                    echo $$ > "$parentFile"
+                    sleep 30 &
+                    echo $! > "$childFile"
+                    wait
+                    """.trimIndent(),
+                )
+
+            val job = launch { runner.run(command(binary)) }
+            while (!Files.exists(parentFile) || !Files.exists(childFile)) delay(20)
+            delay(100)
+            val parent = parentFile.readText().trim().toLong()
+            val child = childFile.readText().trim().toLong()
+            assertTrue(ProcessHandle.of(parent).map { it.isAlive }.orElse(false), "parent must be alive before cancel")
+            assertTrue(ProcessHandle.of(child).map { it.isAlive }.orElse(false), "descendant must be alive before cancel")
+
+            job.cancelAndJoin()
+
+            delay(200)
+            assertFalse(ProcessHandle.of(parent).map { it.isAlive }.orElse(false), "parent must be dead after cancel")
+            assertFalse(ProcessHandle.of(child).map { it.isAlive }.orElse(false), "descendant must be dead after cancel")
+        }
+
+    @Test
     fun `stdout above the cap is Transport without loading the rest`() {
         val oversized = Files.write(tempDir.resolve("big"), ByteArray(32) { 'x'.code.toByte() })
         assertFailsWith<DescriptionException.Transport> {

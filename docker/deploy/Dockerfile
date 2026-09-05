@@ -55,7 +55,7 @@ ENV PATH="/home/appuser/.local/bin:/home/appuser/.grok/bin:${PATH}"
 
 # Install Grok Build as appuser: static binary in ~/.grok/bin/grok, symlink in ~/.local/bin.
 RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "$GROK_VERSION" && \
-    grok --version
+    grok --version 2>&1 | grep -qF "$GROK_VERSION"
 
 WORKDIR /application
 

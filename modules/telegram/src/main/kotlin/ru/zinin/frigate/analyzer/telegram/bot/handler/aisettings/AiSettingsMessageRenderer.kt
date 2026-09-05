@@ -38,7 +38,7 @@ class AiSettingsMessageRenderer(
             null -> msg.get(key, lang)
             is AiSettingsAlertCause.Unavailable -> msg.get(key, lang, reasonText(cause.reason, lang))
             AiSettingsAlertCause.Gone -> msg.get(key, lang, msg.get("ai.settings.reason.gone", lang))
-        }
+        }.take(CALLBACK_ALERT_MAX_CHARS)
 
     private fun renderText(state: AiSettingsViewState): String {
         val lang = state.language
@@ -228,5 +228,8 @@ class AiSettingsMessageRenderer(
         const val SLOW_MARK = "🐢"
 
         const val NO_EFFORT = "—"
+
+        /** Потолок `answerCallbackQuery.text` в Bot API. */
+        const val CALLBACK_ALERT_MAX_CHARS = 200
     }
 }

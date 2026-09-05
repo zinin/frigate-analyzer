@@ -340,4 +340,20 @@ class AiSettingsMessageRendererTest {
 
         verify { msg.get("common.error.owner.only", "ru") }
     }
+
+    @Test
+    fun `an alert longer than the Bot API cap is truncated`() {
+        val longMsg =
+            mockk<MessageResolver>().apply {
+                every { get(any(), any<String>()) } answers { "x".repeat(250) }
+                every { get(any(), any<String>(), *anyVararg()) } answers { "x".repeat(250) }
+            }
+        val text =
+            AiSettingsMessageRenderer(longMsg).alertText(
+                "ai.settings.alert.unavailable",
+                AiSettingsAlertCause.Unavailable(UnavailableReason.HomeUnwritable("/tmp/grok")),
+                "ru",
+            )
+        assertEquals(200, text.length)
+    }
 }

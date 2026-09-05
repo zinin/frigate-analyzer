@@ -38,7 +38,13 @@ class DefaultGrokProcessRunner(
 ) : GrokProcessRunner {
     override suspend fun run(command: GrokCommand): GrokProcessResult {
         val stdoutFile = tempFileWriter.createTempFile("grok-stdout-", ".log", EMPTY_CONTENT)
-        val stderrFile = tempFileWriter.createTempFile("grok-stderr-", ".log", EMPTY_CONTENT)
+        val stderrFile =
+            try {
+                tempFileWriter.createTempFile("grok-stderr-", ".log", EMPTY_CONTENT)
+            } catch (e: Exception) {
+                tempFileWriter.deleteFiles(listOf(stdoutFile))
+                throw e
+            }
         try {
             return withContext(Dispatchers.IO) {
                 val process =
@@ -66,7 +72,9 @@ class DefaultGrokProcessRunner(
                 } finally {
                     if (process.isAlive) {
                         logger.debug { "Killing grok process ${process.pid()} after cancellation" }
+                        val descendants = process.toHandle().descendants().toList()
                         process.destroyForcibly()
+                        descendants.forEach { it.destroyForcibly() }
                         if (!process.waitFor(KILL_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                             logger.warn {
                                 "grok process ${process.pid()} still alive after ${KILL_WAIT_TIMEOUT_MS}ms SIGKILL"

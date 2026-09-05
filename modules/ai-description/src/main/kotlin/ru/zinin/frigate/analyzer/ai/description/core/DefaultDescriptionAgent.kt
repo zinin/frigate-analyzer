@@ -59,11 +59,20 @@ class DefaultDescriptionAgent(
         val entry = resolver.resolve()
         val backend = requireNotNull(entry.backend) { "resolved preset '${entry.view.id}' has no backend" }
 
+        // Флаг, а не «acquire последним выражением withTimeout»: если дедлайн истекает в момент
+        // между возвратом acquire() и завершением блока, kotlinx отбрасывает результат и бросает
+        // TimeoutCancellationException — пермит уже взят, а release жил бы только в следующем try.
+        var acquired = false
         try {
             withTimeout(commonSection.queueTimeout.toMillis()) {
                 semaphore.acquire()
+                acquired = true
             }
         } catch (e: TimeoutCancellationException) {
+            if (acquired) {
+                semaphore.release()
+                acquired = false
+            }
             throw DescriptionException.Timeout(cause = e)
         }
 
@@ -96,7 +105,7 @@ class DefaultDescriptionAgent(
                 "Description via preset '${entry.view.id}' completed in ${callStart.elapsedNow()} " +
                     "for recording ${request.recordingId}"
             }
-            semaphore.release()
+            if (acquired) semaphore.release()
         }
     }
 

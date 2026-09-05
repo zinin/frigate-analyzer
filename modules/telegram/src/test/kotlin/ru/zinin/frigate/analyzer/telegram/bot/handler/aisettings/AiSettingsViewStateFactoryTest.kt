@@ -5,6 +5,11 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
@@ -151,6 +156,27 @@ class AiSettingsViewStateFactoryTest {
             coEvery { active.effective() } returns fast
 
             val state = factory(runtimeSettings = null).build("ru")
+
+            assertTrue(state.descriptionsEnabled)
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a hanging switch read fails open instead of blocking the screen`() =
+        runTest {
+            every { presets.all() } returns listOf(fast)
+            every { authStates.byScope() } returns emptyMap()
+            coEvery { runtimeSettings.descriptionsEnabled() } coAnswers {
+                delay(60_000)
+                false
+            }
+            coEvery { active.storedId() } returns "grok-fast"
+            coEvery { active.effective() } returns fast
+
+            val job = async { factory().build("ru") }
+            advanceTimeBy(6_000)
+            advanceUntilIdle()
+            val state = job.await()
 
             assertTrue(state.descriptionsEnabled)
         }

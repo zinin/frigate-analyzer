@@ -66,7 +66,7 @@ class GrokHomeSweeper(
             .getIfAvailable()
             ?.all()
             .orEmpty()
-            .any { it.provider == GrokBackend.PROVIDER_ID }
+            .any { it.provider == GrokBackend.PROVIDER_ID && it.available }
 
     @PreDestroy
     fun shutdown() {

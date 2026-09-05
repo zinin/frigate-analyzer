@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir
 import org.springframework.beans.factory.ObjectProvider
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
+import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import java.nio.file.Files
 import java.nio.file.Path
@@ -113,5 +114,22 @@ class GrokHomeSweeperTest {
         assertTrue(sweeper().grokIsDeclared())
         assertFalse(sweeper(presetsOf("claude")).grokIsDeclared(), "no grok preset")
         assertFalse(sweeper(presets = null).grokIsDeclared(), "no catalog at all")
+        assertFalse(sweeper(unavailableGrok()).grokIsDeclared(), "unusable grok preset is not ours to sweep")
     }
+
+    private fun unavailableGrok(): DescriptionPresets =
+        object : DescriptionPresets {
+            override fun all(): List<DescriptionPreset> =
+                listOf(
+                    DescriptionPreset(
+                        id = "g",
+                        provider = "grok",
+                        model = "m",
+                        effectiveModel = "m",
+                        effort = "",
+                        authScopeId = "grok:m",
+                        unavailableReason = UnavailableReason.HomeUnwritable("/x"),
+                    ),
+                )
+        }
 }

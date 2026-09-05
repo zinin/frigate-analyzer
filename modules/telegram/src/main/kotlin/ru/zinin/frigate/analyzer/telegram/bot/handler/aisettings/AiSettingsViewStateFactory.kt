@@ -2,6 +2,8 @@ package ru.zinin.frigate.analyzer.telegram.bot.handler.aisettings
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
@@ -10,6 +12,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.ProviderAuthStates
 import ru.zinin.frigate.analyzer.telegram.dto.AiSettingsViewState
+import kotlin.time.Duration.Companion.seconds
 
 private val logger = KotlinLogging.logger {}
 
@@ -75,11 +78,22 @@ class AiSettingsViewStateFactory(
      */
     private suspend fun descriptionsEnabled(): Boolean =
         try {
-            runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true
+            withTimeout(SETTINGS_READ_TIMEOUT) {
+                runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true
+            }
+        } catch (e: TimeoutCancellationException) {
+            logger.warn {
+                "Reading the AI description switch for the /ai screen timed out after $SETTINGS_READ_TIMEOUT; failing open"
+            }
+            true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logger.warn(e) { "Failed to read the AI description switch for the /ai screen; failing open" }
             true
         }
+
+    private companion object {
+        val SETTINGS_READ_TIMEOUT = 5.seconds
+    }
 }

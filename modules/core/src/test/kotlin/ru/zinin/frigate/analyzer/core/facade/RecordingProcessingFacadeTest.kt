@@ -10,9 +10,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
@@ -432,6 +435,25 @@ class RecordingProcessingFacadeTest {
 
             val (f, req) = facade(agent = mockk(relaxed = true), runtimeSettings = settings)
             val supplier = captureSupplierDuring { f.processAndNotify(req) }
+
+            assertNotNull(supplier)
+            coVerify(exactly = 1) { telegramNotificationService.sendRecordingNotification(recording, any(), any()) }
+        }
+
+    @Test
+    fun `a hanging switch read fails open and keeps the notification`() =
+        runTest {
+            val settings = mockk<DescriptionRuntimeSettings>()
+            coEvery { settings.descriptionsEnabled() } coAnswers {
+                delay(60_000)
+                false
+            }
+
+            val (f, req) = facade(agent = mockk(relaxed = true), runtimeSettings = settings)
+            val job = async { captureSupplierDuring { f.processAndNotify(req) } }
+            advanceTimeBy(6_000)
+            advanceUntilIdle()
+            val supplier = job.await()
 
             assertNotNull(supplier)
             coVerify(exactly = 1) { telegramNotificationService.sendRecordingNotification(recording, any(), any()) }

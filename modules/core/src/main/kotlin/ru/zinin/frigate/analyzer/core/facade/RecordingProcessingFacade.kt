@@ -3,7 +3,9 @@ package ru.zinin.frigate.analyzer.core.facade
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
@@ -18,6 +20,7 @@ import ru.zinin.frigate.analyzer.service.NotificationDecisionService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
 import ru.zinin.frigate.analyzer.telegram.service.TelegramNotificationService
 import java.util.UUID
+import kotlin.time.Duration.Companion.seconds
 
 private val logger = KotlinLogging.logger {}
 
@@ -114,7 +117,14 @@ class RecordingProcessingFacade(
      */
     private suspend fun descriptionsEnabled(recordingId: UUID): Boolean =
         try {
-            runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true
+            withTimeout(SETTINGS_READ_TIMEOUT) {
+                runtimeSettingsProvider.getIfAvailable()?.descriptionsEnabled() ?: true
+            }
+        } catch (e: TimeoutCancellationException) {
+            logger.warn {
+                "Reading the AI description switch for $recordingId timed out after $SETTINGS_READ_TIMEOUT; failing open"
+            }
+            true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -195,5 +205,9 @@ class RecordingProcessingFacade(
                 }
             }
         }
+    }
+
+    private companion object {
+        val SETTINGS_READ_TIMEOUT = 5.seconds
     }
 }
