@@ -31,7 +31,14 @@ class JudgeResponseParser(
             throw DescriptionException.InvalidResponse(detail = "reason $reason does not match verdict $decision")
         }
         val confidence = node["confidence"]?.takeIf { it.isNumber }?.doubleValue()?.takeIf { it in 0.0..1.0 }
-        val snooze = node["snooze_minutes"]?.takeIf { it.isNumber }?.intValue()?.coerceIn(0, maxSnoozeMinutes) ?: 0
+        // Jackson 3 intValue() throws on a non-integral number; truncate toward zero then clamp.
+        val snooze =
+            node["snooze_minutes"]
+                ?.takeIf { it.isNumber }
+                ?.doubleValue()
+                ?.toInt()
+                ?.coerceIn(0, maxSnoozeMinutes)
+                ?: 0
         return JudgeVerdict(
             decision = decision,
             reason = reason,

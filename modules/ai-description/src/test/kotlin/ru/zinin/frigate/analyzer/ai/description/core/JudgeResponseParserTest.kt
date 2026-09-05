@@ -62,6 +62,11 @@ class JudgeResponseParserTest {
     }
 
     @Test
+    fun `a fractional snooze is truncated toward zero then clamped`() {
+        assertEquals(15, parse("""{"verdict":"SUPPRESS","reason":"DUPLICATE","summary":"x","snooze_minutes":15.7}""").snoozeMinutes)
+    }
+
+    @Test
     fun `confidence outside 0 to 1 or non-numeric becomes null`() {
         assertNull(parse("""{"verdict":"SUPPRESS","reason":"DUPLICATE","summary":"x","confidence":1.7}""").confidence)
         assertNull(parse("""{"verdict":"SUPPRESS","reason":"DUPLICATE","summary":"x","confidence":"high"}""").confidence)
