@@ -110,6 +110,23 @@ class AiSettingsMessageRendererTest {
         verify { msg.get("ai.settings.auth.unavailable", "ru", "claude", "ai.settings.reason.noToken") }
     }
 
+    /**
+     * Смысл ключа авторизации — область учётных данных, а не провайдер: `grok-fast` и `grok-deep`
+     * ходят одним `auth.json`, и вторая строка о той же области обещала бы вторую независимую
+     * авторизацию, которую нечем чинить отдельно. `exactly = 1` здесь обязателен: голый `verify`
+     * у MockK — «хотя бы раз», и дубль строки прошёл бы мимо него.
+     */
+    @Test
+    fun `two presets sharing one auth scope get a single line`() {
+        val deep = preset("grok-deep", "grok", "grok-4.6", effort = "xhigh", authScopeId = "grok:grok-4.6")
+
+        val text = renderer.render(state(presets = listOf(fast, deep, luna))).text
+
+        verify(exactly = 1) { msg.get("ai.settings.auth.healthy", "ru", "grok:grok-4.6") }
+        verify(exactly = 1) { msg.get("ai.settings.auth.unknown", "ru", "grok:codex-luna") }
+        assertEquals(1, text.lines().count { it == "ai.settings.auth.healthy" }, text)
+    }
+
     @Test
     fun `a scope that was never called reads as unknown`() {
         renderer.render(state(auth = emptyMap()))
@@ -204,7 +221,14 @@ class AiSettingsMessageRendererTest {
         renderer.render(state(storedId = "claude-opus", effectiveId = "grok-fast"))
 
         verify {
-            msg.get("ai.settings.active.mismatch", "ru", "claude-opus", "ai.settings.reason.noToken", "grok-fast")
+            msg.get(
+                "ai.settings.active.mismatch",
+                "ru",
+                "claude-opus",
+                "ai.settings.reason.noToken",
+                "grok-fast",
+                "ai.settings.mismatch.kept",
+            )
         }
     }
 
@@ -214,7 +238,14 @@ class AiSettingsMessageRendererTest {
         renderer.render(state(storedId = "removed-preset", effectiveId = "grok-fast"))
 
         verify {
-            msg.get("ai.settings.active.mismatch", "ru", "removed-preset", "ai.settings.reason.gone", "grok-fast")
+            msg.get(
+                "ai.settings.active.mismatch",
+                "ru",
+                "removed-preset",
+                "ai.settings.reason.gone",
+                "grok-fast",
+                "ai.settings.mismatch.kept",
+            )
         }
     }
 
@@ -222,14 +253,26 @@ class AiSettingsMessageRendererTest {
      * Сохранённый пресет цел и годен, а работает другой: `storedId()` и `effective()` — два
      * независимых fail-open чтения настроек, поэтому такая пара достижима, и `.gone`
      * («пресет больше не объявлен») был бы здесь прямой ложью.
+     *
+     * Следствие здесь обязано отличаться от остальных причин: «применится снова, когда пресет
+     * станет доступен» о доступном пресете — вторая ложь на том же экране, поэтому строка ведёт к
+     * перечитыванию, а не к ожиданию.
      */
     @Test
     fun `a stored preset that is present and usable reports an unknown reason`() {
         renderer.render(state(storedId = "byok-luna", effectiveId = "grok-fast"))
 
         verify {
-            msg.get("ai.settings.active.mismatch", "ru", "byok-luna", "ai.settings.reason.unknown", "grok-fast")
+            msg.get(
+                "ai.settings.active.mismatch",
+                "ru",
+                "byok-luna",
+                "ai.settings.reason.unknown",
+                "grok-fast",
+                "ai.settings.mismatch.recheck",
+            )
         }
+        verify(exactly = 0) { msg.get("ai.settings.mismatch.kept", "ru") }
     }
 
     @Test

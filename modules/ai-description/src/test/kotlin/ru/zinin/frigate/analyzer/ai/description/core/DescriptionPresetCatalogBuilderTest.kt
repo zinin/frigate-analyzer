@@ -85,7 +85,10 @@ class DescriptionPresetCatalogBuilderTest {
         assertIs<DescriptionPresetCatalogBuilder.Result.Catalog>(result).catalog
 
     /** Логгер билдера — файловый, поэтому слушаем корень и отбираем по уровню. */
-    private fun warningsFrom(block: () -> Unit): List<String> {
+    private fun logsFrom(
+        level: Level,
+        block: () -> Unit,
+    ): List<String> {
         val root = LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as Logger
         val appender = ListAppender<ILoggingEvent>()
         appender.start()
@@ -96,8 +99,10 @@ class DescriptionPresetCatalogBuilderTest {
             root.detachAppender(appender)
             appender.stop()
         }
-        return appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
+        return appender.list.filter { it.level == level }.map { it.formattedMessage }
     }
+
+    private fun warningsFrom(block: () -> Unit): List<String> = logsFrom(Level.WARN, block)
 
     @Test
     fun `declaration order is preserved and the default preset wins`() {
@@ -346,6 +351,31 @@ class DescriptionPresetCatalogBuilderTest {
             invoker = { _, _ -> "{}" },
             exceptionMapper = mockk(relaxed = true),
         )
+
+    /**
+     * Стартовая строка каталога — контракт, а не отладка: README и `configuration.md` учат
+     * оператора читать её и сверять с строкой активного пресета от резолвера, а форма
+     * `id (provider/model/effort)` — ровно то, что они ему обещают. Сверка целой строкой, а не
+     * `contains`: разъехавшийся разделитель или потерянные кавычки вокруг умолчания ломают ту самую
+     * сверку двух строк, ради которой единый [logSignature] и заведён. Пустой `effort` в форме
+     * опускается — у claude его не бывает вовсе.
+     */
+    @Test
+    fun `the startup line names every preset with its values and the default`() {
+        val lines =
+            logsFrom(Level.INFO) {
+                build(
+                    presets = linkedMapOf("grok-fast" to grok, "claude-opus" to claude),
+                    factories = listOf(FakeFactory("grok"), FakeFactory("claude")),
+                    defaultPreset = "claude-opus",
+                )
+            }.filter { it.startsWith("Description presets:") }
+
+        assertEquals(
+            "Description presets: grok-fast (grok/grok-4.6/low), claude-opus (claude/opus); default 'claude-opus'",
+            assertNotNull(lines.singleOrNull(), lines.toString()),
+        )
+    }
 
     /**
      * `grok-4.6 xhigh` съедает ~48 с из 60 с, поэтому транспортный повтор (10 с бюджета плюс 5 с

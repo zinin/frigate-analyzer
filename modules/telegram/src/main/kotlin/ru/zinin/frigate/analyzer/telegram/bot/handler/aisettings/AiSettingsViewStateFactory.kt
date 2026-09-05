@@ -39,6 +39,19 @@ class AiSettingsViewStateFactory(
     private val runtimeSettingsProvider: ObjectProvider<DescriptionRuntimeSettings>,
     private val authStatesProvider: ObjectProvider<ProviderAuthStates>,
 ) {
+    /**
+     * Шов, оставленный сознательно: [ActiveDescriptionPreset.storedId] и
+     * [ActiveDescriptionPreset.effective] — два независимых прохода через резолвер, каждый со своим
+     * потолком в 5 с и своим fail-open. Пара «сохранённый + эффективный» поэтому может не
+     * соответствовать ни одному мгновению: мигающий `app_settings` или чужая запись между двумя
+     * чтениями дают целый и годный сохранённый пресет рядом с другим эффективным — ровно то, что
+     * описывает `ai.settings.reason.unknown`. Второй счёт: на отказе хранилища `/ai` рисуется до
+     * 10 с, потолки складываются.
+     *
+     * Одно согласованное чтение (`resolve()` считает обе величины разом, и резолверу достаточно
+     * выставить эту пару наружу) убрало бы и несогласованность, и половину задержки, но меняет
+     * контракт `api`, замороженный в Task 4. Правку сюда стоит начинать с него.
+     */
     suspend fun build(language: String): AiSettingsViewState {
         val presets = presetsProvider.getIfAvailable()?.all().orEmpty()
         val active = activePresetProvider.getIfAvailable()

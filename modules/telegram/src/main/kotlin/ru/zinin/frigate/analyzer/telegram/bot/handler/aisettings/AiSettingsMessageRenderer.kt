@@ -90,6 +90,12 @@ class AiSettingsMessageRenderer(
      * оба случая соврал бы: id, исчезнувшего из конфига, в каталоге просто нет — это `.gone`;
      * годный же сохранённый пресет расходится с эффективным только если чтение настроек не удалось
      * между двумя запросами, и назвать это «пресет удалён» нельзя.
+     *
+     * Следствие подбирается тем же `when`, что и причина, и уходит отдельным аргументом, а не
+     * фиксированным хвостом строки: хвост «применится снова, когда пресет станет доступен» верен
+     * для непригодного пресета, но при `.unknown` сохранённый пресет как раз годен, и хвост врал бы
+     * на единственном экране, ради диагностики и открываемом. В сам ключ `reason.*` следствие не
+     * вносится: те же ключи читает строка авторизации и модалка отказа, где о выборе речи нет.
      */
     private fun mismatchLine(
         state: AiSettingsViewState,
@@ -97,11 +103,11 @@ class AiSettingsMessageRenderer(
     ): String {
         val stored = state.presets.firstOrNull { it.id == state.storedPresetId }
         val cause = stored?.unavailableReason
-        val reason =
+        val (reason, consequenceKey) =
             when {
-                cause != null -> reasonText(cause, lang)
-                stored == null -> msg.get("ai.settings.reason.gone", lang)
-                else -> msg.get("ai.settings.reason.unknown", lang)
+                cause != null -> reasonText(cause, lang) to KEY_MISMATCH_KEPT
+                stored == null -> msg.get("ai.settings.reason.gone", lang) to KEY_MISMATCH_KEPT
+                else -> msg.get("ai.settings.reason.unknown", lang) to KEY_MISMATCH_RECHECK
             }
         return msg.get(
             "ai.settings.active.mismatch",
@@ -109,6 +115,7 @@ class AiSettingsMessageRenderer(
             state.storedPresetId.orEmpty(),
             reason,
             state.effectivePresetId.orEmpty(),
+            msg.get(consequenceKey, lang),
         )
     }
 
@@ -208,6 +215,12 @@ class AiSettingsMessageRenderer(
     }
 
     private companion object {
+        /** Пресет недоступен (или не объявлен) — выбор лежит и ждёт. */
+        const val KEY_MISMATCH_KEPT = "ai.settings.mismatch.kept"
+
+        /** Пресет цел и годен: расхождение — след несогласованного чтения, а не состояние выбора. */
+        const val KEY_MISMATCH_RECHECK = "ai.settings.mismatch.recheck"
+
         const val ACTIVE_MARK = "✅"
         const val UNAVAILABLE_MARK = "⚠️"
 
