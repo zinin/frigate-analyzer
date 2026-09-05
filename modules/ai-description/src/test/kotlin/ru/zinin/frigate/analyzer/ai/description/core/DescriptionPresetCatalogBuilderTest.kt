@@ -7,8 +7,6 @@ import ch.qos.logback.core.read.ListAppender
 import io.mockk.mockk
 import org.junit.jupiter.api.io.TempDir
 import org.slf4j.LoggerFactory
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeBackendFactory
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
@@ -30,15 +28,15 @@ class DescriptionPresetCatalogBuilderTest {
 
     private class FakeFactory(
         override val providerId: String,
-        private val availability: DescriptionBackendFactory.Availability =
-            DescriptionBackendFactory.Availability.Available,
+        private val availability: VisionBackendFactory.Availability =
+            VisionBackendFactory.Availability.Available,
         private val displacedModel: String? = null,
-    ) : DescriptionBackendFactory {
+    ) : VisionBackendFactory {
         var availabilityCalls: Int = 0
             private set
         val createdFor: MutableList<String> = mutableListOf()
 
-        override fun availability(): DescriptionBackendFactory.Availability {
+        override fun availability(): VisionBackendFactory.Availability {
             availabilityCalls++
             return availability
         }
@@ -47,15 +45,14 @@ class DescriptionPresetCatalogBuilderTest {
 
         override fun authScopeId(preset: DescriptionProperties.Preset): String = "$providerId:${preset.model}"
 
-        override fun create(preset: DescriptionProperties.Preset): DescriptionBackend {
+        override fun create(preset: DescriptionProperties.Preset): VisionBackend {
             createdFor += preset.model
-            return object : DescriptionBackend {
+            return object : VisionBackend {
                 override val providerId = this@FakeFactory.providerId
                 override val authScopeId = this@FakeFactory.authScopeId(preset)
                 override val authRecoveryHint = "hint"
 
-                override suspend fun describe(request: DescriptionRequest): DescriptionResult =
-                    DescriptionResult(preset.model, preset.effort)
+                override suspend fun complete(request: VisionRequest) = preset.model
             }
         }
     }
@@ -66,11 +63,11 @@ class DescriptionPresetCatalogBuilderTest {
     private val claude = DescriptionProperties.Preset(provider = "claude", model = "opus")
     private val claudeSonnet = DescriptionProperties.Preset(provider = "claude", model = "sonnet")
 
-    private fun tokenlessClaude() = FakeFactory("claude", DescriptionBackendFactory.Availability.Unavailable(UnavailableReason.NoToken))
+    private fun tokenlessClaude() = FakeFactory("claude", VisionBackendFactory.Availability.Unavailable(UnavailableReason.NoToken))
 
     private fun build(
         presets: Map<String, DescriptionProperties.Preset>,
-        factories: List<DescriptionBackendFactory>,
+        factories: List<VisionBackendFactory>,
         defaultPreset: String = "",
         timeout: Duration = Duration.ofSeconds(120),
     ): DescriptionPresetCatalogBuilder.Result =
@@ -219,7 +216,7 @@ class DescriptionPresetCatalogBuilderTest {
     }
 
     /**
-     * Фабрики осматривают окружение внутри [DescriptionBackendFactory.availability], поэтому спрашивать
+     * Фабрики осматривают окружение внутри [VisionBackendFactory.availability], поэтому спрашивать
      * её у провайдера, которого нет ни в одном пресете, нельзя: claude-деплой не должен создавать
      * каталоги Grok. Один раз на провайдер, а не на пресет — иначе осмотр повторяется впустую.
      */
@@ -292,7 +289,7 @@ class DescriptionPresetCatalogBuilderTest {
 
     /**
      * Область на backend-е и область в строке каталога приходят из одного
-     * `DescriptionBackendFactory.authScopeId`, но двумя разными путями: строку заполняет билдер,
+     * `VisionBackendFactory.authScopeId`, но двумя разными путями: строку заполняет билдер,
      * backend — `create(preset)`. Экран `/ai` группирует строки авторизации по `preset.authScopeId`
      * и ищет их в `byScope()`, чьи ключи приходят от backend-а: разъехавшись, эти два пути навсегда
      * оставили бы каждую строку авторизации серой, и больше ничто этого не поймало бы. Фабрики
@@ -346,9 +343,8 @@ class DescriptionPresetCatalogBuilderTest {
                     proxy = ClaudeProperties.ProxySection("", "", ""),
                 ),
             promptBuilder = mockk(relaxed = true),
-            responseParser = mockk(relaxed = true),
             imageStager = mockk(relaxed = true),
-            invoker = { _, _ -> "{}" },
+            invoker = { _, _, _ -> "{}" },
             exceptionMapper = mockk(relaxed = true),
         )
 

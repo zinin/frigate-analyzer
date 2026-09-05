@@ -17,12 +17,13 @@ class ClaudeAsyncClientFactory(
     fun create(
         workTimeout: Duration,
         model: String,
+        systemPrompt: String,
     ): ClaudeAsyncClient {
         check(claudeProperties.oauthToken.isNotBlank() || claudeProperties.anthropic.authToken.isNotBlank()) {
             "At least one of CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN must be set " +
                 "when application.ai.description.enabled=true"
         }
-        val options = buildOptions(workTimeout, model)
+        val options = buildOptions(workTimeout, model, systemPrompt)
 
         // workingDirectory ОБЯЗАТЕЛЕН для SDK 1.0.0 (AsyncSpec#build бросает
         // IllegalArgumentException("workingDirectory is required")).
@@ -48,6 +49,7 @@ class ClaudeAsyncClientFactory(
     internal fun buildOptions(
         workTimeout: Duration,
         model: String,
+        systemPrompt: String,
     ): CLIOptions {
         val optionsBuilder =
             CLIOptions
@@ -59,6 +61,11 @@ class ClaudeAsyncClientFactory(
                 .env(buildEnvMap())
         if (claudeProperties.anthropic.modelOverride.isBlank()) {
             optionsBuilder.model(model)
+        }
+        if (systemPrompt.isNotBlank()) {
+            // append, а не replace: замена системного промпта CLI меняет обработку @-ссылок на кадры,
+            // а нам нужно лишь добавить правило «только JSON, без инструментов».
+            optionsBuilder.appendSystemPrompt(systemPrompt)
         }
         return optionsBuilder.build()
     }

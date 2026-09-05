@@ -10,8 +10,6 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.slf4j.LoggerFactory
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import kotlin.test.Test
@@ -23,12 +21,12 @@ import kotlin.test.assertTrue
 
 class ActivePresetResolverTest {
     private fun backend(id: String) =
-        object : DescriptionBackend {
+        object : VisionBackend {
             override val providerId = "grok"
             override val authScopeId = "grok:grok-4.6"
             override val authRecoveryHint = "hint"
 
-            override suspend fun describe(request: DescriptionRequest) = DescriptionResult(id, id)
+            override suspend fun complete(request: VisionRequest) = id
         }
 
     private fun entry(

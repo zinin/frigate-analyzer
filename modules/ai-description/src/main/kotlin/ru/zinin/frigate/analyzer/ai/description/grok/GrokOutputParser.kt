@@ -3,7 +3,6 @@ package ru.zinin.frigate.analyzer.ai.description.grok
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
-import ru.zinin.frigate.analyzer.ai.description.core.JsonBlockExtractor
 import tools.jackson.core.JacksonException
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
@@ -12,11 +11,9 @@ import tools.jackson.databind.ObjectMapper
 data class GrokOutput(
     val stopReason: String?,
     val sessionId: String?,
-    val short: String?,
-    val detailed: String?,
-    /** Одна строка для DEBUG-лога: токены и стоимость. */
+    /** JSON structured output целиком или текст ответа; null = модель ничего не вернула. */
+    val payload: String?,
     val usageSummary: String,
-    /** `true`, когда поля пришли не из `structuredOutput`, а из JSON в тексте ответа. */
     val fromText: Boolean = false,
 )
 
@@ -27,7 +24,7 @@ data class GrokOutput(
  *
  * `structuredOutput` заполняют только эндпоинты, которые применяют `--json-schema`. BYOK-модели
  * из `config.toml` схему часто игнорируют и кладут тот же объект в `text`, иногда в markdown-фенс,
- * поэтому при пустом structured output поля читаются из текста.
+ * поэтому при пустом structured output в [payload] уходит текст, а разбор JSON — дело задачи.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -39,23 +36,13 @@ class GrokOutputParser(
             readObject(stdout)
                 ?: throw DescriptionException.InvalidResponse(detail = "stdout is not a JSON object: ${stdout.take(200)}")
         val structured = node["structuredOutput"]?.takeIf { it.isObject }
-        val short = structured?.get("short")?.textOrNull()
-        val detailed = structured?.get("detailed")?.textOrNull()
-        val fallback =
-            if (short.isNullOrBlank() || detailed.isNullOrBlank()) {
-                node["text"]?.textOrNull()?.let { readObject(JsonBlockExtractor.extract(it)) }
-            } else {
-                null
-            }
+        val text = node["text"]?.textOrNull()?.takeUnless { it.isBlank() }
         return GrokOutput(
             stopReason = node["stopReason"]?.textOrNull(),
             sessionId = node["sessionId"]?.textOrNull(),
-            // takeUnless, а не Elvis: пустая строка в structuredOutput это тот же «поля нет»,
-            // и держаться за неё значило бы выбросить готовый ответ из текста.
-            short = short?.takeUnless { it.isBlank() } ?: fallback?.get("short")?.textOrNull(),
-            detailed = detailed?.takeUnless { it.isBlank() } ?: fallback?.get("detailed")?.textOrNull(),
+            payload = structured?.let { objectMapper.writeValueAsString(it) } ?: text,
             usageSummary = usageSummary(node),
-            fromText = fallback != null,
+            fromText = structured == null && text != null,
         )
     }
 

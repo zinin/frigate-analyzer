@@ -8,5 +8,6 @@ fun interface ClaudeInvoker {
     suspend fun invoke(
         prompt: String,
         model: String,
+        systemPrompt: String,
     ): String
 }

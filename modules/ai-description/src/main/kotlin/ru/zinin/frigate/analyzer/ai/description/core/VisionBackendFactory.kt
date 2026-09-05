@@ -8,7 +8,7 @@ import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
  * создание backend-а под конкретный пресет. Проверки, которые раньше жили в `init` backend-ов,
  * принадлежат фабрике: backend-ов на один провайдер теперь столько, сколько пресетов.
  */
-interface DescriptionBackendFactory {
+interface VisionBackendFactory {
     val providerId: String
 
     /**
@@ -32,7 +32,7 @@ interface DescriptionBackendFactory {
      */
     fun authScopeId(preset: DescriptionProperties.Preset): String
 
-    fun create(preset: DescriptionProperties.Preset): DescriptionBackend
+    fun create(preset: DescriptionProperties.Preset): VisionBackend
 
     sealed interface Availability {
         data object Available : Availability

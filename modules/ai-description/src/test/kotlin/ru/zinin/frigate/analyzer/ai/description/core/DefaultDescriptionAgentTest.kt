@@ -21,6 +21,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
+import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
@@ -58,13 +59,14 @@ class DefaultDescriptionAgentTest {
             detailedMaxLength = 1500,
         )
 
+    private val okJson = """{"short":"s","detailed":"d"}"""
     private val ok = DescriptionResult("s", "d")
     private val events = mutableListOf<Any>()
     private val publisher = ApplicationEventPublisher { event -> events.add(event) }
 
     private class FakeBackend(
-        private val handler: suspend (DescriptionRequest) -> DescriptionResult,
-    ) : DescriptionBackend {
+        private val handler: suspend (VisionRequest) -> String,
+    ) : VisionBackend {
         override val providerId = "fake"
 
         // Намеренно НЕ равен providerId: агент обязан отдавать трекеру область, а не провайдера, и
@@ -74,7 +76,7 @@ class DefaultDescriptionAgentTest {
         override val authRecoveryHint = "run fake-login"
         val calls = AtomicInteger()
 
-        override suspend fun describe(request: DescriptionRequest): DescriptionResult {
+        override suspend fun complete(request: VisionRequest): String {
             calls.incrementAndGet()
             return handler(request)
         }
@@ -115,7 +117,7 @@ class DefaultDescriptionAgentTest {
         timeSource: TimeSource = TimeSource.Monotonic,
         eventPublisher: ApplicationEventPublisher = publisher,
         // Пресет по умолчанию — "test" с этим backend; остальные нужны только тестам про резолюцию.
-        extraPresets: List<Pair<String, DescriptionBackend>> = emptyList(),
+        extraPresets: List<Pair<String, VisionBackend>> = emptyList(),
         settings: DescriptionRuntimeSettings = InMemoryDescriptionRuntimeSettings(),
     ) = DefaultDescriptionAgent(
         resolver = ActivePresetResolver(catalogOf("test" to backend, *extraPresets.toTypedArray()), settings),
@@ -123,11 +125,12 @@ class DefaultDescriptionAgentTest {
         // машине состояний, а её собственные — в ProviderAuthTrackerTest.
         authTracker = ProviderAuthTracker(eventPublisher),
         descriptionProperties = DescriptionProperties(enabled = true, provider = "fake", common = customCommon),
+        parser = DescriptionResponseParser(TestObjectMappers.internalMapper()),
         timeSource = timeSource,
     )
 
     /** По пресету на backend; первый объявленный — пресет по умолчанию, он же fallback каталога. */
-    private fun catalogOf(vararg backends: Pair<String, DescriptionBackend>): DescriptionPresetCatalog =
+    private fun catalogOf(vararg backends: Pair<String, VisionBackend>): DescriptionPresetCatalog =
         DescriptionPresetCatalog(
             backends.map { (id, backend) ->
                 DescriptionPresetCatalog.Entry(
@@ -167,7 +170,7 @@ class DefaultDescriptionAgentTest {
     @Test
     fun `happy path returns backend result and publishes nothing`() =
         runTest {
-            val agent = build(FakeBackend { ok })
+            val agent = build(FakeBackend { okJson })
             assertEquals(ok, agent.describe(request))
             assertTrue(authEvents().isEmpty())
         }
@@ -176,7 +179,7 @@ class DefaultDescriptionAgentTest {
     fun `frames are downscaled once before the backend sees them`() =
         runTest {
             val big = jpeg(1920, 1080)
-            val seen = mutableListOf<DescriptionRequest>()
+            val seen = mutableListOf<VisionRequest>()
             var first = true
             val backend =
                 FakeBackend { request ->
@@ -185,7 +188,7 @@ class DefaultDescriptionAgentTest {
                         first = false
                         throw DescriptionException.InvalidResponse(detail = "retry me")
                     }
-                    ok
+                    okJson
                 }
 
             val agent = build(backend, common.copy(maxImageSide = 1568))
@@ -208,7 +211,7 @@ class DefaultDescriptionAgentTest {
                 build(
                     FakeBackend {
                         seen = it.frames.single().bytes
-                        ok
+                        okJson
                     },
                 )
 
@@ -225,9 +228,10 @@ class DefaultDescriptionAgentTest {
                 FakeBackend {
                     if (first) {
                         first = false
-                        throw DescriptionException.InvalidResponse()
+                        "not json"
+                    } else {
+                        okJson
                     }
-                    ok
                 }
             val agent = build(backend)
             agent.describe(request)
@@ -237,7 +241,7 @@ class DefaultDescriptionAgentTest {
     @Test
     fun `fails with InvalidResponse after two invalid responses`() =
         runTest {
-            val agent = build(FakeBackend { throw DescriptionException.InvalidResponse() })
+            val agent = build(FakeBackend { "not json" })
             assertFailsWith<DescriptionException.InvalidResponse> { agent.describe(request) }
         }
 
@@ -251,7 +255,7 @@ class DefaultDescriptionAgentTest {
             val backend =
                 FakeBackend {
                     delay(8_000)
-                    throw DescriptionException.InvalidResponse()
+                    "not json"
                 }
             val agent =
                 build(
@@ -273,7 +277,7 @@ class DefaultDescriptionAgentTest {
                         first = false
                         throw DescriptionException.Transport()
                     }
-                    ok
+                    okJson
                 }
             val agent = build(backend)
             agent.describe(request)
@@ -297,7 +301,7 @@ class DefaultDescriptionAgentTest {
                         first = false
                         throw IllegalStateException("boom")
                     }
-                    ok
+                    okJson
                 }
             val agent = build(backend)
             assertEquals(ok, agent.describe(request))
@@ -335,7 +339,7 @@ class DefaultDescriptionAgentTest {
             var unauthorized = true
             val backend =
                 FakeBackend {
-                    if (unauthorized) throw DescriptionException.Unauthorized("Not signed in") else ok
+                    if (unauthorized) throw DescriptionException.Unauthorized("Not signed in") else okJson
                 }
             val agent = build(backend, eventPublisher = { throw IllegalStateException("listener is down") })
 
@@ -352,7 +356,7 @@ class DefaultDescriptionAgentTest {
                 build(
                     FakeBackend {
                         gate.await()
-                        ok
+                        okJson
                     },
                     customCommon = common.copy(timeout = Duration.ofMillis(500)),
                 )
@@ -370,7 +374,7 @@ class DefaultDescriptionAgentTest {
                 build(
                     FakeBackend {
                         blocker.await()
-                        ok
+                        okJson
                     },
                     customCommon =
                         common.copy(
@@ -405,7 +409,7 @@ class DefaultDescriptionAgentTest {
     fun `the preset is resolved once per call, not per attempt`() =
         runTest {
             val settings = InMemoryDescriptionRuntimeSettings()
-            val other = FakeBackend { ok }
+            val other = FakeBackend { okJson }
             var first = true
             val backend =
                 FakeBackend {
@@ -413,9 +417,10 @@ class DefaultDescriptionAgentTest {
                         first = false
                         // Владелец переключает пресет ровно между попытками одного вызова.
                         settings.setActivePresetId("other", changedBy = "owner")
-                        throw DescriptionException.InvalidResponse()
+                        "not json"
+                    } else {
+                        okJson
                     }
-                    ok
                 }
             val agent = build(backend, extraPresets = listOf("other" to other), settings = settings)
 
@@ -438,7 +443,7 @@ class DefaultDescriptionAgentTest {
     fun `a slow settings read does not hold a permit`() =
         runTest {
             val gate = CompletableDeferred<Unit>()
-            val backend = FakeBackend { ok }
+            val backend = FakeBackend { okJson }
             val agent = build(backend, customCommon = common.copy(maxConcurrent = 1), settings = GatedSettings(gate))
 
             val stuck = async { agent.describe(request) }
@@ -469,9 +474,9 @@ class DefaultDescriptionAgentTest {
                 FakeBackend {
                     entered.complete(Unit)
                     release.await()
-                    ok
+                    okJson
                 }
-            val other = FakeBackend { ok }
+            val other = FakeBackend { okJson }
             val agent =
                 build(
                     holder,
@@ -506,7 +511,7 @@ class DefaultDescriptionAgentTest {
                         maxSeen.updateAndGet { kotlin.math.max(it, current) }
                         delay(100)
                         inFlight.decrementAndGet()
-                        ok
+                        okJson
                     },
                 )
             coroutineScope {

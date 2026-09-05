@@ -7,8 +7,9 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
+import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Path
 import java.util.UUID
@@ -24,13 +25,19 @@ class GrokBackendTest {
 
     private val promptFile = Path.of("/tmp/frigate-analyzer/prompt.json")
     private val promptFileWriter = mockk<GrokPromptFileWriter>(relaxUnitFun = true)
-    private val request =
+    private val descriptionRequest =
         DescriptionRequest(
             recordingId = UUID.randomUUID(),
             frames = listOf(DescriptionRequest.FrameImage(0, byteArrayOf(1))),
             language = "en",
             shortMaxLength = 200,
             detailedMaxLength = 1500,
+        )
+    private val request =
+        VisionRequest(
+            requestId = descriptionRequest.recordingId,
+            frames = descriptionRequest.frames,
+            instructions = DescriptionTask.instructions(descriptionRequest),
         )
 
     private fun props() =
@@ -73,7 +80,7 @@ class GrokBackendTest {
             val stdout = """{"stopReason":"end_turn","sessionId":"s","structuredOutput":{"short":"Car","detailed":"A car."}}"""
             val backend = backend(GrokProcessRunner { result(0, stdout) })
 
-            assertEquals(DescriptionResult("Car", "A car."), backend.describe(request))
+            assertEquals("""{"short":"Car","detailed":"A car."}""", backend.complete(request))
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
         }
 
@@ -88,7 +95,7 @@ class GrokBackendTest {
                         result(0, """{"stopReason":"end_turn","structuredOutput":{"short":"a","detailed":"b"}}""")
                     },
                 )
-            backend.describe(request)
+            backend.complete(request)
             assertTrue(seen!!.argv.contains(promptFile.toString()))
             assertEquals(tempDir.resolve("home").toString(), seen!!.environment["GROK_HOME"])
         }
@@ -104,7 +111,7 @@ class GrokBackendTest {
                         result(0, """{"stopReason":"end_turn","structuredOutput":{"short":"a","detailed":"b"}}""")
                     },
                 )
-            backend.describe(request)
+            backend.complete(request)
             val argv = seen!!.argv
             assertEquals("grok-4.6", argv[argv.indexOf("-m") + 1])
             assertEquals("low", argv[argv.indexOf("--effort") + 1])
@@ -118,7 +125,7 @@ class GrokBackendTest {
                     """run:\n  grok login --device-code"}"""
             val backend = backend(GrokProcessRunner { result(1, stdout, "Error: Not signed in") })
 
-            val e = assertFailsWith<DescriptionException.Unauthorized> { backend.describe(request) }
+            val e = assertFailsWith<DescriptionException.Unauthorized> { backend.complete(request) }
             assertTrue(e.detail.startsWith("Not signed in"))
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
         }
@@ -131,7 +138,7 @@ class GrokBackendTest {
                     """run:\n  grok login --device-code"}"""
             val backend = backend(GrokProcessRunner { result(0, stdout) })
 
-            val e = assertFailsWith<DescriptionException.Unauthorized> { backend.describe(request) }
+            val e = assertFailsWith<DescriptionException.Unauthorized> { backend.complete(request) }
             assertTrue(e.detail.startsWith("Not signed in"))
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
         }
@@ -152,7 +159,7 @@ class GrokBackendTest {
                     },
                 )
 
-            assertEquals(DescriptionResult("Bike", "A bike."), backend.describe(request))
+            assertEquals("""{"short":"Bike","detailed":"A bike."}""", backend.complete(request))
             assertEquals(2, commands.size)
             assertTrue(commands[0].argv.contains("--json-schema"))
             assertFalse(commands[1].argv.contains("--json-schema"))
@@ -175,8 +182,8 @@ class GrokBackendTest {
                     },
                 )
 
-            backend.describe(request)
-            backend.describe(request)
+            backend.complete(request)
+            backend.complete(request)
 
             assertEquals(3, commands.size)
             assertFalse(commands[2].argv.contains("--json-schema"))
@@ -189,28 +196,28 @@ class GrokBackendTest {
                 """{"type":"error","message":"This response_format type is unavailable now"}"""
             val backend = backend(GrokProcessRunner { result(1, schemaError) })
 
-            assertFailsWith<DescriptionException.Transport> { backend.describe(request) }
+            assertFailsWith<DescriptionException.Transport> { backend.complete(request) }
         }
 
     @Test
     fun `other non-zero exit is Transport`() =
         runTest {
             val backend = backend(GrokProcessRunner { result(1, "", "connection reset") })
-            assertFailsWith<DescriptionException.Transport> { backend.describe(request) }
+            assertFailsWith<DescriptionException.Transport> { backend.complete(request) }
         }
 
     @Test
     fun `missing structured output with max_tokens is InvalidResponse`() =
         runTest {
-            val backend = backend(GrokProcessRunner { result(0, """{"stopReason":"max_tokens","text":"..."}""") })
-            assertFailsWith<DescriptionException.InvalidResponse> { backend.describe(request) }
+            val backend = backend(GrokProcessRunner { result(0, """{"stopReason":"max_tokens"}""") })
+            assertFailsWith<DescriptionException.InvalidResponse> { backend.complete(request) }
         }
 
     @Test
     fun `runner failure still deletes the prompt file`() =
         runTest {
             val backend = backend(GrokProcessRunner { throw DescriptionException.Transport(detail = "cannot start") })
-            assertFailsWith<DescriptionException.Transport> { backend.describe(request) }
+            assertFailsWith<DescriptionException.Transport> { backend.complete(request) }
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
         }
 

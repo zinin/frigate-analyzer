@@ -34,9 +34,10 @@ class DefaultClaudeInvoker(
     override suspend fun invoke(
         prompt: String,
         model: String,
+        systemPrompt: String,
     ): String {
         logger.debug { "Claude prompt (${prompt.length} chars):\n$prompt" }
-        val client = clientFactory.create(workTimeout, model)
+        val client = clientFactory.create(workTimeout, model, systemPrompt)
         try {
             // We send the prompt as the FIRST user message via `connect(prompt)`.
             // The no-arg `connect()` would inject a default "Hello" message before ours, and the

@@ -2,49 +2,29 @@ package ru.zinin.frigate.analyzer.ai.description.claude
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
-import ru.zinin.frigate.analyzer.ai.description.core.LanguageNames
+import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import java.nio.file.Path
 
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
 class ClaudePromptBuilder {
     fun build(
-        request: DescriptionRequest,
+        request: VisionRequest,
         framePaths: List<Path>,
     ): String {
         require(framePaths.size == request.frames.size) {
             "framePaths size (${framePaths.size}) must match request.frames size (${request.frames.size})"
         }
-        val languageName = LanguageNames.of(request.language)
-        // Сначала сортируем frames по frameIndex, потом zip со stagedPaths.
-        // stager уже возвращает пути в отсортированном порядке, но request.frames
-        // приходит из ConcurrentHashMap.values() без гарантий порядка.
-        val sortedFrames = request.frames.sortedBy { it.frameIndex }
-        val sortedPairs = sortedFrames.zip(framePaths)
-
-        val framesBlock =
-            sortedPairs
-                .joinToString("\n") { (frame, path) ->
-                    "- Frame ${frame.frameIndex}: @${path.toAbsolutePath().normalize()}"
-                }
-
+        val sortedPairs = request.frames.sortedBy { it.frameIndex }.zip(framePaths)
         return buildString {
-            appendLine(
-                "You are analyzing surveillance camera frames captured during an object detection event.",
-            )
-            appendLine("Write both descriptions in $languageName.")
+            appendLine(request.instructions.preamble.trimEnd())
             appendLine()
             appendLine("Frames (in chronological order):")
-            appendLine(framesBlock)
+            sortedPairs.forEach { (frame, path) ->
+                appendLine("- Frame ${frame.frameIndex}: @${path.toAbsolutePath().normalize()}")
+            }
             appendLine()
-            appendLine("Return ONLY this JSON object (no prose around it):")
-            appendLine("""{"short": "...", "detailed": "..."}""")
-            appendLine()
-            appendLine("Rules:")
-            appendLine("- \"short\" must not exceed ${request.shortMaxLength} characters.")
-            appendLine("- \"detailed\" must not exceed ${request.detailedMaxLength} characters.")
-            appendLine("- No markdown, no explanations — just the JSON object.")
+            append(request.instructions.epilogue.trimEnd())
         }
     }
 }

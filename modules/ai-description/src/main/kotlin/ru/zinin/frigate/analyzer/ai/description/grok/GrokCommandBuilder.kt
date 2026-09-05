@@ -26,23 +26,25 @@ class GrokCommandBuilder(
      * пресетов. Пустой [effort] убирает `--effort` целиком — BYOK-модели без уровней рассуждения
      * отвергают флаг, а не его пустое значение.
      *
-     * [structuredOutput] `false` убирает `--json-schema`: эндпоинт BYOK-модели отверг схему
-     * (`response_format` / grammar), и ответ будет разобран из текстового JSON.
+     * [structuredOutput] `false` или пустой [jsonSchema] убирают `--json-schema`: эндпоинт BYOK-модели
+     * отверг схему (`response_format` / grammar), и ответ будет разобран из текстового JSON.
      */
     fun build(
         promptFile: Path,
         model: String,
         effort: String,
-        structuredOutput: Boolean = true,
+        structuredOutput: Boolean,
+        jsonSchema: String?,
+        systemPrompt: String,
     ): GrokCommand {
         val argv =
             buildList {
                 add(properties.cliPath.ifBlank { "grok" })
                 add("--prompt-file")
                 add(promptFile.toAbsolutePath().normalize().toString())
-                if (structuredOutput) {
+                if (structuredOutput && jsonSchema != null) {
                     add("--json-schema")
-                    add(JSON_SCHEMA)
+                    add(jsonSchema)
                 }
                 add("--output-format")
                 add("json")
@@ -65,7 +67,7 @@ class GrokCommandBuilder(
                 add("bypassPermissions")
                 add("--no-auto-update")
                 add("--system-prompt-override")
-                add(GrokPromptBuilder.SYSTEM_PROMPT)
+                add(systemPrompt)
                 add("--cwd")
                 add(properties.workingDirectoryPath.toString())
             }
@@ -86,9 +88,6 @@ class GrokCommandBuilder(
     }
 
     companion object {
-        const val JSON_SCHEMA =
-            """{"type":"object","properties":{"short":{"type":"string"},"detailed":{"type":"string"}},"required":["short","detailed"],"additionalProperties":false}"""
-
         val ISOLATION_ENV: Map<String, String> =
             buildMap {
                 put("GROK_DISABLE_AUTOUPDATER", "1")

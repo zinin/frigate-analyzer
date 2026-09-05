@@ -23,6 +23,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.claude.ClaudeBackend
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokBackend
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.DescriptionRateLimiter
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
@@ -147,6 +148,7 @@ class AiDescriptionAutoConfigurationTest {
                 assert(ctx.getBean(DescriptionAgent::class.java) is DefaultDescriptionAgent) {
                     "the agent must be the provider-neutral DefaultDescriptionAgent"
                 }
+                assertNotNull(ctx.getBean(DescriptionResponseParser::class.java))
                 // Backend больше не бин: он живёт в каталоге, по одному на пресет.
                 val catalog = catalog(ctx)
                 assertIs<ClaudeBackend>(assertNotNull(catalog.byId("claude")).backend)

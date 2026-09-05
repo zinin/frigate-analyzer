@@ -1,4 +1,4 @@
-package ru.zinin.frigate.analyzer.ai.description.claude
+package ru.zinin.frigate.analyzer.ai.description.core
 
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
@@ -6,9 +6,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
-class ClaudeResponseParserTest {
+class DescriptionResponseParserTest {
     private val mapper = TestObjectMappers.internalMapper()
-    private val parser = ClaudeResponseParser(mapper)
+    private val parser = DescriptionResponseParser(mapper)
 
     private fun parse(
         raw: String,

@@ -21,12 +21,12 @@ private val logger = KotlinLogging.logger {}
 
 /**
  * Единственная реализация [DescriptionAgent]. Провайдер-нейтральная оркестрация одной попытки
- * [DescriptionBackend.describe]. У каждой фазы вызова свой потолок, и `withTimeout` покрывает не
- * весь вызов: резолюция пресета ограничена собственным потолком [ActivePresetResolver] (его
- * истечение даёт пресет по умолчанию, а не исключение), ожидание слота семафора — `queueTimeout`,
- * работа модели вместе с повторами — `withTimeout(timeout)`. Повторы: по одному на `InvalidResponse`
- * (сразу) и `Transport` (через [TRANSPORT_RETRY_DELAY]) с проверкой остатка бюджета. `Timeout`,
- * `RateLimited` и `Unauthorized` не повторяются.
+ * [VisionBackend.complete] и разбор через [DescriptionResponseParser]. У каждой фазы вызова свой
+ * потолок, и `withTimeout` покрывает не весь вызов: резолюция пресета ограничена собственным
+ * потолком [ActivePresetResolver] (его истечение даёт пресет по умолчанию, а не исключение),
+ * ожидание слота семафора — `queueTimeout`, работа модели вместе с повторами — `withTimeout(timeout)`.
+ * Повторы: по одному на `InvalidResponse` (сразу) и `Transport` (через [TRANSPORT_RETRY_DELAY]) с
+ * проверкой остатка бюджета. `Timeout`, `RateLimited` и `Unauthorized` не повторяются.
  *
  * Пресет резолвится один раз на вызов и ДО семафора: повторы обязаны идти в тот же пресет, что и
  * первая попытка (иначе лог одной записи назвал бы двух разных провайдеров), а чтение настроек —
@@ -35,7 +35,7 @@ private val logger = KotlinLogging.logger {}
  * окно ограничено сверху `queueTimeout`.
  *
  * Состояние авторизации агент не держит: исход каждой попытки уходит в [ProviderAuthTracker] под
- * областью учётных данных backend-а ([DescriptionBackend.authScopeId]), а переходы, дедупликацию и
+ * областью учётных данных backend-а ([VisionBackend.authScopeId]), а переходы, дедупликацию и
  * публикацию событий делает трекер. Одного состояния на агента и не хватило бы: пресетов за вызов
  * теперь несколько, и успех BYOK-пресета снимал бы LOST, поднятый пресетом на протухшем OAuth.
  *
@@ -45,6 +45,7 @@ class DefaultDescriptionAgent(
     private val resolver: ActivePresetResolver,
     private val authTracker: ProviderAuthTracker,
     descriptionProperties: DescriptionProperties,
+    private val parser: DescriptionResponseParser,
     // Wall-clock по умолчанию; тесты подставляют TestTimeSource из runTest, чтобы проверка
     // остатка бюджета жила в том же виртуальном времени, что и внешний withTimeout.
     private val timeSource: TimeSource = TimeSource.Monotonic,
@@ -129,7 +130,7 @@ class DefaultDescriptionAgent(
     }
 
     private suspend fun executeWithRetry(
-        backend: DescriptionBackend,
+        backend: VisionBackend,
         request: DescriptionRequest,
     ): DescriptionResult {
         val overallStart = timeSource.markNow()
@@ -181,11 +182,12 @@ class DefaultDescriptionAgent(
 
     /** Одна попытка; всё, что не DescriptionException и не отмена, становится Transport. */
     private suspend fun attempt(
-        backend: DescriptionBackend,
+        backend: VisionBackend,
         request: DescriptionRequest,
     ): DescriptionResult =
         try {
-            backend.describe(request)
+            val raw = backend.complete(VisionRequest(request.recordingId, request.frames, DescriptionTask.instructions(request)))
+            parser.parse(raw, request.shortMaxLength, request.detailedMaxLength)
         } catch (e: CancellationException) {
             throw e
         } catch (e: DescriptionException) {

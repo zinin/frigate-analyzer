@@ -15,11 +15,12 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.core.ActivePresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalogBuilder
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser
 import ru.zinin.frigate.analyzer.ai.description.core.InMemoryDescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.core.ProviderAuthTracker
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackendFactory
 
 private val logger = KotlinLogging.logger {}
 
@@ -32,7 +33,7 @@ open class AiDescriptionAutoConfiguration {
      * порядок объявления `@Bean`-методов ни на что не влияет.
      *
      * Почему не `@ConditionalOnBean(DescriptionPresetCatalog::class)` на соседних методах:
-     * прежний `@ConditionalOnBean(DescriptionBackend::class)` был надёжен потому, что backend
+     * прежний `@ConditionalOnBean(VisionBackend::class)` был надёжен потому, что backend
      * приходил из `@ComponentScan` — из другой фазы, гарантированно раньше. Для sibling-`@Bean`
      * того же класса такой гарантии нет: Spring Boot не обещает, что он виден `OnBeanCondition`,
      * а порядок методов в байткоде Kotlin может разойтись с порядком в файле. Цена ошибки
@@ -48,7 +49,7 @@ open class AiDescriptionAutoConfiguration {
             descriptionProperties: DescriptionProperties,
             claudeProperties: ClaudeProperties,
             grokProperties: GrokProperties,
-            factories: ObjectProvider<DescriptionBackendFactory>,
+            factories: ObjectProvider<VisionBackendFactory>,
         ): DescriptionPresetCatalog {
             val result =
                 DescriptionPresetCatalogBuilder.build(
@@ -100,7 +101,8 @@ open class AiDescriptionAutoConfiguration {
             resolver: ActivePresetResolver,
             authTracker: ProviderAuthTracker,
             descriptionProperties: DescriptionProperties,
-        ): DescriptionAgent = DefaultDescriptionAgent(resolver, authTracker, descriptionProperties)
+            parser: DescriptionResponseParser,
+        ): DescriptionAgent = DefaultDescriptionAgent(resolver, authTracker, descriptionProperties, parser)
 
         /**
          * Пустая карта означает деплой, настроенный старым способом: один пресет из `provider` и

@@ -4,7 +4,7 @@ import io.mockk.mockk
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackendFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -17,9 +17,8 @@ class ClaudeBackendFactoryTest {
     ) = ClaudeBackendFactory(
         claudeProperties = properties(oauthToken, anthropicToken, modelOverride),
         promptBuilder = mockk(relaxed = true),
-        responseParser = mockk(relaxed = true),
         imageStager = mockk(relaxed = true),
-        invoker = { _, _ -> "{}" },
+        invoker = { _, _, _ -> "{}" },
         exceptionMapper = mockk(relaxed = true),
     )
 
@@ -42,7 +41,7 @@ class ClaudeBackendFactoryTest {
     fun `without any token the provider is unavailable instead of failing the startup`() {
         val availability = factory(oauthToken = "").availability()
 
-        val unavailable = assertIs<DescriptionBackendFactory.Availability.Unavailable>(availability)
+        val unavailable = assertIs<VisionBackendFactory.Availability.Unavailable>(availability)
         assertEquals(UnavailableReason.NoToken, unavailable.reason)
     }
 
@@ -57,25 +56,25 @@ class ClaudeBackendFactoryTest {
 
         assertEquals(
             UnavailableReason.NoToken,
-            assertIs<DescriptionBackendFactory.Availability.Unavailable>(availability).reason,
+            assertIs<VisionBackendFactory.Availability.Unavailable>(availability).reason,
         )
     }
 
     @Test
     fun `an oauth token alone makes the provider available`() {
-        assertIs<DescriptionBackendFactory.Availability.Available>(factory(oauthToken = "token-xyz").availability())
+        assertIs<VisionBackendFactory.Availability.Available>(factory(oauthToken = "token-xyz").availability())
     }
 
     @Test
     fun `an anthropic token alone makes the provider available`() {
-        assertIs<DescriptionBackendFactory.Availability.Available>(
+        assertIs<VisionBackendFactory.Availability.Available>(
             factory(oauthToken = "", anthropicToken = "sk-ant").availability(),
         )
     }
 
     @Test
     fun `both tokens make the provider available`() {
-        assertIs<DescriptionBackendFactory.Availability.Available>(
+        assertIs<VisionBackendFactory.Availability.Available>(
             factory(oauthToken = "token-xyz", anthropicToken = "sk-ant").availability(),
         )
     }

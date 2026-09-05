@@ -178,7 +178,7 @@ enum class VerdictReason { NEW_EVENT, CHANGED_SITUATION, FALSE_POSITIVE, STATIC_
 - Consumes: существующие `DescriptionRequest`, `DescriptionResult`, `DescriptionException`, `TempFileWriter`, `JsonBlockExtractor`, `ResultNormalizer`, `LanguageNames`.
 - Produces: `VisionInstructions`, `VisionRequest`, `VisionBackend`, `VisionBackendFactory` (тот же контракт, что был у `DescriptionBackendFactory`, но `create` возвращает `VisionBackend`), `DescriptionTask.instructions(DescriptionRequest): VisionInstructions`, `DescriptionTask.SYSTEM_PROMPT`, `DescriptionTask.JSON_SCHEMA`, `DescriptionResponseParser.parse(raw, shortMaxLength, detailedMaxLength): DescriptionResult`, `ClaudeInvoker.invoke(prompt, model, systemPrompt)`, `GrokCommandBuilder.build(promptFile, model, effort, structuredOutput, jsonSchema, systemPrompt)`, `GrokOutput.payload`.
 
-- [ ] **Step 1: Написать падающие тесты новых юнитов**
+- [x] **Step 1: Написать падающие тесты новых юнитов**
 
 `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/core/DescriptionTaskTest.kt`:
 
@@ -310,12 +310,12 @@ class ClaudePromptBuilderTest {
 
 `grok/GrokCommandBuilderTest.kt` — в вызовах `build(...)` добавить именованные аргументы `jsonSchema = SCHEMA, systemPrompt = "SYS"`; тест `json schema requires exactly short and detailed` переименовать в `json schema flag carries the schema from the call` и проверять, что argv содержит пару `--json-schema`, `SCHEMA`; добавить тест `null schema drops the json-schema flag even when structured output is on`; в проверке argv `--system-prompt-override` идёт `"SYS"`, а не константа.
 
-- [ ] **Step 2: Запустить тесты и убедиться, что они не компилируются**
+- [x] **Step 2: Запустить тесты и убедиться, что они не компилируются**
 
 Run: `./gradlew :frigate-analyzer-ai-description:test --tests '*DescriptionTaskTest' --tests '*ClaudePromptBuilderTest'` (через build-runner)
 Expected: FAIL — `Unresolved reference: VisionInstructions`, `DescriptionTask`, `DescriptionResponseParser`.
 
-- [ ] **Step 3: Создать SPI и задачу описаний**
+- [x] **Step 3: Создать SPI и задачу описаний**
 
 `core/VisionRequest.kt`:
 
@@ -412,7 +412,7 @@ object DescriptionTask {
 
 `core/DescriptionResponseParser.kt` — тело `ClaudeResponseParser` без изменений (JsonBlockExtractor → readTree → `scalarOrNull` → `ResultNormalizer.normalize`), класс переименован, пакет `core`, аннотации `@Component` и `@ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")` сохранены. Удалить `claude/ClaudeResponseParser.kt`.
 
-- [ ] **Step 4: Перевести Claude на `VisionRequest`**
+- [x] **Step 4: Перевести Claude на `VisionRequest`**
 
 `claude/ClaudeInvoker.kt`:
 
@@ -505,7 +505,7 @@ class ClaudeBackend(
 
 `claude/ClaudeBackendFactory.kt`: реализует `VisionBackendFactory`, убрать `responseParser` из конструктора и из `create`.
 
-- [ ] **Step 5: Перевести Grok на `VisionRequest`**
+- [x] **Step 5: Перевести Grok на `VisionRequest`**
 
 `grok/GrokOutputParser.kt`: поля `short`/`detailed` заменяются на `payload`:
 
@@ -604,7 +604,7 @@ data class GrokOutput(
 
 `grok/GrokBackendFactory.kt`: реализует `VisionBackendFactory`.
 
-- [ ] **Step 6: Перевести каталог и агент на новый SPI**
+- [x] **Step 6: Перевести каталог и агент на новый SPI**
 
 `core/DescriptionPresetCatalog.kt`: `Entry(view, backend: VisionBackend?)`. `core/DescriptionPresetCatalogBuilder.kt`: `factories: List<VisionBackendFactory>`, типы `VisionBackendFactory.Availability`. `config/AiDescriptionAutoConfiguration.kt`: `factories: ObjectProvider<VisionBackendFactory>`; бин `descriptionAgent` получает `parser: DescriptionResponseParser`.
 
@@ -627,7 +627,7 @@ data class GrokOutput(
         }
 ```
 
-- [ ] **Step 7: Починить существующие тесты**
+- [x] **Step 7: Починить существующие тесты**
 
 - `DefaultDescriptionAgentTest`: `FakeBackend : VisionBackend` с `complete(request) = handler(request)`, где handler возвращает строку `"""{"short":"s","detailed":"d"}"""`; в `build(...)` добавить `parser = DescriptionResponseParser(TestObjectMappers.internalMapper())`. Тест retry на `InvalidResponse` теперь имитируется backend-ом, возвращающим `"not json"` первым ответом.
 - `ActivePresetResolverTest`, `DescriptionPresetCatalogBuilderTest`: анонимный backend реализует `VisionBackend` с `complete(...) = id`.
@@ -639,17 +639,17 @@ data class GrokOutput(
 - `GrokOutputParserTest`: проверять `payload` — для structured output это JSON-строка с `short`/`detailed`, для текста — сам текст; `fromText` как раньше.
 - `AiDescriptionAutoConfigurationTest`: типы `ClaudeBackend`/`GrokBackend` остаются; добавить проверку, что бин `DescriptionResponseParser` есть при `enabled=true`.
 
-- [ ] **Step 8: Прогнать тесты модуля**
+- [x] **Step 8: Прогнать тесты модуля**
 
 Run: `./gradlew :frigate-analyzer-ai-description:test` (через build-runner)
 Expected: PASS.
 
-- [ ] **Step 9: Прогнать зависимые модули**
+- [x] **Step 9: Прогнать зависимые модули**
 
 Run: `./gradlew :frigate-analyzer-core:test :frigate-analyzer-telegram:test` (через build-runner)
 Expected: PASS — публичный API `DescriptionAgent`/`DescriptionRequest`/`DescriptionResult` не менялся.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add modules/ai-description docs/superpowers/plans/2026-09-05-llm-notification-judge.md

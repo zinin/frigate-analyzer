@@ -5,8 +5,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
+import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import java.nio.file.Path
 
 private val logger = KotlinLogging.logger {}
@@ -21,18 +21,18 @@ class ClaudeImageStager(
      * Returns paths in the SAME ordering — `ClaudePromptBuilder` relies on this contract
      * (`sortedFrames.zip(framePaths)` is only correct when the order matches).
      */
-    suspend fun stage(request: DescriptionRequest): List<Path> {
+    suspend fun stage(request: VisionRequest): List<Path> {
         val sorted = request.frames.sortedBy { it.frameIndex }
         val staged = mutableListOf<Path>()
         try {
             for (frame in sorted) {
-                val prefix = "claude-${request.recordingId}-frame-${frame.frameIndex}"
+                val prefix = "claude-${request.requestId}-frame-${frame.frameIndex}"
                 val path = tempWriter.createTempFile(prefix, ".jpg", frame.bytes)
                 staged.add(path)
             }
             return staged
         } catch (e: Exception) {
-            logger.warn(e) { "Failed to stage frames for ${request.recordingId}; cleaning up partial set" }
+            logger.warn(e) { "Failed to stage frames for ${request.requestId}; cleaning up partial set" }
             // NonCancellable — stage может упасть при TimeoutCancellationException,
             // а suspend-вызов в отменённой корутине сразу бросит CancellationException.
             withContext(NonCancellable) {
@@ -46,7 +46,7 @@ class ClaudeImageStager(
 
     suspend fun cleanup(paths: List<Path>) {
         if (paths.isEmpty()) return
-        // NonCancellable обязателен: cleanup() вызывается из finally в describe(),
+        // NonCancellable обязателен: cleanup() вызывается из finally в complete(),
         // куда выполнение часто попадает через TimeoutCancellationException.
         // Без этого suspend-вызов в отменённой корутине немедленно бросит
         // CancellationException, runCatching его проглотит, файлы останутся.

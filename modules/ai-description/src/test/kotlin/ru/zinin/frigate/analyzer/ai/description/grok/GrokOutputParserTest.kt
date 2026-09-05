@@ -5,6 +5,7 @@ import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -28,8 +29,8 @@ class GrokOutputParserTest {
 
         assertEquals("end_turn", output.stopReason)
         assertEquals("01a06332-cee4-7a82-ac73-8556a6ea21c4", output.sessionId)
-        assertEquals("Car", output.short)
-        assertEquals("A car in the yard.", output.detailed)
+        assertEquals("""{"short":"Car","detailed":"A car in the yard."}""", output.payload)
+        assertFalse(output.fromText)
         assertTrue(output.usageSummary.contains("input_tokens=3048"))
         assertTrue(output.usageSummary.contains("output_tokens=120"))
         assertTrue(output.usageSummary.contains("total_cost_usd=0.0013"))
@@ -46,7 +47,7 @@ class GrokOutputParserTest {
 
         val output = parser.parse(stdout)
 
-        assertEquals("Car", output.short)
+        assertEquals("""{"short":"Car","detailed":"A car in the yard."}""", output.payload)
         assertTrue(output.usageSummary.contains("input_tokens=?"))
         assertTrue(output.usageSummary.contains("output_tokens=5"))
         assertTrue(output.usageSummary.contains("total_cost_usd=unknown"))
@@ -64,8 +65,7 @@ class GrokOutputParserTest {
 
         val output = parser.parse(stdout)
 
-        assertEquals("Bike", output.short)
-        assertEquals("A bike by the fence.", output.detailed)
+        assertEquals("""{"short":"Bike","detailed":"A bike by the fence."}""", output.payload)
         assertTrue(output.fromText)
     }
 
@@ -76,42 +76,48 @@ class GrokOutputParserTest {
 
         val output = parser.parse(stdout)
 
-        assertEquals("Bike", output.short)
-        assertEquals("A bike.", output.detailed)
+        assertEquals("```json\n{\"short\":\"Bike\",\"detailed\":\"A bike.\"}\n```", output.payload)
         assertTrue(output.fromText)
     }
 
     @Test
-    fun `partial structured output is completed from the text`() {
+    fun `partial structured output is kept as the structured payload`() {
         val stdout =
             """{"text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}","structuredOutput":{"short":"Bike"},"stopReason":"end_turn"}"""
 
         val output = parser.parse(stdout)
 
-        assertEquals("Bike", output.short)
-        assertEquals("A bike.", output.detailed)
+        assertEquals("""{"short":"Bike"}""", output.payload)
+        assertFalse(output.fromText)
     }
 
     @Test
-    fun `blank structured fields are completed from the text instead of being kept`() {
+    fun `blank structured fields stay on the structured payload instead of falling back to text`() {
         val stdout =
             """{"text":"{\"short\":\"Bike\",\"detailed\":\"A bike.\"}","structuredOutput":{"short":"","detailed":"  "},"stopReason":"end_turn"}"""
 
         val output = parser.parse(stdout)
 
-        assertEquals("Bike", output.short)
-        assertEquals("A bike.", output.detailed)
-        assertTrue(output.fromText)
+        assertEquals("""{"short":"","detailed":"  "}""", output.payload)
+        assertFalse(output.fromText)
     }
 
     @Test
-    fun `missing structured output yields null fields`() {
+    fun `missing structured output yields the text payload`() {
         val output = parser.parse("""{"text":"sorry","stopReason":"max_tokens","sessionId":"s"}""")
 
-        assertNull(output.short)
-        assertNull(output.detailed)
+        assertEquals("sorry", output.payload)
+        assertTrue(output.fromText)
         assertEquals("max_tokens", output.stopReason)
         assertTrue(output.usageSummary.contains("usage=absent"))
+    }
+
+    @Test
+    fun `missing structured output and text yields null payload`() {
+        val output = parser.parse("""{"stopReason":"max_tokens","sessionId":"s"}""")
+
+        assertNull(output.payload)
+        assertEquals("max_tokens", output.stopReason)
     }
 
     @Test
@@ -138,10 +144,10 @@ class GrokOutputParserTest {
     }
 
     @Test
-    fun `numeric structured fields are not descriptions`() {
+    fun `numeric structured fields stay in the payload`() {
         val output =
             parser.parse("""{"stopReason":"end_turn","structuredOutput":{"short":1,"detailed":true}}""")
-        assertNull(output.short)
-        assertNull(output.detailed)
+        assertEquals("""{"short":1,"detailed":true}""", output.payload)
+        assertFalse(output.fromText)
     }
 }
