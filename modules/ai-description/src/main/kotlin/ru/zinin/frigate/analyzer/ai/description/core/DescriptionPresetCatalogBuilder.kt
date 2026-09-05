@@ -68,7 +68,13 @@ object DescriptionPresetCatalogBuilder {
         if (defaultPreset.isNotBlank() && fallbackId != defaultPreset) {
             logger.warn { "default-preset '$defaultPreset' is unavailable; falling back to '$fallbackId'" }
         }
-        logger.info { "Description presets: ${entries.joinToString { it.view.id }}; default '$fallbackId'" }
+        // Со значениями, а не одними id: вопрос «какая модель сейчас настроена» иначе требует
+        // сверки yaml с окружением, а `GrokBackend.init`, печатавший модель и уровень усилия, больше
+        // не существует — backend теперь создаётся на каждый пресет.
+        logger.info {
+            "Description presets: " + entries.joinToString { "${it.view.id} (${it.view.logSignature()})" } +
+                "; default '$fallbackId'"
+        }
         return Result.Catalog(DescriptionPresetCatalog(entries, fallbackId))
     }
 

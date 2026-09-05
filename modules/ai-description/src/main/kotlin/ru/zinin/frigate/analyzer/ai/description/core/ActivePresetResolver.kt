@@ -113,13 +113,9 @@ class ActivePresetResolver(
             } else {
                 ""
             }
-        logger.info { "Active description preset '${preset.id}' (${describe(preset)}) from $source$overridden" }
+        // Та же форма, что у стартовой строки каталога: оператор сверяет эти строки между собой.
+        logger.info { "Active description preset '${preset.id}' (${preset.logSignature()}) from $source$overridden" }
     }
-
-    /** Модель именно эффективная: строка отвечает на вопрос «какая модель работает сейчас». */
-    private fun describe(preset: DescriptionPreset): String =
-        listOfNotNull(preset.provider, preset.effectiveModel, preset.effort.takeIf { it.isNotBlank() })
-            .joinToString("/")
 
     private fun warnOnce(message: String) {
         if (lastWarning.getAndSet(message) != message) {
