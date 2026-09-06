@@ -199,7 +199,8 @@ application:
       # Заметки владельца о сценах камер, только yaml (application-docker.yaml):
       # cameras:
       #   cam4: { notes: "Огород за домом: грядки под сеткой, куча земли, поленница слева внизу." }
-      cameras: {}
+      # Пустую карту здесь объявлять нельзя: `cameras: {}` разворачивается в пустую строку, а
+      # конвертера из строки в Map нет — контейнер падает на старте. Нет ключа = emptyMap().
   detection-filter:
     enabled: ${DETECTION_FILTER_ENABLED:true}
     allowed-classes: ${DETECTION_FILTER_CLASSES:person,car,motorcycle,truck,bicycle,cat,dog,bird,backpack,horse,sheep,cow,bear,elephant,zebra,giraffe}
