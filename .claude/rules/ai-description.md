@@ -431,13 +431,21 @@ unjudged, while the candidate goes on holding the camera mutex and its in-flight
 starvation itself is bounded one layer lower, by `spring.r2dbc.pool.max-acquire-time` (5 s; r2dbc's
 own default is to wait indefinitely). The per-call bounds on this path are the second echelon: the
 pool setting measures only handing out a connection, and a statement can hang with one already in
-hand. In `submit`'s overflow branch and in the
-cancellation branch of `process` the write runs under `NonCancellable` in the caller's own coroutine,
-where an unbounded suspension is interruptible by nothing at all: not by cancelling the pipeline
-consumer, not by shutting the application down. `withTimeout` still fires under `NonCancellable` — it
-cancels its own coroutine, not the parent. A timed-out row may still land in the table (cancelling
-the subscription does not roll back an INSERT already on its way); nothing retries the write, so it
-cannot duplicate. The cost of a lost row is wider than `/status` and `/verdicts`: `JudgeContextBuilder`
+hand. The bound matters most in `submit`'s overflow branch and in the cancellation branch of
+`process`, where the write runs in the caller's own coroutine and an unbounded suspension would be
+interruptible by nothing at all — not by cancelling the pipeline consumer, not by shutting the
+application down.
+
+The write is also **indivisible** (`NonCancellable`), and `withTimeout` still fires inside that — it
+cancels its own coroutine, not the parent. Interrupting an INSERT buys nothing: cancelling the
+subscription does not roll back a statement already on its way to Postgres, so "cancelled" is
+indistinguishable from "not written". While it was cancellable, a shutdown landing in that window
+sent `process` into its fallback with `handedOver` still false, and the fallback wrote a **second**
+row for the same recording — double-counting the candidate in `/status` and in `/verdicts` — and
+sent the recording even when the verdict was `SUPPRESS`, inverting the judge's decision. With the
+write indivisible there is no suspension point left between it and `handedOver`, so the fallback is
+reachable only where no row exists yet. A timed-out row may still land; nothing retries the write, so
+it cannot duplicate either. The cost of a lost row is wider than `/status` and `/verdicts`: `JudgeContextBuilder`
 feeds `recent_verdicts` and `last_published` into the prompt, so a lost `PUBLISH` makes the next
 candidate from that camera look a little more like a new event. Not an immediate duplicate — the
 snooze is armed independently of the write — but a thinner context once it expires.

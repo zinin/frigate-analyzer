@@ -614,6 +614,35 @@ class NotificationJudgeServiceTest {
         }
 
     @Test
+    fun `a cancellation during the verdict write neither repeats it nor flips the decision`() =
+        runTest {
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.SUPPRESS, JudgeVerdict.Reason.DUPLICATE)
+            val s = service()
+            val started = CompletableDeferred<Unit>()
+            val finish = CompletableDeferred<Unit>()
+            coEvery { verdicts.record(capture(recorded)) } coAnswers {
+                started.complete(Unit)
+                finish.await()
+                mockk()
+            }
+
+            val job = launch { s.process(candidate()) }
+            started.await()
+            // docker stop ровно в окне вставки. Отменить её нечем: строка могла уже уйти в базу, а
+            // отмена подписки уже отправленный INSERT не откатывает — вторая строка на ту же запись
+            // удваивала бы кандидата и в /status, и в /verdicts. Вердикт при этом SUPPRESS, так что
+            // досылка вдобавок превратила бы решение в противоположное.
+            job.cancel()
+            finish.complete(Unit)
+            job.join()
+
+            coVerify(exactly = 1) { verdicts.record(any()) }
+            assertEquals(VerdictStage.JUDGE, recorded.single().stage)
+            coVerify(exactly = 0) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    @Test
     fun `cancellation before the fan-out reaches the queue still delivers the notification`() =
         runTest {
             val gate = CompletableDeferred<Unit>()

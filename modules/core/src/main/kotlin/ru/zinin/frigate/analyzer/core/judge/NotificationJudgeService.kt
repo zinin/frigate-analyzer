@@ -393,6 +393,15 @@ class NotificationJudgeService(
      * выдача соединения ждала бы вечно. Здешняя граница не лишняя и после неё: настройка меряет
      * только выдачу соединения, а зависнуть можно и после неё, на самом операторе.
      *
+     * Сама вставка неделима — [NonCancellable]. Прерывать её нечем осмысленно: отмена подписки не
+     * откатывает INSERT, уже ушедший в базу, поэтому «отменено» неотличимо от «не записано». Раньше
+     * отмена в этом окне уводила [process] в ветку досылки с `handedOver = false`, а та писала
+     * ВТОРУЮ строку на ту же запись — кандидат удваивался и в счётчиках `/status`, и в `/verdicts` —
+     * и отправляла запись даже с вердиктом `SUPPRESS`, то есть переворачивала решение судьи. Теперь
+     * после успешной вставки до `handedOver` не остаётся ни одной точки приостановки, и ветка
+     * досылки достижима только там, где строки ещё нет. Повиснуть неделимость не даёт граница
+     * [VERDICT_WRITE_TIMEOUT] выше: `withTimeout` работает и под [NonCancellable].
+     *
      * Потеря строки вердикта — та же плата, что уже принята для упавшей вставки: решение
      * исполняется. Плата шире, чем `/status` и `/verdicts`: [JudgeContextBuilder] кладёт в промпт
      * `recent_verdicts` и `last_published`, так что потерянный `PUBLISH` делает следующего кандидата
@@ -403,7 +412,9 @@ class NotificationJudgeService(
      */
     private suspend fun record(verdict: NewNotificationVerdict) {
         try {
-            withTimeout(VERDICT_WRITE_TIMEOUT) { verdicts.record(verdict) }
+            withContext(NonCancellable) {
+                withTimeout(VERDICT_WRITE_TIMEOUT) { verdicts.record(verdict) }
+            }
         } catch (_: TimeoutCancellationException) {
             logger.error {
                 "Storing the ${verdict.stage} verdict for recording=${verdict.recordingId} " +
