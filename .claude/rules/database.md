@@ -155,6 +155,17 @@ previous value until it restarts. The deployment is designed for one instance
 (`docker/deploy/docker-compose.yml` runs a single `frigate-analyzer` service); nothing detects or
 repairs the split.
 
+## Connection pool
+
+`spring.r2dbc.pool` in `application.yaml`: `initial-size: 10`, `max-size: 100`,
+`max-acquire-time: 5s`. The last one is load-bearing and not a default — r2dbc waits for a connection
+indefinitely unless told otherwise, so an exhausted pool would suspend a caller rather than fail it.
+Some of those callers cannot survive that: the judge's fan-out and its in-flight overflow branch run
+under `NonCancellable` inside a pipeline consumer, where an unbounded suspension is interruptible by
+nothing at all, shutdown included. With the bound, starvation surfaces as an exception, which every
+path already handles. It covers only handing out a connection; a statement that hangs with one in
+hand is still up to the caller's own `withTimeout` — see the judge's in `ai-description.md`.
+
 ## Patterns
 
 - All repositories use Spring Data R2DBC
