@@ -15,6 +15,8 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.springframework.beans.factory.ObjectProvider
@@ -370,6 +372,40 @@ class NotificationJudgeServiceTest {
         }
 
     @Test
+    fun `a hanging verdict write does not stall the decision`() =
+        runTest {
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            val s = service()
+            // Вставка стоит на КАЖДОМ пути, включая все fail-open, и держит мьютекс камеры вместе с
+            // разрешением in-flight. Подвиснув, она не пропустила бы уведомление ровно там, где
+            // судья обязан пропустить его без вердикта. Голодание пула закрыто настройкой
+            // max-acquire-time, эта граница меряет операцию целиком.
+            //
+            // Залипание с выходом, а не бесконечное: `advanceUntilIdle` доводит виртуальные часы до
+            // границы, и регрессия падает на assert вместо того, чтобы вешать сборку.
+            val stuck = CompletableDeferred<Unit>()
+            coEvery { verdicts.record(any()) } coAnswers {
+                stuck.await()
+                mockk()
+            }
+
+            val judging = launch { s.process(candidate()) }
+            try {
+                advanceUntilIdle()
+                assertTrue(judging.isCompleted, "the verdict write must be bounded")
+                // Не только наличие границы, но и её величина: advanceUntilIdle доводит виртуальные
+                // часы до упора, и с пятью часами вместо пяти секунд тест остался бы зелёным.
+                assertEquals(5_000L, currentTime)
+                coVerify(exactly = 1) { verdicts.record(any()) }
+                coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+            } finally {
+                stuck.complete(Unit)
+                judging.join()
+            }
+        }
+
+    @Test
     fun `cancellation after submit still sends unjudged`() =
         runTest {
             val gate = CompletableDeferred<Unit>()
@@ -477,6 +513,45 @@ class NotificationJudgeServiceTest {
 
             assertTrue(recorded.any { it.recordingId == extra.recording.id }, "the cancelled caller must still record")
             coVerify(exactly = 1) { telegram.sendRecordingNotification(extra.recording, any(), any()) }
+        }
+
+    @Test
+    fun `a hanging verdict write does not wedge the caller past the in-flight cap`() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            coEvery { agent.judge(any()) } coAnswers {
+                gate.await()
+                outcome(JudgeVerdict.Decision.SUPPRESS, JudgeVerdict.Reason.DUPLICATE)
+            }
+            val s = service(maxInFlight = cap)
+            // Все на одной камере: судится первый, остальные стоят на мьютексе — разрешение
+            // in-flight берётся в submit до launch, поэтому потолок они держат все.
+            val jobs = (1..cap).map { s.submit(candidate(at = ts.plusSeconds(it.toLong()))) }
+            runCurrent()
+            val stuck = CompletableDeferred<Unit>()
+            coEvery { verdicts.record(any()) } coAnswers {
+                stuck.await()
+                mockk()
+            }
+
+            // Переполнение потолка вызывающий несёт сам и под NonCancellable, поэтому граница обязана
+            // работать и там: залипшая вставка остановила бы consumer пайплайна навсегда и мимо
+            // отмены — ни docker stop, ни вотчдог runTest его бы не сняли (эта версия теста как раз
+            // и вешала прогон, пока границы не было).
+            val extra = candidate(camId = "cam9")
+            val waiting = launch { s.submit(extra) }
+            try {
+                advanceUntilIdle()
+                assertTrue(waiting.isCompleted, "the caller must not park on the verdict write")
+                assertEquals(5_000L, currentTime)
+                coVerify(exactly = 1) { verdicts.record(match { it.recordingId == extra.recording.id }) }
+                coVerify(exactly = 1) { telegram.sendRecordingNotification(extra.recording, any(), any()) }
+            } finally {
+                stuck.complete(Unit)
+                gate.complete(Unit)
+                waiting.join()
+                jobs.joinAll()
+            }
         }
 
     @Test

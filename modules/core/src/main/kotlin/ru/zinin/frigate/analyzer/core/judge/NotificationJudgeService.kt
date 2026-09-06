@@ -360,9 +360,9 @@ class NotificationJudgeService(
      * Есть ли кому доставить. Fail-open к «есть»: пропустить настоящее уведомление из-за
      * недоступной базы хуже, чем заплатить за вердикт, который никто не увидит.
      *
-     * Граница по времени обязательна, как у [judgeEnabled]: это запрос к базе, а пул R2DBC не
-     * задаёт `max-acquire-time`, так что исчерпанный пул подвесил бы его навсегда — держа при этом
-     * и мьютекс камеры, и разрешение in-flight, то есть в итоге и приём записей.
+     * Граница по времени обязательна, как у [judgeEnabled]: это запрос к базе, а он держит и мьютекс
+     * камеры, и разрешение in-flight, то есть в итоге и приём записей. Голодание пула закрыто
+     * настройкой `spring.r2dbc.pool.max-acquire-time`, здешняя граница меряет операцию целиком.
      */
     private suspend fun hasRecipients(recordingId: UUID): Boolean =
         try {
@@ -379,14 +379,43 @@ class NotificationJudgeService(
             true
         }
 
+    /**
+     * Граница по времени обязательна по той же причине, что у [judgeEnabled] и [hasRecipients], но
+     * цена ошибки здесь выше: вставка стоит на КАЖДОМ пути, включая все fail-open, и всегда ПЕРЕД
+     * рассылкой. Подвиснув, она оставила бы судью, обязанного в этот момент пропустить уведомление
+     * без вердикта, не пропустившим ничего — и держащим мьютекс камеры с разрешением in-flight. В
+     * двух местах — переполнение потолка в [submit] и ветка отмены в [process] — вставка идёт под
+     * [NonCancellable] в корутине вызывающего: там неограниченная приостановка не снимается вообще
+     * ничем, ни отменой consumer-а пайплайна, ни остановкой приложения. `withTimeout` под
+     * [NonCancellable] при этом работает: он отменяет собственную корутину, а не родительскую.
+     *
+     * Голодание пула закрыто ниже по стеку — `spring.r2dbc.pool.max-acquire-time` (5 с), иначе
+     * выдача соединения ждала бы вечно. Здешняя граница не лишняя и после неё: настройка меряет
+     * только выдачу соединения, а зависнуть можно и после неё, на самом операторе.
+     *
+     * Потеря строки вердикта — та же плата, что уже принята для упавшей вставки: решение
+     * исполняется. Плата шире, чем `/status` и `/verdicts`: [JudgeContextBuilder] кладёт в промпт
+     * `recent_verdicts` и `last_published`, так что потерянный `PUBLISH` делает следующего кандидата
+     * той же камеры чуть более похожим на новое событие. Немедленного дубля это не даёт — snooze
+     * взводится независимо от записи, — беднее становится контекст после его истечения. Строка при
+     * этом может всё же появиться: отмена подписки не откатывает уже ушедший в базу INSERT. Дубля
+     * это не создаёт — повторов записи нет.
+     */
     private suspend fun record(verdict: NewNotificationVerdict) {
         try {
-            verdicts.record(verdict)
+            withTimeout(VERDICT_WRITE_TIMEOUT) { verdicts.record(verdict) }
+        } catch (_: TimeoutCancellationException) {
+            logger.error {
+                "Storing the ${verdict.stage} verdict for recording=${verdict.recordingId} " +
+                    "(cam=${verdict.camId}) timed out after $VERDICT_WRITE_TIMEOUT; " +
+                    "the decision is applied anyway"
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logger.error(e) {
-                "Failed to store the judge verdict for recording=${verdict.recordingId}; the decision is applied anyway"
+                "Failed to store the ${verdict.stage} verdict for recording=${verdict.recordingId} " +
+                    "(cam=${verdict.camId}); the decision is applied anyway"
             }
         }
     }
@@ -399,8 +428,16 @@ class NotificationJudgeService(
      * обработанной, пайплайн её не повторит. Ставить флаг «по факту первого enqueue» нечем: очередь
      * скрыта за `TelegramNotificationService`. Плата — та же, что уже принята для досылки в ветке
      * отмены: остановка ждёт рассылку до 10 с, отпущенных [JudgeCoroutineScope], а дальше пишет
-     * предупреждение и идёт дальше — рассылка доработает уже на фоне закрывающихся бинов. Повиснуть
-     * она не может: `enqueue` пишет в ограниченный канал, который закрывается вместе с очередью.
+     * предупреждение и идёт дальше — рассылка доработает уже на фоне закрывающихся бинов.
+     *
+     * Собственной границы у рассылки нет, и это осознанно: обернуть вызов в `withTimeout` снаружи
+     * бессмысленно — под [NonCancellable] тело отмену игнорирует, и таймаут просто дождался бы его
+     * до конца. Держат её две чужие: `enqueue` пишет в ограниченный канал, который закрывается
+     * вместе с очередью, а чтение подписчиков перед первым `enqueue` упирается в
+     * `spring.r2dbc.pool.max-acquire-time`. Незакрытым остаётся оператор, зависший уже с
+     * соединением на руках: граница на это лежала бы внутри
+     * `TelegramNotificationService.sendRecordingNotification` и меняла бы семантику всем трём его
+     * вызывающим, поэтому её здесь нет.
      */
     private suspend fun send(
         candidate: JudgeCandidate,
@@ -475,6 +512,7 @@ class NotificationJudgeService(
     private companion object {
         val SETTINGS_READ_TIMEOUT = 5.seconds
         val CONTEXT_BUILD_TIMEOUT = 10.seconds
+        val VERDICT_WRITE_TIMEOUT = 5.seconds
         const val QUEUE_WARN_THRESHOLD = 20
         const val ERROR_MAX = 1024
     }

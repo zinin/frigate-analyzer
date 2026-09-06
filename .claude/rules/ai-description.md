@@ -423,8 +423,24 @@ the owner's `/timezone`, then the JVM zone (UTC in the container).
    `PUBLISH` sends, `SUPPRESS` does not. Agent failure → `FAILOVER` / `PUBLISH` with the reason
    below, and send.
 
-A failed write to `notification_verdicts` is logged at ERROR; the decision (send or not) is applied
-anyway.
+A failed write to `notification_verdicts` is logged at ERROR and the decision (send or not) is
+applied anyway; the write is bounded by 5 s so that a *stalled* one is treated the same as a failed
+one. It needs that bound more than the two reads above do: it sits on every path, always before the
+send, so a stall there turns fail-open into fail-closed — notifications stop instead of going out
+unjudged, while the candidate goes on holding the camera mutex and its in-flight permit. Pool
+starvation itself is bounded one layer lower, by `spring.r2dbc.pool.max-acquire-time` (5 s; r2dbc's
+own default is to wait indefinitely). The per-call bounds on this path are the second echelon: the
+pool setting measures only handing out a connection, and a statement can hang with one already in
+hand. In `submit`'s overflow branch and in the
+cancellation branch of `process` the write runs under `NonCancellable` in the caller's own coroutine,
+where an unbounded suspension is interruptible by nothing at all: not by cancelling the pipeline
+consumer, not by shutting the application down. `withTimeout` still fires under `NonCancellable` — it
+cancels its own coroutine, not the parent. A timed-out row may still land in the table (cancelling
+the subscription does not roll back an INSERT already on its way); nothing retries the write, so it
+cannot duplicate. The cost of a lost row is wider than `/status` and `/verdicts`: `JudgeContextBuilder`
+feeds `recent_verdicts` and `last_published` into the prompt, so a lost `PUBLISH` makes the next
+candidate from that camera look a little more like a new event. Not an immediate duplicate — the
+snooze is armed independently of the write — but a thinner context once it expires.
 
 **Cancellation (shutdown).** A candidate cancelled *before* the fan-out started is recorded as
 `FAILOVER` / `TRANSPORT` and sent under `NonCancellable` before the cancellation is rethrown — the
@@ -432,8 +448,15 @@ facade has already marked the recording processed, so nothing would retry it. Th
 indivisible: `send()` arms its `handedOver` flag and then calls `sendRecordingNotification` under
 `NonCancellable`, so a cancellation arriving mid-send neither truncates it nor triggers a second
 one. Shutdown waits for it up to the 10s `JudgeCoroutineScope` budget and then proceeds, leaving
-the fan-out to finish against beans that are already closing; it cannot hang, because `enqueue`
-writes to a bounded channel that `TelegramNotificationQueue.stop()` closes. Both halves matter. Without `NonCancellable` a shutdown could land while the call is still
+the fan-out to finish against beans that are already closing. The fan-out has no bound of its own, and
+that is deliberate: wrapping the call in a `withTimeout` from outside would do nothing, because
+`NonCancellable` ignores the cancellation and the timeout would simply wait for the body to finish
+anyway. Two foreign bounds hold it instead — `enqueue` writes to a bounded channel that
+`TelegramNotificationQueue.stop()` closes, and the subscriber read before the first enqueue runs into
+`spring.r2dbc.pool.max-acquire-time`. What stays open is a statement that hangs with a connection
+already in hand; bounding that would have to sit inside
+`TelegramNotificationService.sendRecordingNotification` and would change semantics for all three of
+its callers. Both halves matter. Without `NonCancellable` a shutdown could land while the call is still
 suspended *before* its first `TelegramNotificationQueue.enqueue` (it reads the subscribers from the
 database first), and the armed flag would then skip the fallback send and lose the recording
 outright. Without the flag the fallback would repeat a fan-out that already reached the queue:
