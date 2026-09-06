@@ -185,7 +185,8 @@ application:
         enabled: ${APP_AI_JUDGE_RATE_LIMIT_ENABLED:true}
         max-requests: ${APP_AI_JUDGE_RATE_LIMIT_MAX:200}
         window: ${APP_AI_JUDGE_RATE_LIMIT_WINDOW:1h}
-      # Потолок snooze_minutes из ответа модели.
+      # Потолок snooze_minutes из ответа модели. Не меньше PT1M: потолок считается в целых
+      # минутах, и значение ниже роняет старт, а не округляется вверх до минуты.
       max-snooze: ${APP_AI_JUDGE_MAX_SNOOZE:PT30M}
       # Static score: сколько записей за окно содержали тот же класс в том же месте (IoU >= порога).
       static-window: ${APP_AI_JUDGE_STATIC_WINDOW:P7D}

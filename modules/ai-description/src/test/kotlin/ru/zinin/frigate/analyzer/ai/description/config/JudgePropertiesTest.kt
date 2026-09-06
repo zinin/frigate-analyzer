@@ -35,6 +35,19 @@ class JudgePropertiesTest {
     }
 
     @Test
+    fun `a max-snooze shorter than a minute is rejected`() {
+        // Потолок выражен в целых минутах. PT30S проходил валидацию как «положительная длительность»,
+        // а `maxSnoozeMinutes` округлял его ВВЕРХ до единицы — потолок оказывался вдвое выше
+        // заданного, и модель могла усыпить камеру на минуту там, где владелец разрешил тридцать
+        // секунд.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                JudgeProperties(maxSnooze = Duration.ofSeconds(30))
+            }
+        assertTrue(e.message!!.contains("max-snooze"), e.message)
+    }
+
+    @Test
     fun `staticIou above 1 is rejected`() {
         val e =
             assertFailsWith<IllegalArgumentException> {

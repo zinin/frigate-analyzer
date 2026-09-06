@@ -257,7 +257,7 @@ failure sends the notification unjudged.
 | `APP_AI_JUDGE_RATE_LIMIT_ENABLED` | true | Sliding-window throttle on judge invocations. |
 | `APP_AI_JUDGE_RATE_LIMIT_MAX` | 200 | Protective ceiling. Beyond it candidates are sent unjudged (`FAILOVER` / `RATE_LIMITED`). |
 | `APP_AI_JUDGE_RATE_LIMIT_WINDOW` | 1h | Sliding-window length (same Duration syntax as descriptions). |
-| `APP_AI_JUDGE_MAX_SNOOZE` | PT30M | Ceiling on `snooze_minutes` from the model. Positive duration. |
+| `APP_AI_JUDGE_MAX_SNOOZE` | PT30M | Ceiling on `snooze_minutes` from the model. At least `PT1M` — the ceiling is whole minutes, and startup fails below that rather than rounding it up. |
 | `APP_AI_JUDGE_STATIC_WINDOW` | P7D | How far back the static-score query looks for the same class in the same place. |
 | `APP_AI_JUDGE_STATIC_IOU` | 0.4 | IoU threshold of that query, `0..1`. |
 | `APP_AI_JUDGE_HISTORY_WINDOW` | PT6H | `±` window of `notification_verdicts` included in the prompt context. |

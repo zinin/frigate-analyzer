@@ -53,7 +53,9 @@ data class JudgeProperties(
     init {
         require(queueTimeout.toMillis() > 0) { "application.ai.judge.queue-timeout must be positive" }
         require(timeout.toMillis() > 0) { "application.ai.judge.timeout must be positive" }
-        require(!maxSnooze.isNegative && !maxSnooze.isZero) { "application.ai.judge.max-snooze must be positive" }
+        require(maxSnooze >= Duration.ofMinutes(1)) {
+            "application.ai.judge.max-snooze must be at least PT1M: the ceiling is whole minutes"
+        }
         require(!staticWindow.isNegative && !staticWindow.isZero) { "application.ai.judge.static-window must be positive" }
         require(!historyWindow.isNegative && !historyWindow.isZero) { "application.ai.judge.history-window must be positive" }
         require(maxImageSide == 0 || maxImageSide >= 256) { "application.ai.judge.max-image-side must be 0 or at least 256" }
@@ -63,5 +65,11 @@ data class JudgeProperties(
         }
     }
 
-    val maxSnoozeMinutes: Int get() = maxSnooze.toMinutes().toInt().coerceAtLeast(1)
+    /**
+     * Потолок, который уезжает модели в промпт и режет её ответ. Округления вверх здесь нет
+     * намеренно: оно делало бы потолок ВЫШЕ заданного (`PT30S` давал минуту), то есть настройка,
+     * задуманная ограничивать, тихо поднимала бы себя. Что значение не меньше минуты, гарантирует
+     * [init] — иначе целая минута была бы недостижима и судья обещал бы модели диапазон `0–0`.
+     */
+    val maxSnoozeMinutes: Int get() = maxSnooze.toMinutes().toInt()
 }

@@ -477,7 +477,8 @@ independent of the order two verdicts reach it. The backlog is drained
 newest-first (`findUnprocessedForUpdate` orders by `file_creation_timestamp DESC`), so a verdict on
 an older recording would otherwise drag the window backwards, or clear it, and leave the live
 duplicates it was armed against uncovered. `minutes` is capped by
-`APP_AI_JUDGE_MAX_SNOOZE` in `JudgeResponseParser`. Coverage is class-and-count: a person walking
+`APP_AI_JUDGE_MAX_SNOOZE` in `JudgeResponseParser` — a whole-minute cap, so a value below `PT1M`
+fails startup instead of being rounded up into a ceiling higher than the one configured. Coverage is class-and-count: a person walking
 through a yard that already has a parked car does not stay silent if `person` was not in `covered`,
 and a second person (`person:2` vs `person:1`) breaks it.
 
