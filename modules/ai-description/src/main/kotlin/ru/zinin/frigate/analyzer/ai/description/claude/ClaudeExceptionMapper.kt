@@ -20,13 +20,13 @@ class ClaudeExceptionMapper {
      *
      * Сигнатура обещает возврат DescriptionException, но метод может ТАК ЖЕ выбросить
      * CancellationException — см. @throws ниже. Вызывающему коду стоит писать
-     * `throw mapper.map(e)` (как в ClaudeBackend.describe), тогда
+     * `throw mapper.map(e)` (как в ClaudeBackend.complete), тогда
      * cancellation-path остаётся корректным, а возвращённые DescriptionException
      * ловятся штатными catch-ами.
      *
      * Jackson branch: ловим И Jackson 2 [JsonProcessingException] (Claude SDK всё ещё может
      * эмитить их при парсинге stream-json), И tools.jackson [JacksonException]. Ветка
-     * `is JacksonException` — defensive: [ClaudeResponseParser.parse] оборачивает
+     * `is JacksonException` — defensive: [ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser.parse] оборачивает
      * `readTree(...)` в `try/catch (e: Exception)`, поэтому tools.jackson исключение сегодня
      * до маппера не доходит. Ветка существует для будущих call-sites, которые могут вызывать
      * `internalObjectMapper` напрямую без локального try-catch.

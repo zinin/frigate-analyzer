@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPresets
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
 
 private val logger = KotlinLogging.logger {}
 
@@ -35,6 +36,7 @@ private val logger = KotlinLogging.logger {}
 class AiSettingsCallbackHandler(
     private val presetsProvider: ObjectProvider<DescriptionPresets>,
     private val runtimeSettingsProvider: ObjectProvider<DescriptionRuntimeSettings>,
+    private val judgeSettingsProvider: ObjectProvider<JudgeRuntimeSettings>,
 ) {
     enum class DispatchOutcome { RERENDER, CLOSE, UNAUTHORIZED, IGNORE, ALERT }
 
@@ -91,11 +93,15 @@ class AiSettingsCallbackHandler(
                 Dispatched(DispatchOutcome.CLOSE)
             }
 
-            is Action.Switch -> {
+            is Action.Switch, is Action.JudgeSwitch -> {
                 Dispatched(DispatchOutcome.RERENDER)
             }
 
             is Action.Select -> {
+                classifySelect(action.id)
+            }
+
+            is Action.JudgeSelect -> {
                 classifySelect(action.id)
             }
         }
@@ -109,15 +115,46 @@ class AiSettingsCallbackHandler(
         data: String,
         changedBy: String?,
     ) {
-        val settings = runtimeSettingsProvider.getIfAvailable()
-        if (settings == null) {
-            logger.warn { "No DescriptionRuntimeSettings bean: aip callback changed nothing ($data)" }
-            return
-        }
         when (val action = parse(data)) {
-            is Action.Switch -> settings.setDescriptionsEnabled(action.enabled, changedBy)
-            is Action.Select -> settings.setActivePresetId(action.id, changedBy)
-            Action.Close, null -> Unit
+            is Action.Switch -> {
+                val settings = runtimeSettingsProvider.getIfAvailable()
+                if (settings == null) {
+                    logger.warn { "No DescriptionRuntimeSettings bean: aip callback changed nothing ($data)" }
+                } else {
+                    settings.setDescriptionsEnabled(action.enabled, changedBy)
+                }
+            }
+
+            is Action.Select -> {
+                val settings = runtimeSettingsProvider.getIfAvailable()
+                if (settings == null) {
+                    logger.warn { "No DescriptionRuntimeSettings bean: aip callback changed nothing ($data)" }
+                } else {
+                    settings.setActivePresetId(action.id, changedBy)
+                }
+            }
+
+            is Action.JudgeSwitch -> {
+                val judgeSettings = judgeSettingsProvider.getIfAvailable()
+                if (judgeSettings == null) {
+                    logger.warn { "No JudgeRuntimeSettings bean: aip callback changed nothing ($data)" }
+                } else {
+                    judgeSettings.setJudgeEnabled(action.enabled, changedBy)
+                }
+            }
+
+            is Action.JudgeSelect -> {
+                val judgeSettings = judgeSettingsProvider.getIfAvailable()
+                if (judgeSettings == null) {
+                    logger.warn { "No JudgeRuntimeSettings bean: aip callback changed nothing ($data)" }
+                } else {
+                    judgeSettings.setActivePresetId(action.id, changedBy)
+                }
+            }
+
+            Action.Close, null -> {
+                // classify already decided; close and malformed payloads persist nothing
+            }
         }
     }
 
@@ -175,6 +212,18 @@ class AiSettingsCallbackHandler(
                 Action.Switch(false)
             }
 
+            data == AiSettingsCallbacks.JUDGE_ON -> {
+                Action.JudgeSwitch(true)
+            }
+
+            data == AiSettingsCallbacks.JUDGE_OFF -> {
+                Action.JudgeSwitch(false)
+            }
+
+            data.startsWith(AiSettingsCallbacks.JUDGE_SET_PREFIX) -> {
+                data.removePrefix(AiSettingsCallbacks.JUDGE_SET_PREFIX).takeIf { it.isNotBlank() }?.let { Action.JudgeSelect(it) }
+            }
+
             data.startsWith(AiSettingsCallbacks.SET_PREFIX) -> {
                 data.removePrefix(AiSettingsCallbacks.SET_PREFIX).takeIf { it.isNotBlank() }?.let { Action.Select(it) }
             }
@@ -193,6 +242,14 @@ class AiSettingsCallbackHandler(
         ) : Action
 
         data class Select(
+            val id: String,
+        ) : Action
+
+        data class JudgeSwitch(
+            val enabled: Boolean,
+        ) : Action
+
+        data class JudgeSelect(
             val id: String,
         ) : Action
     }

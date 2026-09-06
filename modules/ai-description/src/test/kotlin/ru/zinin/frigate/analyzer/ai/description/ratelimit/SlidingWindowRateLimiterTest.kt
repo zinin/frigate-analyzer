@@ -29,33 +29,25 @@ private class MutableClock(
     override fun instant(): Instant = current
 }
 
-class DescriptionRateLimiterTest {
+class SlidingWindowRateLimiterTest {
     private val baseInstant = Instant.parse("2026-04-25T12:00:00Z")
 
-    private fun props(
+    private fun limiter(
         enabled: Boolean,
         maxRequests: Int,
         window: Duration = Duration.ofHours(1),
-    ) = DescriptionProperties(
-        enabled = true,
-        provider = "claude",
-        common =
-            DescriptionProperties.CommonSection(
-                language = "en",
-                shortMaxLength = 200,
-                detailedMaxLength = 1500,
-                maxFrames = 10,
-                queueTimeout = Duration.ofSeconds(30),
-                timeout = Duration.ofSeconds(60),
-                maxConcurrent = 2,
-                rateLimit = DescriptionProperties.RateLimit(enabled = enabled, maxRequests = maxRequests, window = window),
-            ),
+        clock: Clock = Clock.fixed(baseInstant, ZoneOffset.UTC),
+        name: String = "test",
+    ) = SlidingWindowRateLimiter(
+        name,
+        DescriptionProperties.RateLimit(enabled = enabled, maxRequests = maxRequests, window = window),
+        clock,
     )
 
     @Test
     fun `disabled rate-limit always returns true`() =
         runBlocking {
-            val limiter = DescriptionRateLimiter(Clock.fixed(baseInstant, ZoneOffset.UTC), props(enabled = false, maxRequests = 1))
+            val limiter = limiter(enabled = false, maxRequests = 1)
             repeat(100) {
                 assertTrue(limiter.tryAcquire(), "iteration $it should be allowed when disabled")
             }
@@ -64,7 +56,7 @@ class DescriptionRateLimiterTest {
     @Test
     fun `under limit allows`() =
         runBlocking {
-            val limiter = DescriptionRateLimiter(Clock.fixed(baseInstant, ZoneOffset.UTC), props(enabled = true, maxRequests = 3))
+            val limiter = limiter(enabled = true, maxRequests = 3)
             assertTrue(limiter.tryAcquire())
             assertTrue(limiter.tryAcquire())
             assertTrue(limiter.tryAcquire())
@@ -73,7 +65,7 @@ class DescriptionRateLimiterTest {
     @Test
     fun `at limit blocks fourth call within same window`() =
         runBlocking {
-            val limiter = DescriptionRateLimiter(Clock.fixed(baseInstant, ZoneOffset.UTC), props(enabled = true, maxRequests = 3))
+            val limiter = limiter(enabled = true, maxRequests = 3)
             repeat(3) { assertTrue(limiter.tryAcquire()) }
             assertFalse(limiter.tryAcquire(), "4th call must be denied within window")
         }
@@ -85,7 +77,7 @@ class DescriptionRateLimiterTest {
             // i.e. timestamp <= cutoff. cutoff = now - window.
             // At now = t + window - 1ms, cutoff = t - 1ms, timestamp = t > cutoff -> keep -> block.
             val clock = MutableClock(baseInstant)
-            val limiter = DescriptionRateLimiter(clock, props(enabled = true, maxRequests = 1))
+            val limiter = limiter(enabled = true, maxRequests = 1, clock = clock)
             assertTrue(limiter.tryAcquire())
 
             clock.current = baseInstant.plus(Duration.ofHours(1)).minusMillis(1)
@@ -98,7 +90,7 @@ class DescriptionRateLimiterTest {
             // At now = t + window, cutoff = t. timestamp = t, !t.isAfter(t) = !false = true -> drop.
             // Documented design choice: a timestamp older or equal to cutoff is OUT of the window.
             val clock = MutableClock(baseInstant)
-            val limiter = DescriptionRateLimiter(clock, props(enabled = true, maxRequests = 1))
+            val limiter = limiter(enabled = true, maxRequests = 1, clock = clock)
             assertTrue(limiter.tryAcquire())
 
             clock.current = baseInstant.plus(Duration.ofHours(1))
@@ -110,7 +102,7 @@ class DescriptionRateLimiterTest {
     fun `boundary - t plus window plus 1ms releases slot`() =
         runBlocking {
             val clock = MutableClock(baseInstant)
-            val limiter = DescriptionRateLimiter(clock, props(enabled = true, maxRequests = 1))
+            val limiter = limiter(enabled = true, maxRequests = 1, clock = clock)
             assertTrue(limiter.tryAcquire())
 
             clock.current = baseInstant.plus(Duration.ofHours(1)).plusMillis(1)
@@ -124,7 +116,7 @@ class DescriptionRateLimiterTest {
             // Use Dispatchers.Default to get real thread parallelism — without it,
             // runBlocking single-threaded event-loop would serialize coroutines and the test
             // would pass even if Mutex were absent, providing false confidence.
-            val limiter = DescriptionRateLimiter(Clock.fixed(baseInstant, ZoneOffset.UTC), props(enabled = true, maxRequests = 10))
+            val limiter = limiter(enabled = true, maxRequests = 10)
 
             val results: List<Boolean> =
                 coroutineScope {
@@ -145,7 +137,7 @@ class DescriptionRateLimiterTest {
             // and after maxRequests calls the limiter would start denying — the test would
             // fail. Using `(i+1)*window+1ms` guarantees strict monotonic progress.
             val clock = MutableClock(baseInstant)
-            val limiter = DescriptionRateLimiter(clock, props(enabled = true, maxRequests = 5))
+            val limiter = limiter(enabled = true, maxRequests = 5, clock = clock)
             val window = Duration.ofHours(1)
 
             repeat(100) { i ->
@@ -163,4 +155,25 @@ class DescriptionRateLimiterTest {
             DescriptionProperties.RateLimit(enabled = true, maxRequests = 10, window = Duration.ofSeconds(-1))
         }
     }
+
+    @Test
+    fun `two limiters do not share the window`() =
+        runBlocking {
+            val clock = Clock.fixed(baseInstant, ZoneOffset.UTC)
+            val a =
+                SlidingWindowRateLimiter(
+                    "a",
+                    DescriptionProperties.RateLimit(enabled = true, maxRequests = 1, window = Duration.ofMinutes(1)),
+                    clock,
+                )
+            val b =
+                SlidingWindowRateLimiter(
+                    "b",
+                    DescriptionProperties.RateLimit(enabled = true, maxRequests = 1, window = Duration.ofMinutes(1)),
+                    clock,
+                )
+            assertTrue(a.tryAcquire())
+            assertTrue(b.tryAcquire())
+            assertFalse(a.tryAcquire())
+        }
 }

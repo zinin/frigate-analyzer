@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.service.helper
 
+import ru.zinin.frigate.analyzer.model.dto.BboxCluster
 import ru.zinin.frigate.analyzer.model.dto.RepresentativeBbox
 import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 
@@ -7,13 +8,14 @@ object BboxClusteringHelper {
     /**
      * Greedy clustering. For each class, sort detections by confidence DESC and grow clusters
      * by adding detections whose IoU with the cluster's running union is above [innerIou].
-     * Each cluster yields one [RepresentativeBbox] computed as a confidence-weighted average.
+     * Each cluster yields one [RepresentativeBbox] computed as a confidence-weighted average,
+     * plus the detections it was built from.
      */
-    fun cluster(
+    fun clusterWithMembers(
         detections: List<DetectionEntity>,
         innerIou: Float,
         confidenceFloor: Float = 0.3f,
-    ): List<RepresentativeBbox> {
+    ): List<BboxCluster> {
         if (detections.isEmpty()) return emptyList()
 
         return detections
@@ -23,6 +25,13 @@ object BboxClusteringHelper {
                 clusterOneClass(className, group.sortedByDescending { it.confidence }, innerIou)
             }
     }
+
+    /** [clusterWithMembers] for callers that only need the representatives. */
+    fun cluster(
+        detections: List<DetectionEntity>,
+        innerIou: Float,
+        confidenceFloor: Float = 0.3f,
+    ): List<RepresentativeBbox> = clusterWithMembers(detections, innerIou, confidenceFloor).map { it.representative }
 
     private data class WorkingCluster(
         var unionX1: Float,
@@ -34,13 +43,14 @@ object BboxClusteringHelper {
         var weightedX2: Float,
         var weightedY2: Float,
         var weightSum: Float,
+        val members: MutableList<DetectionEntity>,
     )
 
     private fun clusterOneClass(
         className: String,
         sortedByConfidenceDesc: List<DetectionEntity>,
         innerIou: Float,
-    ): List<RepresentativeBbox> {
+    ): List<BboxCluster> {
         val clusters = mutableListOf<WorkingCluster>()
         for (det in sortedByConfidenceDesc) {
             val matched =
@@ -55,24 +65,26 @@ object BboxClusteringHelper {
         }
         return clusters.map { c ->
             val w = c.weightSum
-            if (w <= 0f) {
-                // Guard against NaN from all-zero-confidence detections.
-                RepresentativeBbox(
-                    className = className,
-                    x1 = c.unionX1,
-                    y1 = c.unionY1,
-                    x2 = c.unionX2,
-                    y2 = c.unionY2,
-                )
-            } else {
-                RepresentativeBbox(
-                    className = className,
-                    x1 = c.weightedX1 / w,
-                    y1 = c.weightedY1 / w,
-                    x2 = c.weightedX2 / w,
-                    y2 = c.weightedY2 / w,
-                )
-            }
+            val representative =
+                if (w <= 0f) {
+                    // Guard against NaN from all-zero-confidence detections.
+                    RepresentativeBbox(
+                        className = className,
+                        x1 = c.unionX1,
+                        y1 = c.unionY1,
+                        x2 = c.unionX2,
+                        y2 = c.unionY2,
+                    )
+                } else {
+                    RepresentativeBbox(
+                        className = className,
+                        x1 = c.weightedX1 / w,
+                        y1 = c.weightedY1 / w,
+                        x2 = c.weightedX2 / w,
+                        y2 = c.weightedY2 / w,
+                    )
+                }
+            BboxCluster(representative, c.members.toList())
         }
     }
 
@@ -88,6 +100,7 @@ object BboxClusteringHelper {
             weightedX2 = det.x2 * w,
             weightedY2 = det.y2 * w,
             weightSum = w,
+            members = mutableListOf(det),
         )
     }
 
@@ -105,5 +118,6 @@ object BboxClusteringHelper {
         c.weightedX2 += det.x2 * w
         c.weightedY2 += det.y2 * w
         c.weightSum += w
+        c.members += det
     }
 }

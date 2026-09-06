@@ -7,6 +7,8 @@ import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
+import ru.zinin.frigate.analyzer.ai.description.core.VisionInstructions
+import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Path
 import java.util.Base64
@@ -18,37 +20,33 @@ import kotlin.test.assertTrue
 class GrokPromptFileWriterTest {
     private val tempWriter = mockk<TempFileWriter>()
     private val mapper = TestObjectMappers.internalMapper()
-    private val writer = GrokPromptFileWriter(tempWriter, GrokPromptBuilder(), mapper)
+    private val writer = GrokPromptFileWriter(tempWriter, mapper)
 
     private val recordingId = UUID.randomUUID()
+    private val instructions = VisionInstructions(systemPrompt = "sys", preamble = "INTRO", epilogue = "RULES", jsonSchema = null)
     private val request =
-        DescriptionRequest(
-            recordingId = recordingId,
+        VisionRequest(
+            requestId = recordingId,
             frames =
                 listOf(
                     DescriptionRequest.FrameImage(2, byteArrayOf(1, 2)),
                     DescriptionRequest.FrameImage(0, byteArrayOf(3, 4)),
                 ),
-            language = "ru",
-            shortMaxLength = 150,
-            detailedMaxLength = 800,
+            instructions = instructions,
         )
 
     @Test
-    fun `blocks are intro, label+image per frame in frameIndex order, rules`() {
+    fun `blocks are preamble with frames header, label+image per frame in frameIndex order, epilogue`() {
         val blocks = writer.buildBlocks(request)
-
         assertEquals(6, blocks.size)
-        assertEquals("text", blocks[0]["type"])
-        assertTrue(blocks[0]["text"]!!.contains("in Russian"))
+        assertEquals(mapOf("type" to "text", "text" to "INTRO\n\nFrames (in chronological order):"), blocks[0])
         assertEquals(mapOf("type" to "text", "text" to "Frame 0:"), blocks[1])
         assertEquals("image", blocks[2]["type"])
         assertEquals("image/jpeg", blocks[2]["mimeType"])
         assertEquals(Base64.getEncoder().encodeToString(byteArrayOf(3, 4)), blocks[2]["data"])
         assertEquals(mapOf("type" to "text", "text" to "Frame 2:"), blocks[3])
         assertEquals(Base64.getEncoder().encodeToString(byteArrayOf(1, 2)), blocks[4]["data"])
-        assertEquals("text", blocks[5]["type"])
-        assertTrue(blocks[5]["text"]!!.contains("150"))
+        assertEquals(mapOf("type" to "text", "text" to "RULES"), blocks[5])
     }
 
     @Test

@@ -43,7 +43,7 @@ object DescriptionPresetCatalogBuilder {
     fun build(
         presets: Map<String, DescriptionProperties.Preset>,
         defaultPreset: String,
-        factories: List<DescriptionBackendFactory>,
+        factories: List<VisionBackendFactory>,
         timeout: Duration,
     ): Result {
         if (presets.isEmpty()) return Result.NoPresets
@@ -85,8 +85,8 @@ object DescriptionPresetCatalogBuilder {
      */
     private fun availabilityOf(
         presets: Map<String, DescriptionProperties.Preset>,
-        byProvider: Map<String, DescriptionBackendFactory>,
-    ): Map<String, DescriptionBackendFactory.Availability> =
+        byProvider: Map<String, VisionBackendFactory>,
+    ): Map<String, VisionBackendFactory.Availability> =
         presets.values
             .mapTo(LinkedHashSet()) { it.provider }
             .mapNotNull { provider -> byProvider[provider]?.let { provider to it.availability() } }
@@ -95,8 +95,8 @@ object DescriptionPresetCatalogBuilder {
     private fun entryOf(
         id: String,
         preset: DescriptionProperties.Preset,
-        byProvider: Map<String, DescriptionBackendFactory>,
-        availability: Map<String, DescriptionBackendFactory.Availability>,
+        byProvider: Map<String, VisionBackendFactory>,
+        availability: Map<String, VisionBackendFactory.Availability>,
         slowEffort: Boolean,
     ): DescriptionPresetCatalog.Entry {
         val factory = byProvider[preset.provider]
@@ -106,7 +106,7 @@ object DescriptionPresetCatalogBuilder {
             } else {
                 // getValue, а не [], хотя ключ заведомо есть: промах означал бы расхождение с
                 // availabilityOf, а тихо счесть непроверенный провайдер годным хуже, чем упасть.
-                (availability.getValue(preset.provider) as? DescriptionBackendFactory.Availability.Unavailable)?.reason
+                (availability.getValue(preset.provider) as? VisionBackendFactory.Availability.Unavailable)?.reason
             }
         val view =
             DescriptionPreset(

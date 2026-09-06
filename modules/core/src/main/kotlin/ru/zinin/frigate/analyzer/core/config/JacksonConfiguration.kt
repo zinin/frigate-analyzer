@@ -11,7 +11,7 @@ import tools.jackson.databind.json.JsonMapper
  * Primary tools.jackson (Jackson 3) JSON mapper used by:
  *  - WebFlux REST inbound/outbound JSON codec (wired in [WebFluxJacksonCodecConfigurer])
  *  - [ru.zinin.frigate.analyzer.core.service.DetectService] (parses detect-server error bodies as raw JsonNode)
- *  - [ru.zinin.frigate.analyzer.ai.description.claude.ClaudeResponseParser] (parses Claude responses)
+ *  - [ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser] (parses model responses)
  *
  * Settings:
  *  - camelCase (default property naming)
@@ -22,7 +22,7 @@ import tools.jackson.databind.json.JsonMapper
  * **Return type is `JsonMapper`, not `ObjectMapper`.** Spring Framework 7's `JacksonJsonEncoder`/
  * `JacksonJsonDecoder` constructors accept `JsonMapper` (или `JsonMapper.Builder` — 5 overload'ов).
  * `JsonMapper extends ObjectMapper`, so DI into consumers declaring `ObjectMapper` (DetectService,
- * ClaudeResponseParser) still works.
+ * DescriptionResponseParser) still works.
  *
  * **Builder vs pre-built — осознанный trade-off:**
  * Если построить бин через `(builder: JsonMapper.Builder) -> builder.configure(...).build()`,

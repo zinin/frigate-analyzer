@@ -4,17 +4,12 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import org.springframework.context.ApplicationEventPublisher
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
-import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
-import ru.zinin.frigate.analyzer.ai.description.core.ActivePresetResolver
-import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
-import ru.zinin.frigate.analyzer.ai.description.core.InMemoryDescriptionRuntimeSettings
-import ru.zinin.frigate.analyzer.ai.description.core.ProviderAuthTracker
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
+import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Files
 import java.nio.file.Path
@@ -35,7 +30,7 @@ import kotlin.test.assertEquals
  *     --tests ClaudeBackendIntegrationTest
  * ```
  *
- * Verifies: prompt → subprocess → stream-json parse → [ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult],
+ * Verifies: prompt → subprocess → stream-json parse → raw text, then [DescriptionResponseParser],
  * without hitting Anthropic.
  *
  * DISABLED: the SDK (spring-ai-claude-code-sdk, `ClaudeClient.async(...)`) invokes the CLI in
@@ -56,7 +51,7 @@ import kotlin.test.assertEquals
  */
 @Disabled(
     "Stub CLI does not implement the SDK's bidirectional stream-json protocol; " +
-        "ClaudeBackendTest covers the describe() pipeline via ClaudeInvoker.",
+        "ClaudeBackendTest covers the complete() pipeline via ClaudeInvoker.",
 )
 class ClaudeBackendIntegrationTest {
     @Test
@@ -90,20 +85,8 @@ JSON
                 proxy = ClaudeProperties.ProxySection("", "", ""),
                 anthropic = ClaudeProperties.AnthropicSection(),
             )
-        val common =
-            DescriptionProperties.CommonSection(
-                language = "en",
-                shortMaxLength = 200,
-                detailedMaxLength = 1500,
-                maxFrames = 10,
-                queueTimeout = Duration.ofSeconds(30),
-                timeout = Duration.ofSeconds(30),
-                maxConcurrent = 1,
-            )
-        val descriptionProps = DescriptionProperties(enabled = true, provider = "claude", common = common)
-
         val factory = ClaudeAsyncClientFactory(claudeProps)
-        val invoker = DefaultClaudeInvoker(factory, descriptionProps)
+        val invoker = DefaultClaudeInvoker(factory)
 
         val mapper = TestObjectMappers.internalMapper()
         val tempFileWriter =
@@ -128,31 +111,10 @@ JSON
                 model = claudeProps.model,
                 authScopeId = "claude",
                 promptBuilder = ClaudePromptBuilder(),
-                responseParser = ClaudeResponseParser(mapper),
                 imageStager = stager,
                 invoker = invoker,
                 exceptionMapper = ClaudeExceptionMapper(),
             )
-        val catalog =
-            DescriptionPresetCatalog(
-                listOf(
-                    DescriptionPresetCatalog.Entry(
-                        DescriptionPreset(
-                            id = "claude",
-                            provider = backend.providerId,
-                            model = claudeProps.model,
-                            effectiveModel = claudeProps.model,
-                            effort = "",
-                            authScopeId = backend.authScopeId,
-                            unavailableReason = null,
-                        ),
-                        backend,
-                    ),
-                ),
-                fallbackId = "claude",
-            )
-        val resolver = ActivePresetResolver(catalog, InMemoryDescriptionRuntimeSettings())
-        val agent = DefaultDescriptionAgent(resolver, ProviderAuthTracker(ApplicationEventPublisher { }), descriptionProps)
 
         val request =
             DescriptionRequest(
@@ -163,7 +125,13 @@ JSON
                 detailedMaxLength = 1500,
             )
 
-        val result = agent.describe(request)
+        val raw =
+            backend
+                .complete(
+                    VisionRequest(request.recordingId, request.frames, DescriptionTask.instructions(request)),
+                    Duration.ofSeconds(120),
+                ).primary
+        val result = DescriptionResponseParser(mapper).parse(raw, request.shortMaxLength, request.detailedMaxLength)
         assertEquals("stub-s", result.short)
         assertEquals("stub-d", result.detailed)
     }

@@ -6,8 +6,8 @@ import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackend
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackendFactory
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -35,13 +35,13 @@ class GrokBackendFactory(
     private val outputParser: GrokOutputParser,
     private val exceptionMapper: GrokExceptionMapper,
     private val guard: GrokHomeGuard,
-) : DescriptionBackendFactory {
+) : VisionBackendFactory {
     override val providerId: String = GrokBackend.PROVIDER_ID
 
     /** Каталоги и `PATH` приходят из окружения процесса — осматриваем один раз. */
-    private val inspected: DescriptionBackendFactory.Availability by lazy { inspectEnvironment() }
+    private val inspected: VisionBackendFactory.Availability by lazy { inspectEnvironment() }
 
-    override fun availability(): DescriptionBackendFactory.Availability = inspected
+    override fun availability(): VisionBackendFactory.Availability = inspected
 
     /**
      * Авторизация принадлежит паре «провайдер плюс модель»: два пресета на одной модели живут в
@@ -50,7 +50,7 @@ class GrokBackendFactory(
      */
     override fun authScopeId(preset: DescriptionProperties.Preset): String = "$providerId:${preset.model}"
 
-    override fun create(preset: DescriptionProperties.Preset): DescriptionBackend =
+    override fun create(preset: DescriptionProperties.Preset): VisionBackend =
         GrokBackend(
             model = preset.model,
             effort = preset.effort,
@@ -71,7 +71,7 @@ class GrokBackendFactory(
      * Отсутствие `auth.json` непригодностью не считается — BYOK-модель ходит по собственному ключу,
      * а протухшую сессию ловит `Unauthorized` и сообщение владельцу.
      */
-    private fun inspectEnvironment(): DescriptionBackendFactory.Availability {
+    private fun inspectEnvironment(): VisionBackendFactory.Availability {
         val home = properties.homePath
         val cwd = properties.workingDirectoryPath
         createDirectory(home)?.let { return it }
@@ -95,18 +95,18 @@ class GrokBackendFactory(
             }
         }
         logger.info { "Grok description provider: home=$home, cwd=$cwd" }
-        return DescriptionBackendFactory.Availability.Available
+        return VisionBackendFactory.Availability.Available
     }
 
     /** @return причину непригодности, если каталог создать не удалось, иначе null. */
-    private fun createDirectory(dir: Path): DescriptionBackendFactory.Availability.Unavailable? =
+    private fun createDirectory(dir: Path): VisionBackendFactory.Availability.Unavailable? =
         try {
             Files.createDirectories(dir)
             null
         } catch (e: IOException) {
             // Подробности — в лог: на экран владельца уходит только код причины.
             logger.warn(e) { "Cannot create Grok directory $dir: ${e.message}" }
-            DescriptionBackendFactory.Availability.Unavailable(UnavailableReason.HomeUnwritable(dir.toString()))
+            VisionBackendFactory.Availability.Unavailable(UnavailableReason.HomeUnwritable(dir.toString()))
         }
 
     private fun cliAvailable(): Boolean {

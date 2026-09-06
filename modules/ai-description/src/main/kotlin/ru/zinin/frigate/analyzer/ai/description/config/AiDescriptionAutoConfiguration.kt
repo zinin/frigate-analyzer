@@ -13,26 +13,43 @@ import org.springframework.context.annotation.Conditional
 import org.springframework.context.annotation.Configuration
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionAgent
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeAgent
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.core.ActivePresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.DefaultDescriptionAgent
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
+import ru.zinin.frigate.analyzer.ai.description.core.DefaultJudgeAgent
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalog
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetCatalogBuilder
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionPresetResolver
+import ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser
 import ru.zinin.frigate.analyzer.ai.description.core.InMemoryDescriptionRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.core.InMemoryJudgeRuntimeSettings
+import ru.zinin.frigate.analyzer.ai.description.core.JudgePresetResolver
+import ru.zinin.frigate.analyzer.ai.description.core.JudgeResponseParser
 import ru.zinin.frigate.analyzer.ai.description.core.ProviderAuthTracker
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackendFactory
+import ru.zinin.frigate.analyzer.ai.description.core.VisionCallExecutor
+import ru.zinin.frigate.analyzer.ai.description.core.VisionLimits
+import ru.zinin.frigate.analyzer.ai.description.ratelimit.JudgeRateLimiter
+import java.time.Clock
 
 private val logger = KotlinLogging.logger {}
 
 @AutoConfiguration
 @ComponentScan("ru.zinin.frigate.analyzer.ai.description")
-@EnableConfigurationProperties(DescriptionProperties::class, ClaudeProperties::class, GrokProperties::class)
+@EnableConfigurationProperties(
+    DescriptionProperties::class,
+    ClaudeProperties::class,
+    GrokProperties::class,
+    JudgeProperties::class,
+)
 open class AiDescriptionAutoConfiguration {
     /**
      * Все бины фичи живут здесь, под ОДНИМ условием, и связаны обычными зависимостями — поэтому
      * порядок объявления `@Bean`-методов ни на что не влияет.
      *
      * Почему не `@ConditionalOnBean(DescriptionPresetCatalog::class)` на соседних методах:
-     * прежний `@ConditionalOnBean(DescriptionBackend::class)` был надёжен потому, что backend
+     * прежний `@ConditionalOnBean(VisionBackend::class)` был надёжен потому, что backend
      * приходил из `@ComponentScan` — из другой фазы, гарантированно раньше. Для sibling-`@Bean`
      * того же класса такой гарантии нет: Spring Boot не обещает, что он виден `OnBeanCondition`,
      * а порядок методов в байткоде Kotlin может разойтись с порядком в файле. Цена ошибки
@@ -48,7 +65,7 @@ open class AiDescriptionAutoConfiguration {
             descriptionProperties: DescriptionProperties,
             claudeProperties: ClaudeProperties,
             grokProperties: GrokProperties,
-            factories: ObjectProvider<DescriptionBackendFactory>,
+            factories: ObjectProvider<VisionBackendFactory>,
         ): DescriptionPresetCatalog {
             val result =
                 DescriptionPresetCatalogBuilder.build(
@@ -79,14 +96,16 @@ open class AiDescriptionAutoConfiguration {
         fun inMemoryDescriptionRuntimeSettings(): DescriptionRuntimeSettings = InMemoryDescriptionRuntimeSettings()
 
         /**
-         * Резолвер, а не каталог: он же отдаёт `telegram` реализацию `ActiveDescriptionPreset` —
-         * бин виден и по конкретному типу, и по интерфейсу из `api`.
+         * Адаптер описаний как `ActiveDescriptionPreset`. Сам [ActivePresetResolver] бином не
+         * является: второй резолвер (судья) делит каталог, но не fallback, и два бина одного типа
+         * ломают `ObjectProvider.getIfAvailable()` у экрана `/ai`.
          */
         @Bean
-        fun activePresetResolver(
+        fun descriptionPresetResolver(
             catalog: DescriptionPresetCatalog,
             runtimeSettings: DescriptionRuntimeSettings,
-        ): ActivePresetResolver = ActivePresetResolver(catalog, runtimeSettings)
+        ): DescriptionPresetResolver =
+            DescriptionPresetResolver(ActivePresetResolver(catalog, runtimeSettings, catalog.fallbackId, label = "description"))
 
         /**
          * Виден и по конкретному типу — агенту, — и по `ProviderAuthStates`: экран `/ai` читает
@@ -96,11 +115,25 @@ open class AiDescriptionAutoConfiguration {
         fun providerAuthTracker(eventPublisher: ApplicationEventPublisher): ProviderAuthTracker = ProviderAuthTracker(eventPublisher)
 
         @Bean
-        fun descriptionAgent(
-            resolver: ActivePresetResolver,
+        fun descriptionVisionCallExecutor(
+            resolver: DescriptionPresetResolver,
             authTracker: ProviderAuthTracker,
             descriptionProperties: DescriptionProperties,
-        ): DescriptionAgent = DefaultDescriptionAgent(resolver, authTracker, descriptionProperties)
+        ): VisionCallExecutor {
+            val common = descriptionProperties.common
+            return VisionCallExecutor(
+                resolver = resolver.resolver,
+                authTracker = authTracker,
+                limits = VisionLimits(common.queueTimeout, common.timeout, common.maxConcurrent, common.maxImageSide),
+                label = "description",
+            )
+        }
+
+        @Bean
+        fun descriptionAgent(
+            descriptionVisionCallExecutor: VisionCallExecutor,
+            parser: DescriptionResponseParser,
+        ): DescriptionAgent = DefaultDescriptionAgent(descriptionVisionCallExecutor, parser)
 
         /**
          * Пустая карта означает деплой, настроенный старым способом: один пресет из `provider` и
@@ -149,5 +182,68 @@ open class AiDescriptionAutoConfiguration {
             /** Совпадает с дефолтом `application.ai.description.provider` в application.yaml. */
             const val YAML_DEFAULT_PROVIDER = "claude"
         }
+    }
+
+    /**
+     * Бины судьи — отдельное условие поверх каталога описаний. Два [VisionCallExecutor] живут
+     * рядом и различаются именем параметра (`descriptionVisionCallExecutor` /
+     * `judgeVisionCallExecutor`); по типу их никто не инжектит.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
+    @ConditionalOnProperty("application.ai.judge.enabled", havingValue = "true")
+    @Conditional(DescriptionPresetsDeclaredCondition::class)
+    open class JudgeBeans {
+        @Bean
+        @ConditionalOnMissingBean(JudgeRuntimeSettings::class)
+        fun inMemoryJudgeRuntimeSettings(): JudgeRuntimeSettings = InMemoryJudgeRuntimeSettings()
+
+        @Bean
+        fun judgePresetResolver(
+            catalog: DescriptionPresetCatalog,
+            runtimeSettings: JudgeRuntimeSettings,
+            judgeProperties: JudgeProperties,
+        ): JudgePresetResolver {
+            val fallbackId = judgeProperties.defaultPreset.ifBlank { catalog.fallbackId }
+            val entry = catalog.byId(fallbackId)
+            check(entry != null) {
+                "application.ai.judge default-preset '$fallbackId' is not declared in application.ai.description.presets"
+            }
+            check(entry.backend != null) {
+                "application.ai.judge default-preset '$fallbackId' is unavailable: ${entry.view.unavailableReason}"
+            }
+            return JudgePresetResolver(ActivePresetResolver(catalog, runtimeSettings, fallbackId, label = "judge"))
+        }
+
+        @Bean
+        fun judgeVisionCallExecutor(
+            resolver: JudgePresetResolver,
+            authTracker: ProviderAuthTracker,
+            judgeProperties: JudgeProperties,
+        ): VisionCallExecutor =
+            VisionCallExecutor(
+                resolver = resolver.resolver,
+                authTracker = authTracker,
+                limits =
+                    VisionLimits(
+                        judgeProperties.queueTimeout,
+                        judgeProperties.timeout,
+                        judgeProperties.maxConcurrent,
+                        judgeProperties.maxImageSide,
+                    ),
+                label = "judge",
+            )
+
+        @Bean
+        fun judgeRateLimiter(
+            clock: Clock,
+            judgeProperties: JudgeProperties,
+        ): JudgeRateLimiter = JudgeRateLimiter(clock, judgeProperties)
+
+        @Bean
+        fun judgeAgent(
+            judgeVisionCallExecutor: VisionCallExecutor,
+            parser: JudgeResponseParser,
+        ): JudgeAgent = DefaultJudgeAgent(judgeVisionCallExecutor, parser)
     }
 }

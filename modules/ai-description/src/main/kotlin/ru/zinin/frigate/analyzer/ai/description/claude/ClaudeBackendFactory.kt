@@ -7,8 +7,8 @@ import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackend
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackend
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackendFactory
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -28,17 +28,16 @@ private val logger = KotlinLogging.logger {}
 class ClaudeBackendFactory(
     private val claudeProperties: ClaudeProperties,
     private val promptBuilder: ClaudePromptBuilder,
-    private val responseParser: ClaudeResponseParser,
     private val imageStager: ClaudeImageStager,
     private val invoker: ClaudeInvoker,
     private val exceptionMapper: ClaudeExceptionMapper,
-) : DescriptionBackendFactory {
+) : VisionBackendFactory {
     override val providerId: String = "claude"
 
     /** Токен и наличие CLI приходят из окружения процесса — осматриваем один раз. */
-    private val inspected: DescriptionBackendFactory.Availability by lazy { inspectEnvironment() }
+    private val inspected: VisionBackendFactory.Availability by lazy { inspectEnvironment() }
 
-    override fun availability(): DescriptionBackendFactory.Availability = inspected
+    override fun availability(): VisionBackendFactory.Availability = inspected
 
     /**
      * `ANTHROPIC_MODEL` вытесняет объявленную модель на уровне процесса, поэтому два claude-пресета
@@ -50,14 +49,13 @@ class ClaudeBackendFactory(
     /** Один токен обслуживает все модели Claude, поэтому область у всех пресетов общая. */
     override fun authScopeId(preset: DescriptionProperties.Preset): String = providerId
 
-    override fun create(preset: DescriptionProperties.Preset): DescriptionBackend =
+    override fun create(preset: DescriptionProperties.Preset): VisionBackend =
         ClaudeBackend(
             model = preset.model,
             // Через authScopeId(preset), а не providerId напрямую: область считает ровно одно
             // место, и строка на backend-е совпадает с той, что каталог кладёт в DescriptionPreset.
             authScopeId = authScopeId(preset),
             promptBuilder = promptBuilder,
-            responseParser = responseParser,
             imageStager = imageStager,
             invoker = invoker,
             exceptionMapper = exceptionMapper,
@@ -68,12 +66,12 @@ class ClaudeBackendFactory(
      * где живёт только Grok. Такой пресет помечается недоступным, а старт падает, только если
      * недоступны все.
      */
-    private fun inspectEnvironment(): DescriptionBackendFactory.Availability {
+    private fun inspectEnvironment(): VisionBackendFactory.Availability {
         if (claudeProperties.oauthToken.isBlank() && claudeProperties.anthropic.authToken.isBlank()) {
-            return DescriptionBackendFactory.Availability.Unavailable(UnavailableReason.NoToken)
+            return VisionBackendFactory.Availability.Unavailable(UnavailableReason.NoToken)
         }
         warnIfCliMissing()
-        return DescriptionBackendFactory.Availability.Available
+        return VisionBackendFactory.Availability.Available
     }
 
     /**

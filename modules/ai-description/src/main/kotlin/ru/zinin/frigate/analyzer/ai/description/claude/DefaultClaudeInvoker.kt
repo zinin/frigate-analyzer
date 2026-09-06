@@ -10,7 +10,6 @@ import org.springaicommunity.claude.agent.sdk.types.AssistantMessage
 import org.springaicommunity.claude.agent.sdk.types.ResultMessage
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
-import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import java.time.Duration
 
 private val logger = KotlinLogging.logger {}
@@ -19,24 +18,22 @@ private val logger = KotlinLogging.logger {}
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
 class DefaultClaudeInvoker(
     private val clientFactory: ClaudeAsyncClientFactory,
-    descriptionProperties: DescriptionProperties,
 ) : ClaudeInvoker {
-    // Invoker depends only on work-timeout — pull it out of properties at DI time
-    // so configuration errors surface as startup failure, not at first call.
-    //
-    // SDK timeout is intentionally given a small buffer on top of the agent's `withTimeout`
-    // so Kotlin's coroutine timeout always fires first. Otherwise, if both triggered at the
-    // same value, whichever raced first would produce a different exception type (SDK →
-    // Transport → retry with delay(5s) vs Kotlin → Timeout → no retry), making behaviour
-    // non-deterministic near the budget boundary. The SDK side then acts as a safety net.
-    private val workTimeout: Duration = descriptionProperties.common.timeout.plus(SDK_TIMEOUT_BUFFER)
-
     override suspend fun invoke(
         prompt: String,
         model: String,
+        systemPrompt: String,
+        timeout: Duration,
     ): String {
         logger.debug { "Claude prompt (${prompt.length} chars):\n$prompt" }
-        val client = clientFactory.create(workTimeout, model)
+        // Бюджет приходит от задачи, а не из настроек описаний: у судьи свой таймаут, и клиент,
+        // построенный по чужому, обрывал бы его вызов раньше срока и отдавал бы это как Transport.
+        //
+        // Буфер поверх бюджета намеренный: `withTimeout` корутины обязан сработать первым. При
+        // равных значениях выиграл бы тот, кто успел, а типы исключений разные (SDK → Transport →
+        // повтор с delay(5s) против Kotlin → Timeout без повтора), и поведение у границы бюджета
+        // стало бы недетерминированным. Сторона SDK остаётся страховкой.
+        val client = clientFactory.create(timeout.plus(SDK_TIMEOUT_BUFFER), model, systemPrompt)
         try {
             // We send the prompt as the FIRST user message via `connect(prompt)`.
             // The no-arg `connect()` would inject a default "Hello" message before ours, and the
@@ -76,7 +73,7 @@ class DefaultClaudeInvoker(
         } finally {
             // ClaudeAsyncClient is NOT AutoCloseable — .use not usable. Close explicitly.
             // NonCancellable required: invoke() runs under withTimeout in
-            // DefaultDescriptionAgent.describe(); on timeout the finally runs with Job
+            // VisionCallExecutor; on timeout the finally runs with Job
             // already cancelled, and a bare awaitSingleOrNull() would throw
             // CancellationException before subscribing — skipping the close and leaking
             // the Claude CLI subprocess.

@@ -5,8 +5,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 
 /**
  * Провайдер-нейтральная нормализация ответа модели: непустые поля и обрезка по лимитам.
- * Провайдеры извлекают `short` и `detailed` по-своему (JSON в тексте у Claude, `structuredOutput`
- * у Grok) и отдают их сюда.
+ * [DescriptionResponseParser] извлекает `short` и `detailed` из сырого текста и отдаёт их сюда.
  */
 object ResultNormalizer {
     fun normalize(

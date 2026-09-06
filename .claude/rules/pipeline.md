@@ -16,7 +16,8 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 | RecordingTracker | `core/pipeline/frame/` | Thread-safe state management |
 | RecordingState | `core/pipeline/frame/` | Per-recording state data class |
 | FrameTask | `core/pipeline/frame/` | Frame processing task data class |
-| RecordingProcessingFacade | `core/facade/` | Orchestrates save + notify + visualize |
+| RecordingProcessingFacade | `core/facade/` | Orchestrates save + notify + visualize; when the judge bean exists, hands the candidate to it and does not send itself |
+| JudgeCoroutineScope | `core/judge/` | IO + SupervisorJob for `NotificationJudgeService`; `@PreDestroy` cancels in-flight jobs |
 
 ## FrameAnalysisPipeline
 
@@ -50,8 +51,14 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 ## RecordingProcessingFacade
 
 - Saves processing results to DB
-- Sends Telegram notification with best detection frame
 - Orchestrates frame visualization for notifications
+- When `application.ai.judge.enabled=true`, hands the candidate to `NotificationJudgeService.submit`
+  and returns (the pipeline consumer does not wait for the model; send-or-not happens inside the
+  judge on `JudgeCoroutineScope`). Without that bean, sends the Telegram notification itself.
+  Beyond `APP_AI_JUDGE_MAX_IN_FLIGHT` candidates in memory, `submit` sends the recording unjudged
+  from the consumer's own coroutine rather than queueing another one — that bounds memory and puts
+  the back-pressure back where it was before the judge. See "Two different limits" in
+  `ai-description.md`.
 
 ## File Watching & Startup
 

@@ -84,6 +84,37 @@ Migrations location: `docker/liquibase/migration/`
 
 Index: `idx_object_tracks_cam_lastseen (cam_id, last_seen_at DESC)`. Cleanup via `ObjectTracksCleanupTask`.
 
+### notification_verdicts
+
+One row per notification candidate that reached the LLM judge (or was bypassed / snoozed / failed
+over). Migration `1.0.6.xml`. **No cleanup** — rows are kept forever so `/verdicts` and offline
+review of `context_json` stay possible. Cascade-deleted with the recording.
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| id | UUID | Primary key |
+| created_at | TIMESTAMPTZ | Row creation time |
+| recording_id | UUID | FK → recordings (`ON DELETE CASCADE`) |
+| cam_id | VARCHAR(255) | Camera identifier (denormalized for history queries) |
+| record_timestamp | TIMESTAMPTZ | Recording timestamp (event time, not insert time) |
+| stage | VARCHAR(16) | `JUDGE` / `SNOOZE` / `FAILOVER` / `BYPASS` |
+| verdict | VARCHAR(8) | `PUBLISH` / `SUPPRESS` |
+| reason | VARCHAR(32) | Model reason or fail-open reason — see `VerdictReason` |
+| tracker_reason | VARCHAR(32) | Why the tracker wanted to notify (`NEW_OBJECTS` / `REAPPEARED`) |
+| classes | VARCHAR(255) | Clustered class counts, e.g. `bicycle:2,car:1` |
+| confidence | REAL NULL | Model confidence in `[0, 1]`, or null |
+| summary | VARCHAR(512) NULL | Model one-liner; stored, not shown to recipients |
+| wanted | VARCHAR(512) NULL | Model's extra-context request; stored and ignored |
+| snooze_until | TIMESTAMPTZ NULL | When the in-memory snooze (if any) expires |
+| preset_id | VARCHAR(32) NULL | Preset that produced a `JUDGE` row |
+| model | VARCHAR(255) NULL | Effective model of that preset |
+| latency_ms | INT NULL | Model call latency |
+| context_json | TEXT NULL | Prompt context that was sent (or built before a failover) |
+| error | VARCHAR(1024) NULL | Failover detail (`ClassName: message`), never a secret |
+
+Indexes: `idx_notification_verdicts_cam_record (cam_id, record_timestamp DESC)` for `/verdicts` and
+the history block; `idx_notification_verdicts_created (created_at)` for `/status` 24h counters.
+
 ### app_settings
 
 | Column | Type | Purpose |
@@ -106,15 +137,34 @@ AI-description keys are not seeded either — both are written by `/ai`
 | `ai.description.preset.active` | string, a preset id | nothing chosen: `default-preset`, else the first usable preset of the catalog |
 | `ai.description.enabled` | boolean | `true` — descriptions are on; `APP_AI_DESCRIPTION_ENABLED=false` still wins, as the feature beans do not exist then |
 
+Judge keys are not seeded either — written by `/ai` (`AppSettingsJudgeRuntimeSettings`, gated on
+`application.ai.judge.enabled=true`):
+
+| Key | Type | Absent means |
+|-----|------|--------------|
+| `ai.judge.preset.active` | string, a preset id | nothing chosen: `APP_AI_JUDGE_DEFAULT_PRESET`, else the descriptions fallback |
+| `ai.judge.enabled` | boolean | `true` — the judge is on; `APP_AI_JUDGE_ENABLED=false` still wins, as the feature beans do not exist then |
+
 `AppSettingsService` caches keys per-process without TTL, absence included, so direct SQL edits to
 this table need an application restart — see "Operational Notes" in `telegram-notifications.md`.
 
 **This cache makes the feature single-instance.** A write invalidates only the cache of the process
 that performed it, so with two application containers behind one database the preset choice and the
-runtime description switch diverge: the container that did not serve the `/ai` tap keeps serving the
+runtime description/judge switch diverge: the container that did not serve the `/ai` tap keeps serving the
 previous value until it restarts. The deployment is designed for one instance
 (`docker/deploy/docker-compose.yml` runs a single `frigate-analyzer` service); nothing detects or
 repairs the split.
+
+## Connection pool
+
+`spring.r2dbc.pool` in `application.yaml`: `initial-size: 10`, `max-size: 100`,
+`max-acquire-time: 5s`. The last one is load-bearing and not a default — r2dbc waits for a connection
+indefinitely unless told otherwise, so an exhausted pool would suspend a caller rather than fail it.
+Some of those callers cannot survive that: the judge's fan-out and its in-flight overflow branch run
+under `NonCancellable` inside a pipeline consumer, where an unbounded suspension is interruptible by
+nothing at all, shutdown included. With the bound, starvation surfaces as an exception, which every
+path already handles. It covers only handing out a connection; a statement that hangs with one in
+hand is still up to the caller's own `withTimeout` — see the judge's in `ai-description.md`.
 
 ## Patterns
 

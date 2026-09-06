@@ -20,7 +20,7 @@ import tools.jackson.databind.json.JsonMapper
  * fixtures / shared testsupport module intentionally **out of scope of issue #29**.
  *
  * Return type is `JsonMapper` to match production. `JsonMapper extends ObjectMapper`, so
- * `ClaudeResponseParser`'s `ObjectMapper` parameter is satisfied transparently.
+ * `DescriptionResponseParser`'s `ObjectMapper` parameter is satisfied transparently.
  *
  * Jackson 3 note: `WRITE_DATES_AS_TIMESTAMPS`/`WRITE_DURATIONS_AS_TIMESTAMPS` находятся в
  * `tools.jackson.databind.cfg.DateTimeFeature`, не в `SerializationFeature` (Jackson 2 расположение).

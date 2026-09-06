@@ -195,8 +195,9 @@ worth probing in production.
 | /language | USER, OWNER | Configure interface language |
 | /notifications | USER, OWNER | Manage notification subscriptions |
 | /version | USER, OWNER | Show application version |
-| /status | OWNER | Recordings, cameras and detect-servers snapshot (handler lives in `core`) |
-| /ai | OWNER | Switch the active AI-description preset, turn descriptions on and off (`**/handler/aisettings/**`, see `ai-description.md`) |
+| /status | OWNER | Recordings, cameras, detect-servers and (when enabled) the LLM judge snapshot — 24h counters and active snoozes (handler lives in `core`) |
+| /ai | OWNER | Two blocks when the judge is on: switch the active description **and** judge presets, turn each on and off (`**/handler/aisettings/**`, `aip:*` / `aip:j:*`, see `ai-description.md`) |
+| /verdicts | OWNER | Latest rows from `notification_verdicts` (`/verdicts [cam] [n]`, default 10, max 30; handler lives in `core`) |
 | /adduser | OWNER | Invite user |
 | /removeuser | OWNER | Remove user |
 | /users | OWNER | List all users |

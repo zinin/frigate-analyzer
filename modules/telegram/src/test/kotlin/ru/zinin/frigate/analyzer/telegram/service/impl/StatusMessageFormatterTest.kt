@@ -6,9 +6,12 @@ import org.junit.jupiter.api.Test
 import org.springframework.context.support.ReloadableResourceBundleMessageSource
 import ru.zinin.frigate.analyzer.model.dto.CameraState
 import ru.zinin.frigate.analyzer.model.dto.CameraStatusDto
+import ru.zinin.frigate.analyzer.model.response.CameraSnoozeDto
 import ru.zinin.frigate.analyzer.model.response.CameraStatistics
 import ru.zinin.frigate.analyzer.model.response.CamerasSection
 import ru.zinin.frigate.analyzer.model.response.DetectServerStatistics
+import ru.zinin.frigate.analyzer.model.response.JudgeCounters
+import ru.zinin.frigate.analyzer.model.response.JudgeSection
 import ru.zinin.frigate.analyzer.model.response.RecordingsStatistics
 import ru.zinin.frigate.analyzer.model.response.ServerLoad
 import ru.zinin.frigate.analyzer.model.response.ServerStatus
@@ -56,6 +59,7 @@ class StatusMessageFormatterTest {
     private fun snapshot(
         camerasEnabled: Boolean = true,
         cameras: List<CameraStatusDto> = emptyList(),
+        judge: JudgeSection = JudgeSection.disabled(),
     ): StatusResponse =
         StatusResponse(
             recordings =
@@ -84,6 +88,7 @@ class StatusMessageFormatterTest {
                         videoVisualizeRequests = ServerLoad(0, 1),
                     ),
                 ),
+            judge = judge,
         )
 
     @Test
@@ -352,6 +357,43 @@ class StatusMessageFormatterTest {
             2,
             out.split("status.recordings.value.withPct[0,0.0]").size - 1,
             "expected two '0 (0.0%)' rows (success + errors) when total=0: $out",
+        )
+    }
+
+    @Test
+    fun `judge section says disabled when the feature is off`() {
+        val out = formatter.format(snapshot(), language = "en", zone = zone, now = now)
+        assertTrue(out.contains("status.judge.disabled"), "missing disabled marker in: $out")
+    }
+
+    @Test
+    fun `judge section lists counters and snoozes`() {
+        val judge =
+            JudgeSection(
+                enabled = true,
+                runtimeEnabled = true,
+                presetId = "claude-sonnet",
+                last24h =
+                    JudgeCounters(
+                        published = 6,
+                        suppressedByReason = mapOf("STATIC_OBJECT" to 30),
+                        failover = 1,
+                        snoozed = 20,
+                    ),
+                snoozes =
+                    listOf(
+                        CameraSnoozeDto("cam2", now.plusSeconds(900), "person:1"),
+                    ),
+            )
+        val out = formatter.format(snapshot(judge = judge), language = "en", zone = zone, now = now)
+        assertTrue(out.contains("status.judge.preset[claude-sonnet]"), "missing preset in: $out")
+        assertTrue(out.contains("status.judge.published[6]"), "missing published in: $out")
+        assertTrue(out.contains("STATIC_OBJECT 30"), "missing suppressed reason in: $out")
+        assertTrue(out.contains("status.judge.failover[1]"), "missing failover in: $out")
+        assertTrue(out.contains("status.judge.snoozed[20]"), "missing snoozed in: $out")
+        assertTrue(
+            out.contains("status.judge.snooze.line[cam2,10:15:00,person:1]"),
+            "missing snooze line in: $out",
         )
     }
 }

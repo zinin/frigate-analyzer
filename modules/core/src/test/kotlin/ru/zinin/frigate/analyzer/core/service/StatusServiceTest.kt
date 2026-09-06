@@ -7,6 +7,9 @@ import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
+import ru.zinin.frigate.analyzer.ai.description.api.ActiveJudgePreset
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
+import ru.zinin.frigate.analyzer.core.judge.NotificationJudgeService
 import ru.zinin.frigate.analyzer.core.loadbalancer.DetectServerLoadBalancer
 import ru.zinin.frigate.analyzer.core.task.CameraSignalState
 import ru.zinin.frigate.analyzer.core.task.SignalLossMonitorTask
@@ -14,6 +17,7 @@ import ru.zinin.frigate.analyzer.model.dto.CameraState
 import ru.zinin.frigate.analyzer.model.dto.CameraStatisticsDto
 import ru.zinin.frigate.analyzer.model.dto.RecordingCountsDto
 import ru.zinin.frigate.analyzer.model.response.DetectServerStatistics
+import ru.zinin.frigate.analyzer.model.response.JudgeSection
 import ru.zinin.frigate.analyzer.model.response.ServerLoad
 import ru.zinin.frigate.analyzer.model.response.ServerStatus
 import ru.zinin.frigate.analyzer.service.repository.RecordingEntityRepository
@@ -72,13 +76,34 @@ class StatusServiceTest {
             every { ifAvailable } returns monitor
         }
 
+    private fun <T : Any> provider(value: T?): ObjectProvider<T> =
+        mockk {
+            every { getIfAvailable() } returns value
+            every { ifAvailable } returns value
+        }
+
+    private fun statusService(
+        recordingRepository: RecordingEntityRepository = recordings,
+        monitor: SignalLossMonitorTask? = null,
+    ) = StatusService(
+        recordingRepository = recordingRepository,
+        detectServerLoadBalancer = lb,
+        signalLossMonitorTask = monitorProvider(monitor),
+        clock = clock,
+        judgeService = provider<NotificationJudgeService>(null),
+        verdictService = mockk(relaxed = true),
+        judgeRuntimeSettings = provider<JudgeRuntimeSettings>(null),
+        activeJudgePreset = provider<ActiveJudgePreset>(null),
+    )
+
     @Test
     fun `collect returns monitoringEnabled=false when monitor bean absent`() =
         runBlocking {
-            val service = StatusService(recordings, lb, monitorProvider(null), clock)
+            val service = statusService()
             val resp = service.collect()
             assertThat(resp.cameras.monitoringEnabled).isFalse()
             assertThat(resp.cameras.items).isEmpty()
+            assertThat(resp.judge).isEqualTo(JudgeSection.disabled())
             Unit
         }
 
@@ -89,7 +114,7 @@ class StatusServiceTest {
                 mockk<SignalLossMonitorTask>().apply {
                     every { snapshotStates() } returns emptyMap()
                 }
-            val service = StatusService(recordings, lb, monitorProvider(monitor), clock)
+            val service = statusService(monitor = monitor)
             val resp = service.collect()
             assertThat(resp.cameras.monitoringEnabled).isTrue()
             assertThat(resp.cameras.items).isEmpty()
@@ -107,7 +132,7 @@ class StatusServiceTest {
                             "cam2" to CameraSignalState.SignalLost(now.minusSeconds(600), notificationSent = true),
                         )
                 }
-            val service = StatusService(recordings, lb, monitorProvider(monitor), clock)
+            val service = statusService(monitor = monitor)
 
             val resp = service.collect()
 
@@ -125,7 +150,7 @@ class StatusServiceTest {
     @Test
     fun `collect sorts detect servers DEAD first then alphabetical`() =
         runBlocking {
-            val service = StatusService(recordings, lb, monitorProvider(null), clock)
+            val service = statusService()
             val resp = service.collect()
             assertThat(resp.detectServers.map { it.id }).containsExactly("srv-a", "srv-b")
             Unit
@@ -134,7 +159,7 @@ class StatusServiceTest {
     @Test
     fun `collect populates recordings counters and rate`() =
         runBlocking {
-            val service = StatusService(recordings, lb, monitorProvider(null), clock)
+            val service = statusService()
             val resp = service.collect()
             assertThat(resp.recordings.total).isEqualTo(100L)
             assertThat(resp.recordings.processed).isEqualTo(90L)
@@ -156,7 +181,7 @@ class StatusServiceTest {
                     coEvery { getStatisticsByCameras() } returns emptyList()
                     coEvery { getProcessingRatePerMinuteLast5Minutes() } returns 0.0
                 }
-            val service = StatusService(emptyRecordings, lb, monitorProvider(null), clock)
+            val service = statusService(recordingRepository = emptyRecordings)
             val resp = service.collect()
             assertThat(resp.recordings.total).isEqualTo(0L)
             assertThat(resp.recordings.processed).isEqualTo(0L)

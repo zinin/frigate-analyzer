@@ -7,4 +7,7 @@ object AiSettingsCallbacks {
     const val ON = PREFIX + "on"
     const val OFF = PREFIX + "off"
     const val SET_PREFIX = PREFIX + "set:"
+    const val JUDGE_ON = PREFIX + "j:on"
+    const val JUDGE_OFF = PREFIX + "j:off"
+    const val JUDGE_SET_PREFIX = PREFIX + "j:set:"
 }

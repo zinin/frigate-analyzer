@@ -54,6 +54,10 @@ class AiSettingsMessageRendererTest {
         effectiveId: String? = "grok-fast",
         presets: List<DescriptionPreset> = listOf(fast, luna, opus),
         auth: Map<String, ProviderAuthStates.Health> = mapOf("grok:grok-4.6" to ProviderAuthStates.Health.HEALTHY),
+        judgeAvailable: Boolean = false,
+        judgeEnabled: Boolean = true,
+        judgeStoredPresetId: String? = null,
+        judgeEffectivePresetId: String? = null,
     ) = AiSettingsViewState(
         descriptionsEnabled = enabled,
         storedPresetId = storedId,
@@ -61,6 +65,10 @@ class AiSettingsMessageRendererTest {
         presets = presets,
         authByScope = auth,
         language = "ru",
+        judgeAvailable = judgeAvailable,
+        judgeEnabled = judgeEnabled,
+        judgeStoredPresetId = judgeStoredPresetId,
+        judgeEffectivePresetId = judgeEffectivePresetId,
     )
 
     private fun payloads(state: AiSettingsViewState): List<String> =
@@ -174,9 +182,9 @@ class AiSettingsMessageRendererTest {
     fun `every preset gets a button and the effective one is marked`() {
         val rendered = labels(state())
 
-        assertTrue(rendered.contains("✅ grok-fast"), rendered.toString())
-        assertTrue(rendered.contains("byok-luna"), rendered.toString())
-        assertTrue(rendered.contains("⚠️ claude-opus"), rendered.toString())
+        assertTrue(rendered.contains("📝 ✅ grok-fast"), rendered.toString())
+        assertTrue(rendered.contains("📝 byok-luna"), rendered.toString())
+        assertTrue(rendered.contains("📝 ⚠️ claude-opus"), rendered.toString())
         assertTrue(payloads(state()).containsAll(listOf("aip:set:grok-fast", "aip:set:claude-opus")))
     }
 
@@ -185,8 +193,8 @@ class AiSettingsMessageRendererTest {
     fun `the mark follows the effective preset, not the stored one`() {
         val rendered = labels(state(storedId = "claude-opus", effectiveId = "grok-fast"))
 
-        assertTrue(rendered.contains("✅ grok-fast"), rendered.toString())
-        assertFalse(rendered.contains("✅ claude-opus"), rendered.toString())
+        assertTrue(rendered.contains("📝 ✅ grok-fast"), rendered.toString())
+        assertFalse(rendered.contains("📝 ✅ claude-opus"), rendered.toString())
     }
 
     @Test
@@ -293,8 +301,8 @@ class AiSettingsMessageRendererTest {
                 .flatten()
                 .map { (it as CallbackDataInlineKeyboardButton).text }
 
-        assertTrue(buttons.contains("grok-deep 🐢"), buttons.toString())
-        assertTrue(buttons.contains("✅ grok-fast"), buttons.toString())
+        assertTrue(buttons.contains("📝 grok-deep 🐢"), buttons.toString())
+        assertTrue(buttons.contains("📝 ✅ grok-fast"), buttons.toString())
         assertTrue(rendered.text.contains("ai.settings.slow.note"), rendered.text)
         verify { msg.get("ai.settings.slow.note", "ru", "🐢") }
     }
@@ -355,5 +363,60 @@ class AiSettingsMessageRendererTest {
                 "ru",
             )
         assertEquals(200, text.length)
+    }
+
+    @Test
+    fun `the judge block is rendered when the feature is available`() {
+        val withJudge =
+            state(
+                judgeAvailable = true,
+                judgeEnabled = true,
+                judgeStoredPresetId = "grok-fast",
+                judgeEffectivePresetId = "grok-fast",
+            )
+        val rendered = renderer.render(withJudge)
+
+        assertTrue(rendered.text.contains("ai.settings.judge.title"), rendered.text)
+        assertTrue(rendered.text.contains("ai.settings.judge.state"), rendered.text)
+        assertTrue(rendered.text.contains("ai.settings.judge.active"), rendered.text)
+        verify { msg.get("ai.settings.judge.active", "ru", "grok-fast", "grok", "grok-4.6", "low") }
+
+        val data = payloads(withJudge)
+        assertTrue(data.containsAll(listOf("aip:j:set:grok-fast", "aip:j:set:byok-luna", "aip:j:set:claude-opus")))
+        assertTrue(data.contains("aip:j:off"), data.toString())
+        assertEquals("aip:close", data.last())
+
+        val buttons = labels(withJudge)
+        assertTrue(buttons.any { it.startsWith("📝 ") }, buttons.toString())
+        assertTrue(buttons.any { it.startsWith("⚖️ ") }, buttons.toString())
+        assertTrue(buttons.contains("📝 ✅ grok-fast"), buttons.toString())
+        assertTrue(buttons.contains("⚖️ ✅ grok-fast"), buttons.toString())
+        assertTrue(buttons.contains("⚖️ ⚠️ claude-opus"), buttons.toString())
+    }
+
+    @Test
+    fun `without the judge feature there is no judge text and no judge buttons`() {
+        val rendered = renderer.render(state())
+
+        assertFalse(rendered.text.contains("ai.settings.judge"), rendered.text)
+        assertTrue(payloads(state()).none { it.startsWith("aip:j:") }, payloads(state()).toString())
+    }
+
+    @Test
+    fun `a disabled judge offers to enable`() {
+        assertTrue(payloads(state(judgeAvailable = true, judgeEnabled = false)).contains("aip:j:on"))
+    }
+
+    @Test
+    fun `a judge mismatch is reported`() {
+        renderer.render(
+            state(
+                judgeAvailable = true,
+                judgeStoredPresetId = "claude-opus",
+                judgeEffectivePresetId = "grok-fast",
+            ),
+        )
+
+        verify { msg.get("ai.settings.judge.mismatch", "ru", "claude-opus", "grok-fast") }
     }
 }

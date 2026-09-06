@@ -5,7 +5,7 @@ import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.ai.description.api.UnavailableReason
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
-import ru.zinin.frigate.analyzer.ai.description.core.DescriptionBackendFactory
+import ru.zinin.frigate.analyzer.ai.description.core.VisionBackendFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.writeText
@@ -45,7 +45,7 @@ class GrokBackendFactoryTest {
 
     /**
      * Конструктор строго пассивен: каталог Grok смонтирован и на claude-деплое, а его пресеты этого
-     * провайдера не называют. Осмотр окружения делает только [DescriptionBackendFactory.availability],
+     * провайдера не называют. Осмотр окружения делает только [VisionBackendFactory.availability],
      * которую билдер каталога зовёт лишь для объявленных провайдеров.
      */
     @Test
@@ -58,7 +58,7 @@ class GrokBackendFactoryTest {
 
     @Test
     fun `availability creates the grok directories`() {
-        assertIs<DescriptionBackendFactory.Availability.Available>(factory().availability())
+        assertIs<VisionBackendFactory.Availability.Available>(factory().availability())
 
         assertTrue(Files.isDirectory(tempDir.resolve("home")))
         assertTrue(Files.isDirectory(tempDir.resolve("cwd")))
@@ -87,13 +87,13 @@ class GrokBackendFactoryTest {
 
         val availability = factory(home = file).availability()
 
-        val unavailable = assertIs<DescriptionBackendFactory.Availability.Unavailable>(availability)
+        val unavailable = assertIs<VisionBackendFactory.Availability.Unavailable>(availability)
         assertEquals(UnavailableReason.HomeUnwritable(file.toAbsolutePath().normalize().toString()), unavailable.reason)
     }
 
     @Test
     fun `grok is available even without auth json - BYOK models carry their own key`() {
-        assertIs<DescriptionBackendFactory.Availability.Available>(factory().availability())
+        assertIs<VisionBackendFactory.Availability.Available>(factory().availability())
         assertFalse(Files.exists(tempDir.resolve("home/auth.json")))
     }
 

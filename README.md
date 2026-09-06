@@ -17,7 +17,8 @@ graph TD
     C --> VIS["Annotate top frames<br/>(local, Java2D)"]
     VIS --> D["Save to PostgreSQL"]
     D --> E["Object Tracker<br/>(cross-recording IoU)"]
-    E --> F["Telegram bot"]
+    E --> J["LLM notification judge<br/>(optional, fail-open)"]
+    J --> F["Telegram bot"]
 
     D -. "polled" .-> SL["Signal-loss Monitor"]
     SL -.-> F
@@ -41,6 +42,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 - **Object tracking** — cross-recording IoU matching suppresses duplicate notifications when the same object lingers across consecutive recordings
 - **Signal-loss detection** — polls the database for last recording per camera and alerts (Telegram) on signal loss / recovery
 - **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI or Grok Build CLI, edited into the notification message
+- **LLM notification judge (optional)** — third gate after the object tracker: a fast model looks at the annotated frames and database context and decides PUBLISH/SUPPRESS; every verdict is stored and visible in `/status` and `/verdicts`
 - **Telegram bot** — real-time notifications with annotated images, inline quick-export buttons, video export (raw or annotated), per-user and global notification toggles, timezone support, user management
 - **Reactive stack** — built on Spring WebFlux, R2DBC, and Kotlin Coroutines for non-blocking I/O throughout
 
@@ -185,7 +187,7 @@ them into the notification. Two providers: the Claude Code CLI (`claude`) and th
 | `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
 | `APP_AI_DESCRIPTION_TIMEOUT` | `60s` | Per-call budget for the model and the agent's retries — see "Timeout ceiling" below |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous model requests |
-| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `10` | Max invocations per sliding window |
+| `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `30` | Max invocations per sliding window |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
 | `CLAUDE_CODE_OAUTH_TOKEN` | *(required for claude)* | Token from `claude setup-token` |
 | `CLAUDE_MODEL` | `opus` | `opus` / `sonnet` / `haiku`; single-preset path only |
@@ -209,7 +211,8 @@ application:
 ```
 
 The owner switches the active preset in `/ai`, one tap, no restart — the screen also turns
-descriptions off and back on, and shows the authorization state of every credential scope in use.
+descriptions (and, when enabled, the notification judge) off and back on, and shows the
+authorization state of every credential scope in use.
 The choice is stored in the database, so it survives a restart; `default-preset` decides only until
 that first tap and stops mattering afterwards. A preset whose provider is not configured (no token, a
 directory that could not be created) stays on the screen, marked, and cannot be selected. The startup
@@ -257,6 +260,33 @@ working, the bot owner receives a Telegram message with the command to run.
 and `GROK_*`/`XAI_*`, so a key named outside those prefixes also needs
 `GROK_PASS_THROUGH_ENV=MY_GATEWAY_KEY`; naming it `GROK_MY_GATEWAY_KEY` works without the list.
 
+### AI notification judge (optional)
+
+Third gate between the object tracker and Telegram, on the **same** preset catalog as descriptions.
+A fast model looks at the annotated frames and a JSON context from the database and answers
+`PUBLISH` or `SUPPRESS`. Fail-open: any judge failure sends the notification as today. Every verdict
+is stored in `notification_verdicts` (no cleanup) and shown to the owner in `/status` and `/verdicts`.
+The recipient never sees the verdict. Requires `APP_AI_DESCRIPTION_ENABLED=true`. Scene notes per
+camera live in `application-docker.yaml` (`application.ai.judge.cameras.<cam>.notes`), not in `.env`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_AI_JUDGE_ENABLED` | `false` | Master switch |
+| `APP_AI_JUDGE_DEFAULT_PRESET` | *(empty)* | Preset until the owner picks one in `/ai`; empty = the descriptions default. Prefer a fast model (`claude-sonnet`, `grok-fast`) |
+| `APP_AI_JUDGE_TIMEOUT` | `60s` | Per-call budget including retries |
+| `APP_AI_JUDGE_QUEUE_TIMEOUT` | `30s` | Wait for a free concurrency slot |
+| `APP_AI_JUDGE_MAX_CONCURRENT` | `2` | Max simultaneous judge calls (separate from descriptions) |
+| `APP_AI_JUDGE_MAX_FRAMES` | `4` | Annotated frames sent to the model |
+| `APP_AI_JUDGE_MAX_IMAGE_SIDE` | `1280` | Longest frame side; `0` = as-is |
+| `APP_AI_JUDGE_RATE_LIMIT_MAX` | `200` | Protective ceiling; beyond it candidates go out unjudged |
+| `APP_AI_JUDGE_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
+| `APP_AI_JUDGE_MAX_SNOOZE` | `PT30M` | Ceiling on `snooze_minutes` from the model |
+| `APP_AI_JUDGE_STATIC_WINDOW` | `P7D` | Window for the same-class-same-place score |
+| `APP_AI_JUDGE_STATIC_IOU` | `0.4` | IoU threshold of that score |
+| `APP_AI_JUDGE_HISTORY_WINDOW` | `PT6H` | `±` window of recent verdicts in the prompt |
+| `APP_AI_JUDGE_HISTORY_LIMIT` | `10` | Max verdict rows in that context |
+| `APP_AI_JUDGE_ZONE` | *(empty)* | Local-time zone of the prompt; empty = owner's `/timezone`, then the JVM zone (UTC in the container) |
+
 Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
 [`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.
 
@@ -299,8 +329,9 @@ You can define multiple servers — the load balancer distributes requests based
 | `/language` | Set your interface language (ru / en) | Authorized users |
 | `/notifications` | Toggle recording / signal-loss notifications (per-user; OWNER also toggles global) | Authorized users |
 | `/version` | Show build and version info | Authorized users |
-| `/status` | Snapshot of recordings, cameras, and detect-servers state | Owner only |
-| `/ai` | Switch the active AI-description preset; turn descriptions on and off | Owner only |
+| `/status` | Snapshot of recordings, cameras, detect-servers, and (when enabled) the LLM judge | Owner only |
+| `/ai` | Switch the active description and judge presets; turn each on and off | Owner only |
+| `/verdicts` | Latest rows from `notification_verdicts` (`/verdicts [cam] [n]`, default 10, max 30) | Owner only |
 | `/adduser` | Invite a user (by @username) | Owner only |
 | `/removeuser` | Remove a user | Owner only |
 | `/users` | List all registered users | Owner only |
@@ -381,7 +412,7 @@ modules/
 ├── common/         # Utilities (UUID generation, clock)
 ├── model/          # Entities, DTOs, request/response types
 ├── service/        # Business logic, repositories, MapStruct mappers
-├── ai-description/ # AI-generated detection descriptions via Claude Code SDK or Grok Build CLI
+├── ai-description/ # AI descriptions and the LLM notification judge over a shared preset catalog
 ├── telegram/       # Telegram bot, notifications, user management
 └── core/           # Spring Boot app, controllers, pipeline, detection, signal-loss
 ```

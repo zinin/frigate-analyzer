@@ -28,9 +28,26 @@ class GrokCommandBuilderTest {
 
     private val promptFile = Path.of("/tmp/frigate-analyzer/prompt.json")
 
+    private fun build(
+        properties: GrokProperties = props(),
+        model: String = "grok-4.6",
+        effort: String = "low",
+        structuredOutput: Boolean = true,
+        jsonSchema: String? = SCHEMA,
+        systemPrompt: String = "SYS",
+        environmentSource: (String) -> String? = { null },
+    ) = GrokCommandBuilder(properties, environmentSource).build(
+        promptFile,
+        model = model,
+        effort = effort,
+        structuredOutput = structuredOutput,
+        jsonSchema = jsonSchema,
+        systemPrompt = systemPrompt,
+    )
+
     @Test
     fun `argv matches the spec exactly`() {
-        val command = GrokCommandBuilder(props()).build(promptFile, model = "grok-4.6", effort = "low")
+        val command = build()
 
         assertEquals(
             listOf(
@@ -38,7 +55,7 @@ class GrokCommandBuilderTest {
                 "--prompt-file",
                 "/tmp/frigate-analyzer/prompt.json",
                 "--json-schema",
-                GrokCommandBuilder.JSON_SCHEMA,
+                SCHEMA,
                 "--output-format",
                 "json",
                 "-m",
@@ -58,7 +75,7 @@ class GrokCommandBuilderTest {
                 "bypassPermissions",
                 "--no-auto-update",
                 "--system-prompt-override",
-                GrokPromptBuilder.SYSTEM_PROMPT,
+                "SYS",
                 "--cwd",
                 "/data/grok-cwd",
             ),
@@ -69,15 +86,13 @@ class GrokCommandBuilderTest {
 
     @Test
     fun `blank effort omits the flag`() {
-        val argv = GrokCommandBuilder(props()).build(promptFile, model = "grok-4.6", effort = "").argv
+        val argv = build(effort = "").argv
         assertFalse(argv.contains("--effort"))
     }
 
     @Test
     fun `model and effort come from the call, not from the properties`() {
-        val builder = GrokCommandBuilder(props(model = "grok-4.6", effort = "low")) { null }
-
-        val command = builder.build(promptFile, model = "codex-luna", effort = "")
+        val command = build(properties = props(model = "grok-4.6", effort = "low"), model = "codex-luna", effort = "")
 
         assertEquals("codex-luna", command.argv[command.argv.indexOf("-m") + 1])
         assertFalse(command.argv.contains("--effort"))
@@ -85,16 +100,13 @@ class GrokCommandBuilderTest {
 
     @Test
     fun `explicit cli path replaces the bare binary name`() {
-        val argv =
-            GrokCommandBuilder(props(cliPath = "/opt/grok/bin/grok"))
-                .build(promptFile, model = "grok-4.6", effort = "low")
-                .argv
+        val argv = build(properties = props(cliPath = "/opt/grok/bin/grok")).argv
         assertEquals("/opt/grok/bin/grok", argv.first())
     }
 
     @Test
     fun `environment carries GROK_HOME and the isolation variables, no proxy when blank`() {
-        val env = GrokCommandBuilder(props()).build(promptFile, model = "grok-4.6", effort = "low").environment
+        val env = build().environment
 
         assertEquals("/data/grok-home", env["GROK_HOME"])
         assertEquals("1", env["GROK_DISABLE_AUTOUPDATER"])
@@ -112,8 +124,7 @@ class GrokCommandBuilderTest {
     @Test
     fun `proxy variables are passed when configured`() {
         val env =
-            GrokCommandBuilder(props(http = "http://proxy:80", https = "http://proxy:443", noProxy = "localhost"))
-                .build(promptFile, model = "grok-4.6", effort = "low")
+            build(properties = props(http = "http://proxy:80", https = "http://proxy:443", noProxy = "localhost"))
                 .environment
 
         assertEquals("http://proxy:80", env["HTTP_PROXY"])
@@ -123,15 +134,12 @@ class GrokCommandBuilderTest {
 
     @Test
     fun `structured output disabled drops the json-schema flag and keeps everything else`() {
-        val withSchema = GrokCommandBuilder(props()).build(promptFile, model = "grok-4.6", effort = "low").argv
-        val without =
-            GrokCommandBuilder(props())
-                .build(promptFile, model = "grok-4.6", effort = "low", structuredOutput = false)
-                .argv
+        val withSchema = build().argv
+        val without = build(structuredOutput = false).argv
 
         assertFalse(without.contains("--json-schema"))
-        assertFalse(without.contains(GrokCommandBuilder.JSON_SCHEMA))
-        assertEquals(withSchema.filterNot { it == "--json-schema" || it == GrokCommandBuilder.JSON_SCHEMA }, without)
+        assertFalse(without.contains(SCHEMA))
+        assertEquals(withSchema.filterNot { it == "--json-schema" || it == SCHEMA }, without)
     }
 
     @Test
@@ -139,9 +147,10 @@ class GrokCommandBuilderTest {
         val host = mapOf("MY_GATEWAY_KEY" to "secret", "DB_PASS" to "must not leak")
 
         val env =
-            GrokCommandBuilder(props(passThroughEnv = listOf("MY_GATEWAY_KEY", "ABSENT_KEY")), host::get)
-                .build(promptFile, model = "grok-4.6", effort = "low")
-                .environment
+            build(
+                properties = props(passThroughEnv = listOf("MY_GATEWAY_KEY", "ABSENT_KEY")),
+                environmentSource = host::get,
+            ).environment
 
         assertEquals("secret", env["MY_GATEWAY_KEY"])
         assertFalse(env.containsKey("ABSENT_KEY"))
@@ -153,17 +162,30 @@ class GrokCommandBuilderTest {
         val host = mapOf("GROK_HOME" to "/home/developer/.grok", "GROK_MEMORY" to "1")
 
         val env =
-            GrokCommandBuilder(props(passThroughEnv = listOf("GROK_HOME", "GROK_MEMORY")), host::get)
-                .build(promptFile, model = "grok-4.6", effort = "low")
-                .environment
+            build(
+                properties = props(passThroughEnv = listOf("GROK_HOME", "GROK_MEMORY")),
+                environmentSource = host::get,
+            ).environment
 
         assertEquals("/data/grok-home", env["GROK_HOME"])
         assertEquals("0", env["GROK_MEMORY"])
     }
 
     @Test
-    fun `json schema requires exactly short and detailed`() {
-        assertTrue(GrokCommandBuilder.JSON_SCHEMA.contains("\"required\":[\"short\",\"detailed\"]"))
-        assertTrue(GrokCommandBuilder.JSON_SCHEMA.contains("\"additionalProperties\":false"))
+    fun `json schema flag carries the schema from the call`() {
+        val argv = build(jsonSchema = SCHEMA).argv
+        assertTrue(argv.contains("--json-schema"))
+        assertEquals(SCHEMA, argv[argv.indexOf("--json-schema") + 1])
+    }
+
+    @Test
+    fun `null schema drops the json-schema flag even when structured output is on`() {
+        val argv = build(structuredOutput = true, jsonSchema = null).argv
+        assertFalse(argv.contains("--json-schema"))
+    }
+
+    private companion object {
+        const val SCHEMA =
+            """{"type":"object","properties":{"short":{"type":"string"},"detailed":{"type":"string"}},"required":["short","detailed"],"additionalProperties":false}"""
     }
 }

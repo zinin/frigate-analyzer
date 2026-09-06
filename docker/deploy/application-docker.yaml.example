@@ -31,3 +31,8 @@ application:
   #       grok-fast:   { provider: grok,   model: grok-4.6,   effort: low }
   #       grok-deep:   { provider: grok,   model: grok-4.6,   effort: xhigh }
   #       claude-opus: { provider: claude, model: opus }
+  #   judge:
+  #     # Заметки владельца о сцене каждой камеры попадают в контекст судьи как есть.
+  #     cameras:
+  #       cam2: { notes: "Двор дачи: у ворот обычно стоит машина хозяев, велосипеды лежат на траве." }
+  #       cam4: { notes: "Огород за домом: грядки под сеткой, куча земли, поленница слева внизу." }
