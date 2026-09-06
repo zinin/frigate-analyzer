@@ -163,3 +163,13 @@ application:
     base-font-size: 16
     label-padding: 4
     max-frames: 10
+  notifications:
+    tracker:
+      # Интеграционные тесты поднимают приложение целиком, вместе с уборкой object_tracks:
+      # @Scheduled(fixedDelay) без initialDelay срабатывает сразу при старте контекста, а
+      # @DirtiesContext(AFTER_CLASS) поднимает контекст заново на каждый тестовый класс.
+      # Фикстуры репозиторных тестов датированы прошлым, поэтому при дефолтном retention PT1H тик,
+      # попавший между вставкой и запросом, сносил их прямо посреди теста. Десять лет делают уборку
+      # холостой; саму логику удаления проверяют ObjectTrackerServiceImplTest и deleteExpired-тест
+      # репозитория, вызывая её явно.
+      cleanup-retention: P3650D
