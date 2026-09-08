@@ -4,9 +4,15 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 
 /** Тексты задачи описаний. Единственное место, где живут формулировки для обоих провайдеров. */
 object DescriptionTask {
+    /**
+     * Правила про инструменты здесь нет намеренно. Кадры до провайдеров доезжают по-разному:
+     * Claude получает ссылки `@path` и видит картинку только вызовом Read, Grok — готовые
+     * image-блоки, а инструменты ему отключены флагами команды. Общий запрет запрещал Claude
+     * единственный способ увидеть кадр, поэтому каждый бэкенд дописывает своё правило сам.
+     */
     const val SYSTEM_PROMPT =
         "You describe frames from a security camera for a notification message. " +
-            "Answer only with the requested JSON object. Do not call tools and do not ask questions."
+            "Answer only with the requested JSON object. Do not ask questions."
 
     const val JSON_SCHEMA =
         """{"type":"object","properties":{"short":{"type":"string"},"detailed":{"type":"string"}},"required":["short","detailed"],"additionalProperties":false}"""

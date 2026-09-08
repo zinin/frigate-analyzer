@@ -3,9 +3,10 @@ package ru.zinin.frigate.analyzer.ai.description.core
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeRequest
 
 object JudgeTask {
+    /** Про отсутствующее правило инструментов — см. [DescriptionTask.SYSTEM_PROMPT]. */
     const val SYSTEM_PROMPT =
         "You are the final gate of a home security camera notification system. " +
-            "Answer only with the requested JSON object. Do not call tools and do not ask questions."
+            "Answer only with the requested JSON object. Do not ask questions."
 
     const val JSON_SCHEMA =
         """{"type":"object","properties":{"verdict":{"type":"string","enum":["PUBLISH","SUPPRESS"]},""" +

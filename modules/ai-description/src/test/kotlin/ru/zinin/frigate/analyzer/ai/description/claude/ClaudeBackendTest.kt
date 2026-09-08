@@ -10,7 +10,9 @@ import kotlinx.coroutines.test.runTest
 import org.springaicommunity.claude.agent.sdk.exceptions.ClaudeSDKException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRequest
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
+import ru.zinin.frigate.analyzer.ai.description.core.JudgeTask
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import java.nio.file.Path
 import java.time.Duration
@@ -59,9 +61,65 @@ class ClaudeBackendTest {
     @Test
     fun `happy path stages, invokes, parses and cleans up`() =
         runTest {
-            val backend = build(ClaudeInvoker { _, _, _, _ -> """{"short": "s", "detailed": "d"}""" })
+            val backend = build(ClaudeInvoker { _, _, _, _, _ -> """{"short": "s", "detailed": "d"}""" })
             assertEquals("""{"short": "s", "detailed": "d"}""", backend.complete(request, budget).primary)
             coVerify(exactly = 1) { imageStager.cleanup(stagedPaths) }
+        }
+
+    /**
+     * Кадры уходят ссылками `@path`, поэтому увидеть их модель может только вызовом Read. Запрет
+     * инструментов в общем тексте задачи оставлял её без картинки, и описание не приходило.
+     */
+    @Test
+    fun `the system prompt tells the model to read every frame path with Read`() =
+        runTest {
+            var seenSystemPrompt: String? = null
+            var seenFrames = -1
+            val backend =
+                build(
+                    ClaudeInvoker { _, _, systemPrompt, _, framesToRead ->
+                        seenSystemPrompt = systemPrompt
+                        seenFrames = framesToRead
+                        """{"short": "s", "detailed": "d"}"""
+                    },
+                )
+
+            backend.complete(request, budget)
+
+            assertEquals("${DescriptionTask.SYSTEM_PROMPT} ${ClaudeBackend.FRAME_READING_RULE}", seenSystemPrompt)
+            assertEquals(stagedPaths.size, seenFrames)
+        }
+
+    /**
+     * Судья ходит через этот же бэкенд, поэтому правило достаётся и ему: переключение его пресета
+     * на claude не должно оставить вердикт без кадров, а это дороже потерянного описания.
+     */
+    @Test
+    fun `a judge request gets the same frame-reading rule`() =
+        runTest {
+            var seenSystemPrompt: String? = null
+            val judgeRequest =
+                JudgeRequest(
+                    recordingId = UUID.randomUUID(),
+                    camId = "cam2",
+                    frames = descriptionRequest.frames,
+                    contextJson = "{}",
+                    language = "ru",
+                    maxSnoozeMinutes = 30,
+                )
+            val judgeVisionRequest =
+                VisionRequest(judgeRequest.recordingId, judgeRequest.frames, JudgeTask.instructions(judgeRequest))
+            val backend =
+                build(
+                    ClaudeInvoker { _, _, systemPrompt, _, _ ->
+                        seenSystemPrompt = systemPrompt
+                        """{"verdict":"PUBLISH","reason":"NEW_EVENT","summary":"s"}"""
+                    },
+                )
+
+            backend.complete(judgeVisionRequest, budget)
+
+            assertEquals("${JudgeTask.SYSTEM_PROMPT} ${ClaudeBackend.FRAME_READING_RULE}", seenSystemPrompt)
         }
 
     @Test
@@ -70,7 +128,7 @@ class ClaudeBackendTest {
             var seenModel: String? = null
             val backend =
                 build(
-                    ClaudeInvoker { _, model, _, _ ->
+                    ClaudeInvoker { _, model, _, _, _ ->
                         seenModel = model
                         """{"short": "s", "detailed": "d"}"""
                     },
@@ -85,7 +143,7 @@ class ClaudeBackendTest {
             var seenTimeout: Duration? = null
             val backend =
                 build(
-                    ClaudeInvoker { _, _, _, timeout ->
+                    ClaudeInvoker { _, _, _, timeout, _ ->
                         seenTimeout = timeout
                         """{"short": "s", "detailed": "d"}"""
                     },
@@ -97,13 +155,13 @@ class ClaudeBackendTest {
     @Test
     fun `SDK exceptions go through the exception mapper`() =
         runTest {
-            val backend = build(ClaudeInvoker { _, _, _, _ -> throw ClaudeSDKException("request was rate limited") })
+            val backend = build(ClaudeInvoker { _, _, _, _, _ -> throw ClaudeSDKException("request was rate limited") })
             assertFailsWith<DescriptionException.RateLimited> { backend.complete(request, budget) }
         }
 
     @Test
     fun `identifies itself as claude`() {
-        val backend = build(ClaudeInvoker { _, _, _, _ -> "" })
+        val backend = build(ClaudeInvoker { _, _, _, _, _ -> "" })
         assertEquals("claude", backend.providerId)
         assert(backend.authRecoveryHint.contains("CLAUDE_CODE_OAUTH_TOKEN"))
     }

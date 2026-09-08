@@ -5,6 +5,7 @@ import ru.zinin.frigate.analyzer.ai.description.api.JudgeRequest
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class JudgeTaskTest {
@@ -29,6 +30,15 @@ class JudgeTaskTest {
         assertTrue(instructions.epilogue.contains("one sentence in Russian"))
         assertEquals(JudgeTask.SYSTEM_PROMPT, instructions.systemPrompt)
         assertEquals(JudgeTask.JSON_SCHEMA, instructions.jsonSchema)
+    }
+
+    /** Тот же довод, что в `DescriptionTaskTest`: судья ходит через тех же провайдеров. */
+    @Test
+    fun `the shared system prompt leaves the tool rule to the provider`() {
+        val systemPrompt = JudgeTask.instructions(request).systemPrompt
+
+        assertFalse(systemPrompt.contains("tool", ignoreCase = true))
+        assertTrue(systemPrompt.contains("Answer only with the requested JSON object."))
     }
 
     @Test

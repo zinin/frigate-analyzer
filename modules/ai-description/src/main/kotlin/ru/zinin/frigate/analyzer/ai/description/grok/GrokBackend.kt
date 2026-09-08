@@ -54,16 +54,17 @@ class GrokBackend(
             promptFile = file
             val schema = request.instructions.jsonSchema
             val useSchema = schemaSupported && schema != null
+            val systemPrompt = "${request.instructions.systemPrompt} $TOOL_RULE"
             logger.debug {
                 "Grok request ${request.requestId}: model=$model, effort=${effortForLog()}, " +
                     "json-schema=${if (useSchema) "on" else "off"}, frames=${request.frames.size}"
             }
-            var result = runGrok(file, useSchema, schema, request.instructions.systemPrompt)
+            var result = runGrok(file, useSchema, schema, systemPrompt)
             var errorMessage = outputParser.errorMessage(result.stdout)
             if (errorMessage != null && useSchema && exceptionMapper.isStructuredOutputUnsupported(errorMessage)) {
                 logger.warn { "Model $model does not accept --json-schema ($errorMessage); retrying without it" }
                 schemaSupported = false
-                result = runGrok(file, structuredOutput = false, schema, request.instructions.systemPrompt)
+                result = runGrok(file, structuredOutput = false, schema, systemPrompt)
                 errorMessage = outputParser.errorMessage(result.stdout)
             }
             if (errorMessage != null) throw exceptionMapper.fromFailure(result.exitCode, errorMessage, result.stderrTail)
@@ -98,6 +99,13 @@ class GrokBackend(
 
     companion object {
         const val PROVIDER_ID = "grok"
+
+        /**
+         * Кадры Grok получает image-блоками в prompt-файле, читать ему нечего: `read_file` и так
+         * снят `--disallowed-tools`. Запрет живёт здесь, потому что общий текст задачи его больше
+         * не несёт — Claude там же требует обратного, вызова Read.
+         */
+        const val TOOL_RULE = "Do not call tools."
 
         const val AUTH_RECOVERY_HINT =
             "grok login --device-code (in Docker: docker compose exec frigate-analyzer grok login --device-code)"

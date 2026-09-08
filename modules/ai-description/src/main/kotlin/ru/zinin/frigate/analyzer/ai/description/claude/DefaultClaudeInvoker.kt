@@ -10,6 +10,7 @@ import org.springaicommunity.claude.agent.sdk.types.AssistantMessage
 import org.springaicommunity.claude.agent.sdk.types.ResultMessage
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import java.time.Duration
 
 private val logger = KotlinLogging.logger {}
@@ -24,6 +25,7 @@ class DefaultClaudeInvoker(
         model: String,
         systemPrompt: String,
         timeout: Duration,
+        framesToRead: Int,
     ): String {
         logger.debug { "Claude prompt (${prompt.length} chars):\n$prompt" }
         // Бюджет приходит от задачи, а не из настроек описаний: у судьи свой таймаут, и клиент,
@@ -64,11 +66,10 @@ class DefaultClaudeInvoker(
                 throw ClaudeSDKException(detail)
             }
 
-            val rawText =
-                messages
-                    .filterIsInstance<AssistantMessage>()
-                    .joinToString(separator = "") { it.text() }
+            val assistantMessages = messages.filterIsInstance<AssistantMessage>()
+            val rawText = assistantMessages.joinToString(separator = "") { it.text() }
             logger.debug { "Claude raw response (${rawText.length} chars):\n$rawText" }
+            requireFramesWereRead(assistantMessages, framesToRead, rawText)
             return rawText
         } finally {
             // ClaudeAsyncClient is NOT AutoCloseable — .use not usable. Close explicitly.
@@ -83,7 +84,51 @@ class DefaultClaudeInvoker(
         }
     }
 
+    /**
+     * Кадры уходят ссылками `@path`, поэтому модель видит их только вызовом Read. Ответ без единого
+     * такого вызова написан вслепую, и цена ошибки тут не в потраченном вызове: прозу «картинки
+     * нет» парсер отвергает сам, а вот такой же отказ, оформленный валидным JSON, дошёл бы до
+     * получателей вместо описания и не оставил бы в логах ничего. Отвергаем как InvalidResponse —
+     * executor повторит попытку ровно так же, как на любом другом негодном ответе.
+     *
+     * Проверяем «был ли хоть один Read», а не «прочитан ли каждый кадр». Сверка путей выглядит
+     * точнее, но ошибается в дорогую сторону: назови модель файл иначе, чем промпт, и годный ответ
+     * ушёл бы в отказ, то есть в потерянное описание. Ответ по части кадров всё равно опирается на
+     * картинку. Поэтому число чтений меньше числа кадров — только строка в логе, и строка неточная:
+     * дважды прочитанный один кадр здесь неотличим от двух разных.
+     *
+     * Ответ уходит в WARN обрезанным: без него в логе остаётся один счётчик, а вежливый отказ и
+     * выдуманное описание сцены, которой модель не видела, различаются только текстом — и второе
+     * стоит эскалации, потому что повторится на каждой записи.
+     */
+    private fun requireFramesWereRead(
+        messages: List<AssistantMessage>,
+        framesToRead: Int,
+        rawText: String,
+    ) {
+        if (framesToRead <= 0) return
+        val reads = messages.sumOf { message -> message.toolUses.count { it.name() == READ_TOOL } }
+        if (reads == 0) {
+            logger.warn {
+                "Claude answered without reading any of the $framesToRead staged frames; rejecting. " +
+                    "The answer was: ${rawText.take(ANSWER_LOG_MAX)}"
+            }
+            throw DescriptionException.InvalidResponse(
+                detail = "the model answered without reading any of the $framesToRead staged frames",
+            )
+        }
+        if (reads < framesToRead) {
+            logger.warn { "Claude read $reads times for $framesToRead staged frames; some may not have been seen" }
+        }
+    }
+
     companion object {
         private val SDK_TIMEOUT_BUFFER: Duration = Duration.ofSeconds(5)
+
+        /** Имя инструмента Claude Code, которым модель читает кадр. */
+        private const val READ_TOOL = "Read"
+
+        /** Сколько символов отвергнутого ответа уходит в лог: хватает отличить отказ от выдумки. */
+        private const val ANSWER_LOG_MAX = 300
     }
 }

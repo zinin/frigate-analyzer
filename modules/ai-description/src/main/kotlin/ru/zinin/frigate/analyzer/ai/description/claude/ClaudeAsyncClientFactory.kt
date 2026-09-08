@@ -63,8 +63,9 @@ class ClaudeAsyncClientFactory(
             optionsBuilder.model(model)
         }
         if (systemPrompt.isNotBlank()) {
-            // append, а не replace: замена системного промпта CLI меняет обработку @-ссылок на кадры,
-            // а нам нужно лишь добавить правило «только JSON, без инструментов».
+            // append, а не replace: кадры приходят ссылками `@path`, разворачивает их вызов Read, а
+            // описание этого инструмента живёт в собственном промпте CLI. Замена унесла бы инструмент
+            // вместе с промптом, и увидеть кадр модели было бы нечем.
             optionsBuilder.appendSystemPrompt(systemPrompt)
         }
         return optionsBuilder.build()
