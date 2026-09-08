@@ -71,6 +71,25 @@ class DefaultClaudeInvokerTest {
             )
         }
 
+    /**
+     * Прочитаны не все кадры: ответ всё равно опирается на картинку, а повтор был бы платой зря.
+     * Ветку легко «ужесточить», прочитав условие `reads < framesToRead` как повод для отказа.
+     */
+    @Test
+    fun `an answer that read some of the frames is not rejected`() =
+        runTest {
+            val invoker =
+                invokerReturning(
+                    assistant(ToolUseBlock("t1", "Read", mapOf("file_path" to "/tmp/f1.jpg"))),
+                    assistant(TextBlock("""{"short":"s"}""")),
+                )
+
+            assertEquals(
+                """{"short":"s"}""",
+                invoker.invoke("prompt", "opus", "system", Duration.ofSeconds(60), 3),
+            )
+        }
+
     /** Запрос без кадров читать нечего — требование Read к нему не относится. */
     @Test
     fun `an answer to a frameless request is not required to read anything`() =

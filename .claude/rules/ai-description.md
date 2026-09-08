@@ -174,7 +174,7 @@ epilogue. `DefaultClaudeInvoker` then opens a bidirectional stream-json session
 
 **The `@` reference is not expanded by anyone — the model turns it into pixels by calling `Read`.**
 The CLI passes the line through as text, the model issues a `Read` tool_use, and the tool_result
-carries the image back (that echo is why `CLAUDE_MAX_BUFFER_SIZE` is 16MB: a frame over ~750 KB does
+carries the image back (that echo is why `CLAUDE_MAX_BUFFER_SIZE` is 16MB: a frame over ~800 KB does
 not fit the SDK's 1 MiB default). Two consequences the code depends on:
 
 - The session must keep the CLI's own system prompt, so `ClaudeAsyncClientFactory` uses
@@ -187,12 +187,24 @@ not fit the SDK's 1 MiB default). Two consequences the code depends on:
   descriptions started failing, `opus` having become `claude-opus-5`.
 
 `DefaultClaudeInvoker` rejects an answer produced without a single `Read` as `InvalidResponse`, so
-the executor retries it like any other unusable answer. This is not belt-and-braces: a model that
-never saw the frame answers that the image is missing either in prose — which the parser rejects on
-its own — or as a **valid JSON object** whose `short`/`detailed` say "изображение недоступно". The
-second shape would reach the recipients as a real description and leave nothing in the log. Reading
-some of the frames but not all is only a WARN: such an answer still rests on a picture, and a retry
-would be paid for nothing.
+the executor retries it like any other unusable answer, and logs the rejected text truncated to 300
+characters. This is not belt-and-braces: a model that never saw the frame answers that the image is
+missing either in prose — which the parser rejects on its own — or as a **valid JSON object** whose
+`short`/`detailed` say "изображение недоступно". The second shape would reach the recipients as a
+real description and leave nothing in the log, and the counter alone would not tell the two apart.
+
+The gate asks only whether *some* `Read` happened, never whether every frame was read. Matching the
+paths would look sharper and err in the expensive direction: a model naming the file differently
+from the prompt would lose a usable answer. Fewer reads than frames is therefore a WARN and an
+imprecise one — one frame read twice is indistinguishable here from two frames read once.
+
+Two consequences worth knowing before reading a log. `VisionCallExecutor` allows exactly **one**
+`InvalidResponse` retry, now shared between "read nothing" and "unparseable JSON", so a first
+attempt rejected by the gate and a second returning malformed JSON leaves no third try. And a model
+that will not tool-call at all — a third-party endpoint behind `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`
+— turns descriptions from "wrong but present" into "absent, two calls each": deliberate, since a
+blind description is worse than the fallback line, but the WARN, not a transport error, is what says
+so.
 
 ## Grok invocation
 

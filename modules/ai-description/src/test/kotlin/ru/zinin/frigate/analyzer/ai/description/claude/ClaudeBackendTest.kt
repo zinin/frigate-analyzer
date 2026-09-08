@@ -10,7 +10,9 @@ import kotlinx.coroutines.test.runTest
 import org.springaicommunity.claude.agent.sdk.exceptions.ClaudeSDKException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRequest
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
+import ru.zinin.frigate.analyzer.ai.description.core.JudgeTask
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import java.nio.file.Path
 import java.time.Duration
@@ -86,6 +88,38 @@ class ClaudeBackendTest {
 
             assertEquals("${DescriptionTask.SYSTEM_PROMPT} ${ClaudeBackend.FRAME_READING_RULE}", seenSystemPrompt)
             assertEquals(stagedPaths.size, seenFrames)
+        }
+
+    /**
+     * Судья ходит через этот же бэкенд, поэтому правило достаётся и ему: переключение его пресета
+     * на claude не должно оставить вердикт без кадров, а это дороже потерянного описания.
+     */
+    @Test
+    fun `a judge request gets the same frame-reading rule`() =
+        runTest {
+            var seenSystemPrompt: String? = null
+            val judgeRequest =
+                JudgeRequest(
+                    recordingId = UUID.randomUUID(),
+                    camId = "cam2",
+                    frames = descriptionRequest.frames,
+                    contextJson = "{}",
+                    language = "ru",
+                    maxSnoozeMinutes = 30,
+                )
+            val judgeVisionRequest =
+                VisionRequest(judgeRequest.recordingId, judgeRequest.frames, JudgeTask.instructions(judgeRequest))
+            val backend =
+                build(
+                    ClaudeInvoker { _, _, systemPrompt, _, _ ->
+                        seenSystemPrompt = systemPrompt
+                        """{"verdict":"PUBLISH","reason":"NEW_EVENT","summary":"s"}"""
+                    },
+                )
+
+            backend.complete(judgeVisionRequest, budget)
+
+            assertEquals("${JudgeTask.SYSTEM_PROMPT} ${ClaudeBackend.FRAME_READING_RULE}", seenSystemPrompt)
         }
 
     @Test

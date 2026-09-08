@@ -165,5 +165,8 @@ class ClaudeAsyncClientFactoryTest {
     fun `non-blank system prompt is appended`() {
         val options = factory(props()).buildOptions(Duration.ofMinutes(2), model = "opus", systemPrompt = "SYS")
         assertEquals("SYS", options.appendSystemPrompt)
+        // Замена унесла бы из промпта CLI описание Read, которым модель разворачивает `@`-ссылку
+        // на кадр, — тот же отказ «картинки нет», только другим путём.
+        assertNull(options.systemPrompt)
     }
 }

@@ -3,6 +3,7 @@ package ru.zinin.frigate.analyzer.ai.description.claude
 import ru.zinin.frigate.analyzer.ai.description.core.VisionBackend
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.core.VisionResponse
+import java.nio.file.Path
 import java.time.Duration
 
 /**
@@ -32,7 +33,7 @@ class ClaudeBackend(
             val prompt = promptBuilder.build(request, stagedPaths)
             return try {
                 // Второго представления у Claude нет: SDK отдаёт один текст.
-                VisionResponse(invoker.invoke(prompt, model, systemPrompt(request), timeout, stagedPaths.size))
+                VisionResponse(invoker.invoke(prompt, model, systemPrompt(request, stagedPaths), timeout, stagedPaths.size))
             } catch (e: Throwable) {
                 throw exceptionMapper.map(e)
             }
@@ -47,8 +48,11 @@ class ClaudeBackend(
      * Пока общий текст задачи запрещал инструменты, он запрещал ей единственный способ увидеть
      * кадр — модель отвечала, что картинки нет, то прозой, то сочинённым JSON.
      */
-    private fun systemPrompt(request: VisionRequest): String =
-        if (request.frames.isEmpty()) {
+    private fun systemPrompt(
+        request: VisionRequest,
+        stagedPaths: List<Path>,
+    ): String =
+        if (stagedPaths.isEmpty()) {
             request.instructions.systemPrompt
         } else {
             "${request.instructions.systemPrompt} $FRAME_READING_RULE"

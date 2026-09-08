@@ -67,9 +67,9 @@ class DefaultClaudeInvoker(
             }
 
             val assistantMessages = messages.filterIsInstance<AssistantMessage>()
-            requireFramesWereRead(assistantMessages, framesToRead)
             val rawText = assistantMessages.joinToString(separator = "") { it.text() }
             logger.debug { "Claude raw response (${rawText.length} chars):\n$rawText" }
+            requireFramesWereRead(assistantMessages, framesToRead, rawText)
             return rawText
         } finally {
             // ClaudeAsyncClient is NOT AutoCloseable — .use not usable. Close explicitly.
@@ -91,24 +91,34 @@ class DefaultClaudeInvoker(
      * получателей вместо описания и не оставил бы в логах ничего. Отвергаем как InvalidResponse —
      * executor повторит попытку ровно так же, как на любом другом негодном ответе.
      *
-     * Порог — ноль прочитанных, а не «все»: ответ по части кадров всё-таки опирается на картинку,
-     * и отвергать его значило бы платить за повтор там, где ответ годен. Неполное чтение видно в
-     * логе.
+     * Проверяем «был ли хоть один Read», а не «прочитан ли каждый кадр». Сверка путей выглядит
+     * точнее, но ошибается в дорогую сторону: назови модель файл иначе, чем промпт, и годный ответ
+     * ушёл бы в отказ, то есть в потерянное описание. Ответ по части кадров всё равно опирается на
+     * картинку. Поэтому число чтений меньше числа кадров — только строка в логе, и строка неточная:
+     * дважды прочитанный один кадр здесь неотличим от двух разных.
+     *
+     * Ответ уходит в WARN обрезанным: без него в логе остаётся один счётчик, а вежливый отказ и
+     * выдуманное описание сцены, которой модель не видела, различаются только текстом — и второе
+     * стоит эскалации, потому что повторится на каждой записи.
      */
     private fun requireFramesWereRead(
         messages: List<AssistantMessage>,
         framesToRead: Int,
+        rawText: String,
     ) {
         if (framesToRead <= 0) return
         val reads = messages.sumOf { message -> message.toolUses.count { it.name() == READ_TOOL } }
         if (reads == 0) {
-            logger.warn { "Claude answered without reading any of the $framesToRead staged frames; rejecting" }
+            logger.warn {
+                "Claude answered without reading any of the $framesToRead staged frames; rejecting. " +
+                    "The answer was: ${rawText.take(ANSWER_LOG_MAX)}"
+            }
             throw DescriptionException.InvalidResponse(
                 detail = "the model answered without reading any of the $framesToRead staged frames",
             )
         }
         if (reads < framesToRead) {
-            logger.warn { "Claude read $reads of $framesToRead staged frames; the answer covers only part of them" }
+            logger.warn { "Claude read $reads times for $framesToRead staged frames; some may not have been seen" }
         }
     }
 
@@ -117,5 +127,8 @@ class DefaultClaudeInvoker(
 
         /** Имя инструмента Claude Code, которым модель читает кадр. */
         private const val READ_TOOL = "Read"
+
+        /** Сколько символов отвергнутого ответа уходит в лог: хватает отличить отказ от выдумки. */
+        private const val ANSWER_LOG_MAX = 300
     }
 }
