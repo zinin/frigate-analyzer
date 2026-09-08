@@ -165,6 +165,35 @@ semaphore and timeouts).
 `RateLimited` and `Unauthorized` are not retried. Anything a backend throws that is not a
 `DescriptionException` becomes `Transport`.
 
+## Claude invocation
+
+`ClaudeImageStager` writes every frame to a temp `.jpg` under `application.temp-folder`, and
+`ClaudePromptBuilder` puts one `- Frame N: @/abs/path.jpg` line per frame between preamble and
+epilogue. `DefaultClaudeInvoker` then opens a bidirectional stream-json session
+(`connect(prompt).messages()`); the staged files are deleted in a `finally`.
+
+**The `@` reference is not expanded by anyone — the model turns it into pixels by calling `Read`.**
+The CLI passes the line through as text, the model issues a `Read` tool_use, and the tool_result
+carries the image back (that echo is why `CLAUDE_MAX_BUFFER_SIZE` is 16MB: a frame over ~750 KB does
+not fit the SDK's 1 MiB default). Two consequences the code depends on:
+
+- The session must keep the CLI's own system prompt, so `ClaudeAsyncClientFactory` uses
+  `appendSystemPrompt`, never `systemPrompt` — a replaced prompt takes `Read` with it.
+- **The tool rule is per provider, never in the task text.** `DescriptionTask.SYSTEM_PROMPT` and
+  `JudgeTask.SYSTEM_PROMPT` say nothing about tools; `ClaudeBackend.FRAME_READING_RULE` requires the
+  `Read` call, `GrokBackend.TOOL_RULE` forbids tools (Grok gets inline images and has no tools
+  anyway). While the shared text carried "Do not call tools", it forbade Claude the only way to see
+  a frame. It held only as long as the model put the task above the instruction: on 2026-09-08 the
+  descriptions started failing, `opus` having become `claude-opus-5`.
+
+`DefaultClaudeInvoker` rejects an answer produced without a single `Read` as `InvalidResponse`, so
+the executor retries it like any other unusable answer. This is not belt-and-braces: a model that
+never saw the frame answers that the image is missing either in prose — which the parser rejects on
+its own — or as a **valid JSON object** whose `short`/`detailed` say "изображение недоступно". The
+second shape would reach the recipients as a real description and leave nothing in the log. Reading
+some of the frames but not all is only a WARN: such an answer still rests on a picture, and a retry
+would be paid for nothing.
+
 ## Grok invocation
 
 Per recording `GrokPromptFileWriter` writes `prompt.json` (suffix mandatory: any other extension is

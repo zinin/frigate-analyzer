@@ -32,7 +32,7 @@ class ClaudeBackend(
             val prompt = promptBuilder.build(request, stagedPaths)
             return try {
                 // Второго представления у Claude нет: SDK отдаёт один текст.
-                VisionResponse(invoker.invoke(prompt, model, request.instructions.systemPrompt, timeout))
+                VisionResponse(invoker.invoke(prompt, model, systemPrompt(request), timeout, stagedPaths.size))
             } catch (e: Throwable) {
                 throw exceptionMapper.map(e)
             }
@@ -41,7 +41,24 @@ class ClaudeBackend(
         }
     }
 
+    /**
+     * Правило чтения кадров провайдерское, а не задачное: [ClaudePromptBuilder] отдаёт кадры
+     * ссылками `@path`, и превратить их в пиксели может только Read, вызванный самой моделью.
+     * Пока общий текст задачи запрещал инструменты, он запрещал ей единственный способ увидеть
+     * кадр — модель отвечала, что картинки нет, то прозой, то сочинённым JSON.
+     */
+    private fun systemPrompt(request: VisionRequest): String =
+        if (request.frames.isEmpty()) {
+            request.instructions.systemPrompt
+        } else {
+            "${request.instructions.systemPrompt} $FRAME_READING_RULE"
+        }
+
     companion object {
+        const val FRAME_READING_RULE =
+            "The frames are referenced by file path, not attached as images: call the Read tool once on " +
+                "each frame path before you answer. Use no other tool."
+
         const val AUTH_RECOVERY_HINT =
             "set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token` (or ANTHROPIC_AUTH_TOKEN) and restart"
     }

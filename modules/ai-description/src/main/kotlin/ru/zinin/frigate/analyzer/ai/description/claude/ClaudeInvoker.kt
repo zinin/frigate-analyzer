@@ -13,5 +13,10 @@ fun interface ClaudeInvoker {
         systemPrompt: String,
         /** Бюджет вызова, отпущенный задачей: от него, а не от настроек описаний, считается таймаут SDK. */
         timeout: Duration,
+        /**
+         * Сколько кадров промпт передал ссылками `@path`. Ответ, написанный без единого Read, этих
+         * кадров не видел, и реализация его отвергает — см. `DefaultClaudeInvoker`.
+         */
+        framesToRead: Int,
     ): String
 }

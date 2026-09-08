@@ -5,6 +5,7 @@ import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class DescriptionTaskTest {
@@ -41,5 +42,20 @@ class DescriptionTaskTest {
     @Test
     fun `rejects unknown language code`() {
         assertFailsWith<IllegalStateException> { DescriptionTask.instructions(request("de")) }
+    }
+
+    /**
+     * Правило про инструменты принадлежит провайдеру, а не задаче: Claude получает кадры ссылками
+     * `@path` и видит их только вызовом Read, а Grok — готовыми image-блоками. Общий запрет
+     * инструментов запрещал Claude единственный способ увидеть кадр, и модель отвечала либо прозой
+     * (InvalidResponse), либо валидным JSON про недоступное изображение — вторая форма уходила
+     * получателям вместо описания и не оставляла в логах ничего.
+     */
+    @Test
+    fun `the shared system prompt leaves the tool rule to the provider`() {
+        val systemPrompt = DescriptionTask.instructions(request()).systemPrompt
+
+        assertFalse(systemPrompt.contains("tool", ignoreCase = true))
+        assertTrue(systemPrompt.contains("Answer only with the requested JSON object."))
     }
 }

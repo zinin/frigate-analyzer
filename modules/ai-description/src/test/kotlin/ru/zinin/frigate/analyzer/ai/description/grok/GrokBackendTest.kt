@@ -100,6 +100,31 @@ class GrokBackendTest {
             assertEquals("""{"short":"Bike","detailed":"A bike."}""", response.fallback)
         }
 
+    /**
+     * Кадры Grok получает готовыми image-блоками, инструменты ему не нужны и отключены флагами
+     * команды. Запрет остаётся в промпте провайдера — общий текст задачи его больше не несёт.
+     */
+    @Test
+    fun `the system prompt handed to grok keeps the tool ban`() =
+        runTest {
+            var seen: GrokCommand? = null
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        seen = it
+                        result(0, """{"stopReason":"end_turn","structuredOutput":{"short":"a","detailed":"b"}}""")
+                    },
+                )
+
+            backend.complete(request, budget)
+
+            val argv = seen!!.argv
+            assertEquals(
+                "${DescriptionTask.SYSTEM_PROMPT} ${GrokBackend.TOOL_RULE}",
+                argv[argv.indexOf("--system-prompt-override") + 1],
+            )
+        }
+
     @Test
     fun `runner receives the command built for the prompt file`() =
         runTest {

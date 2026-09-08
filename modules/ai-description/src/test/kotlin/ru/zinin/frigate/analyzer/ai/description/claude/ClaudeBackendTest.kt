@@ -59,9 +59,33 @@ class ClaudeBackendTest {
     @Test
     fun `happy path stages, invokes, parses and cleans up`() =
         runTest {
-            val backend = build(ClaudeInvoker { _, _, _, _ -> """{"short": "s", "detailed": "d"}""" })
+            val backend = build(ClaudeInvoker { _, _, _, _, _ -> """{"short": "s", "detailed": "d"}""" })
             assertEquals("""{"short": "s", "detailed": "d"}""", backend.complete(request, budget).primary)
             coVerify(exactly = 1) { imageStager.cleanup(stagedPaths) }
+        }
+
+    /**
+     * Кадры уходят ссылками `@path`, поэтому увидеть их модель может только вызовом Read. Запрет
+     * инструментов в общем тексте задачи оставлял её без картинки, и описание не приходило.
+     */
+    @Test
+    fun `the system prompt tells the model to read every frame path with Read`() =
+        runTest {
+            var seenSystemPrompt: String? = null
+            var seenFrames = -1
+            val backend =
+                build(
+                    ClaudeInvoker { _, _, systemPrompt, _, framesToRead ->
+                        seenSystemPrompt = systemPrompt
+                        seenFrames = framesToRead
+                        """{"short": "s", "detailed": "d"}"""
+                    },
+                )
+
+            backend.complete(request, budget)
+
+            assertEquals("${DescriptionTask.SYSTEM_PROMPT} ${ClaudeBackend.FRAME_READING_RULE}", seenSystemPrompt)
+            assertEquals(stagedPaths.size, seenFrames)
         }
 
     @Test
@@ -70,7 +94,7 @@ class ClaudeBackendTest {
             var seenModel: String? = null
             val backend =
                 build(
-                    ClaudeInvoker { _, model, _, _ ->
+                    ClaudeInvoker { _, model, _, _, _ ->
                         seenModel = model
                         """{"short": "s", "detailed": "d"}"""
                     },
@@ -85,7 +109,7 @@ class ClaudeBackendTest {
             var seenTimeout: Duration? = null
             val backend =
                 build(
-                    ClaudeInvoker { _, _, _, timeout ->
+                    ClaudeInvoker { _, _, _, timeout, _ ->
                         seenTimeout = timeout
                         """{"short": "s", "detailed": "d"}"""
                     },
@@ -97,13 +121,13 @@ class ClaudeBackendTest {
     @Test
     fun `SDK exceptions go through the exception mapper`() =
         runTest {
-            val backend = build(ClaudeInvoker { _, _, _, _ -> throw ClaudeSDKException("request was rate limited") })
+            val backend = build(ClaudeInvoker { _, _, _, _, _ -> throw ClaudeSDKException("request was rate limited") })
             assertFailsWith<DescriptionException.RateLimited> { backend.complete(request, budget) }
         }
 
     @Test
     fun `identifies itself as claude`() {
-        val backend = build(ClaudeInvoker { _, _, _, _ -> "" })
+        val backend = build(ClaudeInvoker { _, _, _, _, _ -> "" })
         assertEquals("claude", backend.providerId)
         assert(backend.authRecoveryHint.contains("CLAUDE_CODE_OAUTH_TOKEN"))
     }

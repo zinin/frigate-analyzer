@@ -10,6 +10,7 @@ import org.springaicommunity.claude.agent.sdk.types.AssistantMessage
 import org.springaicommunity.claude.agent.sdk.types.ResultMessage
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import java.time.Duration
 
 private val logger = KotlinLogging.logger {}
@@ -24,6 +25,7 @@ class DefaultClaudeInvoker(
         model: String,
         systemPrompt: String,
         timeout: Duration,
+        framesToRead: Int,
     ): String {
         logger.debug { "Claude prompt (${prompt.length} chars):\n$prompt" }
         // Бюджет приходит от задачи, а не из настроек описаний: у судьи свой таймаут, и клиент,
@@ -64,10 +66,9 @@ class DefaultClaudeInvoker(
                 throw ClaudeSDKException(detail)
             }
 
-            val rawText =
-                messages
-                    .filterIsInstance<AssistantMessage>()
-                    .joinToString(separator = "") { it.text() }
+            val assistantMessages = messages.filterIsInstance<AssistantMessage>()
+            requireFramesWereRead(assistantMessages, framesToRead)
+            val rawText = assistantMessages.joinToString(separator = "") { it.text() }
             logger.debug { "Claude raw response (${rawText.length} chars):\n$rawText" }
             return rawText
         } finally {
@@ -83,7 +84,38 @@ class DefaultClaudeInvoker(
         }
     }
 
+    /**
+     * Кадры уходят ссылками `@path`, поэтому модель видит их только вызовом Read. Ответ без единого
+     * такого вызова написан вслепую, и цена ошибки тут не в потраченном вызове: прозу «картинки
+     * нет» парсер отвергает сам, а вот такой же отказ, оформленный валидным JSON, дошёл бы до
+     * получателей вместо описания и не оставил бы в логах ничего. Отвергаем как InvalidResponse —
+     * executor повторит попытку ровно так же, как на любом другом негодном ответе.
+     *
+     * Порог — ноль прочитанных, а не «все»: ответ по части кадров всё-таки опирается на картинку,
+     * и отвергать его значило бы платить за повтор там, где ответ годен. Неполное чтение видно в
+     * логе.
+     */
+    private fun requireFramesWereRead(
+        messages: List<AssistantMessage>,
+        framesToRead: Int,
+    ) {
+        if (framesToRead <= 0) return
+        val reads = messages.sumOf { message -> message.toolUses.count { it.name() == READ_TOOL } }
+        if (reads == 0) {
+            logger.warn { "Claude answered without reading any of the $framesToRead staged frames; rejecting" }
+            throw DescriptionException.InvalidResponse(
+                detail = "the model answered without reading any of the $framesToRead staged frames",
+            )
+        }
+        if (reads < framesToRead) {
+            logger.warn { "Claude read $reads of $framesToRead staged frames; the answer covers only part of them" }
+        }
+    }
+
     companion object {
         private val SDK_TIMEOUT_BUFFER: Duration = Duration.ofSeconds(5)
+
+        /** Имя инструмента Claude Code, которым модель читает кадр. */
+        private const val READ_TOOL = "Read"
     }
 }

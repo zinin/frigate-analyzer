@@ -347,7 +347,7 @@ class DescriptionPresetCatalogBuilderTest {
                 ),
             promptBuilder = mockk(relaxed = true),
             imageStager = mockk(relaxed = true),
-            invoker = { _, _, _, _ -> "{}" },
+            invoker = { _, _, _, _, _ -> "{}" },
             exceptionMapper = mockk(relaxed = true),
         )
 
