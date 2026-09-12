@@ -14,6 +14,7 @@ import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.exception.UnprocessableVideoException
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
+import ru.zinin.frigate.analyzer.model.response.ExtractedFrameData
 import ru.zinin.frigate.analyzer.model.response.FrameExtractionResponse
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
 import java.nio.file.Files
@@ -22,6 +23,22 @@ import java.nio.file.Path
 import java.util.Base64
 
 private val logger = KotlinLogging.logger {}
+
+/**
+ * Summarises how the extraction server arrived at the frames it returned — ` (first=1, grid=3,
+ * motion=2)`, empty for an empty list. Since vision-api 3.0 picks frames by motion, this is what
+ * answers "why did this recording yield a single frame" without a second request.
+ */
+internal fun frameReasonSuffix(frames: List<ExtractedFrameData>): String =
+    if (frames.isEmpty()) {
+        ""
+    } else {
+        frames
+            .groupingBy { it.reason }
+            .eachCount()
+            .entries
+            .joinToString(separator = ", ", prefix = " (", postfix = ")") { (reason, count) -> "$reason=$count" }
+    }
 
 @Component
 class FrameExtractorProducer(
@@ -89,8 +106,13 @@ class FrameExtractorProducer(
 
         try {
             val response = extractFramesFromVideo(record)
-            logger.info { "Extracted ${response.frames.size} frames for recording ${record.id}" }
+            logger.info {
+                "Extracted ${response.frames.size} frames for recording ${record.id}" +
+                    frameReasonSuffix(response.frames)
+            }
 
+            // Still reachable although the server always returns frame 0: the zero-byte file path
+            // in extractFramesFromVideo fabricates an empty response without asking the server.
             if (response.frames.isEmpty()) {
                 recordingEntityService.saveProcessingResult(
                     SaveProcessingResultRequest(record.id),
@@ -153,7 +175,8 @@ class FrameExtractorProducer(
             bytes = videoBytes,
             filePath = record.filePath,
             recordingId = record.id,
-            sceneThreshold = frameExtractionConfig.sceneThreshold,
+            maxGap = frameExtractionConfig.maxGap,
+            motionThreshold = frameExtractionConfig.motionThreshold,
             minInterval = frameExtractionConfig.minInterval,
             maxFrames = frameExtractionConfig.maxFrames,
         )

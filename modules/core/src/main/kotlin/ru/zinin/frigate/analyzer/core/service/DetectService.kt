@@ -123,9 +123,11 @@ class DetectService(
      *
      * @param bytes video file content
      * @param filePath file path for Content-Disposition
-     * @param sceneThreshold scene change sensitivity threshold (lower = more frames)
+     * @param maxGap grid step in seconds — the longest gap the server may leave between frames
+     * @param motionThreshold motion as a share of the frame area, above which a frame is taken
+     *   (lower = more frames)
      * @param minInterval minimum interval between frames in seconds
-     * @param maxFrames maximum number of frames
+     * @param maxFrames cap on the number of frames, not a target
      * @param quality JPEG quality
      * @throws DetectTimeoutException if the wait timeout is exceeded
      */
@@ -133,13 +135,23 @@ class DetectService(
         bytes: ByteArray,
         filePath: String,
         recordingId: java.util.UUID,
-        sceneThreshold: Double = detectProperties.frameExtraction.sceneThreshold,
+        maxGap: Double = detectProperties.frameExtraction.maxGap,
+        motionThreshold: Double = detectProperties.frameExtraction.motionThreshold,
         minInterval: Double = detectProperties.frameExtraction.minInterval,
         maxFrames: Int = detectProperties.frameExtraction.maxFrames,
         quality: Int = detectProperties.frameExtraction.quality,
     ): FrameExtractionResponse =
         retryWithTimeout(detectProperties.frameExtractionTimeout.toMillis(), "Frame extraction") {
-            extractFramesRemote(bytes, filePath, recordingId, sceneThreshold, minInterval, maxFrames, quality)
+            extractFramesRemote(
+                bytes = bytes,
+                filePath = filePath,
+                recordingId = recordingId,
+                maxGap = maxGap,
+                motionThreshold = motionThreshold,
+                minInterval = minInterval,
+                maxFrames = maxFrames,
+                quality = quality,
+            )
         }
 
     /**
@@ -152,7 +164,8 @@ class DetectService(
         bytes: ByteArray,
         filePath: String,
         recordingId: java.util.UUID,
-        sceneThreshold: Double,
+        maxGap: Double,
+        motionThreshold: Double,
         minInterval: Double,
         maxFrames: Int,
         quality: Int,
@@ -177,7 +190,8 @@ class DetectService(
                         .host(acquired.host)
                         .port(acquired.port)
                         .path("/extract/frames")
-                        .queryParam("scene_threshold", sceneThreshold)
+                        .queryParam("max_gap", maxGap)
+                        .queryParam("motion_threshold", motionThreshold)
                         .queryParam("min_interval", minInterval)
                         .queryParam("max_frames", maxFrames)
                         .queryParam("quality", quality)
