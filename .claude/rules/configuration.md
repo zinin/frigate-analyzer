@@ -77,12 +77,15 @@ The reference form (`${FIRST_SCAN_PERIOD:${application.records-watcher.watch-per
 
 ### Frame Extraction
 
+`/extract/frames` of vision-api 3.0 selects frames by motion: a grid every `DETECT_MAX_GAP` seconds, plus every frame whose largest changed region exceeds `DETECT_MOTION_THRESHOLD` of the frame area. Frame 0 is always among them, so a successful answer never carries an empty frame list. Every default below mirrors the server's own, and every range is the server's: a value outside it comes back as 422, which `FrameExtractorProducer` turns into a recording marked processed-with-error — the validation fails the boot instead. Expect more frames per recording than 2.x returned (4.71 against 2.07 on the corpus these cameras produced) and a proportional rise in detection load: the pipeline sends one `/detect` request per frame.
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DETECT_SCENE_THRESHOLD` | 0.05 | Scene change threshold |
-| `DETECT_MIN_INTERVAL` | 1.0 | Min interval between frames (sec) |
-| `DETECT_MAX_FRAMES` | 50 | Max frames per recording |
-| `DETECT_FRAME_QUALITY` | 85 | Extracted frame JPEG quality |
+| `DETECT_MAX_GAP` | 4.0 | Grid step — the longest gap between frames, sec. Validated `0.5..30.0`. |
+| `DETECT_MOTION_THRESHOLD` | 0.001 | Motion threshold as a share of the frame area; lower = more frames. Validated `0.0001..0.1`. Below 0.001 the value goes out in scientific notation (`1.0E-4`), which the server parses. |
+| `DETECT_MIN_INTERVAL` | 1.0 | Min interval between frames (sec). Validated `0.1..30.0`. |
+| `DETECT_MAX_FRAMES` | 6 | Frames per recording — a cap, not a target. Validated `1..200`. |
+| `DETECT_FRAME_QUALITY` | 85 | Extracted frame JPEG quality. Validated `1..100`. |
 
 ### Remote Visualization
 

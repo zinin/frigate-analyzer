@@ -1,6 +1,6 @@
 # Frigate Analyzer
 
-Automated video recording analysis for [Frigate NVR](https://frigate.video/) security cameras using YOLO-based object detection. Watches for new recordings, extracts key frames, detects objects, and sends Telegram notifications with annotated images.
+Automated video recording analysis for [Frigate NVR](https://frigate.video/) security cameras using YOLO-based object detection. Watches for new recordings, extracts frames where motion appears, detects objects, and sends Telegram notifications with annotated images.
 
 ## How It Works
 
@@ -11,7 +11,7 @@ graph TD
 
     subgraph C ["Detection Pipeline (via Vision API Server — multi-instance, priority load balancing)"]
         direction LR
-        P["<b>Producers</b><br/>Extract key frames"] -- "Channel" --> Q["<b>Consumers (auto-scaled)</b><br/>Detect • Filter • Re-check"]
+        P["<b>Producers</b><br/>Extract frames by motion"] -- "Channel" --> Q["<b>Consumers (auto-scaled)</b><br/>Detect • Filter • Re-check"]
     end
 
     C --> VIS["Annotate top frames<br/>(local, Java2D)"]
@@ -35,7 +35,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 
 ## Features
 
-- **Automatic recording processing** — watches Frigate recording directories, extracts key frames using scene detection, runs object detection on each frame
+- **Automatic recording processing** — watches Frigate recording directories, extracts frames on a time grid plus wherever motion appears, runs object detection on each frame
 - **Multi-server load balancing** — distributes detection workload across multiple vision-api-server instances with priority-based scheduling and health monitoring
 - **Two-stage detection** — initial fast scan with a lightweight model, then re-checks detected objects with a higher-accuracy model for validation
 - **Configurable object filtering** — only keep detections for classes you care about (person, car, dog, etc.)
