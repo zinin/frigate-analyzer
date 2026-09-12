@@ -216,9 +216,10 @@ application:
     default-model: ${DETECT_DEFAULT_MODEL:yolo26s.pt}
     good-model: ${DETECT_GOOD_MODEL:yolo26x.pt}
     frame-extraction:
-      scene-threshold: ${DETECT_SCENE_THRESHOLD:0.05}
+      max-gap: ${DETECT_MAX_GAP:4.0}
+      motion-threshold: ${DETECT_MOTION_THRESHOLD:0.001}
       min-interval: ${DETECT_MIN_INTERVAL:1.0}
-      max-frames: ${DETECT_MAX_FRAMES:50}
+      max-frames: ${DETECT_MAX_FRAMES:6}
       quality: ${DETECT_FRAME_QUALITY:85}
     visualize:
       max-det: ${DETECT_MAX_DET:100}

@@ -1,6 +1,8 @@
 package ru.zinin.frigate.analyzer.core.config.properties
 
 import jakarta.validation.Valid
+import jakarta.validation.constraints.DecimalMax
+import jakarta.validation.constraints.DecimalMin
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
 import org.springframework.boot.context.properties.ConfigurationProperties
@@ -31,14 +33,29 @@ data class DetectProperties(
     val videoVisualize: VideoVisualizeConfig = VideoVisualizeConfig(),
 )
 
+/**
+ * The client half of the `/extract/frames` contract of vision-api 3.0, which selects frames by
+ * motion: a grid every [maxGap] seconds plus every frame whose largest changed region exceeds
+ * [motionThreshold] of the frame area.
+ *
+ * Every range below is the server's own. Outside it the server answers 422, which
+ * `FrameExtractorProducer` records as processed-with-error — so a typo in the environment has to
+ * fail the boot instead of burying recordings one by one.
+ */
 data class FrameExtractionConfig(
-    @field:Min(0)
-    @field:Max(1)
-    val sceneThreshold: Double = 0.05,
-    @field:Min(0)
+    @field:DecimalMin("0.5")
+    @field:DecimalMax("30.0")
+    val maxGap: Double = 4.0,
+    @field:DecimalMin("0.0001")
+    @field:DecimalMax("0.1")
+    val motionThreshold: Double = 0.001,
+    @field:DecimalMin("0.1")
+    @field:DecimalMax("30.0")
     val minInterval: Double = 1.0,
+    /** A cap, not a target: the server returns what the motion metric found, up to this many. */
     @field:Min(1)
-    val maxFrames: Int = 50,
+    @field:Max(200)
+    val maxFrames: Int = 6,
     @field:Min(1)
     @field:Max(100)
     val quality: Int = 85,
