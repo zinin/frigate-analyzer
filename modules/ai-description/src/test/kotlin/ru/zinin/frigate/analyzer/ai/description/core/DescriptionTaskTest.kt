@@ -32,6 +32,15 @@ class DescriptionTaskTest {
         assertTrue(epilogue.contains("must not exceed 800 characters"))
     }
 
+    /** Одного ограничения длины мало: модель считает его потолком и пишет подпись, а не описание. */
+    @Test
+    fun `the short description asks for what happened, movement included`() {
+        val epilogue = DescriptionTask.instructions(request()).epilogue
+
+        assertTrue(epilogue.contains("\"short\": one to three sentences on what happened, including any movement"))
+        assertTrue(epilogue.contains("must not exceed 150 characters"))
+    }
+
     @Test
     fun `system prompt and schema are the fixed description ones`() {
         val instructions = DescriptionTask.instructions(request())

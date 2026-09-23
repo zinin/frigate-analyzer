@@ -206,7 +206,7 @@ that will actually be used.
 | `APP_AI_DESCRIPTION_DEFAULT_PRESET` | empty | `default-preset` — see above. |
 | `APP_AI_DESCRIPTION_PROVIDER` | claude | **Legacy**, single-preset path only: `claude` or `grok`, used while the `presets` map is empty. An unknown value then leaves the deployment without an agent — a WARN at startup and every recording goes out without description blocks. |
 | `APP_AI_DESCRIPTION_LANGUAGE` | en | Reply language. `ru` or `en`. |
-| `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (the `<p>` above the frames). |
+| `APP_AI_DESCRIPTION_SHORT_MAX` | 400 | Max characters of the short description (the `<p>` above the frames). Was 200. The prompt also asks for one to three sentences with the movement in them — a length cap alone reads to the model as a ceiling and it writes a caption. |
 | `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (the `<details>` body). |
 | `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. Validated `1..50`, but the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. |
 | `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | 0 | Longest frame side in pixels before the model call; `0` sends frames at camera resolution. Validated `0` or `256..8192`. Vision endpoints bill by image area, and some gateways drop an image above their own limit without saying so — the LiteLLM gateway in front of DKS-Vision ignores anything wider than 1568 px and the model answers "frame unavailable". Resizing happens once per request in `VisionCallExecutor`, before the provider attempt, so both providers get it. |

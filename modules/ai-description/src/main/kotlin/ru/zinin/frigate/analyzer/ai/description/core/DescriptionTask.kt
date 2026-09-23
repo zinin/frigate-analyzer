@@ -43,7 +43,11 @@ object DescriptionTask {
                 appendLine("""{"short": "...", "detailed": "..."}""")
                 appendLine()
                 appendLine("Rules:")
-                appendLine("- \"short\" must not exceed ${request.shortMaxLength} characters.")
+                appendLine(
+                    "- \"short\": one to three sentences on what happened, including any movement " +
+                        "(who or what, where from, where to, whether it stopped); " +
+                        "must not exceed ${request.shortMaxLength} characters.",
+                )
                 appendLine("- \"detailed\" must not exceed ${request.detailedMaxLength} characters.")
                 append("- No markdown, no explanations — just the JSON object.")
             }

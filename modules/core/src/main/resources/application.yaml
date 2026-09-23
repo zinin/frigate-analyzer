@@ -114,7 +114,7 @@ application:
       default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:}
       common:
         language: ${APP_AI_DESCRIPTION_LANGUAGE:en}
-        short-max-length: ${APP_AI_DESCRIPTION_SHORT_MAX:200}
+        short-max-length: ${APP_AI_DESCRIPTION_SHORT_MAX:400}
         detailed-max-length: ${APP_AI_DESCRIPTION_DETAILED_MAX:1500}
         max-frames: ${APP_AI_DESCRIPTION_MAX_FRAMES:10}
         # Длинная сторона кадра в пикселях перед отправкой модели; 0 = отдавать как есть.
