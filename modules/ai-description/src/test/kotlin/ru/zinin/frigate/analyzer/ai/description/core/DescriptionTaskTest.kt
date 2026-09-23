@@ -18,6 +18,20 @@ class DescriptionTaskTest {
             detailedMaxLength = 800,
         )
 
+    private fun storyboard(
+        missingBefore: Boolean = false,
+        missingAfter: Boolean = false,
+        detections: List<DescriptionRequest.DetectionMark> = listOf(DescriptionRequest.DetectionMark("car", 0.87, 5.0)),
+    ) = DescriptionRequest.Storyboard(
+        image = byteArrayOf(9),
+        tiles = 16,
+        stepSeconds = 1.0,
+        durationSeconds = 15.0,
+        detections = detections,
+        missingBefore = missingBefore,
+        missingAfter = missingAfter,
+    )
+
     @Test
     fun `preamble names the language`() {
         assertTrue(DescriptionTask.instructions(request("ru")).preamble.contains("Write both descriptions in Russian."))
@@ -100,5 +114,95 @@ class DescriptionTaskTest {
         assertEquals(request.recordingId, vision.requestId)
         assertEquals(DescriptionTask.images(request), vision.images)
         assertEquals(DescriptionTask.instructions(request), vision.instructions)
+    }
+
+    @Test
+    fun `the storyboard goes first, then the full-resolution frames in time order`() {
+        val request =
+            request().copy(
+                frames =
+                    listOf(
+                        DescriptionRequest.FrameImage(4, byteArrayOf(4), offsetSeconds = 9.0),
+                        DescriptionRequest.FrameImage(1, byteArrayOf(1), offsetSeconds = 5.0),
+                    ),
+                storyboard = storyboard(),
+            )
+
+        val images = DescriptionTask.images(request)
+
+        assertEquals(
+            listOf(
+                "Storyboard: 16 frames, 1.0s apart, left to right, top to bottom",
+                "Full-resolution frame at 5.0s",
+                "Full-resolution frame at 9.0s",
+            ),
+            images.map { it.caption },
+        )
+        assertEquals(listOf<Byte>(9, 1, 4), images.map { it.bytes.single() })
+        assertEquals("Images:", DescriptionTask.instructions(request).imagesHeader)
+    }
+
+    @Test
+    fun `the storyboard preamble explains the timeline and lists detections with times`() {
+        val detections =
+            listOf(
+                DescriptionRequest.DetectionMark("car", 0.87, 5.0),
+                DescriptionRequest.DetectionMark("person", 0.71, 9.0),
+            )
+
+        val preamble = DescriptionTask.instructions(request().copy(storyboard = storyboard(detections = detections))).preamble
+
+        assertTrue(preamble.contains("Write both descriptions in English."))
+        assertTrue(preamble.contains("16 frames taken every 1.0s over 15.0s of footage, read left to right, top to bottom"))
+        assertTrue(preamble.contains("The detector found: car 0.87 at 5.0s; person 0.71 at 9.0s."))
+        assertTrue(preamble.contains("The remaining images are full-resolution frames for details."))
+        assertTrue(preamble.contains("An object that stays in the same place in every tile is stationary."))
+        assertFalse(preamble.contains("not available"))
+    }
+
+    /** Без этих строк модель выдумала бы, что машина «уехала», когда запись просто кончилась. */
+    @Test
+    fun `missing footage on either side is spelled out`() {
+        val preamble =
+            DescriptionTask.instructions(request().copy(storyboard = storyboard(missingBefore = true, missingAfter = true))).preamble
+
+        assertTrue(preamble.contains("Earlier footage is not available."))
+        assertTrue(preamble.contains("Footage after 15.0s is not available."))
+    }
+
+    @Test
+    fun `a detection without a time is listed without one`() {
+        val detections = listOf(DescriptionRequest.DetectionMark("car", 0.87, null))
+
+        val preamble = DescriptionTask.instructions(request().copy(storyboard = storyboard(detections = detections))).preamble
+
+        assertTrue(preamble.contains("The detector found: car 0.87."))
+    }
+
+    @Test
+    fun `the storyboard preamble mentions only what the request carries`() {
+        val request = request().copy(frames = emptyList(), storyboard = storyboard(detections = emptyList()))
+
+        val preamble = DescriptionTask.instructions(request).preamble
+
+        assertEquals(listOf<Byte>(9), DescriptionTask.images(request).map { it.bytes.single() })
+        assertFalse(preamble.contains("full-resolution"))
+        assertFalse(preamble.contains("The detector found"))
+    }
+
+    @Test
+    fun `a full-resolution frame without a time keeps its number`() {
+        val request = request().copy(frames = listOf(DescriptionRequest.FrameImage(3, byteArrayOf(3))), storyboard = storyboard())
+
+        assertEquals("Full-resolution frame 3", DescriptionTask.images(request).last().caption)
+    }
+
+    @Test
+    fun `without a storyboard the preamble stays as it was`() {
+        assertEquals(
+            "You are analyzing surveillance camera frames captured during an object detection event.\n" +
+                "Write both descriptions in English.",
+            DescriptionTask.instructions(request("en")).preamble,
+        )
     }
 }

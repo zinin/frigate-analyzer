@@ -25,7 +25,7 @@ data class VisionOutcome<T>(
 /**
  * Провайдер-нейтральное исполнение одной vision-задачи: резолюция пресета до семафора, семафор,
  * queueTimeout, timeout, retry по InvalidResponse и Transport с проверкой остатка бюджета, downscale
- * кадров, отчёт в ProviderAuthTracker. Разбор ответа ([parse]) выполняется внутри цикла повторов:
+ * картинок, отчёт в ProviderAuthTracker. Разбор ответа ([parse]) выполняется внутри цикла повторов:
  * InvalidResponse из парсера повторяет вызов так же, как раньше повторял его backend.
  *
  * У каждой фазы вызова свой потолок, и `withTimeout` покрывает не весь вызов: резолюция пресета
@@ -93,10 +93,10 @@ class VisionCallExecutor(
 
             val callStart = timeSource.markNow()
             try {
-                // Уменьшение кадров держим под семафором, но вне withTimeout: это CPU-работа, чей
+                // Уменьшение картинок держим под семафором, но вне withTimeout: это CPU-работа, чей
                 // размер известен заранее, и она не должна съедать бюджет, отпущенный модели. Отсюда
                 // же и перехват: вне attempt() исключение ушло бы из execute() сырым, мимо контракта
-                // DescriptionException, а описание важнее уменьшения — кадры пойдут как есть.
+                // DescriptionException, а описание важнее уменьшения — картинки пойдут как есть.
                 val prepared =
                     try {
                         downscaleImages(request)

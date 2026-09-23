@@ -30,7 +30,7 @@ class ClaudeImageStager(
             }
             return staged
         } catch (e: Exception) {
-            logger.warn(e) { "Failed to stage frames for ${request.requestId}; cleaning up partial set" }
+            logger.warn(e) { "Failed to stage images for ${request.requestId}; cleaning up partial set" }
             // NonCancellable — stage может упасть при TimeoutCancellationException,
             // а suspend-вызов в отменённой корутине сразу бросит CancellationException.
             withContext(NonCancellable) {
@@ -50,7 +50,7 @@ class ClaudeImageStager(
         // CancellationException, runCatching его проглотит, файлы останутся.
         withContext(NonCancellable) {
             runCatching { tempWriter.deleteFiles(paths) }
-                .onFailure { logger.warn(it) { "Failed to delete staged Claude frames" } }
+                .onFailure { logger.warn(it) { "Failed to delete staged Claude images" } }
         }
     }
 }

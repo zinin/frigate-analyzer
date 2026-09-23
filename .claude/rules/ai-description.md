@@ -30,7 +30,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 |-------|-----------|----------|---------|
 | API | `DescriptionAgent` | `api/` | Single-method `suspend fun describe(request): DescriptionResult` |
 | API | `JudgeAgent` | `api/` | Single-method `suspend fun judge(request): JudgeOutcome` |
-| API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs; `DescriptionException` is provider-neutral: `Timeout`, `InvalidResponse`, `Transport`, `RateLimited`, `Unauthorized` |
+| API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs; `DescriptionException` is provider-neutral: `Timeout`, `InvalidResponse`, `Transport`, `RateLimited`, `Unauthorized`; `DescriptionRequest.storyboard` optionally carries a timed grid of the event (`Storyboard`: image, tiles, step, duration, `DetectionMark`s, missing footage before/after), worded by `DescriptionTask` — see "Storyboard" |
 | API | `JudgeRequest` / `JudgeOutcome` / `JudgeVerdict` | `api/` | Judge DTOs; `JudgeVerdict.Reason` is the five model reasons (`NEW_EVENT`, `CHANGED_SITUATION`, `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE`) |
 | API | `DescriptionProviderAuthEvent` | `api/` | Spring event `LOST` / `RESTORED`, one per transition, keyed by `authScopeId` |
 | API | `DescriptionPreset` / `DescriptionPresets` / `UnavailableReason` | `api/` | One preset as its consumers see it (`id`, `provider`, `model`, `effectiveModel`, `effort`, `authScopeId`, `unavailableReason`, `slowEffort`) and the read-only catalog `all()` in declaration order |
@@ -42,8 +42,8 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns `VisionResponse` (`primary` plus the provider's `fallback` representation, when it has one); takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
 | Core | `VisionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
 | Core | `VisionRequest` / `VisionInstructions` / `VisionImage` | `core/` | One vision call: images with the task's captions, in the order the model must see them, plus `systemPrompt` / `preamble` / `imagesHeader` / `epilogue` / optional `jsonSchema`; the provider prints the header and each caption with its image between preamble and epilogue and never reorders |
-| Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, frame downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
-| Core | `DescriptionTask` / `JudgeTask` | `core/` | Build `VisionInstructions` for descriptions and for the judge |
+| Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, image downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
+| Core | `DescriptionTask` / `JudgeTask` | `core/` | Build the whole `VisionRequest` for descriptions and for the judge: the images with their captions, in the order the model sees them, and the `VisionInstructions`, the header before the images included |
 | Core | `DescriptionResponseParser` / `JudgeResponseParser` | `core/` | Parse the raw model text into `DescriptionResult` / `JudgeVerdict` |
 | Core | `DefaultDescriptionAgent` | `core/` | Thin `DescriptionAgent`: `DescriptionTask` → `VisionCallExecutor` → `DescriptionResponseParser` |
 | Core | `DefaultJudgeAgent` | `core/` | Thin `JudgeAgent`: `JudgeTask` → `VisionCallExecutor` → `JudgeResponseParser` |
