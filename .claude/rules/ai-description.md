@@ -41,7 +41,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
 | Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns `VisionResponse` (`primary` plus the provider's `fallback` representation, when it has one); takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
 | Core | `VisionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
-| Core | `VisionRequest` / `VisionInstructions` | `core/` | One vision call: frames plus `systemPrompt` / `preamble` / `epilogue` / optional `jsonSchema`; the provider inserts frames between preamble and epilogue |
+| Core | `VisionRequest` / `VisionInstructions` / `VisionImage` | `core/` | One vision call: images with the task's captions, in the order the model must see them, plus `systemPrompt` / `preamble` / `imagesHeader` / `epilogue` / optional `jsonSchema`; the provider prints the header and each caption with its image between preamble and epilogue and never reorders |
 | Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, frame downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
 | Core | `DescriptionTask` / `JudgeTask` | `core/` | Build `VisionInstructions` for descriptions and for the judge |
 | Core | `DescriptionResponseParser` / `JudgeResponseParser` | `core/` | Parse the raw model text into `DescriptionResult` / `JudgeVerdict` |
@@ -74,6 +74,11 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Limits | `SlidingWindowRateLimiter` | `ratelimit/` | Domain-agnostic sliding window; two named subclasses do not share a counter |
 | Limits | `DescriptionRateLimiter` | `ratelimit/` | Description throttle (`AI description`); default 30 / 1h |
 | Limits | `JudgeRateLimiter` | `ratelimit/` | Judge throttle (`AI judge`); default 200 / 1h; miss → send unjudged (`FAILOVER` / `RATE_LIMITED`) |
+
+**Captions belong to the task.** `DescriptionTask` and `JudgeTask` build the images (`images()`,
+`visionRequest()`) and word both the captions and the header; the judge keeps `Frame N` in
+`frameIndex` order under `Frames (in chronological order):`, byte for byte what the providers
+printed before, pinned by `the judge prompt keeps its shape` / `the judge blocks keep their shape`.
 
 ## Presets, catalog and resolution
 
@@ -167,10 +172,11 @@ semaphore and timeouts).
 
 ## Claude invocation
 
-`ClaudeImageStager` writes every frame to a temp `.jpg` under `application.temp-folder`, and
-`ClaudePromptBuilder` puts one `- Frame N: @/abs/path.jpg` line per frame between preamble and
-epilogue. `DefaultClaudeInvoker` then opens a bidirectional stream-json session
-(`connect(prompt).messages()`); the staged files are deleted in a `finally`.
+`ClaudeImageStager` writes every image to a temp `.jpg` under `application.temp-folder`, and
+`ClaudePromptBuilder` puts the task's header and one `- <caption>: @/abs/path.jpg` line per image,
+in the task's order, between preamble and epilogue. `DefaultClaudeInvoker` then opens a
+bidirectional stream-json session (`connect(prompt).messages()`); the staged files are deleted in a
+`finally`.
 
 **The `@` reference is not expanded by anyone — the model turns it into pixels by calling `Read`.**
 The CLI passes the line through as text, the model issues a `Read` tool_use, and the tool_result
@@ -209,9 +215,9 @@ so.
 ## Grok invocation
 
 Per recording `GrokPromptFileWriter` writes `prompt.json` (suffix mandatory: any other extension is
-read as plain text) with ACP content blocks: intro text, then `Frame N:` + `{"type":"image",
-"mimeType":"image/jpeg","data":"<base64>"}` per frame in `frameIndex` order, then the rules.
-`GrokCommandBuilder` runs:
+read as plain text) with ACP content blocks: intro text with the task's header, then `<caption>:` +
+`{"type":"image","mimeType":"image/jpeg","data":"<base64>"}` per image in the task's order, then the
+rules. `GrokCommandBuilder` runs:
 
 ```
 grok --prompt-file <file> --json-schema '{…short,detailed…}' --output-format json -m <model>
@@ -265,7 +271,7 @@ model-agnostic:
   must not inherit this refusal). Both attempts share the agent's single `timeout`, so the very first description after
   startup may time out on a slow endpoint — the next one goes straight to the schema-less form.
 
-`GrokBackend` logs per recording at DEBUG: `model=…, effort=…, json-schema=on|off, frames=N` before
+`GrokBackend` logs per recording at DEBUG: `model=…, effort=…, json-schema=on|off, images=N` before
 the run and `model=…, effort=…, fields=structuredOutput|text, input_tokens=…` after it. It has no
 startup line of its own — one instance exists per grok preset now; the values are named at INFO by the
 catalog line once at startup and by the resolver's active-preset line on every change (see "Presets,

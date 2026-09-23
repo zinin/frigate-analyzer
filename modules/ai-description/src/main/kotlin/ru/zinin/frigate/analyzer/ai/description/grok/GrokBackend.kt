@@ -57,7 +57,7 @@ class GrokBackend(
             val systemPrompt = "${request.instructions.systemPrompt} $TOOL_RULE"
             logger.debug {
                 "Grok request ${request.requestId}: model=$model, effort=${effortForLog()}, " +
-                    "json-schema=${if (useSchema) "on" else "off"}, frames=${request.frames.size}"
+                    "json-schema=${if (useSchema) "on" else "off"}, images=${request.images.size}"
             }
             var result = runGrok(file, useSchema, schema, systemPrompt)
             var errorMessage = outputParser.errorMessage(result.stdout)

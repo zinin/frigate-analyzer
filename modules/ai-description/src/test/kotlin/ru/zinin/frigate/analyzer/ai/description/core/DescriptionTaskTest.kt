@@ -58,4 +58,38 @@ class DescriptionTaskTest {
         assertFalse(systemPrompt.contains("tool", ignoreCase = true))
         assertTrue(systemPrompt.contains("Answer only with the requested JSON object."))
     }
+
+    @Test
+    fun `frames go in time order, captioned with their time when it is known`() {
+        val request =
+            request().copy(
+                frames =
+                    listOf(
+                        DescriptionRequest.FrameImage(3, byteArrayOf(3), offsetSeconds = 7.5),
+                        DescriptionRequest.FrameImage(1, byteArrayOf(1), offsetSeconds = 2.0),
+                        DescriptionRequest.FrameImage(2, byteArrayOf(2)),
+                    ),
+            )
+
+        val images = DescriptionTask.images(request)
+
+        assertEquals(listOf("Frame at 2.0s", "Frame 2", "Frame at 7.5s"), images.map { it.caption })
+        assertEquals(listOf<Byte>(1, 2, 3), images.map { it.bytes.single() })
+    }
+
+    @Test
+    fun `frames alone are introduced by the chronological header`() {
+        assertEquals("Frames (in chronological order):", DescriptionTask.instructions(request()).imagesHeader)
+    }
+
+    @Test
+    fun `the vision request carries the recording id, the images and the instructions`() {
+        val request = request()
+
+        val vision = DescriptionTask.visionRequest(request)
+
+        assertEquals(request.recordingId, vision.requestId)
+        assertEquals(DescriptionTask.images(request), vision.images)
+        assertEquals(DescriptionTask.instructions(request), vision.instructions)
+    }
 }

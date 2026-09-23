@@ -99,11 +99,11 @@ class VisionCallExecutor(
                 // DescriptionException, а описание важнее уменьшения — кадры пойдут как есть.
                 val prepared =
                     try {
-                        downscaleFrames(request)
+                        downscaleImages(request)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        logger.warn(e) { "Cannot downscale frames of ${request.requestId}; sending them unchanged" }
+                        logger.warn(e) { "Cannot downscale images of ${request.requestId}; sending them unchanged" }
                         request
                     }
                 val value =
@@ -127,23 +127,23 @@ class VisionCallExecutor(
         }
     }
 
-    /** Один проход на запрос, до повторов: провайдер получает уже готовые кадры. */
-    private suspend fun downscaleFrames(request: VisionRequest): VisionRequest {
+    /** Один проход на запрос, до повторов: провайдер получает уже готовые картинки. */
+    private suspend fun downscaleImages(request: VisionRequest): VisionRequest {
         val maxSide = limits.maxImageSide
-        if (maxSide <= 0 || request.frames.isEmpty()) return request
-        val before = request.frames.sumOf { it.bytes.size }
-        val frames =
+        if (maxSide <= 0 || request.images.isEmpty()) return request
+        val before = request.images.sumOf { it.bytes.size }
+        val images =
             withContext(Dispatchers.Default) {
-                request.frames.map { frame -> frame.copy(bytes = FrameDownscaler.downscale(frame.bytes, maxSide)) }
+                request.images.map { image -> image.copy(bytes = FrameDownscaler.downscale(image.bytes, maxSide)) }
             }
-        val after = frames.sumOf { it.bytes.size }
+        val after = images.sumOf { it.bytes.size }
         if (after != before) {
             logger.debug {
-                "Downscaled ${frames.size} frames of ${request.requestId} to <=$maxSide px: " +
+                "Downscaled ${images.size} images of ${request.requestId} to <=$maxSide px: " +
                     "$before -> $after bytes"
             }
         }
-        return request.copy(frames = frames)
+        return request.copy(images = images)
     }
 
     private suspend fun <T> executeWithRetry(

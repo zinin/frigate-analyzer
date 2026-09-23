@@ -99,7 +99,7 @@ class DefaultDescriptionAgentTest {
 
             val vision = requireNotNull(seen)
             assertEquals(request.recordingId, vision.requestId)
-            assertEquals(request.frames, vision.frames)
+            assertEquals(DescriptionTask.images(request), vision.images)
             assertTrue(vision.instructions.preamble.contains("Write both descriptions in English."))
             assertEquals(DescriptionTask.SYSTEM_PROMPT, vision.instructions.systemPrompt)
             assertEquals(DescriptionTask.JSON_SCHEMA, vision.instructions.jsonSchema)

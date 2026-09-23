@@ -16,6 +16,17 @@ object JudgeTask {
             """"snooze_minutes":{"type":"integer"},"wanted":{"type":"string"}},""" +
             """"required":["verdict","reason","summary"],"additionalProperties":false}"""
 
+    /** Заголовок перед кадрами судьи — тот же, что провайдеры печатали сами до раскадровки. */
+    const val FRAMES_HEADER = "Frames (in chronological order):"
+
+    fun visionRequest(request: JudgeRequest): VisionRequest = VisionRequest(request.recordingId, images(request), instructions(request))
+
+    /** Кадры с рамками по `frameIndex`, подписи `Frame N` — ровно то, что провайдеры писали сами. */
+    fun images(request: JudgeRequest): List<VisionImage> =
+        request.frames
+            .sortedBy { it.frameIndex }
+            .map { VisionImage(it.bytes, "Frame ${it.frameIndex}") }
+
     fun instructions(request: JudgeRequest): VisionInstructions {
         val language = LanguageNames.of(request.language)
         val preamble =
@@ -65,6 +76,12 @@ object JudgeTask {
                         """"summary": "...", "snooze_minutes": 0, "wanted": ""}""",
                 )
             }
-        return VisionInstructions(SYSTEM_PROMPT, preamble, epilogue, JSON_SCHEMA)
+        return VisionInstructions(
+            systemPrompt = SYSTEM_PROMPT,
+            preamble = preamble,
+            imagesHeader = FRAMES_HEADER,
+            epilogue = epilogue,
+            jsonSchema = JSON_SCHEMA,
+        )
     }
 }

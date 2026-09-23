@@ -1,6 +1,7 @@
 package ru.zinin.frigate.analyzer.ai.description.core
 
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
+import java.util.Locale
 
 /** Тексты задачи описаний. Единственное место, где живут формулировки для обоих провайдеров. */
 object DescriptionTask {
@@ -16,6 +17,18 @@ object DescriptionTask {
 
     const val JSON_SCHEMA =
         """{"type":"object","properties":{"short":{"type":"string"},"detailed":{"type":"string"}},"required":["short","detailed"],"additionalProperties":false}"""
+
+    /** Заголовок перед кадрами, когда модель получает только их. */
+    const val FRAMES_HEADER = "Frames (in chronological order):"
+
+    fun visionRequest(request: DescriptionRequest): VisionRequest =
+        VisionRequest(request.recordingId, images(request), instructions(request))
+
+    /** Кадры по времени, каждый со своей подписью. */
+    fun images(request: DescriptionRequest): List<VisionImage> =
+        request.frames
+            .sortedBy { it.frameIndex }
+            .map { frame -> VisionImage(frame.bytes, frameCaption(frame)) }
 
     fun instructions(request: DescriptionRequest): VisionInstructions {
         val languageName = LanguageNames.of(request.language)
@@ -34,6 +47,18 @@ object DescriptionTask {
                 appendLine("- \"detailed\" must not exceed ${request.detailedMaxLength} characters.")
                 append("- No markdown, no explanations — just the JSON object.")
             }
-        return VisionInstructions(SYSTEM_PROMPT, preamble, epilogue, JSON_SCHEMA)
+        return VisionInstructions(
+            systemPrompt = SYSTEM_PROMPT,
+            preamble = preamble,
+            imagesHeader = FRAMES_HEADER,
+            epilogue = epilogue,
+            jsonSchema = JSON_SCHEMA,
+        )
     }
+
+    private fun frameCaption(frame: DescriptionRequest.FrameImage): String =
+        frame.offsetSeconds?.let { "Frame at ${seconds(it)}" } ?: "Frame ${frame.frameIndex}"
+
+    /** `5.0s`: одна цифра после точки, точка при любой локали JVM. */
+    internal fun seconds(value: Double): String = String.format(Locale.US, "%.1fs", value)
 }

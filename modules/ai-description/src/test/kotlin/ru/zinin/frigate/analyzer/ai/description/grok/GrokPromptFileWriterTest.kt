@@ -6,7 +6,10 @@ import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
+import ru.zinin.frigate.analyzer.ai.description.api.JudgeRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
+import ru.zinin.frigate.analyzer.ai.description.core.JudgeTask
+import ru.zinin.frigate.analyzer.ai.description.core.VisionImage
 import ru.zinin.frigate.analyzer.ai.description.core.VisionInstructions
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
@@ -23,30 +26,56 @@ class GrokPromptFileWriterTest {
     private val writer = GrokPromptFileWriter(tempWriter, mapper)
 
     private val recordingId = UUID.randomUUID()
-    private val instructions = VisionInstructions(systemPrompt = "sys", preamble = "INTRO", epilogue = "RULES", jsonSchema = null)
+    private val instructions =
+        VisionInstructions(systemPrompt = "sys", preamble = "INTRO", imagesHeader = "HEADER:", epilogue = "RULES", jsonSchema = null)
     private val request =
         VisionRequest(
             requestId = recordingId,
-            frames =
-                listOf(
-                    DescriptionRequest.FrameImage(2, byteArrayOf(1, 2)),
-                    DescriptionRequest.FrameImage(0, byteArrayOf(3, 4)),
-                ),
+            images = listOf(VisionImage(byteArrayOf(1, 2), "Storyboard"), VisionImage(byteArrayOf(3, 4), "Frame at 5.0s")),
             instructions = instructions,
         )
 
     @Test
-    fun `blocks are preamble with frames header, label+image per frame in frameIndex order, epilogue`() {
+    fun `blocks are preamble with header, caption+image per image in request order, epilogue`() {
         val blocks = writer.buildBlocks(request)
         assertEquals(6, blocks.size)
-        assertEquals(mapOf("type" to "text", "text" to "INTRO\n\nFrames (in chronological order):"), blocks[0])
-        assertEquals(mapOf("type" to "text", "text" to "Frame 0:"), blocks[1])
+        assertEquals(mapOf("type" to "text", "text" to "INTRO\n\nHEADER:"), blocks[0])
+        assertEquals(mapOf("type" to "text", "text" to "Storyboard:"), blocks[1])
         assertEquals("image", blocks[2]["type"])
         assertEquals("image/jpeg", blocks[2]["mimeType"])
+        assertEquals(Base64.getEncoder().encodeToString(byteArrayOf(1, 2)), blocks[2]["data"])
+        assertEquals(mapOf("type" to "text", "text" to "Frame at 5.0s:"), blocks[3])
+        assertEquals(Base64.getEncoder().encodeToString(byteArrayOf(3, 4)), blocks[4]["data"])
+        assertEquals(mapOf("type" to "text", "text" to "RULES"), blocks[5])
+    }
+
+    /** См. одноимённый тест в `ClaudePromptBuilderTest`: судья видит тот же промпт, что и до раскадровки. */
+    @Test
+    fun `the judge blocks keep their shape`() {
+        val judge =
+            JudgeRequest(
+                recordingId = UUID.randomUUID(),
+                camId = "cam2",
+                frames =
+                    listOf(
+                        DescriptionRequest.FrameImage(2, byteArrayOf(1, 2)),
+                        DescriptionRequest.FrameImage(0, byteArrayOf(3, 4)),
+                    ),
+                contextJson = "{}",
+                language = "en",
+                maxSnoozeMinutes = 30,
+            )
+        val vision = JudgeTask.visionRequest(judge)
+
+        val blocks = writer.buildBlocks(vision)
+
+        assertEquals(
+            mapOf("type" to "text", "text" to vision.instructions.preamble.trimEnd() + "\n\nFrames (in chronological order):"),
+            blocks[0],
+        )
+        assertEquals(mapOf("type" to "text", "text" to "Frame 0:"), blocks[1])
         assertEquals(Base64.getEncoder().encodeToString(byteArrayOf(3, 4)), blocks[2]["data"])
         assertEquals(mapOf("type" to "text", "text" to "Frame 2:"), blocks[3])
-        assertEquals(Base64.getEncoder().encodeToString(byteArrayOf(1, 2)), blocks[4]["data"])
-        assertEquals(mapOf("type" to "text", "text" to "RULES"), blocks[5])
     }
 
     @Test
