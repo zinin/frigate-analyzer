@@ -21,6 +21,7 @@ import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.util.Base64
+import java.util.UUID
 
 private val logger = KotlinLogging.logger {}
 
@@ -39,6 +40,21 @@ internal fun frameReasonSuffix(frames: List<ExtractedFrameData>): String =
             .entries
             .joinToString(separator = ", ", prefix = " (", postfix = ")") { (reason, count) -> "$reason=$count" }
     }
+
+/**
+ * Кадры сервера в кадры пайплайна. Номер свой, с нуля, в порядке сервера; время — `timestamp`
+ * сервера, секунды от начала записи. Без него после перенумерации не осталось бы следа того, когда
+ * снят кадр, а раскадровке AI-описания нужно поставить детекции на шкалу времени.
+ */
+internal fun toFrameData(
+    recordId: UUID,
+    frames: List<ExtractedFrameData>,
+): List<FrameData> {
+    val decoder = Base64.getDecoder()
+    return frames.mapIndexed { index, frame ->
+        FrameData(recordId, index, decoder.decode(frame.imageBase64), offsetSeconds = frame.timestamp)
+    }
+}
 
 @Component
 class FrameExtractorProducer(
@@ -121,12 +137,7 @@ class FrameExtractorProducer(
                 return
             }
 
-            val decoder = Base64.getDecoder()
-            val frameDataList =
-                response.frames.mapIndexed { index, frame ->
-                    val frameBytes = decoder.decode(frame.imageBase64)
-                    FrameData(record.id, index, frameBytes)
-                }
+            val frameDataList = toFrameData(record.id, response.frames)
 
             recordingTracker.registerRecording(record.id, frameDataList)
 
