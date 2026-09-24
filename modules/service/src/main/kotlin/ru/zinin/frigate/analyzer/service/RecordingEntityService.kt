@@ -4,6 +4,7 @@ import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.persistent.DetectionEntity
 import ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
+import java.time.Instant
 import java.util.UUID
 
 data class SavedProcessingResult(
@@ -19,6 +20,20 @@ interface RecordingEntityService {
     suspend fun saveProcessingResult(request: SaveProcessingResultRequest): SavedProcessingResult
 
     suspend fun getRecording(id: UUID): RecordingDto?
+
+    /** Последняя запись камеры, начавшаяся в `[from, before)`; `null` — такой нет. */
+    suspend fun findPreviousSegment(
+        camId: String,
+        from: Instant,
+        before: Instant,
+    ): RecordingDto?
+
+    /** Первая запись камеры, начавшаяся в `(after, until]`; `null` — такой нет. */
+    suspend fun findNextSegment(
+        camId: String,
+        after: Instant,
+        until: Instant,
+    ): RecordingDto?
 
     suspend fun deleteRecording(id: UUID)
 

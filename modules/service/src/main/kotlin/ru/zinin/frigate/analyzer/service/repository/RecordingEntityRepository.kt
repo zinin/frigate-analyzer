@@ -187,4 +187,45 @@ interface RecordingEntityRepository : CoroutineCrudRepository<RecordingEntity, U
         """,
     )
     suspend fun getProcessingRatePerMinuteLast5Minutes(): Double
+
+    /**
+     * Сегмент камеры перед записью: последняя строка с началом в `[from, before)`. Окно ограничено,
+     * чтобы запрос шёл по индексу `record_timestamp`, а не сканировал историю камеры назад.
+     */
+    @Query(
+        """
+        SELECT *
+        FROM recordings
+        WHERE cam_id = :camId
+          AND record_timestamp >= :from
+          AND record_timestamp < :before
+          AND file_path IS NOT NULL
+        ORDER BY record_timestamp DESC
+        LIMIT 1
+        """,
+    )
+    suspend fun findPreviousSegment(
+        @Param("camId") camId: String,
+        @Param("from") from: Instant,
+        @Param("before") before: Instant,
+    ): RecordingEntity?
+
+    /** Сегмент камеры после записи: первая строка с началом в `(after, until]`. */
+    @Query(
+        """
+        SELECT *
+        FROM recordings
+        WHERE cam_id = :camId
+          AND record_timestamp > :after
+          AND record_timestamp <= :until
+          AND file_path IS NOT NULL
+        ORDER BY record_timestamp ASC
+        LIMIT 1
+        """,
+    )
+    suspend fun findNextSegment(
+        @Param("camId") camId: String,
+        @Param("after") after: Instant,
+        @Param("until") until: Instant,
+    ): RecordingEntity?
 }

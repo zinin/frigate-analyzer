@@ -44,6 +44,7 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
         analyzedFramesCount: Int? = 0,
         processAttempts: Int? = 0,
         errorMessage: String? = null,
+        recordTimestamp: Instant = Instant.now(),
     ): RecordingEntity {
         val now = Instant.now()
         return RecordingEntity(
@@ -54,7 +55,7 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
             camId = camId,
             recordDate = LocalDate.now(),
             recordTime = LocalTime.now(),
-            recordTimestamp = now,
+            recordTimestamp = recordTimestamp,
             startProcessingTimestamp = startProcessingTimestamp,
             processTimestamp = processTimestamp,
             processAttempts = processAttempts,
@@ -689,6 +690,71 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
         runBlocking {
             val result = repository.findLastRecordingPerCamera(Instant.parse("2026-04-25T10:00:00Z"))
             assertTrue(result.isEmpty())
+        }
+    }
+
+    // endregion
+
+    // region adjacent segments
+
+    @Test
+    fun `findPreviousSegment picks the latest recording of the camera before the start`() {
+        runBlocking {
+            val start = Instant.parse("2026-09-23T10:00:00Z")
+            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.minusSeconds(20)))
+            val previous = repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.minusSeconds(10)))
+            repository.save(createRecordingEntity(camId = "cam2", recordTimestamp = start.minusSeconds(5)))
+            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start))
+
+            val found = repository.findPreviousSegment("cam1", start.minusSeconds(60), start)
+
+            assertEquals(previous.id, found?.id)
+        }
+    }
+
+    @Test
+    fun `findPreviousSegment ignores recordings older than the lookback`() {
+        runBlocking {
+            val start = Instant.parse("2026-09-23T10:00:00Z")
+            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.minusSeconds(61)))
+
+            assertNull(repository.findPreviousSegment("cam1", start.minusSeconds(60), start))
+        }
+    }
+
+    @Test
+    fun `findNextSegment picks the earliest recording of the camera after the start`() {
+        runBlocking {
+            val start = Instant.parse("2026-09-23T10:00:00Z")
+            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start))
+            val next = repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.plusSeconds(10)))
+            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.plusSeconds(20)))
+            repository.save(createRecordingEntity(camId = "cam2", recordTimestamp = start.plusSeconds(5)))
+
+            val found = repository.findNextSegment("cam1", start, start.plusSeconds(15))
+
+            assertEquals(next.id, found?.id)
+        }
+    }
+
+    /** `file_path` в `recordings` допускает NULL; такой строке нечего отдать ffmpeg. */
+    @Test
+    fun `findNextSegment skips a recording without a file`() {
+        runBlocking {
+            val start = Instant.parse("2026-09-23T10:00:00Z")
+            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.plusSeconds(10)).copy(filePath = null))
+
+            assertNull(repository.findNextSegment("cam1", start, start.plusSeconds(15)))
+        }
+    }
+
+    @Test
+    fun `findNextSegment returns null when nothing started within the window`() {
+        runBlocking {
+            val start = Instant.parse("2026-09-23T10:00:00Z")
+            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.plusSeconds(20)))
+
+            assertNull(repository.findNextSegment("cam1", start, start.plusSeconds(15)))
         }
     }
 

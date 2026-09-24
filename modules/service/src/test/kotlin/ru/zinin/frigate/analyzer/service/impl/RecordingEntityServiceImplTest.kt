@@ -92,6 +92,28 @@ class RecordingEntityServiceImplTest {
             coVerify(exactly = 1) { repository.markProcessed(recordingId, now, 1, 123, 1) }
         }
 
+    @Test
+    fun `findPreviousSegment maps the repository row`() =
+        runTest {
+            val entity = recordingEntity(UUID.randomUUID(), Instant.parse("2026-04-29T11:59:50Z"))
+            val from = Instant.parse("2026-04-29T11:59:00Z")
+            val before = Instant.parse("2026-04-29T12:00:00Z")
+            coEvery { repository.findPreviousSegment("cam1", from, before) } returns entity
+            every { mapper.toDto(entity) } returns entity.toDto()
+
+            assertEquals(entity.toDto(), service.findPreviousSegment("cam1", from, before))
+        }
+
+    @Test
+    fun `findNextSegment returns null when the repository has nothing`() =
+        runTest {
+            val after = Instant.parse("2026-04-29T12:00:00Z")
+            val until = Instant.parse("2026-04-29T12:00:15Z")
+            coEvery { repository.findNextSegment("cam1", after, until) } returns null
+
+            assertEquals(null, service.findNextSegment("cam1", after, until))
+        }
+
     private fun recordingEntity(
         recordingId: UUID,
         recordingTimestamp: Instant,
