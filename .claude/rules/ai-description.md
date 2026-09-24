@@ -55,7 +55,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Core | `ProviderAuthTracker` | `core/` | Auth state machine per credential scope; publishes the events; implements `ProviderAuthStates` |
 | Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form for both INFO lines about presets |
 | Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
-| Core | `FrameDownscaler` | `core/` | Optional resize to `max-image-side` (bilinear, JPEG q0.85 via `JpegCodec`), once per request in `VisionCallExecutor`; an unreadable frame is passed through with a WARN |
+| Core | `FrameDownscaler` | `core/` | Optional resize to `max-image-side` (bilinear, JPEG q0.85 via `JpegCodec`), once per request in `VisionCallExecutor`; an unreadable frame is passed through unchanged (a WARN when decoding or encoding throws; bytes no reader recognises pass silently) |
 | Core | `JpegCodec` | `core/` | In-memory JPEG decode and encode (`MemoryCacheImage*Stream`, not ImageIO's temp-file cache in `java.io.tmpdir`); `decode` returns `null` for bytes no reader claims; no default quality, each caller passes its own. Shared by `FrameDownscaler` and the storyboard composer in `core` |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
 | Claude | `ClaudeBackendFactory` | `claude/` | Token check, CLI WARN, `ANTHROPIC_MODEL` displacement, `authScopeId=claude` |
@@ -581,7 +581,7 @@ is `@ConditionalOnMissingBean`. Same per-process cache as descriptions — see `
 
 Besides the full-resolution frames the description model gets a timed storyboard of the event: one
 grid of up to `tiles` (16) frames sampled evenly around the detection, reaching into the neighbouring
-Frigate segments when the event crosses a recording boundary. Without it the model saw usually 1–4
+Frigate segments when the event crosses a recording boundary. Without it the model usually saw 1–4
 frames of one segment and could not tell a parked car from one driving past. Built in `core`
 (`core/storyboard/`); this module only words it (`DescriptionRequest.storyboard`, `DescriptionTask`).
 
@@ -619,7 +619,10 @@ next-segment-wait`. The pipeline takes a recording only 30 s after its file appe
 (`findUnprocessedRecordings`: `file_creation_timestamp < now − 30 s`), so when a description starts
 the next segment has usually been in the database for a while and the first lookup finds it; waiting
 happens only when Frigate is late. A backlog recording gets exactly one lookup. A next segment that
-starts after a gap is not waited for — Frigate skipped it.
+starts after a gap of at most 5 s (`NEXT_LOOKAHEAD`) past the expected start is not waited for —
+Frigate skipped it. A longer gap, such as a wholly skipped segment (motion-only recording), looks the
+same as a late segment: the next file starts outside the lookup window, so the finder polls until the
+deadline and the INFO line says `next: missing after N s`.
 
 **Fail-open.** Any failure (`Throwable`) except cancellation → WARN, and the description goes out
 from the frames alone, captioned with their times; a `CancellationException` always propagates. That
@@ -633,7 +636,7 @@ storyboard ends at the end of the current recording, so "Footage after …s is n
 real end; after a failed previous one the footage, and its zero, start at the current recording. The
 model is told when footage before or after is not available, so it does not invent that a car "left".
 
-**Log.** One INFO line per storyboard, e.g. `Storyboard for <id>: footage -4.0..5.9 s of the recording
+**Log.** One INFO line per storyboard, e.g. `Storyboard for <id>: footage -4.0..6.0 s of the recording
 (prev+current), 16 tiles 0.7 s apart, built in 1.8 s`; a missing neighbour shows as `prev: missing` /
 `next: missing after N s`, a found next one as `waited N s for the next segment`, and a neighbour
 whose sampling failed or returned no frames as `prev: sampling failed` / `next: sampling failed`. The

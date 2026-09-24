@@ -119,8 +119,8 @@ All settings use environment variables with sensible defaults. Key variables:
 | `DISABLE_FIRST_SCAN` | `true` | Startup scan is an opt-in backfill — set to `false` to run it once |
 | `WATCH_PERIOD` | `P1D` | ISO-8601 duration — how far back to watch for recordings |
 | `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD`, truncated to whole days | ISO-8601 duration — how far back the startup backfill indexes files (whole days, UTC; `P0D` = today only) |
-| `FFMPEG_PATH` | `/usr/bin/ffmpeg` | Path to ffmpeg binary |
-| `FFPROBE_PATH` | `/usr/bin/ffprobe` | Path to ffprobe binary — reads the parameters of an export before it is re-encoded to fit the Telegram 50 MB limit |
+| `FFMPEG_PATH` | `/usr/bin/ffmpeg` | Path to ffmpeg binary — used by exports and by the AI description storyboard; without it every AI description falls back to the frames alone with a WARN |
+| `FFPROBE_PATH` | `/usr/bin/ffprobe` | Path to ffprobe binary — reads the parameters of an export before it is re-encoded to fit the Telegram 50 MB limit, and the video durations the AI description storyboard needs; without it every AI description falls back to the frames alone with a WARN |
 | `EXPORT_COMPRESS_PRESET` | `fast` | libx264 preset for that re-encode (`ultrafast` … `placebo`): speed versus compression |
 | `EXPORT_COMPRESS_CRF` | `23` | libx264 quality target (0–51) for that re-encode; the bitrate cap from the size budget still applies |
 | `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` | `0.1` | Smallest bits-per-pixel a candidate height (1080/720/540, never above the source) may have before the next smaller one is tried |
