@@ -40,7 +40,7 @@ import tools.jackson.databind.json.JsonMapper
  *  - **explicitly** via `implementation(libs.bundles.jackson)` in `modules/core/build.gradle.kts`
  *    and `modules/ai-description/build.gradle.kts`
  *    (bundle = `[jackson-databind, jackson-jsr310, jackson-kotlin, jackson-yaml]`)
- *  - **transitively** via `springdoc-openapi-starter` 3.0.3 (uses
+ *  - **transitively** via `springdoc-openapi-starter` 3.1.1 (uses
  *    `com.fasterxml.jackson.module.kotlin.KotlinModule` through
  *    `SpringDocJacksonKotlinModuleConfiguration` for OpenAPI spec generation) and other
  *    transitive consumers (YAML loaders, etc.).

@@ -422,12 +422,12 @@ Module dependencies: main chain `core` → `telegram` → `service` → `model` 
 
 ## Tech Stack
 
-- **Kotlin 2.3.21** + **Coroutines** + **Channels**
-- **Spring Boot 4.0.6** + **WebFlux** (reactive)
+- **Kotlin 2.4.10** + **Coroutines** + **Channels**
+- **Spring Boot 4.1.1** + **WebFlux** (reactive)
 - **R2DBC** + **PostgreSQL** (non-blocking database access)
 - **Liquibase 5** (database migrations)
 - **MapStruct** (entity mapping)
-- **ktgbotapi 33** (Telegram bot)
+- **ktgbotapi 36** (Telegram bot)
 - **Jackson 3** (`tools.jackson.*`)
 - **Claude Code SDK** or **Grok Build CLI** (optional AI description)
 - **Java 25** with AOT cache for fast startup
