@@ -46,6 +46,8 @@ class StoryboardComposerTest {
         y: Int,
     ) = Color(getRGB(x, y))
 
+    private fun Color.brightness() = red + green + blue
+
     private fun assertAbout(
         expected: Color,
         actual: Color,
@@ -87,6 +89,17 @@ class StoryboardComposerTest {
         val plate = image.colorAt(1, 1)
         assertTrue(plate.green < 150, "the label plate must darken the corner, got $plate")
         assertAbout(Color.GREEN, image.colorAt(150, 100))
+    }
+
+    @Test
+    fun `a portrait tile keeps its label inside the tile`() {
+        val portrait = tile(Color.GREEN, label = "12.3s • detection", marked = true, width = 640, height = 1138)
+        val image = decode(composer.compose(listOf(portrait), GridLayout(2, 1)))
+
+        assertTrue(image.colorAt(1, 1).green < 150, "the label must be drawn, got ${image.colorAt(1, 1)}")
+        // Вторая ячейка пустая: всё не чёрное в ней — вылезшая подпись. Первые 16 px пропущены: на стыке шумит JPEG.
+        val spill = (656 until 1280).filter { x -> (0 until 1138).any { y -> image.colorAt(x, y).brightness() >= 60 } }
+        assertTrue(spill.isEmpty(), "the label runs into the next cell (x from 640) up to x = ${spill.maxOrNull()}")
     }
 
     @Test
