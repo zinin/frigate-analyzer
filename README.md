@@ -185,7 +185,7 @@ them into the notification. Two providers: the Claude Code CLI (`claude`) and th
 | `APP_AI_DESCRIPTION_DEFAULT_PRESET` | *(empty)* | Preset that is active until the owner picks one in `/ai`; empty = the first usable preset |
 | `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Single-preset path only — `claude` or `grok`, used while no `presets` map is declared |
 | `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
-| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | `true` | Give the model a timed storyboard of the event; `false` describes from the frames alone |
+| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | `true` | Give the model a timed storyboard of the event; `false` describes from the frames alone; then also set `APP_AI_DESCRIPTION_MAX_FRAMES=10` to give the model every frame with detections again (the default is now 4) |
 | `APP_AI_DESCRIPTION_TIMEOUT` | `60s` | Per-call budget for the model and the agent's retries — see "Timeout ceiling" below |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous model requests |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `30` | Max invocations per sliding window |

@@ -280,6 +280,28 @@ class StoryboardBuilderTest {
             assertNull(builder().build(recording(), listOf(frame(0, 1.0))))
         }
 
+    /** `after = 0` и детекция в самом начале записи: окно −5.0..0.0 с, все 10 клеток — в предыдущем сегменте. */
+    @Test
+    fun `a window that ends where the recording starts gives no storyboard`() =
+        runTest {
+            coEvery { finder.previous(any()) } returns segment(previousPath, recordStart.minusSeconds(10), 10.0)
+
+            assertNull(builder(StoryboardProperties(after = Duration.ZERO)).build(recording(), listOf(frame(0, 0.0))))
+            coVerify(exactly = 0) { sampler.sample(any(), any(), any(), any(), any()) }
+        }
+
+    /** Запись 0.3 с короче шага клеток, ≈0.67 с: 8 клеток ложатся в предыдущий сегмент, 8 — в следующий, в неё ни одной. */
+    @Test
+    fun `a recording shorter than the tile step gives no storyboard`() =
+        runTest {
+            coEvery { probe.probe(currentPath) } returns info(0.3)
+            coEvery { finder.previous(any()) } returns segment(previousPath, recordStart.minusSeconds(10), 10.0)
+            coEvery { finder.next(any(), any(), any()) } returns segment(nextPath, recordStart.plusMillis(300), 10.0)
+
+            assertNull(builder().build(recording(), listOf(frame(0, 0.0), frame(1, 0.2))))
+            coVerify(exactly = 0) { sampler.sample(any(), any(), any(), any(), any()) }
+        }
+
     /**
      * 9 клеток 64×36: столбцов 4, как в плане на 16 — под их ширину ffmpeg уже нарезал клетки, — а рядов 3.
      * Показанный отрезок и его ноль начинаются с текущей записи: 0.0..6.0 с.

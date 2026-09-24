@@ -128,6 +128,14 @@ class StoryboardBuilder(
             grid.moments
                 .map { moment -> moment to StoryboardPlanner.locate(moment, duration, previous?.info?.durationSeconds) }
                 .groupBy { (_, located) -> located.role }
+        // Без текущей записи раскадровки нет. Ни одна клетка не попадает в неё, когда запись короче шага клеток
+        // или когда `after = 0` встречает детекцию в самом начале записи.
+        if (SegmentRole.CURRENT !in groups) {
+            logger.warn {
+                "Storyboard for ${recording.id}: no tile falls into the current recording; describing from the frames alone"
+            }
+            return null
+        }
         for ((role, group) in groups) {
             val file = requireNotNull(files[role]) { "no file for the $role segment" }
             val images =
