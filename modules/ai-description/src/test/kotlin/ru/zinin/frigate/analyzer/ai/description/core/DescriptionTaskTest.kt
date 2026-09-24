@@ -170,6 +170,23 @@ class DescriptionTaskTest {
         assertTrue(preamble.contains("Footage after 15.0s is not available."))
     }
 
+    /** По одному флагу за раз: перепутанные строки прошли бы проверку, где подняты оба. */
+    @Test
+    fun `missing earlier footage alone is spelled out alone`() {
+        val preamble = DescriptionTask.instructions(request().copy(storyboard = storyboard(missingBefore = true))).preamble
+
+        assertTrue(preamble.contains("Earlier footage is not available."))
+        assertFalse(preamble.contains("Footage after"))
+    }
+
+    @Test
+    fun `missing later footage alone is spelled out alone`() {
+        val preamble = DescriptionTask.instructions(request().copy(storyboard = storyboard(missingAfter = true))).preamble
+
+        assertTrue(preamble.contains("Footage after 15.0s is not available."))
+        assertFalse(preamble.contains("Earlier footage"))
+    }
+
     @Test
     fun `a detection without a time is listed without one`() {
         val detections = listOf(DescriptionRequest.DetectionMark("car", 0.87, null))

@@ -722,13 +722,14 @@ class RecordingEntityRepositoryTest : IntegrationTestBase() {
         }
     }
 
+    /** Две строки cam1 в окне, поздняя сохранена первой: ранняя приходит не по порядку вставки, а `ORDER BY … DESC` отдал бы позднюю. */
     @Test
     fun `findNextSegment picks the earliest recording of the camera after the start`() {
         runBlocking {
             val start = Instant.parse("2026-09-23T10:00:00Z")
             repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start))
+            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.plusSeconds(12)))
             val next = repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.plusSeconds(10)))
-            repository.save(createRecordingEntity(camId = "cam1", recordTimestamp = start.plusSeconds(20)))
             repository.save(createRecordingEntity(camId = "cam2", recordTimestamp = start.plusSeconds(5)))
 
             val found = repository.findNextSegment("cam1", start, start.plusSeconds(15))

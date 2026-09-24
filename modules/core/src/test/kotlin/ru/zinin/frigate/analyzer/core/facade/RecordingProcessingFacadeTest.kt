@@ -548,7 +548,11 @@ class RecordingProcessingFacadeTest {
 
             val (f, req) =
                 facade(agent, framesForRequest = listOf(frameWithDetection(0, offsetSeconds = 2.0)), storyboardBuilder = builder)
-            captureSupplierDuring { f.processAndNotify(req) }!!.invoke().await()
+            val supplier = assertNotNull(captureSupplierDuring { f.processAndNotify(req) })
+            // Раскадровка ленивая, как и describe: иначе ffmpeg и ожидание следующего сегмента шли бы на consumer-е
+            // пайплайна, до фильтра получателей, лимитера и PUBLISH судьи.
+            coVerify(exactly = 0) { builder.build(any(), any()) }
+            supplier.invoke().await()
 
             assertEquals(storyboard, captured.captured.storyboard)
             assertEquals(listOf(5.0), captured.captured.frames.map { it.offsetSeconds })
