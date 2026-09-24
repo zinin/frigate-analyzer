@@ -218,6 +218,18 @@ that will actually be used.
 | `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
 
+### Storyboard (`application.ai.description.storyboard.*`)
+
+Bound by `StoryboardProperties` in `core`; see "Storyboard" in `ai-description.md`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | true | Give the model a timed grid of frames around the detection. `false` describes from the full-resolution frames alone (still captioned with their times). |
+| `APP_AI_DESCRIPTION_STORYBOARD_BEFORE` | 5s | Footage before the first detection, `0s..10s`: at most one neighbouring segment is taken per side, and a segment is ~10 s. |
+| `APP_AI_DESCRIPTION_STORYBOARD_AFTER` | 5s | Footage after the last detection, same range. |
+| `APP_AI_DESCRIPTION_STORYBOARD_TILES` | 16 | Most tiles in the grid, `4..25`; tiles are never closer than 0.5 s. |
+| `APP_AI_DESCRIPTION_STORYBOARD_NEXT_SEGMENT_WAIT` | 30s | How long past its expected appearance to wait for the next segment, `0s..120s`. The pipeline takes a recording 30 s after its file appeared, so the next segment is usually there already; the INFO line says `next: missing after N s` when it was not. |
+
 ### Grok provider (any preset with `provider: grok`, or the legacy `APP_AI_DESCRIPTION_PROVIDER=grok`)
 
 | Variable | Default | Purpose |

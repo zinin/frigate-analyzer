@@ -128,6 +128,14 @@ application:
           enabled: ${APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED:true}
           max-requests: ${APP_AI_DESCRIPTION_RATE_LIMIT_MAX:30}
           window: ${APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW:1h}
+      # Раскадровка для описаний: сетка кадров вокруг детекции, при необходимости из соседних
+      # сегментов. Подробности — раздел Storyboard в .claude/rules/ai-description.md.
+      storyboard:
+        enabled: ${APP_AI_DESCRIPTION_STORYBOARD_ENABLED:true}
+        before: ${APP_AI_DESCRIPTION_STORYBOARD_BEFORE:5s}
+        after: ${APP_AI_DESCRIPTION_STORYBOARD_AFTER:5s}
+        tiles: ${APP_AI_DESCRIPTION_STORYBOARD_TILES:16}
+        next-segment-wait: ${APP_AI_DESCRIPTION_STORYBOARD_NEXT_SEGMENT_WAIT:30s}
       claude:
         oauth-token: ${CLAUDE_CODE_OAUTH_TOKEN:}
         model: ${CLAUDE_MODEL:opus}
