@@ -10,18 +10,17 @@ import java.nio.file.Path
 class ClaudePromptBuilder {
     fun build(
         request: VisionRequest,
-        framePaths: List<Path>,
+        imagePaths: List<Path>,
     ): String {
-        require(framePaths.size == request.frames.size) {
-            "framePaths size (${framePaths.size}) must match request.frames size (${request.frames.size})"
+        require(imagePaths.size == request.images.size) {
+            "imagePaths size (${imagePaths.size}) must match request.images size (${request.images.size})"
         }
-        val sortedPairs = request.frames.sortedBy { it.frameIndex }.zip(framePaths)
         return buildString {
             appendLine(request.instructions.preamble.trimEnd())
             appendLine()
-            appendLine("Frames (in chronological order):")
-            sortedPairs.forEach { (frame, path) ->
-                appendLine("- Frame ${frame.frameIndex}: @${path.toAbsolutePath().normalize()}")
+            appendLine(request.instructions.imagesHeader)
+            request.images.zip(imagePaths).forEach { (image, path) ->
+                appendLine("- ${image.caption}: @${path.toAbsolutePath().normalize()}")
             }
             appendLine()
             append(request.instructions.epilogue.trimEnd())

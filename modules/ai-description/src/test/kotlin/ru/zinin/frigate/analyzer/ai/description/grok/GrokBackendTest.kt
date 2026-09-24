@@ -9,7 +9,6 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
-import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Path
 import java.time.Duration
@@ -35,12 +34,7 @@ class GrokBackendTest {
             detailedMaxLength = 1500,
         )
     private val budget: Duration = Duration.ofSeconds(90)
-    private val request =
-        VisionRequest(
-            requestId = descriptionRequest.recordingId,
-            frames = descriptionRequest.frames,
-            instructions = DescriptionTask.instructions(descriptionRequest),
-        )
+    private val request = DescriptionTask.visionRequest(descriptionRequest)
 
     private fun props() =
         GrokProperties(

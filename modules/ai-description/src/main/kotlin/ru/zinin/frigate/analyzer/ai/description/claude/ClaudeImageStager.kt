@@ -17,22 +17,20 @@ class ClaudeImageStager(
     private val tempWriter: TempFileWriter,
 ) {
     /**
-     * Writes `request.frames` (ordered by `frameIndex`) to temp files via [TempFileWriter].
-     * Returns paths in the SAME ordering — `ClaudePromptBuilder` relies on this contract
-     * (`sortedFrames.zip(framePaths)` is only correct when the order matches).
+     * Пишет картинки запроса во временные файлы через [TempFileWriter] в том порядке, в каком их
+     * выложила задача, и возвращает пути в том же порядке: `ClaudePromptBuilder` сшивает подписи с
+     * путями по позиции.
      */
     suspend fun stage(request: VisionRequest): List<Path> {
-        val sorted = request.frames.sortedBy { it.frameIndex }
         val staged = mutableListOf<Path>()
         try {
-            for (frame in sorted) {
-                val prefix = "claude-${request.requestId}-frame-${frame.frameIndex}"
-                val path = tempWriter.createTempFile(prefix, ".jpg", frame.bytes)
-                staged.add(path)
+            request.images.forEachIndexed { index, image ->
+                val prefix = "claude-${request.requestId}-image-$index"
+                staged.add(tempWriter.createTempFile(prefix, ".jpg", image.bytes))
             }
             return staged
         } catch (e: Exception) {
-            logger.warn(e) { "Failed to stage frames for ${request.requestId}; cleaning up partial set" }
+            logger.warn(e) { "Failed to stage images for ${request.requestId}; cleaning up partial set" }
             // NonCancellable — stage может упасть при TimeoutCancellationException,
             // а suspend-вызов в отменённой корутине сразу бросит CancellationException.
             withContext(NonCancellable) {
@@ -52,7 +50,7 @@ class ClaudeImageStager(
         // CancellationException, runCatching его проглотит, файлы останутся.
         withContext(NonCancellable) {
             runCatching { tempWriter.deleteFiles(paths) }
-                .onFailure { logger.warn(it) { "Failed to delete staged Claude frames" } }
+                .onFailure { logger.warn(it) { "Failed to delete staged Claude images" } }
         }
     }
 }

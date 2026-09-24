@@ -9,7 +9,6 @@ import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.config.ClaudeProperties
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionResponseParser
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
-import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
 import java.nio.file.Files
 import java.nio.file.Path
@@ -128,7 +127,7 @@ JSON
         val raw =
             backend
                 .complete(
-                    VisionRequest(request.recordingId, request.frames, DescriptionTask.instructions(request)),
+                    DescriptionTask.visionRequest(request),
                     Duration.ofSeconds(120),
                 ).primary
         val result = DescriptionResponseParser(mapper).parse(raw, request.shortMaxLength, request.detailedMaxLength)

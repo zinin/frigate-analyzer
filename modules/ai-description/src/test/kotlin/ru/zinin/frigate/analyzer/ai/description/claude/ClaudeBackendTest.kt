@@ -13,7 +13,6 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeRequest
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
 import ru.zinin.frigate.analyzer.ai.description.core.JudgeTask
-import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
@@ -35,12 +34,7 @@ class ClaudeBackendTest {
             shortMaxLength = 200,
             detailedMaxLength = 1500,
         )
-    private val request =
-        VisionRequest(
-            descriptionRequest.recordingId,
-            descriptionRequest.frames,
-            DescriptionTask.instructions(descriptionRequest),
-        )
+    private val request = DescriptionTask.visionRequest(descriptionRequest)
 
     init {
         coEvery { imageStager.stage(any()) } returns stagedPaths
@@ -107,8 +101,7 @@ class ClaudeBackendTest {
                     language = "ru",
                     maxSnoozeMinutes = 30,
                 )
-            val judgeVisionRequest =
-                VisionRequest(judgeRequest.recordingId, judgeRequest.frames, JudgeTask.instructions(judgeRequest))
+            val judgeVisionRequest = JudgeTask.visionRequest(judgeRequest)
             val backend =
                 build(
                     ClaudeInvoker { _, _, systemPrompt, _, _ ->

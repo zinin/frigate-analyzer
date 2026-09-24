@@ -10,8 +10,7 @@ class DefaultJudgeAgent(
     private val parser: JudgeResponseParser,
 ) : JudgeAgent {
     override suspend fun judge(request: JudgeRequest): JudgeOutcome {
-        val vision = VisionRequest(request.recordingId, request.frames, JudgeTask.instructions(request))
-        val outcome = executor.execute(vision) { raw -> parser.parse(raw, request.maxSnoozeMinutes) }
+        val outcome = executor.execute(JudgeTask.visionRequest(request)) { raw -> parser.parse(raw, request.maxSnoozeMinutes) }
         return JudgeOutcome(outcome.value, outcome.preset.id, outcome.preset.effectiveModel, outcome.elapsed.toJavaDuration())
     }
 }

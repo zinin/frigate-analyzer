@@ -27,17 +27,17 @@ class GrokPromptFileWriter(
     suspend fun write(request: VisionRequest): Path {
         val bytes = objectMapper.writeValueAsBytes(buildBlocks(request))
         val path = tempFileWriter.createTempFile("grok-${request.requestId}", ".json", bytes)
-        logger.debug { "Grok prompt file $path: ${bytes.size} bytes, ${request.frames.size} frames" }
+        logger.debug { "Grok prompt file $path: ${bytes.size} bytes, ${request.images.size} images" }
         return path
     }
 
     internal fun buildBlocks(request: VisionRequest): List<Map<String, String>> {
         val encoder = Base64.getEncoder()
         return buildList {
-            add(text(request.instructions.preamble.trimEnd() + "\n\nFrames (in chronological order):"))
-            request.frames.sortedBy { it.frameIndex }.forEach { frame ->
-                add(text("Frame ${frame.frameIndex}:"))
-                add(mapOf("type" to "image", "mimeType" to "image/jpeg", "data" to encoder.encodeToString(frame.bytes)))
+            add(text(request.instructions.preamble.trimEnd() + "\n\n" + request.instructions.imagesHeader))
+            request.images.forEach { image ->
+                add(text("${image.caption}:"))
+                add(mapOf("type" to "image", "mimeType" to "image/jpeg", "data" to encoder.encodeToString(image.bytes)))
             }
             add(text(request.instructions.epilogue.trimEnd()))
         }

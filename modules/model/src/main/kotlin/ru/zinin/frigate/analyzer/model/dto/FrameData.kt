@@ -8,6 +8,11 @@ data class FrameData(
     val frameIndex: Int,
     val frameBytes: ByteArray,
     val detectResponse: DetectResponse? = null,
+    /**
+     * Момент кадра в секундах от начала записи — `timestamp` из ответа vision-api. После перенумерации
+     * кадров это единственная память о том, когда кадр снят. `null` — неизвестно.
+     */
+    val offsetSeconds: Double? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

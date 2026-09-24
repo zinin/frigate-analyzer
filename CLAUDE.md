@@ -49,7 +49,7 @@ Main chain: `core` → `telegram` → `service` → `model` → `common`. Cross-
 - **Detection:** Priority-based load balancing across multiple servers
 - **Signal-loss monitor:** Polls latest recording per camera, alerts on gap > threshold
 - **Object tracking:** Cross-recording IoU matching to suppress duplicate notifications
-- **AI description:** Provider-neutral agent (semaphore, retry, auth-loss alert to owner) over `VisionBackend`; Claude Code SDK or headless Grok Build CLI; edits the notification message
+- **AI description:** Provider-neutral agent (semaphore, retry, auth-loss alert to owner) over `VisionBackend`; Claude Code SDK or headless Grok Build CLI; edits the notification message; the model gets a timed storyboard of the event (grid of frames around the detection, reaching into neighbouring segments), built fail-open in `core/storyboard`
 - **Description presets:** yaml declares named presets (provider + model + effort), one backend per preset; the owner switches the active one and turns descriptions off from `/ai`, stored in `app_settings` and surviving a restart
 - **LLM judge:** third gate after the tracker; annotated frames + DB context → PUBLISH/SUPPRESS, snooze against duplicates, every verdict in `notification_verdicts`, fail-open
 - **Database:** R2DBC reactive, Liquibase migrations in `docker/liquibase/migration/`
@@ -78,7 +78,7 @@ Detailed docs in `.claude/rules/` with conditional loading via `paths:` frontmat
 | telegram.md | Bot core: components, queue, auth, ktgbotapi waiter API | `modules/telegram/**` |
 | telegram-export.md | `/export` + Quick Export, size limit (`core.video`), cancellation, lock-ordering invariant | `**/handler/export/**`, `**/handler/quickexport/**`, `**/handler/cancel/**`, `core/**/video/**` |
 | telegram-notifications.md | `/notifications` dialog, `nfs:*` callbacks, per-user/global flag storage | `**/handler/notifications/**` |
-| ai-description.md | Presets and catalog, provider SPI and factories, Claude and Grok backends, `/ai` dialog, auth alerts, rate limiter, LLM notification judge | `modules/ai-description/**`, `**/handler/aisettings/**`, `**/judge/**`, `**/Verdicts*` |
+| ai-description.md | Presets and catalog, provider SPI and factories, Claude and Grok backends, `/ai` dialog, auth alerts, rate limiter, LLM notification judge, description storyboard | `modules/ai-description/**`, `**/handler/aisettings/**`, `**/judge/**`, `**/Verdicts*`, `**/storyboard/**` |
 | configuration.md | All environment variables | `**/application.yaml` |
 | database.md | Schema, migrations | `**/liquibase/**`, `**/repository/**`, `**/entity/**`, `**/persistent/**` |
 | telegram-timeout-bug.md | ktgbotapi long-polling timeout workaround status | `**/TelegramAutoConfiguration*` |

@@ -41,7 +41,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 - **Configurable object filtering** — only keep detections for classes you care about (person, car, dog, etc.)
 - **Object tracking** — cross-recording IoU matching suppresses duplicate notifications when the same object lingers across consecutive recordings
 - **Signal-loss detection** — polls the database for last recording per camera and alerts (Telegram) on signal loss / recovery
-- **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI or Grok Build CLI, edited into the notification message
+- **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI or Grok Build CLI from a timed storyboard of the event (frames around the detection, reaching into neighbouring segments) plus full-resolution frames, edited into the notification message
 - **LLM notification judge (optional)** — third gate after the object tracker: a fast model looks at the annotated frames and database context and decides PUBLISH/SUPPRESS; every verdict is stored and visible in `/status` and `/verdicts`
 - **Telegram bot** — real-time notifications with annotated images, inline quick-export buttons, video export (raw or annotated), per-user and global notification toggles, timezone support, user management
 - **Reactive stack** — built on Spring WebFlux, R2DBC, and Kotlin Coroutines for non-blocking I/O throughout
@@ -119,8 +119,8 @@ All settings use environment variables with sensible defaults. Key variables:
 | `DISABLE_FIRST_SCAN` | `true` | Startup scan is an opt-in backfill — set to `false` to run it once |
 | `WATCH_PERIOD` | `P1D` | ISO-8601 duration — how far back to watch for recordings |
 | `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD`, truncated to whole days | ISO-8601 duration — how far back the startup backfill indexes files (whole days, UTC; `P0D` = today only) |
-| `FFMPEG_PATH` | `/usr/bin/ffmpeg` | Path to ffmpeg binary |
-| `FFPROBE_PATH` | `/usr/bin/ffprobe` | Path to ffprobe binary — reads the parameters of an export before it is re-encoded to fit the Telegram 50 MB limit |
+| `FFMPEG_PATH` | `/usr/bin/ffmpeg` | Path to ffmpeg binary — used by exports and by the AI description storyboard; without it every AI description falls back to the frames alone with a WARN |
+| `FFPROBE_PATH` | `/usr/bin/ffprobe` | Path to ffprobe binary — reads the parameters of an export before it is re-encoded to fit the Telegram 50 MB limit, and the video durations the AI description storyboard needs; without it every AI description falls back to the frames alone with a WARN |
 | `EXPORT_COMPRESS_PRESET` | `fast` | libx264 preset for that re-encode (`ultrafast` … `placebo`): speed versus compression |
 | `EXPORT_COMPRESS_CRF` | `23` | libx264 quality target (0–51) for that re-encode; the bitrate cap from the size budget still applies |
 | `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` | `0.1` | Smallest bits-per-pixel a candidate height (1080/720/540, never above the source) may have before the next smaller one is tried |
@@ -185,6 +185,7 @@ them into the notification. Two providers: the Claude Code CLI (`claude`) and th
 | `APP_AI_DESCRIPTION_DEFAULT_PRESET` | *(empty)* | Preset that is active until the owner picks one in `/ai`; empty = the first usable preset |
 | `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Single-preset path only — `claude` or `grok`, used while no `presets` map is declared |
 | `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
+| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | `true` | Give the model a timed storyboard of the event; `false` describes from the frames alone; then also set `APP_AI_DESCRIPTION_MAX_FRAMES=10` to give the model every frame with detections again (the default is now 4) |
 | `APP_AI_DESCRIPTION_TIMEOUT` | `60s` | Per-call budget for the model and the agent's retries — see "Timeout ceiling" below |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous model requests |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `30` | Max invocations per sliding window |
