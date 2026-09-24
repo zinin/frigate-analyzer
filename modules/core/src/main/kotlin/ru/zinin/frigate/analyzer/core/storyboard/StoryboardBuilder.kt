@@ -118,7 +118,10 @@ class StoryboardBuilder(
         val tileWidth = StoryboardPlanner.tileWidth(layout.columns)
         val files = mapOf(SegmentRole.PREVIOUS to previous?.path, SegmentRole.CURRENT to currentPath, SegmentRole.NEXT to next?.path)
 
+        // Что на сетке, решают пришедшие клетки: failed — нарезанные соседи, не давшие ни одной (исключение или
+        // пустой ответ), shown — сегменты, давшие хоть одну.
         val failed = mutableSetOf<SegmentRole>()
+        val shown = mutableSetOf<SegmentRole>()
         val sampled = mutableListOf<Pair<Double, ByteArray>>()
         val groups =
             grid.moments
@@ -138,8 +141,19 @@ class StoryboardBuilder(
                     if (role == SegmentRole.CURRENT) throw e
                     logger.warn(e) { "Storyboard for ${recording.id}: cannot sample the ${role.name.lowercase()} segment; leaving it out" }
                     failed += role
-                    emptyList<ByteArray>()
+                    continue
                 }
+            // Не отдав ни кадра, ffmpeg не всегда выходит с ошибкой — это зависит от сборки. Пустой ответ — такой
+            // же сбой, и правило то же: без текущей записи — запасной путь, сосед выпадает.
+            if (images.isEmpty()) {
+                if (role == SegmentRole.CURRENT) error("ffmpeg returned no frames of the current recording")
+                logger.warn {
+                    "Storyboard for ${recording.id}: ffmpeg returned no frames of the ${role.name.lowercase()} segment; leaving it out"
+                }
+                failed += role
+                continue
+            }
+            shown += role
             group.zip(images).forEach { (entry, image) -> sampled += entry.first to image }
         }
         if (sampled.size < StoryboardPlanner.MIN_TILES) {
@@ -151,10 +165,11 @@ class StoryboardBuilder(
 
         val previousFailed = SegmentRole.PREVIOUS in failed
         val nextFailed = SegmentRole.NEXT in failed
-        val zero = footage.range.start
-        // Без клеток следующего сегмента показанный отрезок кончается на конце записи: этот момент и назовёт
-        // «Footage after … is not available». Без клеток предыдущего ноль не сдвигается — подписи клеток и
-        // «Earlier footage is not available» верны и так.
+        // Ноль — начало показанного отрезка. Без клеток предыдущего сегмента отрезок, а с ним и ноль, начинается
+        // с текущей записи: иначе подписи клеток считались бы от начала, которого на сетке нет, а длина отрезка
+        // включала бы непоказанный хвост предыдущего. Без клеток следующего отрезок кончается на конце записи:
+        // этот момент и назовёт «Footage after … is not available».
+        val zero = if (previousFailed) 0.0 else footage.range.start
         val shownEnd = if (nextFailed) minOf(footage.range.end, duration) else footage.range.end
         val marked = StoryboardPlanner.markedTiles(sampled.map { it.first }, detectionSeconds)
         val tiles =
@@ -177,14 +192,14 @@ class StoryboardBuilder(
                 missingAfter = footage.missingAfter || nextFailed,
             )
         logger.info {
-            // Строка описывает то, что на сетке: сосед, которого не удалось нарезать, в неё не входит.
+            // Строка описывает то, что на сетке: в скобках только сегменты, давшие хоть одну клетку. Соседа, которого
+            // не удалось нарезать, там нет, как и найденного следующего, в который не попал ни один момент.
             val parts =
                 listOfNotNull(
-                    "prev".takeIf { previous != null && !previousFailed },
-                    "current",
-                    "next".takeIf { next != null && !nextFailed },
+                    "prev".takeIf { SegmentRole.PREVIOUS in shown },
+                    "current".takeIf { SegmentRole.CURRENT in shown },
+                    "next".takeIf { SegmentRole.NEXT in shown },
                 )
-            val shownStart = if (previousFailed) 0.0 else zero
             val missing =
                 buildString {
                     if (previousWanted && previous == null) append(", prev: missing")
@@ -193,7 +208,7 @@ class StoryboardBuilder(
                     if (nextWanted && next == null) append(", next: missing after ${fmt(waited)} s")
                     if (nextFailed) append(", next: sampling failed")
                 }
-            "Storyboard for ${recording.id}: footage ${fmt(shownStart)}..${fmt(shownEnd)} s of the recording " +
+            "Storyboard for ${recording.id}: footage ${fmt(zero)}..${fmt(shownEnd)} s of the recording " +
                 "(${parts.joinToString("+")}), ${tiles.size} tiles ${fmt(grid.stepSeconds)} s apart$missing, " +
                 "built in ${fmt(started.elapsedNow())} s"
         }

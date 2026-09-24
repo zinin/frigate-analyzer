@@ -624,18 +624,21 @@ starts after a gap is not waited for — Frigate skipped it.
 **Fail-open.** Any failure (`Throwable`) except cancellation → WARN, and the description goes out
 from the frames alone, captioned with their times; a `CancellationException` always propagates. That
 covers too little footage for 4 tiles, fewer than 4 frames back from ffmpeg, a failure on the current
-recording (its ffprobe or ffmpeg) and one in the composer. A failed neighbour only drops its tiles
-(`missingBefore` / `missingAfter`): ffmpeg is not retried on it (the finder retries only the next
-segment's ffprobe, while it waits). After a failed next segment the storyboard ends at the end of the
-current recording, so "Footage after …s is not available" names the real end; after a failed previous
-one the zero stays at the planned start, so the labels keep counting from there. The model is told
-when footage before or after is not available, so it does not invent that a car "left".
+recording (its ffprobe, or an ffmpeg run that fails or returns no frames) and one in the composer.
+What the grid shows is decided by the tiles that came back, not by ffmpeg's exit code: whether ffmpeg
+fails when it writes no frame depends on the build. A neighbour whose ffmpeg run fails or returns no
+frames only drops its tiles (`missingBefore` / `missingAfter`): ffmpeg is not retried on it (the
+finder retries only the next segment's ffprobe, while it waits). After a failed next segment the
+storyboard ends at the end of the current recording, so "Footage after …s is not available" names the
+real end; after a failed previous one the footage, and its zero, start at the current recording. The
+model is told when footage before or after is not available, so it does not invent that a car "left".
 
 **Log.** One INFO line per storyboard, e.g. `Storyboard for <id>: footage -4.0..5.9 s of the recording
 (prev+current), 16 tiles 0.7 s apart, built in 1.8 s`; a missing neighbour shows as `prev: missing` /
 `next: missing after N s`, a found next one as `waited N s for the next segment`, and a neighbour
-whose sampling failed as `prev: sampling failed` / `next: sampling failed` — it is then left out of
-`(prev+current+next)`, and the footage range is the one actually shown.
+whose sampling failed or returned no frames as `prev: sampling failed` / `next: sampling failed`. The
+parentheses list only the segments that gave at least one tile — neither such a neighbour nor a found
+next segment that no tile falls into — and the footage range is the one actually shown.
 
 ## Integration with Telegram
 

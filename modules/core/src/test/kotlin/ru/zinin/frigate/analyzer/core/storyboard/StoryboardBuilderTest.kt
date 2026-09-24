@@ -154,6 +154,21 @@ class StoryboardBuilderTest {
             coVerify(exactly = 1) { sampler.sample(currentPath, near(0.62), near(0.66), 9, 640) }
         }
 
+    /** Предыдущего сегмента нет: отрезок начинается с начала записи — 0.0..6.0 с, клетки через 0.5 с. */
+    @Test
+    fun `a missing previous segment starts the footage at the recording`() =
+        runTest {
+            coEvery { finder.previous(any()) } returns null
+
+            val built = assertNotNull(builder().build(recording(), listOf(frame(0, 1.0))))
+
+            assertTrue(built.storyboard.missingBefore)
+            assertEquals(0.0, built.zeroSeconds)
+            assertEquals(6.0, built.storyboard.durationSeconds, 1e-9)
+            assertEquals(12, built.storyboard.tiles)
+            coVerify(exactly = 1) { sampler.sample(currentPath, near(0.0), near(0.5), 12, 640) }
+        }
+
     @Test
     fun `a detection near the end takes the head of the next segment`() =
         runTest {
@@ -255,7 +270,20 @@ class StoryboardBuilderTest {
             assertNull(builder().build(recording(), listOf(frame(2, 6.0))))
         }
 
-    /** 9 клеток 64×36: столбцов 4, как в плане на 16 — под их ширину ffmpeg уже нарезал клетки, — а рядов 3. */
+    /** Пустой ответ по текущей записи — запасной путь: из 7 клеток предыдущего вышла бы раскадровка без самой детекции. */
+    @Test
+    fun `a current recording that gives no frames gives no storyboard`() =
+        runTest {
+            coEvery { finder.previous(any()) } returns segment(previousPath, recordStart.minusSeconds(10), 10.0)
+            coEvery { sampler.sample(currentPath, any(), any(), any(), any()) } returns emptyList()
+
+            assertNull(builder().build(recording(), listOf(frame(0, 1.0))))
+        }
+
+    /**
+     * 9 клеток 64×36: столбцов 4, как в плане на 16 — под их ширину ffmpeg уже нарезал клетки, — а рядов 3.
+     * Показанный отрезок и его ноль начинаются с текущей записи: 0.0..6.0 с.
+     */
     @Test
     fun `a failure on a neighbour leaves only its tiles out`() =
         runTest {
@@ -266,10 +294,27 @@ class StoryboardBuilderTest {
 
             assertTrue(built.storyboard.missingBefore)
             assertEquals(9, built.storyboard.tiles)
-            assertEquals(-4.0, built.zeroSeconds)
+            assertEquals(0.0, built.zeroSeconds)
+            assertEquals(6.0, built.storyboard.durationSeconds, 1e-9)
+            assertEquals(listOf(DescriptionRequest.DetectionMark("car", 0.9, 1.0)), built.storyboard.detections)
             val grid = assertNotNull(ImageIO.read(ByteArrayInputStream(built.storyboard.image)))
             assertEquals(256, grid.width)
             assertEquals(108, grid.height)
+        }
+
+    /** ffmpeg не везде падает, не отдав ни кадра: пустой ответ по соседу — такой же сбой, и ноль тот же, что выше. */
+    @Test
+    fun `a previous segment that gives no frames counts as a failed one`() =
+        runTest {
+            coEvery { finder.previous(any()) } returns segment(previousPath, recordStart.minusSeconds(10), 10.0)
+            coEvery { sampler.sample(previousPath, any(), any(), any(), any()) } returns emptyList()
+
+            val built = assertNotNull(builder().build(recording(), listOf(frame(0, 1.0))))
+
+            assertTrue(built.storyboard.missingBefore)
+            assertEquals(9, built.storyboard.tiles)
+            assertEquals(0.0, built.zeroSeconds)
+            assertEquals(6.0, built.storyboard.durationSeconds, 1e-9)
         }
 
     /** Без клеток следующего сегмента показанный отрезок кончается там, где кончается запись: 5.0..12.0 с. */
@@ -284,6 +329,42 @@ class StoryboardBuilderTest {
             assertTrue(built.storyboard.missingAfter)
             assertEquals(11, built.storyboard.tiles)
             assertEquals(7.0, built.storyboard.durationSeconds, 1e-9)
+        }
+
+    /** Те же числа, что при исключении. Иначе клетки соседа выпали бы молча, а с ними и «Footage after …» из промпта. */
+    @Test
+    fun `a next segment that gives no frames counts as a failed one`() =
+        runTest {
+            coEvery { finder.next(any(), any(), any()) } returns segment(nextPath, recordStart.plusSeconds(12), 10.0)
+            coEvery { sampler.sample(nextPath, any(), any(), any(), any()) } returns emptyList()
+
+            val built = assertNotNull(builder().build(recording(), listOf(frame(4, 10.0))))
+
+            assertTrue(built.storyboard.missingAfter)
+            assertEquals(11, built.storyboard.tiles)
+            assertEquals(7.0, built.storyboard.durationSeconds, 1e-9)
+        }
+
+    /** Файл кончился раньше, чем обещал ffprobe: 13 клеток из 16 — столбцов по-прежнему 4, рядов тоже 4. */
+    @Test
+    fun `a recording that ends early gives the tiles that came back`() =
+        runTest {
+            coEvery { sampler.sample(currentPath, any(), any(), any(), any()) } returns List(13) { tileJpeg }
+
+            val built = assertNotNull(builder().build(recording(), listOf(frame(2, 6.0))))
+
+            assertEquals(13, built.storyboard.tiles)
+            val grid = assertNotNull(ImageIO.read(ByteArrayInputStream(built.storyboard.image)))
+            assertEquals(256, grid.width)
+            assertEquals(144, grid.height)
+        }
+
+    @Test
+    fun `too few frames back from ffmpeg give no storyboard`() =
+        runTest {
+            coEvery { sampler.sample(currentPath, any(), any(), any(), any()) } returns List(3) { tileJpeg }
+
+            assertNull(builder().build(recording(), listOf(frame(2, 6.0))))
         }
 
     @Test
