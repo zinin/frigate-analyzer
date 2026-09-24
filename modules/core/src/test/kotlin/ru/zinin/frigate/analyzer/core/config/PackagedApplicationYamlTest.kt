@@ -47,6 +47,7 @@ class PackagedApplicationYamlTest {
         assertEquals("claude", properties.provider)
         assertTrue(properties.presets.isEmpty())
         assertEquals(400, properties.common.shortMaxLength)
+        assertEquals(4, properties.common.maxFrames)
     }
 
     /**

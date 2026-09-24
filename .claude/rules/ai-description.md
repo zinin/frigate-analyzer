@@ -1,5 +1,5 @@
 ---
-paths: "modules/ai-description/**,**/handler/aisettings/**,**/judge/**,**/Verdicts*,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*,**/DescriptionAuthAlertNotifier*"
+paths: "modules/ai-description/**,**/handler/aisettings/**,**/judge/**,**/Verdicts*,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*,**/DescriptionAuthAlertNotifier*,**/storyboard/**"
 ---
 
 # AI Description Module
@@ -577,6 +577,66 @@ Callbacks `aip:j:on` / `aip:j:off` / `aip:j:set:<id>` write:
 `AppSettingsJudgeRuntimeSettings` (core) is the production implementation; `InMemoryJudgeRuntimeSettings`
 is `@ConditionalOnMissingBean`. Same per-process cache as descriptions — see `database.md`.
 
+## Storyboard
+
+Besides the full-resolution frames the description model gets a timed storyboard of the event: one
+grid of up to `tiles` (16) frames sampled evenly around the detection, reaching into the neighbouring
+Frigate segments when the event crosses a recording boundary. Without it the model saw usually 1–4
+frames of one segment and could not tell a parked car from one driving past. Built in `core`
+(`core/storyboard/`); this module only words it (`DescriptionRequest.storyboard`, `DescriptionTask`).
+
+| Component | Purpose |
+|-----------|---------|
+| `StoryboardPlanner` | Pure arithmetic: window, neighbours needed, contiguity, footage, tile moments and the segment of each, marks, grid layout, tile width, labels |
+| `AdjacentSegmentFinder` | Previous segment (one lookup); next segment polled once a second until the deadline and probed only once its file has not changed for 1 s — a failed ffprobe is retried on the next poll |
+| `StoryboardFrameSampler` | One ffmpeg run per segment: input `-ss` to the first moment, `fps=<R>:start_time=0:round=up,scale=<tile width>:-2` (`R` = 1 / step), JPEGs into the temp folder, deleted in `finally`. Each tile shows the last frame at or before its moment (the first tile: the first frame after the seek point); plain `fps=<R>` (round=near) showed every tile ≈ step/2 after its label and lost the tile at a file end |
+| `StoryboardComposer` | Java2D grid, ~2560 px wide (columns × tile width); the rows are counted from the tiles actually sampled while the columns and the tile width stay as planned, so only the last row can have empty cells. Label on a dark plate in each tile's top-left corner, a tile nearest a detection in yellow with `• detection`; one label font per grid — base `max(12, tile height / 10)`, shrunk until the widest label with its plate fits the tile (portrait 9:16 cameras). JPEG decode and encode in memory through `JpegCodec` (ai-description `core/`), quality 0.85 |
+| `StoryboardBuilder` | Orchestration; `Semaphore(2)` around the current recording's ffprobe and each ffmpeg run only (the neighbours' lookups, their ffprobe and the wait hold no permit); fail-open — any failure (`Throwable`) except cancellation → `null` + WARN; one INFO line |
+
+**Where it runs.** Inside the description supplier of `RecordingProcessingFacade`, so only when a
+description will actually be made (after the recipient filter, the rate limiter and a judge
+`PUBLISH`): storyboard, then the runtime switch, then `agent.describe`. It runs before the executor's
+semaphore and spends none of the model's timeouts; the Telegram side awaits the result with no
+timeout of its own, so the placeholder stays up through the storyboard's wait too. The builder gets
+only the frames with detections, without their bytes, and is not called at all with
+`APP_AI_DESCRIPTION_STORYBOARD_ENABLED=false`. The full-resolution frames stay within the
+user-visible collage (`selectTopFrames`, capped by `APP_AI_DESCRIPTION_MAX_FRAMES`, default 4, and by
+`LOCAL_VIZ_MAX_FRAMES`); the storyboard is deliberately wider.
+
+**Timeline.** "Recording time": the current segment is `[0, D)` (`D` from ffprobe), the previous
+`[-Dp, 0)`, the next `[D, D + Dn)`. Detection moments are `FrameData.offsetSeconds` of the frames with
+detections. Window: `[first − before, last + after]`; no detection times at all → the whole current
+recording, no neighbours. A neighbour is used only when it butts against the current recording within
+1.5 s (Frigate file names are second-precision) and is laid on the timeline by durations, so there are
+no false gaps. Tiles: up to `tiles`, evenly over the footage minus its last 0.1 s (a frame exactly at
+the end of a file is not returned), never closer than 0.5 s; fewer than 4 → no storyboard. Every time
+the model sees counts from the start of the footage (`BuiltStoryboard.zeroSeconds`): tile labels,
+detection marks and the full-resolution frames, which the facade shifts to that zero. Without a
+storyboard the frames count from the start of the recording.
+
+**Waiting for the next segment.** Deadline = `min(job start, fileCreationTimestamp + D) +
+next-segment-wait`. The pipeline takes a recording only 30 s after its file appeared
+(`findUnprocessedRecordings`: `file_creation_timestamp < now − 30 s`), so when a description starts
+the next segment has usually been in the database for a while and the first lookup finds it; waiting
+happens only when Frigate is late. A backlog recording gets exactly one lookup. A next segment that
+starts after a gap is not waited for — Frigate skipped it.
+
+**Fail-open.** Any failure (`Throwable`) except cancellation → WARN, and the description goes out
+from the frames alone, captioned with their times; a `CancellationException` always propagates. That
+covers too little footage for 4 tiles, fewer than 4 frames back from ffmpeg, a failure on the current
+recording (its ffprobe or ffmpeg) and one in the composer. A failed neighbour only drops its tiles
+(`missingBefore` / `missingAfter`): ffmpeg is not retried on it (the finder retries only the next
+segment's ffprobe, while it waits). After a failed next segment the storyboard ends at the end of the
+current recording, so "Footage after …s is not available" names the real end; after a failed previous
+one the zero stays at the planned start, so the labels keep counting from there. The model is told
+when footage before or after is not available, so it does not invent that a car "left".
+
+**Log.** One INFO line per storyboard, e.g. `Storyboard for <id>: footage -4.0..5.9 s of the recording
+(prev+current), 16 tiles 0.7 s apart, built in 1.8 s`; a missing neighbour shows as `prev: missing` /
+`next: missing after N s`, a found next one as `waited N s for the next segment`, and a neighbour
+whose sampling failed as `prev: sampling failed` / `next: sampling failed` — it is then left out of
+`(prev+current+next)`, and the footage range is the one actually shown.
+
 ## Integration with Telegram
 
 When a notification is enqueued and AI description is enabled:
@@ -654,7 +714,8 @@ All variables documented in `.claude/rules/configuration.md` under "AI Descripti
 - `APP_AI_DESCRIPTION_LANGUAGE` — `ru` or `en`
 - `APP_AI_DESCRIPTION_SHORT_MAX` / `APP_AI_DESCRIPTION_DETAILED_MAX` — character caps for the
   short paragraph and the `<details>` body
-- `APP_AI_DESCRIPTION_MAX_FRAMES` — frames forwarded to the model per recording
+- `APP_AI_DESCRIPTION_MAX_FRAMES` — full-resolution frames forwarded next to the storyboard (default 4)
+- `APP_AI_DESCRIPTION_STORYBOARD_*` — the storyboard (`configuration.md`, "Storyboard")
 - `CLAUDE_MAX_BUFFER_SIZE` — max size of one JSON message from the Claude CLI (default 16MB). The CLI
   echoes every frame the model reads back as base64, so the SDK's 1 MiB default overflowed on
   ~800 KB frames; an oversized line is dropped with `Failed to process message (continuing)`
