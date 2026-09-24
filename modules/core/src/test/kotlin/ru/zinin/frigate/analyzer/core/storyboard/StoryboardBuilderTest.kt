@@ -367,7 +367,10 @@ class StoryboardBuilderTest {
             assertEquals(7.0, built.storyboard.durationSeconds, 1e-9)
         }
 
-    /** Файл кончился раньше, чем обещал ffprobe: 13 клеток из 16 — столбцов по-прежнему 4, рядов тоже 4. */
+    /**
+     * Файл кончился раньше, чем обещал ffprobe: 13 клеток из 16 — столбцов по-прежнему 4, рядов тоже 4.
+     * Отрезок тогда кончается на последней пришедшей клетке: 1.0..8.92 с.
+     */
     @Test
     fun `a recording that ends early gives the tiles that came back`() =
         runTest {
@@ -376,9 +379,54 @@ class StoryboardBuilderTest {
             val built = assertNotNull(builder().build(recording(), listOf(frame(2, 6.0))))
 
             assertEquals(13, built.storyboard.tiles)
+            assertTrue(built.storyboard.missingAfter)
+            assertEquals(7.92, built.storyboard.durationSeconds, 1e-9)
             val grid = assertNotNull(ImageIO.read(ByteArrayInputStream(built.storyboard.image)))
             assertEquals(256, grid.width)
             assertEquals(144, grid.height)
+        }
+
+    /** Следующий сегмент отдал 3 клетки из 5: отрезок кончается на последней из них — 5.0..13.58 с. */
+    @Test
+    fun `a next segment that ends early ends the footage on its last tile`() =
+        runTest {
+            coEvery { finder.next(any(), any(), any()) } returns segment(nextPath, recordStart.plusSeconds(12), 10.0)
+            coEvery { sampler.sample(nextPath, any(), any(), any(), any()) } returns List(3) { tileJpeg }
+
+            val built = assertNotNull(builder().build(recording(), listOf(frame(4, 10.0))))
+
+            assertTrue(built.storyboard.missingAfter)
+            assertEquals(14, built.storyboard.tiles)
+            assertEquals(8.58, built.storyboard.durationSeconds, 1e-9)
+        }
+
+    /** Запись отдала 9 клеток из 11, следующий сегмент упал: отрезок кончается на 10.28 с, а не на конце записи, 12.0 с. */
+    @Test
+    fun `a recording that ends early before a failed next segment ends the footage on its last tile`() =
+        runTest {
+            coEvery { finder.next(any(), any(), any()) } returns segment(nextPath, recordStart.plusSeconds(12), 10.0)
+            coEvery { sampler.sample(currentPath, any(), any(), any(), any()) } returns List(9) { tileJpeg }
+            coEvery { sampler.sample(nextPath, any(), any(), any(), any()) } throws RuntimeException("ffmpeg exited with 1")
+
+            val built = assertNotNull(builder().build(recording(), listOf(frame(4, 10.0))))
+
+            assertTrue(built.storyboard.missingAfter)
+            assertEquals(9, built.storyboard.tiles)
+            assertEquals(5.28, built.storyboard.durationSeconds, 1e-9)
+        }
+
+    /** Запись отдала 10 клеток из 11, следующий сегмент — все 5: в подписях скачок, но отрезок кончается по плану, 5.0..15.0 с. */
+    @Test
+    fun `a recording that ends early before a full next segment keeps the planned end`() =
+        runTest {
+            coEvery { finder.next(any(), any(), any()) } returns segment(nextPath, recordStart.plusSeconds(12), 10.0)
+            coEvery { sampler.sample(currentPath, any(), any(), any(), any()) } returns List(10) { tileJpeg }
+
+            val built = assertNotNull(builder().build(recording(), listOf(frame(4, 10.0))))
+
+            assertFalse(built.storyboard.missingAfter)
+            assertEquals(15, built.storyboard.tiles)
+            assertEquals(10.0, built.storyboard.durationSeconds, 1e-9)
         }
 
     @Test

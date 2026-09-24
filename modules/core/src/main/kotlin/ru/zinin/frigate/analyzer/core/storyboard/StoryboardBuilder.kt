@@ -124,6 +124,9 @@ class StoryboardBuilder(
         val failed = mutableSetOf<SegmentRole>()
         val shown = mutableSetOf<SegmentRole>()
         val sampled = mutableListOf<Pair<Double, ByteArray>>()
+        // Последний сегмент, давший клетки, отдал меньше, чем просили (файл кончился раньше, чем обещал ffprobe):
+        // сетка кончается на его последней клетке.
+        var tailCut = false
         val groups =
             grid.moments
                 .map { moment -> moment to StoryboardPlanner.locate(moment, duration, previous?.info?.durationSeconds) }
@@ -163,6 +166,7 @@ class StoryboardBuilder(
                 continue
             }
             shown += role
+            tailCut = images.size < group.size
             group.zip(images).forEach { (entry, image) -> sampled += entry.first to image }
         }
         if (sampled.size < StoryboardPlanner.MIN_TILES) {
@@ -177,9 +181,15 @@ class StoryboardBuilder(
         // Ноль — начало показанного отрезка. Без клеток предыдущего сегмента отрезок, а с ним и ноль, начинается
         // с текущей записи: иначе подписи клеток считались бы от начала, которого на сетке нет, а длина отрезка
         // включала бы непоказанный хвост предыдущего. Без клеток следующего отрезок кончается на конце записи:
-        // этот момент и назовёт «Footage after … is not available».
+        // этот момент и назовёт «Footage after … is not available». Если последний сегмент на сетке отдал меньше
+        // клеток, чем просили, отрезок кончается на его последней клетке, и «Footage after …» назовёт этот момент.
         val zero = if (previousFailed) 0.0 else footage.range.start
-        val shownEnd = if (nextFailed) minOf(footage.range.end, duration) else footage.range.end
+        val shownEnd =
+            when {
+                tailCut -> sampled.last().first
+                nextFailed -> minOf(footage.range.end, duration)
+                else -> footage.range.end
+            }
         val marked = StoryboardPlanner.markedTiles(sampled.map { it.first }, detectionSeconds)
         val tiles =
             sampled.mapIndexed { index, (moment, image) ->
@@ -198,7 +208,7 @@ class StoryboardBuilder(
                 durationSeconds = shownEnd - zero,
                 detections = detectionMarks(detectionFrames, zero),
                 missingBefore = footage.missingBefore || previousFailed,
-                missingAfter = footage.missingAfter || nextFailed,
+                missingAfter = footage.missingAfter || nextFailed || tailCut,
             )
         logger.info {
             // Строка описывает то, что на сетке: в скобках только сегменты, давшие хоть одну клетку. Соседа, которого

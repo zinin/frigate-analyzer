@@ -626,15 +626,21 @@ deadline and the INFO line says `next: missing after N s`.
 
 **Fail-open.** Any failure (`Throwable`) except cancellation → WARN, and the description goes out
 from the frames alone, captioned with their times; a `CancellationException` always propagates. That
-covers too little footage for 4 tiles, fewer than 4 frames back from ffmpeg, a failure on the current
-recording (its ffprobe, or an ffmpeg run that fails or returns no frames) and one in the composer.
+covers too little footage for 4 tiles, fewer than 4 frames back from ffmpeg, a grid with no tile in
+the current recording (a recording shorter than the tile step, or `after = 0` with a detection at its
+very start), a failure on the current recording (its ffprobe, or an ffmpeg run that fails or returns
+no frames) and one in the composer.
 What the grid shows is decided by the tiles that came back, not by ffmpeg's exit code: whether ffmpeg
 fails when it writes no frame depends on the build. A neighbour whose ffmpeg run fails or returns no
 frames only drops its tiles (`missingBefore` / `missingAfter`): ffmpeg is not retried on it (the
 finder retries only the next segment's ffprobe, while it waits). After a failed next segment the
 storyboard ends at the end of the current recording, so "Footage after …s is not available" names the
-real end; after a failed previous one the footage, and its zero, start at the current recording. The
-model is told when footage before or after is not available, so it does not invent that a car "left".
+real end; after a failed previous one the footage, and its zero, start at the current recording. When
+the last segment on the grid gives fewer tiles than it was asked for (its file ends earlier than
+ffprobe said), the footage ends at the last tile that came back, and "Footage after …s is not
+available" names that moment; a shorter segment earlier in the grid only leaves a jump in the tile
+times. The model is told when footage before or after is not available, so it does not invent that a
+car "left".
 
 **Log.** One INFO line per storyboard, e.g. `Storyboard for <id>: footage -4.0..6.0 s of the recording
 (prev+current), 16 tiles 0.7 s apart, built in 1.8 s`; a missing neighbour shows as `prev: missing` /
