@@ -11,8 +11,8 @@ import java.nio.file.Path
  * который отключает инъекцию инструментов по умолчанию, а `--disallowed-tools read_file` снимает
  * и этот один инструмент (кадры уже inline); `--max-turns 1` запрещает второй ход;
  * `--system-prompt-override` заменяет промпт кодового агента; `--cwd` указывает на пустой каталог.
- * Env изолирует процесс от skills, rules и плагинов Claude Code и Cursor, которые Grok иначе
- * читает из HOME, и от сессий Claude Code, Cursor и Codex.
+ * Env изолирует процесс от skills, rules, плагинов и сессий Claude Code, Cursor и Codex, которые
+ * Grok иначе читает из HOME. Флаги повторены в smoke-проверке `docker/deploy/Dockerfile`.
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -93,15 +93,13 @@ class GrokCommandBuilder(
                 put("GROK_DISABLE_AUTOUPDATER", "1")
                 put("GROK_MEMORY", "0")
                 put("GROK_SUBAGENTS", "0")
-                listOf("CLAUDE", "CURSOR").forEach { tool ->
-                    listOf("AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS").forEach { kind ->
+                // Все ячейки совместимости чужих харнессов. Часть из них в 1.0.41 ещё инертна (сессии, всё у
+                // Codex), но образ ставит последнюю версию Grok, а в HOME контейнера лежат транскрипты
+                // Claude Code по каждому описанию.
+                listOf("CLAUDE", "CURSOR", "CODEX").forEach { tool ->
+                    listOf("AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS", "SESSIONS").forEach { kind ->
                         put("GROK_${tool}_${kind}_ENABLED", "0")
                     }
-                }
-                // Чужие сессии в 1.0.13 были инертны, но образ ставит последнюю версию Grok, а в HOME
-                // контейнера лежат транскрипты Claude Code по каждому описанию.
-                listOf("CLAUDE", "CURSOR", "CODEX").forEach { tool ->
-                    put("GROK_${tool}_SESSIONS_ENABLED", "0")
                 }
             }
     }

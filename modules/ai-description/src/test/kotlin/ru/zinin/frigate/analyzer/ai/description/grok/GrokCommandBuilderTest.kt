@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.ai.description.grok
 
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import java.nio.file.Path
+import kotlin.io.path.readText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -112,12 +113,10 @@ class GrokCommandBuilderTest {
         assertEquals("1", env["GROK_DISABLE_AUTOUPDATER"])
         assertEquals("0", env["GROK_MEMORY"])
         assertEquals("0", env["GROK_SUBAGENTS"])
-        listOf("AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS").forEach { kind ->
-            assertEquals("0", env["GROK_CLAUDE_${kind}_ENABLED"], "GROK_CLAUDE_${kind}_ENABLED")
-            assertEquals("0", env["GROK_CURSOR_${kind}_ENABLED"], "GROK_CURSOR_${kind}_ENABLED")
-        }
         listOf("CLAUDE", "CURSOR", "CODEX").forEach { tool ->
-            assertEquals("0", env["GROK_${tool}_SESSIONS_ENABLED"], "GROK_${tool}_SESSIONS_ENABLED")
+            listOf("AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS", "SESSIONS").forEach { kind ->
+                assertEquals("0", env["GROK_${tool}_${kind}_ENABLED"], "GROK_${tool}_${kind}_ENABLED")
+            }
         }
         assertFalse(env.containsKey("HTTP_PROXY"))
         assertFalse(env.containsKey("HTTPS_PROXY"))
@@ -185,6 +184,21 @@ class GrokCommandBuilderTest {
     fun `null schema drops the json-schema flag even when structured output is on`() {
         val argv = build(structuredOutput = true, jsonSchema = null).argv
         assertFalse(argv.contains("--json-schema"))
+    }
+
+    /**
+     * Образ ставит последнюю версию Grok, и smoke-проверка в Dockerfile валит сборку, если флаг пропал.
+     * Флаг, которого нет в её списке, она не проверит. Рабочий каталог теста — каталог модуля.
+     */
+    @Test
+    fun `the Dockerfile smoke check passes every flag the builder passes`() {
+        val dockerfile = Path.of("../../docker/deploy/Dockerfile").readText()
+        val smoke = "--prompt-file" + dockerfile.substringAfter("grok --prompt-file").substringBefore("--help")
+        val tokens = smoke.split(Regex("\\s+")).toSet()
+
+        build().argv.filter { it.startsWith("-") }.forEach { flag ->
+            assertTrue(flag in tokens, "$flag is missing from the Dockerfile smoke check")
+        }
     }
 
     private companion object {

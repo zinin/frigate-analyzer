@@ -10,7 +10,8 @@ FROM azul/zulu-openjdk-alpine:25
 WORKDIR /application
 
 # Grok Build (xAI): the latest stable release at image build, like the Claude CLI below. Empty means
-# latest; `--build-arg GROK_VERSION=x.y.z` pins one if a release breaks the headless call.
+# latest; set x.y.z here to pin a known-good release if one breaks the headless call (the release
+# workflow passes no build args).
 ARG GROK_VERSION=
 
 # Runtime deps: ffmpeg/fontconfig (existing) + bash/libgcc/libstdc++/ripgrep (Claude CLI on musl per Anthropic docs).
@@ -58,7 +59,8 @@ ENV PATH="/home/appuser/.local/bin:/home/appuser/.grok/bin:${PATH}"
 # The installer takes the latest stable release when GROK_VERSION is empty.
 # The smoke check parses every flag GrokCommandBuilder passes: clap rejects an unknown flag before
 # it prints --help, so a Grok release that renames or drops one fails this build instead of the
-# judge in production. Keep the list in sync with GrokCommandBuilder.
+# judge and the Grok descriptions in production. It does not catch effort values, conflicting
+# arguments or a changed JSON output. GrokCommandBuilderTest keeps this list in sync.
 RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "$GROK_VERSION" && \
     grok --version && \
     grok --prompt-file /dev/null --json-schema '{}' --output-format json -m grok --effort low \

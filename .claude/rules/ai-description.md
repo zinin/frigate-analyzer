@@ -22,10 +22,13 @@ edit job. The same happens when nothing is declared at all (empty `presets` map 
 
 Both CLIs are installed into the runtime container by `docker/deploy/Dockerfile` (`claude.ai/install.sh`
 and `x.ai/cli/install.sh`), each at its latest stable release when the image is built; neither updates
-itself inside a running container. `--build-arg GROK_VERSION=x.y.z` pins Grok if a release breaks the
-headless call, and a smoke check in the Dockerfile parses every flag `GrokCommandBuilder` passes, so a
-renamed or dropped flag fails the image build instead of the judge. Local development needs the chosen
-binary on `PATH` or an explicit `*_CLI_PATH`.
+itself inside a running container. If a Grok release breaks the headless call, pin a known-good one by
+setting `ARG GROK_VERSION=x.y.z` in the Dockerfile; the release workflow passes no build args. A smoke
+check in the Dockerfile parses every flag `GrokCommandBuilder` passes, and `GrokCommandBuilderTest`
+keeps the two lists in sync. A renamed or dropped flag therefore fails the image build instead of the
+judge and the Grok descriptions in production. The check does not catch effort values, conflicting
+arguments (`--help` exits before clap checks them) or a change in the JSON output; those surface on the
+first call. Local development needs the chosen binary on `PATH` or an explicit `*_CLI_PATH`.
 
 ## Layers
 
@@ -230,8 +233,8 @@ grok --prompt-file <file> --json-schema '{…short,detailed…}' --output-format
      --no-auto-update --system-prompt-override "<constant>" --cwd <working-directory>
 ```
 
-with `GROK_HOME=<home>`, `GROK_DISABLE_AUTOUPDATER=1`, `GROK_MEMORY=0`, `GROK_SUBAGENTS=0`,
-`GROK_CLAUDE_*_ENABLED=0` / `GROK_CURSOR_*_ENABLED=0` and `GROK_CODEX_SESSIONS_ENABLED=0`. The child env is not a copy of the JVM:
+with `GROK_HOME=<home>`, `GROK_DISABLE_AUTOUPDATER=1`, `GROK_MEMORY=0`, `GROK_SUBAGENTS=0` and
+`GROK_{CLAUDE,CURSOR,CODEX}_{AGENTS,HOOKS,MCPS,RULES,SKILLS,SESSIONS}_ENABLED=0`. The child env is not a copy of the JVM:
 `ProcessBuilder` is cleared, then PATH/HOME/locale, host `GROK_*`/`XAI_*` (BYOK `env_key`), the names listed in
 `GROK_PASS_THROUGH_ENV` for BYOK keys outside those prefixes, and the command map. `--tools read_file` is an allowlist that disables default tool injection;
 `--disallowed-tools read_file` then removes that one tool. Frames are inline. `--effort` is omitted
@@ -239,11 +242,11 @@ when blank so BYOK models without reasoning levels work.
 
 **Isolation from other harnesses.** `grok inspect` reports compatibility cells per foreign harness:
 `skills`, `rules`, `agents`, `mcps`, `hooks` and `sessions` for claude and cursor, and `sessions` alone for
-codex. Under `ISOLATION_ENV` every one of them reads `OFF (env)`; this was checked on 1.0.41. The `sessions`
-cells were inert in 1.0.13: "staged and inert until a foreign-session scanner consumes them", and they
-also needed a `resume-*` skill before any filesystem I/O. They are switched off explicitly anyway,
-because the image now installs whatever Grok is latest, and the container's HOME holds Claude Code's
-transcript of every description. A later release may ship that scanner. When a Grok release adds a
+codex. Under `ISOLATION_ENV` every one of them reads `OFF (env)`; this was checked on 1.0.41. Some
+cells are still inert as of 1.0.41. The `sessions` cells are "staged; no scanner consumer yet". The
+binary also knows `GROK_CODEX_{SKILLS,RULES,AGENTS,MCPS,HOOKS}_ENABLED`, which `inspect` does not
+list yet. All eighteen are switched off anyway, because the image installs whatever Grok is latest and
+the container's HOME holds Claude Code's transcript of every description. When a Grok release adds a
 harness or a cell, re-check with `grok inspect`.
 
 **Models that do not support `--json-schema`.** Only xAI endpoints reliably apply the schema. BYOK
