@@ -9,8 +9,9 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 FROM azul/zulu-openjdk-alpine:25
 WORKDIR /application
 
-# Grok Build (xAI) pinned: the app depends on specific headless flags and the JSON output shape.
-ARG GROK_VERSION=1.0.13
+# Grok Build (xAI): the latest stable release at image build, like the Claude CLI below. Empty means
+# latest; `--build-arg GROK_VERSION=x.y.z` pins one if a release breaks the headless call.
+ARG GROK_VERSION=
 
 # Runtime deps: ffmpeg/fontconfig (existing) + bash/libgcc/libstdc++/ripgrep (Claude CLI on musl per Anthropic docs).
 RUN apk add --no-cache ffmpeg curl fontconfig ttf-dejavu bash libgcc libstdc++ ripgrep
@@ -54,8 +55,16 @@ RUN curl -fsSL https://claude.ai/install.sh | bash && \
 ENV PATH="/home/appuser/.local/bin:/home/appuser/.grok/bin:${PATH}"
 
 # Install Grok Build as appuser: static binary in ~/.grok/bin/grok, symlink in ~/.local/bin.
+# The installer takes the latest stable release when GROK_VERSION is empty.
+# The smoke check parses every flag GrokCommandBuilder passes: clap rejects an unknown flag before
+# it prints --help, so a Grok release that renames or drops one fails this build instead of the
+# judge in production. Keep the list in sync with GrokCommandBuilder.
 RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "$GROK_VERSION" && \
-    grok --version 2>&1 | grep -qF "$GROK_VERSION"
+    grok --version && \
+    grok --prompt-file /dev/null --json-schema '{}' --output-format json -m grok --effort low \
+         --max-turns 1 --tools read_file --disallowed-tools read_file --no-plan --no-subagents \
+         --disable-web-search --permission-mode bypassPermissions --no-auto-update \
+         --system-prompt-override x --cwd /tmp --help > /dev/null
 
 WORKDIR /application
 

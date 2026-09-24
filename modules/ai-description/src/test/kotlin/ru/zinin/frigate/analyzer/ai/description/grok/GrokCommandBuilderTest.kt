@@ -116,6 +116,9 @@ class GrokCommandBuilderTest {
             assertEquals("0", env["GROK_CLAUDE_${kind}_ENABLED"], "GROK_CLAUDE_${kind}_ENABLED")
             assertEquals("0", env["GROK_CURSOR_${kind}_ENABLED"], "GROK_CURSOR_${kind}_ENABLED")
         }
+        listOf("CLAUDE", "CURSOR", "CODEX").forEach { tool ->
+            assertEquals("0", env["GROK_${tool}_SESSIONS_ENABLED"], "GROK_${tool}_SESSIONS_ENABLED")
+        }
         assertFalse(env.containsKey("HTTP_PROXY"))
         assertFalse(env.containsKey("HTTPS_PROXY"))
         assertFalse(env.containsKey("NO_PROXY"))
