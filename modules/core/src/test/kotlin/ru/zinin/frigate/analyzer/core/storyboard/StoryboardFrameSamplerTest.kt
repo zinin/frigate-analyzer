@@ -37,7 +37,7 @@ class StoryboardFrameSamplerTest {
         assertEquals("3.250", command[command.indexOf("-ss") + 1])
         assertTrue(command.indexOf("-ss") < command.indexOf("-i"), "-ss must be an input option: an accurate and fast seek")
         assertEquals("/rec/cam1/10.00.mp4", command[command.indexOf("-i") + 1])
-        assertEquals("fps=1.515152,scale=640:-2", command[command.indexOf("-vf") + 1])
+        assertEquals("fps=1.515152:start_time=0:round=up,scale=640:-2", command[command.indexOf("-vf") + 1])
         assertEquals("7", command[command.indexOf("-frames:v") + 1])
     }
 }

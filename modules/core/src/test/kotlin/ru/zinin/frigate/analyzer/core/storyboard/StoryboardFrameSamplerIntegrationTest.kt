@@ -15,6 +15,7 @@ import java.time.Clock
 import java.time.Duration
 import javax.imageio.ImageIO
 import kotlin.io.path.listDirectoryEntries
+import kotlin.math.roundToInt
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -73,6 +74,43 @@ class StoryboardFrameSamplerIntegrationTest {
         )
     }
 
+    /**
+     * 6 с по [TIMED_FPS] кадров/с; в кадре N белая полоса от левого края шириной (N + 1) × 10 px —
+     * номер кадра читается и после JPEG.
+     */
+    private suspend fun makeTimedVideo(): Path {
+        val timed = tempDir.resolve("timed.mp4")
+        runner.run(
+            listOf(
+                ffmpeg.toString(),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:size=640x360:rate=$TIMED_FPS:duration=6,format=yuv420p," +
+                    "geq=lum='if(lt(X,10*(N+1)),235,16)':cb=128:cr=128",
+                "-c:v",
+                "mpeg4",
+                "-q:v",
+                "2",
+                timed.toString(),
+            ),
+            Duration.ofMinutes(1),
+        )
+        return timed
+    }
+
+    /** Время кадра, который показывает клетка: ширина полосы — светлые пиксели средней строки. */
+    private fun shownSeconds(jpeg: ByteArray): Double {
+        val image = ImageIO.read(ByteArrayInputStream(jpeg))
+        val row = image.height / 2
+        val bar = (0 until image.width).count { x -> (image.getRGB(x, row) shr 8 and 0xFF) > 128 }
+        return ((bar / 10.0).roundToInt() - 1) / TIMED_FPS.toDouble()
+    }
+
     @Test
     fun `samples the requested frames at the tile width`() =
         runTest(timeout = 2.minutes) {
@@ -101,6 +139,34 @@ class StoryboardFrameSamplerIntegrationTest {
         }
 
     @Test
+    fun `a moment just before the end of the file still gets its frame`() =
+        runTest(timeout = 2.minutes) {
+            makeVideo()
+
+            // Последний момент 9.9 с — за 0.1 с до конца файла, как последняя клетка у планировщика.
+            val frames = sampler.sample(video, firstSeconds = 0.0, stepSeconds = 0.66, count = 16, tileWidth = 320)
+
+            assertEquals(16, frames.size)
+        }
+
+    @Test
+    fun `each tile shows the last frame at or before its moment`() =
+        runTest(timeout = 2.minutes) {
+            val timed = makeTimedVideo()
+            // Переход между кадрами: без start_time=0 фильтр сдвинул бы все клетки на шаг.
+            val moments = List(6) { 1.05 + it * 0.66 }
+
+            val shown = sampler.sample(timed, moments.first(), 0.66, moments.size, tileWidth = 640).map(::shownSeconds)
+
+            assertEquals(moments.size, shown.size)
+            moments.zip(shown).forEachIndexed { index, (moment, seconds) ->
+                // Кадры раньше точки перехода ffmpeg отбрасывает, поэтому первой клетке достаётся первый кадр после неё.
+                val allowed = if (index == 0) moment..(moment + FRAME_SECONDS) else (moment - FRAME_SECONDS)..moment
+                assertTrue(seconds in allowed, "tile $index at $moment s shows $seconds s; moments $moments, shown $shown")
+            }
+        }
+
+    @Test
     fun `a missing file fails`() =
         runTest(timeout = 2.minutes) {
             assertFailsWith<RuntimeException> {
@@ -108,4 +174,9 @@ class StoryboardFrameSamplerIntegrationTest {
             }
             assertTrue(tempDir.resolve("tmp").listDirectoryEntries("storyboard-*").isEmpty())
         }
+
+    companion object {
+        private const val TIMED_FPS = 10
+        private const val FRAME_SECONDS = 1.0 / TIMED_FPS
+    }
 }
