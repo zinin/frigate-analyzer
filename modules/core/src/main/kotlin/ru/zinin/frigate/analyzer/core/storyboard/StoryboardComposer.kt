@@ -2,26 +2,19 @@ package ru.zinin.frigate.analyzer.core.storyboard
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import ru.zinin.frigate.analyzer.ai.description.core.JpegCodec
 import java.awt.Color
 import java.awt.Font
 import java.awt.FontMetrics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
 import java.awt.image.BufferedImage
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
-import java.io.IOException
-import javax.imageio.IIOImage
-import javax.imageio.ImageIO
-import javax.imageio.ImageWriteParam
-import javax.imageio.stream.MemoryCacheImageInputStream
-import javax.imageio.stream.MemoryCacheImageOutputStream
 import kotlin.math.max
 
 /**
  * Собирает клетки раскадровки в одну сетку: слева направо и сверху вниз, подпись на тёмной подложке
  * в левом верхнем углу каждой клетки. Размер клетки — размер первого кадра; пустые ячейки последнего
- * ряда остаются чёрными. Кадры читаются и JPEG пишется в памяти, без временных файлов.
+ * ряда остаются чёрными. Кадры читаются и JPEG пишется в памяти, через [JpegCodec].
  */
 @Component
 @ConditionalOnProperty("application.ai.description.enabled", havingValue = "true")
@@ -41,7 +34,10 @@ class StoryboardComposer {
         require(tiles.size <= layout.columns * layout.rows) {
             "${tiles.size} tiles do not fit a ${layout.columns}x${layout.rows} grid"
         }
-        val images = tiles.map { decode(it.image) }
+        val images =
+            tiles.map { tile ->
+                requireNotNull(JpegCodec.decode(tile.image)) { "A storyboard tile is not a readable image" }
+            }
         val width = images.first().width
         val height = images.first().height
         val canvas = BufferedImage(width * layout.columns, height * layout.rows, BufferedImage.TYPE_INT_RGB)
@@ -59,21 +55,7 @@ class StoryboardComposer {
         } finally {
             graphics.dispose()
         }
-        return encodeJpeg(canvas)
-    }
-
-    /**
-     * Кадр читается из памяти: `ImageIO.read(InputStream)` по умолчанию кэширует поток во временном файле —
-     * по файлу на клетку, а без доступного `java.io.tmpdir` бросает.
-     */
-    private fun decode(bytes: ByteArray): BufferedImage {
-        val stream = MemoryCacheImageInputStream(ByteArrayInputStream(bytes))
-        // Не use: прочитав кадр, ImageIO.read закрывает поток сам, и повторный close бросает. Открытым поток
-        // остаётся, только если reader не нашёлся и вернулся null.
-        return ImageIO.read(stream) ?: run {
-            stream.close()
-            throw IllegalArgumentException("A storyboard tile is not a readable image")
-        }
+        return JpegCodec.encode(canvas, JPEG_QUALITY)
     }
 
     /**
@@ -120,32 +102,13 @@ class StoryboardComposer {
         label: String,
     ): Int = metrics.stringWidth(label) + padding(metrics) * 2
 
-    private fun encodeJpeg(image: BufferedImage): ByteArray {
-        val writer =
-            ImageIO.getImageWritersByFormatName("jpeg").takeIf { it.hasNext() }?.next()
-                ?: throw IOException("No JPEG writer available")
-        val output = ByteArrayOutputStream()
-        try {
-            // Memory-cache, а не ImageIO.createImageOutputStream: тот по умолчанию заводит временный файл.
-            MemoryCacheImageOutputStream(output).use { stream ->
-                writer.output = stream
-                val params =
-                    writer.defaultWriteParam.apply {
-                        compressionMode = ImageWriteParam.MODE_EXPLICIT
-                        compressionQuality = JPEG_QUALITY
-                    }
-                writer.write(null, IIOImage(image, null, null), params)
-            }
-        } finally {
-            writer.dispose()
-        }
-        return output.toByteArray()
-    }
-
     private companion object {
         const val MIN_FONT_SIZE = 12
         const val FONT_DIVISOR = 10
+
+        /** Качество раскадровки — константа спеки, своя: не должно меняться вслед за `FrameDownscaler`. */
         const val JPEG_QUALITY = 0.85f
+
         val LABEL_BACKGROUND = Color(0, 0, 0, 153)
         val MARKED_TEXT = Color(255, 214, 0)
     }

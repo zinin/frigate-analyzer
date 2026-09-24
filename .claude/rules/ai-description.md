@@ -55,7 +55,8 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Core | `ProviderAuthTracker` | `core/` | Auth state machine per credential scope; publishes the events; implements `ProviderAuthStates` |
 | Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form for both INFO lines about presets |
 | Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
-| Core | `FrameDownscaler` | `core/` | Optional resize to `max-image-side` (ImageIO, bilinear, JPEG q0.85), once per request in `VisionCallExecutor`; an unreadable frame is passed through with a WARN |
+| Core | `FrameDownscaler` | `core/` | Optional resize to `max-image-side` (bilinear, JPEG q0.85 via `JpegCodec`), once per request in `VisionCallExecutor`; an unreadable frame is passed through with a WARN |
+| Core | `JpegCodec` | `core/` | In-memory JPEG decode and encode (`MemoryCacheImage*Stream`, not ImageIO's temp-file cache in `java.io.tmpdir`); `decode` returns `null` for bytes no reader claims; no default quality, each caller passes its own. Shared by `FrameDownscaler` and the storyboard composer in `core` |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
 | Claude | `ClaudeBackendFactory` | `claude/` | Token check, CLI WARN, `ANTHROPIC_MODEL` displacement, `authScopeId=claude` |
 | Claude | `ClaudeImageStager`, `ClaudePromptBuilder`, `ClaudeInvoker`/`DefaultClaudeInvoker`, `ClaudeAsyncClientFactory`, `ClaudeResponseParser`, `ClaudeExceptionMapper` | `claude/` | Claude specifics; `@Component`s gated on `enabled=true` only |
