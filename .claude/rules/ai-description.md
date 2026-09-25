@@ -311,10 +311,12 @@ newest entries — the run's own — survive the trim. `inspect()` keeps the lin
 characters of the answer and throws `InvalidResponse` (the executor retries it once, like any
 unusable answer); lines of the session without the event → `Clean`; no lines of the session at all →
 `Blind` — a WARN once per process and the answer is accepted as before, because a missing log or a
-changed format must not turn into refusals. Any strip rejects the answer, partial ones included: the
-count is exact, and the inserted notice ends up paraphrased in the description. The DEBUG line
-`Grok call …` carries `strip=clean|stripped|blind`. The file is grok-internal: re-check the event
-name and fields when `ARG GROK_VERSION` changes, as with `grok inspect`.
+changed format must not turn into refusals. `Clean` is no proof of delivery: a renamed strip event,
+or lines of the run lost when a parallel grok trims the file mid-run, end in the same silent `Clean`
+as a run without a strip. Any strip rejects the answer, partial ones included: the count is exact,
+and the inserted notice ends up paraphrased in the description. The DEBUG line `Grok call …` carries
+`strip=clean|stripped|blind`. The file is grok-internal: re-check the event name and fields when
+`ARG GROK_VERSION` changes, as with `grok inspect`.
 
 **GROK_HOME hygiene.** Every headless run persists a session under `GROK_HOME/sessions/<cwd>/<id>/`
 with the base64 frames, and `sessions/session_search.sqlite` grows ~9 KB per run without shrinking.
