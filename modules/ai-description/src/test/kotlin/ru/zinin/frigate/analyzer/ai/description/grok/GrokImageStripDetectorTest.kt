@@ -107,6 +107,17 @@ class GrokImageStripDetectorTest {
     }
 
     @Test
+    fun `an unreadable log is blind and says so`() {
+        // Каталог на месте файла: читать его нельзя. Файл внутри — чтобы размер каталога не был 0 (пустой каталог на btrfs).
+        Files.createDirectories(log)
+        Files.writeString(log.resolve("entry"), "x")
+        val captured = detector().capture()
+        val unavailable = assertIs<CapturedLog.Unavailable>(captured)
+        assertTrue(unavailable.reason.startsWith("cannot read"), unavailable.reason)
+        assertEquals(StripCheck.Blind(unavailable.reason), detector().inspect(captured, SID))
+    }
+
+    @Test
     fun `an unterminated last line and a garbage line are skipped`() {
         // Последнюю строку без перевода строки мог дописывать другой запуск — её не читаем.
         writeLog(lines("not json at all", inferenceDone(SID)) + stripped(SID, 10))
@@ -123,6 +134,13 @@ class GrokImageStripDetectorTest {
                 """{"sid":"$SID","msg":"shell.turn.images_stripped","ctx":{"stripped":"many"}}""",
             ),
         )
+
+        assertEquals(StripCheck.Stripped(2, setOf("payload_heuristic")), check())
+    }
+
+    @Test
+    fun `a strip event with a zero or negative count still counts as one dropped frame`() {
+        writeLog(lines(stripped(SID, 0), stripped(SID, -2)))
 
         assertEquals(StripCheck.Stripped(2, setOf("payload_heuristic")), check())
     }

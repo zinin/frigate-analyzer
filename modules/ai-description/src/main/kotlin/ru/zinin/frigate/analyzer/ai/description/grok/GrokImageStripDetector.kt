@@ -114,8 +114,10 @@ class GrokImageStripDetector(
                 seen = true
                 if (entry.stringField("msg") == STRIPPED_EVENT) {
                     val ctx = entry["ctx"]
-                    // Каждое событие выкидывает картинки, ещё остававшиеся в запросе, поэтому сумма.
-                    images += ctx?.get("stripped")?.takeIf { it.isIntegralNumber && it.canConvertToInt() }?.intValue() ?: 1
+                    // Каждое событие выкидывает картинки, ещё остававшиеся в запросе, поэтому сумма. Само событие —
+                    // уже выброс, поэтому оно весит не меньше одной картинки, какое бы число в нём ни стояло.
+                    val count = ctx?.get("stripped")?.takeIf { it.isIntegralNumber && it.canConvertToInt() }?.intValue() ?: 1
+                    images += count.coerceAtLeast(1)
                     ctx?.stringField("reason")?.let(reasons::add)
                 }
             }

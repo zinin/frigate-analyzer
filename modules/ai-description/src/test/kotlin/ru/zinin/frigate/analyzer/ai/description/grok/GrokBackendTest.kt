@@ -361,6 +361,37 @@ class GrokBackendTest {
         }
 
     @Test
+    fun `an error envelope is classified even when the log holds a strip of the session`() =
+        runTest {
+            val stdout =
+                """{"type":"error","message":"Not signed in. To authenticate without a browser, """ +
+                    """run:\n  grok login --device-code"}"""
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        appendToGrokLog(stripped(SID, 1))
+                        result(1, stdout, "Error: Not signed in")
+                    },
+                )
+
+            assertFailsWith<DescriptionException.Unauthorized> { backend.complete(request, budget) }
+        }
+
+    @Test
+    fun `a non-zero exit is classified even when the log holds a strip of the session`() =
+        runTest {
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        appendToGrokLog(stripped(SID, 1))
+                        result(1, "", "connection reset")
+                    },
+                )
+
+            assertFailsWith<DescriptionException.Transport> { backend.complete(request, budget) }
+        }
+
+    @Test
     fun `after a schema retry the run whose answer is used is the one inspected`() =
         runTest {
             val schemaError = """{"type":"error","message":"litellm.BadRequestError: failed to parse grammar"}"""

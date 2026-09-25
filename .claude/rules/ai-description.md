@@ -53,7 +53,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Core | `ActivePresetResolver` | `core/` | Resolves the active preset per call, fail-open; implements `ActiveDescriptionPreset` |
 | Core | `InMemoryDescriptionRuntimeSettings` / `InMemoryJudgeRuntimeSettings` | `core/` | Defaults used only when `core` registers no `*RuntimeSettings`; the choice dies with the process |
 | Core | `ProviderAuthTracker` | `core/` | Auth state machine per credential scope; publishes the events; implements `ProviderAuthStates` |
-| Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form for both INFO lines about presets |
+| Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form, plus `, max-image-side=N` when the preset sets a cap, for both INFO lines about presets |
 | Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
 | Core | `FrameDownscaler` | `core/` | Optional resize to the stricter of the feature's and the preset's `max-image-side` (`effectiveMaxSide`; ImageIO, bilinear, JPEG q0.85), once per request in `VisionCallExecutor`; an unreadable frame is passed through with a WARN |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
