@@ -186,6 +186,7 @@ them into the notification. Two providers: the Claude Code CLI (`claude`) and th
 | `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Single-preset path only — `claude` or `grok`, used while no `presets` map is declared |
 | `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
 | `APP_AI_DESCRIPTION_TIMEOUT` | `60s` | Per-call budget for the model and the agent's retries — see "Timeout ceiling" below |
+| `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | `0` | Longest frame side before the model call; `0` = camera resolution. A preset may declare a stricter cap of its own — see "Frame size per preset" below |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous model requests |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | `30` | Max invocations per sliding window |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
@@ -227,6 +228,19 @@ The `presets` map replaces `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EF
 map turns them off. `ANTHROPIC_MODEL`, when set, still displaces the model of every `claude` preset —
 `/ai` shows the model that will actually be used.
 
+**Frame size per preset.** Some endpoints limit the request size or the image resolution; others do
+not. A preset may carry its own `max-image-side`, and frames sent through it are downscaled to the
+stricter of that value and the feature's own setting — `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` for
+descriptions, `APP_AI_JUDGE_MAX_IMAGE_SIDE` for the judge — where `0` means no cap:
+
+```yaml
+        byok-vision: { provider: grok, model: my-vision, effort: low, max-image-side: 1568 }
+```
+
+A preset without the key keeps the feature's setting, so a model with no such limit still receives
+frames at the full resolution the feature allows. The value appears in the startup catalog line —
+`byok-vision (grok/my-vision/low, max-image-side=1568)`.
+
 **Timeout ceiling.** `APP_AI_DESCRIPTION_TIMEOUT` has to cover the *slowest* declared preset, not the
 typical one. `grok-4.6` at `effort: xhigh` takes ~48 s, which leaves nothing inside the default 60 s
 for a retry: the transport retry (10 s of budget plus a 5 s pause) never starts, and the
@@ -259,6 +273,11 @@ working, the bot owner receives a Telegram message with the command to run.
 `GROK_EFFORT`. The `grok` process starts from an empty environment and inherits only PATH/HOME/locale
 and `GROK_*`/`XAI_*`, so a key named outside those prefixes also needs
 `GROK_PASS_THROUGH_ENV=MY_GATEWAY_KEY`; naming it `GROK_MY_GATEWAY_KEY` works without the list.
+If the endpoint rejects the images — a gateway answering `413 Payload Too Large`, for example —
+`grok` drops them, repeats the request without them and returns an answer about frames the model
+never saw. The application reads that from `grok-home/logs/unified.jsonl` and rejects the answer:
+the notification shows "⚠ Описание недоступно", the judge sends it unjudged, and the log WARN
+suggests `max-image-side` on the preset.
 
 ### AI notification judge (optional)
 

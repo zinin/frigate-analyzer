@@ -50,7 +50,7 @@ Main chain: `core` → `telegram` → `service` → `model` → `common`. Cross-
 - **Signal-loss monitor:** Polls latest recording per camera, alerts on gap > threshold
 - **Object tracking:** Cross-recording IoU matching to suppress duplicate notifications
 - **AI description:** Provider-neutral agent (semaphore, retry, auth-loss alert to owner) over `VisionBackend`; Claude Code SDK or headless Grok Build CLI; edits the notification message
-- **Description presets:** yaml declares named presets (provider + model + effort), one backend per preset; the owner switches the active one and turns descriptions off from `/ai`, stored in `app_settings` and surviving a restart
+- **Description presets:** yaml declares named presets (provider + model + effort + optional max-image-side), one backend per preset; the owner switches the active one and turns descriptions off from `/ai`, stored in `app_settings` and surviving a restart
 - **LLM judge:** third gate after the tracker; annotated frames + DB context → PUBLISH/SUPPRESS, snooze against duplicates, every verdict in `notification_verdicts`, fail-open
 - **Database:** R2DBC reactive, Liquibase migrations in `docker/liquibase/migration/`
 - **Mapping:** MapStruct with KAPT (`unmappedTargetPolicy=error`)
