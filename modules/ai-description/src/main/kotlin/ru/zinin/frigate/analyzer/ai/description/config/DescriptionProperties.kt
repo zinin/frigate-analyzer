@@ -55,6 +55,13 @@ data class DescriptionProperties(
         val provider: String,
         val model: String,
         val effort: String = "",
+        /**
+         * Потолок длинной стороны кадра для вызовов через этот пресет; `0` — без потолка. Итог —
+         * меньшее из ненулевых значений пресета и фичи ([CommonSection.maxImageSide] у описаний,
+         * `application.ai.judge.max-image-side` у судьи): пресет выражает предел своей модели или
+         * шлюза и может только ужесточить лимит фичи, но не поднять его.
+         */
+        val maxImageSide: Int = 0,
     ) {
         internal fun validate(id: String) {
             require(provider in KNOWN_PROVIDERS) {
@@ -66,6 +73,10 @@ data class DescriptionProperties(
             }
             require(effort.isBlank() || provider == "grok") {
                 "preset '$id': effort is supported only by provider grok, not '$provider'"
+            }
+            // Границы те же, что у CommonSection.maxImageSide и JudgeProperties.maxImageSide.
+            require(maxImageSide == 0 || maxImageSide in 256..8192) {
+                "preset '$id': max-image-side must be 0 (no cap) or 256..8192, was $maxImageSide"
             }
         }
     }

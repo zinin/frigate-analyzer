@@ -30,6 +30,12 @@ data class DescriptionPreset(
      * место, где владелец узнаёт о ловушке ДО того, как выберет пресет, а не по `Timeout` в проде.
      */
     val slowEffort: Boolean = false,
+    /**
+     * Потолок длинной стороны кадра этого пресета; `0` — без потолка. Итоговая сторона — меньшее из
+     * ненулевых значений пресета и вызывающей фичи (`VisionLimits.maxImageSide`), см.
+     * `FrameDownscaler.effectiveMaxSide`.
+     */
+    val maxImageSide: Int = 0,
 ) {
     val available: Boolean get() = unavailableReason == null
 }

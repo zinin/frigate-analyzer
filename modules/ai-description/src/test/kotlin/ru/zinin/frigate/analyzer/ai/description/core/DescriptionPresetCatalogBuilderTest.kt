@@ -459,4 +459,40 @@ class DescriptionPresetCatalogBuilderTest {
 
         assertTrue(catalog.all().none { it.slowEffort }, catalog.all().toString())
     }
+
+    @Test
+    fun `the preset cap reaches the catalog view`() {
+        val catalog =
+            catalogOf(
+                build(
+                    presets = linkedMapOf("byok" to grok.copy(maxImageSide = 1568), "grok-fast" to grok),
+                    factories = listOf(FakeFactory("grok")),
+                ),
+            )
+
+        assertEquals(1568, assertNotNull(catalog.byId("byok")).view.maxImageSide)
+        assertEquals(0, assertNotNull(catalog.byId("grok-fast")).view.maxImageSide)
+    }
+
+    /**
+     * Потолок входит в подпись пресета только там, где задан: у большинства пресетов его нет, и
+     * пустой сегмент в каждой строке каталога был бы шумом. Строка сверяется целиком, как и
+     * соседний тест стартовой строки.
+     */
+    @Test
+    fun `the startup line names the cap only for a preset that sets it`() {
+        val lines =
+            logsFrom(Level.INFO) {
+                build(
+                    presets = linkedMapOf("byok" to grok.copy(maxImageSide = 1568), "claude-opus" to claude),
+                    factories = listOf(FakeFactory("grok"), FakeFactory("claude")),
+                    defaultPreset = "claude-opus",
+                )
+            }.filter { it.startsWith("Description presets:") }
+
+        assertEquals(
+            "Description presets: byok (grok/grok-4.6/low, max-image-side=1568), claude-opus (claude/opus); default 'claude-opus'",
+            assertNotNull(lines.singleOrNull(), lines.toString()),
+        )
+    }
 }
