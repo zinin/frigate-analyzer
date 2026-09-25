@@ -25,7 +25,7 @@ data class VisionOutcome<T>(
 /**
  * Провайдер-нейтральное исполнение одной vision-задачи: резолюция пресета до семафора, семафор,
  * queueTimeout, timeout, retry по InvalidResponse и Transport с проверкой остатка бюджета, downscale
- * кадров, отчёт в ProviderAuthTracker. Разбор ответа ([parse]) выполняется внутри цикла повторов:
+ * кадров до меньшего из потолков фичи и пресета, отчёт в ProviderAuthTracker. Разбор ответа ([parse]) выполняется внутри цикла повторов:
  * InvalidResponse из парсера повторяет вызов так же, как раньше повторял его backend.
  *
  * У каждой фазы вызова свой потолок, и `withTimeout` покрывает не весь вызов: резолюция пресета
@@ -99,7 +99,7 @@ class VisionCallExecutor(
                 // DescriptionException, а описание важнее уменьшения — кадры пойдут как есть.
                 val prepared =
                     try {
-                        downscaleFrames(request)
+                        downscaleFrames(request, entry.view.maxImageSide)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -127,9 +127,15 @@ class VisionCallExecutor(
         }
     }
 
-    /** Один проход на запрос, до повторов: провайдер получает уже готовые кадры. */
-    private suspend fun downscaleFrames(request: VisionRequest): VisionRequest {
-        val maxSide = limits.maxImageSide
+    /**
+     * Один проход на запрос, до повторов: провайдер получает уже готовые кадры. Потолок — меньшее из
+     * ненулевых значений фичи ([VisionLimits.maxImageSide]) и пресета, выбранного для этого вызова.
+     */
+    private suspend fun downscaleFrames(
+        request: VisionRequest,
+        presetCap: Int,
+    ): VisionRequest {
+        val maxSide = FrameDownscaler.effectiveMaxSide(limits.maxImageSide, presetCap)
         if (maxSide <= 0 || request.frames.isEmpty()) return request
         val before = request.frames.sumOf { it.bytes.size }
         val frames =

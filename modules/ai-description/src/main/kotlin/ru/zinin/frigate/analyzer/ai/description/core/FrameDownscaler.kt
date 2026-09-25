@@ -34,6 +34,16 @@ object FrameDownscaler {
      */
     private const val JPEG_QUALITY = 0.85f
 
+    /**
+     * Итоговая длинная сторона из двух потолков — фичи и пресета: меньшее из ненулевых, `0` — ни
+     * один не задан. Пресет выражает предел своей модели или шлюза и может только ужесточить лимит
+     * фичи, но не поднять его.
+     */
+    internal fun effectiveMaxSide(
+        featureCap: Int,
+        presetCap: Int,
+    ): Int = listOf(featureCap, presetCap).filter { it > 0 }.minOrNull() ?: 0
+
     fun downscale(
         bytes: ByteArray,
         maxSide: Int,
