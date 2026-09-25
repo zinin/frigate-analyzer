@@ -2,7 +2,7 @@ package ru.zinin.frigate.analyzer.ai.description.core
 
 import io.mockk.coEvery
 import io.mockk.mockk
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import org.springframework.context.ApplicationEventPublisher
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
@@ -13,6 +13,7 @@ import ru.zinin.frigate.analyzer.ai.description.grok.GrokBackend
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokCommandBuilder
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokExceptionMapper
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokHomeGuard
+import ru.zinin.frigate.analyzer.ai.description.grok.GrokImageStripDetector
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokOutputParser
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokProcessResult
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokProcessRunner
@@ -30,6 +31,9 @@ import kotlin.test.assertEquals
  * частично, а полный объект положил в текст. Ровно этот случай терялся между слоями — разбор
  * структуры годен по отдельности, разбор текста годен по отдельности, а цепочка целиком платила за
  * повтор и отдавала «описание недоступно». Тесты по одному шву этого не ловят.
+ *
+ * `runBlocking`, а не `runTest`: `GrokBackend` читает лог на `Dispatchers.IO`, и виртуальный
+ * `withTimeout` исполнителя в `runTest` срабатывает, не дожидаясь этого чтения.
  */
 class PartialSchemaRecoveryTest {
     private val mapper = TestObjectMappers.internalMapper()
@@ -63,6 +67,7 @@ class PartialSchemaRecoveryTest {
                 outputParser = GrokOutputParser(mapper),
                 exceptionMapper = GrokExceptionMapper(),
                 guard = GrokHomeGuard(),
+                stripDetector = GrokImageStripDetector(properties, mapper),
             )
         val catalog =
             DescriptionPresetCatalog(
@@ -104,7 +109,7 @@ class PartialSchemaRecoveryTest {
 
     @Test
     fun `a description survives a half-applied schema when the text carries the whole object`() =
-        runTest {
+        runBlocking {
             val stdout =
                 """{"stopReason":"end_turn","structuredOutput":{"short":"Bike"},""" +
                     """"text":"{\"short\":\"Bike\",\"detailed\":\"A bike by the fence.\"}"}"""
@@ -127,7 +132,7 @@ class PartialSchemaRecoveryTest {
 
     @Test
     fun `a verdict survives a half-applied schema when the text carries the whole object`() =
-        runTest {
+        runBlocking {
             val stdout =
                 """{"stopReason":"end_turn","structuredOutput":{"verdict":"SUPPRESS"},""" +
                     """"text":"{\"verdict\":\"SUPPRESS\",\"reason\":\"STATIC_OBJECT\",\"summary\":\"Parked car.\",""" +

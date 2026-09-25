@@ -333,6 +333,7 @@ class DescriptionPresetCatalogBuilderTest {
             outputParser = mockk(relaxed = true),
             exceptionMapper = mockk(relaxed = true),
             guard = mockk(relaxed = true),
+            stripDetector = mockk(relaxed = true),
         )
 
     private fun realClaudeFactory() =
