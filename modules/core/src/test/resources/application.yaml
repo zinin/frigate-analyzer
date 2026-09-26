@@ -126,9 +126,10 @@ application:
     default-model: yolo26s.pt
     good-model: yolo26x.pt
     frame-extraction:
-      scene-threshold: 0.05
+      max-gap: 4.0
+      motion-threshold: 0.001
       min-interval: 1.0
-      max-frames: 50
+      max-frames: 6
       quality: 85
     visualize:
       max-det: 100

@@ -6,7 +6,14 @@ import mockwebserver3.RecordedRequest
 import okio.Buffer
 import java.util.concurrent.atomic.AtomicInteger
 
-class DetectServiceDispatcher : Dispatcher() {
+/**
+ * @param legacyFrames answer `/extract/frames` the way a vision-api older than 3.0 does —
+ *   `frame_number` counted from 1 and no `reason` field — which is the payload the default of
+ *   `ExtractedFrameData.reason` exists for.
+ */
+class DetectServiceDispatcher(
+    private val legacyFrames: Boolean = false,
+) : Dispatcher() {
     override fun dispatch(request: RecordedRequest): MockResponse {
         val path = request.url.encodedPath
         val method = request.method ?: "GET"
@@ -113,6 +120,32 @@ class DetectServiceDispatcher : Dispatcher() {
         """.trimIndent()
 
     private fun frameExtractionResponseJson(): String =
+        if (legacyFrames) legacyFrameExtractionResponseJson() else currentFrameExtractionResponseJson()
+
+    /** vision-api 3.0 and up: `frame_number` from 0, a real pts `timestamp`, and `reason`. */
+    private fun currentFrameExtractionResponseJson(): String =
+        """
+        {
+          "success": true,
+          "video_duration": 2.5,
+          "video_resolution": [1920, 1080],
+          "frames_extracted": 1,
+          "frames": [
+            {
+              "frame_number": 0,
+              "timestamp": 0.0,
+              "image_base64": "ZmFrZV9qcGVn",
+              "width": 1920,
+              "height": 1080,
+              "reason": "first"
+            }
+          ],
+          "processing_time_ms": 80
+        }
+        """.trimIndent()
+
+    /** vision-api 2.x: frames numbered from 1 and no `reason` at all. */
+    private fun legacyFrameExtractionResponseJson(): String =
         """
         {
           "success": true,
@@ -349,11 +382,12 @@ class ConfigurableDetectServiceDispatcher(
           "frames_extracted": 1,
           "frames": [
             {
-              "frame_number": 1,
+              "frame_number": 0,
               "timestamp": 0.0,
               "image_base64": "ZmFrZV9qcGVn",
               "width": 1920,
-              "height": 1080
+              "height": 1080,
+              "reason": "first"
             }
           ],
           "processing_time_ms": 80

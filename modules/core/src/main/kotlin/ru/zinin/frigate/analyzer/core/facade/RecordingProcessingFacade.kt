@@ -14,9 +14,12 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
+import ru.zinin.frigate.analyzer.core.config.properties.StoryboardProperties
 import ru.zinin.frigate.analyzer.core.judge.JudgeCandidate
 import ru.zinin.frigate.analyzer.core.judge.NotificationJudgeService
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
+import ru.zinin.frigate.analyzer.core.storyboard.StoryboardBuilder
+import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
 import ru.zinin.frigate.analyzer.service.NotificationDecisionService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
@@ -40,6 +43,9 @@ class RecordingProcessingFacade(
     private val runtimeSettingsProvider: ObjectProvider<DescriptionRuntimeSettings>,
     // ObjectProvider: бина нет при application.ai.judge.enabled=false, и фасад тогда отправляет сам.
     private val judgeProvider: ObjectProvider<NotificationJudgeService>,
+    // ObjectProvider: бинов раскадровки нет при application.ai.description.enabled=false.
+    private val storyboardBuilderProvider: ObjectProvider<StoryboardBuilder>,
+    private val storyboardProperties: StoryboardProperties,
 ) {
     suspend fun processAndNotify(
         request: SaveProcessingResultRequest,
@@ -92,7 +98,7 @@ class RecordingProcessingFacade(
         }
         // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
         // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
-        val descriptionSupplier = buildDescriptionSupplier(recordingId, request)
+        val descriptionSupplier = buildDescriptionSupplier(recording, request)
         val judge = judgeProvider.getIfAvailable()
         if (judge != null) {
             // Судья держит кандидата на время ответа модели, поэтому уходит в свой scope: consumer
@@ -164,11 +170,14 @@ class RecordingProcessingFacade(
      * frames with detections are available.
      * When non-null, the supplier returns a non-null Deferred when invoked — the rate limiter
      * has already consumed a slot at the call site, and a null return would silently waste it.
+     * Inside the job the storyboard is built first (it may wait for the next segment), then the
+     * runtime switch is read again, then the model is called.
      */
     private suspend fun buildDescriptionSupplier(
-        recordingId: UUID,
+        recording: RecordingDto,
         request: SaveProcessingResultRequest,
     ): (() -> Deferred<Result<DescriptionResult>>)? {
+        val recordingId = recording.id
         val agent = descriptionAgentProvider.getIfAvailable() ?: return null
         // Рантайм-выключатель: то же поведение, что «агента нет» — уведомление уходит с
         // DescriptionState.Absent, плейсхолдеров нет, слот rate limiter не тратится, потому что
@@ -179,32 +188,32 @@ class RecordingProcessingFacade(
         }
 
         val common = descriptionProperties.common
-        // Mirror FrameVisualizationService ranking (confidence, then detection count) so Claude
-        // sees the exact subset the user receives in the notification's collage. Capped by the visualization
-        // limit so the AI set is always contained in the user-visible set — see `selectTopFrames`.
+        // Полноразмерные кадры — то же ранжирование, что у коллажа (confidence, затем число детекций),
+        // и не больше видимого пользователю набора (`selectTopFrames`). Раскадровка намеренно шире:
+        // она показывает модели и кадры без детекций, и соседние сегменты.
         val cap = minOf(common.maxFrames, frameVisualizationService.maxFrames)
-        val trimmedFrames =
+        val keyFrames =
             frameVisualizationService
                 .selectTopFrames(request.frames, cap)
                 .sortedBy { it.frameIndex } // chronological order in the prompt, post-selection
-                .map { DescriptionRequest.FrameImage(it.frameIndex, it.frameBytes) }
 
-        if (trimmedFrames.isEmpty()) {
+        if (keyFrames.isEmpty()) {
             logger.debug { "No frames with detections for recording $recordingId; skipping describe-job" }
             return null
         }
 
-        val descriptionRequest =
-            DescriptionRequest(
-                recordingId = recordingId,
-                frames = trimmedFrames,
-                language = common.language,
-                shortMaxLength = common.shortMaxLength,
-                detailedMaxLength = common.detailedMaxLength,
-            )
+        // Раскадровке нужны только время и детекции; байты кадров в замыкании не держим.
+        val detectionFrames =
+            request.frames
+                .filter { it.detectResponse?.detections?.isNotEmpty() == true }
+                .map { it.copy(frameBytes = ByteArray(0)) }
+        val storyboardBuilder = if (storyboardProperties.enabled) storyboardBuilderProvider.getIfAvailable() else null
 
         return {
             descriptionScope.async {
+                // Раскадровка до выключателя: он остаётся вплотную к вызову модели, а раскадровка может
+                // ждать следующий сегмент — выключение за это время тоже должно подействовать.
+                val built = storyboardBuilder?.build(recording, detectionFrames)
                 // Вторая проверка выключателя, вплотную к вызову модели: между сборкой supplier-а и
                 // его вызовом лежат фильтрация получателей и rate limiter, поэтому одной проверки
                 // хватало бы лишь на «подействует со следующей записи», а кнопку жмут тогда, когда
@@ -218,6 +227,19 @@ class RecordingProcessingFacade(
                     // ничего, оставив плейсхолдер навсегда.
                     return@async Result.failure(IllegalStateException("AI descriptions are switched off at runtime"))
                 }
+                val zero = built?.zeroSeconds ?: 0.0
+                val descriptionRequest =
+                    DescriptionRequest(
+                        recordingId = recordingId,
+                        frames =
+                            keyFrames.map {
+                                DescriptionRequest.FrameImage(it.frameIndex, it.frameBytes, it.offsetSeconds?.minus(zero))
+                            },
+                        language = common.language,
+                        shortMaxLength = common.shortMaxLength,
+                        detailedMaxLength = common.detailedMaxLength,
+                        storyboard = built?.storyboard,
+                    )
                 try {
                     Result.success(agent.describe(descriptionRequest))
                 } catch (e: CancellationException) {

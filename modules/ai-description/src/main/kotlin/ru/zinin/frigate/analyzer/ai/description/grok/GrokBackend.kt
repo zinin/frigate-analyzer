@@ -64,7 +64,7 @@ class GrokBackend(
             val systemPrompt = "${request.instructions.systemPrompt} $TOOL_RULE"
             logger.debug {
                 "Grok request ${request.requestId}: model=$model, effort=${effortForLog()}, " +
-                    "json-schema=${if (useSchema) "on" else "off"}, frames=${request.frames.size}"
+                    "json-schema=${if (useSchema) "on" else "off"}, images=${request.images.size}"
             }
             var run = runGrok(file, useSchema, schema, systemPrompt)
             var errorMessage = outputParser.errorMessage(run.result.stdout)
@@ -79,7 +79,7 @@ class GrokBackend(
             if (result.exitCode != 0) throw exceptionMapper.fromFailure(result.exitCode, null, result.stderrTail)
             val output = outputParser.parse(result.stdout)
             // Проверяется запуск, чей ответ используется: при повторе без схемы это второй.
-            val strip = if (request.frames.isEmpty()) StripCheck.Clean else stripDetector.inspect(run.log, output.sessionId)
+            val strip = if (request.images.isEmpty()) StripCheck.Clean else stripDetector.inspect(run.log, output.sessionId)
             logger.debug {
                 "Grok call ${request.requestId}: model=$model, effort=${effortForLog()}, " +
                     "primary=${if (output.fromText) "text" else "structuredOutput"}, " +
@@ -111,7 +111,7 @@ class GrokBackend(
         output: GrokOutput,
         strip: StripCheck.Stripped,
     ): DescriptionException.InvalidResponse {
-        val frames = request.frames.size
+        val frames = request.images.size
         val reasons = strip.reasons.joinToString().ifEmpty { "unknown" }
         logger.warn {
             "Grok dropped ${strip.images} of $frames frame(s) for ${request.requestId} " +

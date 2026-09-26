@@ -25,7 +25,7 @@ data class VisionOutcome<T>(
 /**
  * Провайдер-нейтральное исполнение одной vision-задачи: резолюция пресета до семафора, семафор,
  * queueTimeout, timeout, retry по InvalidResponse и Transport с проверкой остатка бюджета, downscale
- * кадров до меньшего из потолков фичи и пресета, отчёт в ProviderAuthTracker. Разбор ответа
+ * картинок до меньшего из потолков фичи и пресета, отчёт в ProviderAuthTracker. Разбор ответа
  * ([parse]) выполняется внутри цикла повторов: InvalidResponse из парсера повторяет вызов так же,
  * как раньше повторял его backend.
  *
@@ -94,17 +94,17 @@ class VisionCallExecutor(
 
             val callStart = timeSource.markNow()
             try {
-                // Уменьшение кадров держим под семафором, но вне withTimeout: это CPU-работа, чей
+                // Уменьшение картинок держим под семафором, но вне withTimeout: это CPU-работа, чей
                 // размер известен заранее, и она не должна съедать бюджет, отпущенный модели. Отсюда
                 // же и перехват: вне attempt() исключение ушло бы из execute() сырым, мимо контракта
-                // DescriptionException, а описание важнее уменьшения — кадры пойдут как есть.
+                // DescriptionException, а описание важнее уменьшения — картинки пойдут как есть.
                 val prepared =
                     try {
-                        downscaleFrames(request, entry.view.maxImageSide)
+                        downscaleImages(request, entry.view.maxImageSide)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        logger.warn(e) { "Cannot downscale frames of ${request.requestId}; sending them unchanged" }
+                        logger.warn(e) { "Cannot downscale images of ${request.requestId}; sending them unchanged" }
                         request
                     }
                 val value =
@@ -129,28 +129,28 @@ class VisionCallExecutor(
     }
 
     /**
-     * Один проход на запрос, до повторов: провайдер получает уже готовые кадры. Потолок — меньшее из
+     * Один проход на запрос, до повторов: провайдер получает уже готовые картинки. Потолок — меньшее из
      * ненулевых значений фичи ([VisionLimits.maxImageSide]) и пресета, выбранного для этого вызова.
      */
-    private suspend fun downscaleFrames(
+    private suspend fun downscaleImages(
         request: VisionRequest,
         presetCap: Int,
     ): VisionRequest {
         val maxSide = FrameDownscaler.effectiveMaxSide(limits.maxImageSide, presetCap)
-        if (maxSide <= 0 || request.frames.isEmpty()) return request
-        val before = request.frames.sumOf { it.bytes.size }
-        val frames =
+        if (maxSide <= 0 || request.images.isEmpty()) return request
+        val before = request.images.sumOf { it.bytes.size }
+        val images =
             withContext(Dispatchers.Default) {
-                request.frames.map { frame -> frame.copy(bytes = FrameDownscaler.downscale(frame.bytes, maxSide)) }
+                request.images.map { image -> image.copy(bytes = FrameDownscaler.downscale(image.bytes, maxSide)) }
             }
-        val after = frames.sumOf { it.bytes.size }
+        val after = images.sumOf { it.bytes.size }
         if (after != before) {
             logger.debug {
-                "Downscaled ${frames.size} frames of ${request.requestId} to <=$maxSide px: " +
+                "Downscaled ${images.size} images of ${request.requestId} to <=$maxSide px: " +
                     "$before -> $after bytes"
             }
         }
-        return request.copy(frames = frames)
+        return request.copy(images = images)
     }
 
     private suspend fun <T> executeWithRetry(

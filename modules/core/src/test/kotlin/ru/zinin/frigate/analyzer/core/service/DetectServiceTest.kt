@@ -35,6 +35,7 @@ import java.time.ZoneOffset
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class DetectServiceTest {
@@ -121,15 +122,33 @@ class DetectServiceTest {
             assertEquals(1, response.framesExtracted)
             assertNotNull(response.frames.firstOrNull())
             assertEquals("ZmFrZV9qcGVn", response.frames.first().imageBase64)
+            assertEquals("first", response.frames.first().reason)
             assertEquals(0, registry.getServer("test")!!.processingFrameExtractionRequestsCount.get())
 
             val request = mockWebServer.takeRequest()
             assertEquals("POST", request.method)
             assertEquals("/extract/frames", request.url.encodedPath)
-            assertTrue(request.url.query!!.contains("scene_threshold=0.05"))
-            assertTrue(request.url.query!!.contains("min_interval=1.0"))
-            assertTrue(request.url.query!!.contains("max_frames=50"))
-            assertTrue(request.url.query!!.contains("quality=85"))
+            assertNull(request.url.queryParameter("scene_threshold"))
+            assertEquals("4.0", request.url.queryParameter("max_gap"))
+            assertEquals("0.001", request.url.queryParameter("motion_threshold"))
+            assertEquals("1.0", request.url.queryParameter("min_interval"))
+            assertEquals("6", request.url.queryParameter("max_frames"))
+            assertEquals("85", request.url.queryParameter("quality"))
+        }
+
+    @Test
+    fun `a frame from a vision-api older than 3_0 decodes with an unknown reason`() =
+        runBlocking {
+            mockWebServer.dispatcher = DetectServiceDispatcher(legacyFrames = true)
+
+            val response =
+                detectService.extractFramesRemoteWithRetry(
+                    byteArrayOf(7, 8),
+                    filePath = "/test/path/video.mp4",
+                    recordingId = java.util.UUID.randomUUID(),
+                )
+
+            assertEquals("unknown", response.frames.first().reason)
         }
 
     @Test
@@ -459,8 +478,9 @@ class DetectServiceTest {
                 byteArrayOf(7, 8),
                 filePath = "/custom/path/video.mp4",
                 recordingId = java.util.UUID.randomUUID(),
-                sceneThreshold = 0.1,
-                minInterval = 2.0,
+                maxGap = 2.0,
+                motionThreshold = 0.01,
+                minInterval = 3.0,
                 maxFrames = 100,
                 quality = 95,
             )
@@ -468,10 +488,12 @@ class DetectServiceTest {
             val request = mockWebServer.takeRequest()
             assertEquals("POST", request.method)
             assertEquals("/extract/frames", request.url.encodedPath)
-            assertTrue(request.url.query!!.contains("scene_threshold=0.1"))
-            assertTrue(request.url.query!!.contains("min_interval=2.0"))
-            assertTrue(request.url.query!!.contains("max_frames=100"))
-            assertTrue(request.url.query!!.contains("quality=95"))
+            assertNull(request.url.queryParameter("scene_threshold"))
+            assertEquals("2.0", request.url.queryParameter("max_gap"))
+            assertEquals("0.01", request.url.queryParameter("motion_threshold"))
+            assertEquals("3.0", request.url.queryParameter("min_interval"))
+            assertEquals("100", request.url.queryParameter("max_frames"))
+            assertEquals("95", request.url.queryParameter("quality"))
         }
 
     private fun buildWebClient(): WebClient {

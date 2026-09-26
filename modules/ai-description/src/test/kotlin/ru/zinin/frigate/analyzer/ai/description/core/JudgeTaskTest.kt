@@ -45,4 +45,26 @@ class JudgeTaskTest {
     fun `is deterministic for the same input`() {
         assertEquals(JudgeTask.instructions(request), JudgeTask.instructions(request))
     }
+
+    /**
+     * Пока подписи писали провайдеры, судья видел ровно это; раскадровка описаний не должна это сдвинуть.
+     * Время кадра, даже если оно есть, в подписи судьи не попадает — его промпт не меняется ни на символ.
+     */
+    @Test
+    fun `frames are captioned Frame N in frameIndex order under the chronological header`() {
+        val judge =
+            request.copy(
+                frames =
+                    listOf(
+                        DescriptionRequest.FrameImage(2, byteArrayOf(2), offsetSeconds = 5.0),
+                        DescriptionRequest.FrameImage(0, byteArrayOf(0)),
+                    ),
+            )
+
+        val vision = JudgeTask.visionRequest(judge)
+
+        assertEquals(listOf("Frame 0", "Frame 2"), vision.images.map { it.caption })
+        assertEquals(listOf<Byte>(0, 2), vision.images.map { it.bytes.single() })
+        assertEquals("Frames (in chronological order):", vision.instructions.imagesHeader)
+    }
 }

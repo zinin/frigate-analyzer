@@ -1,6 +1,10 @@
 [versions]
+# Hold at 2.4.10: with 2.4.20 ktlint 1.8.0 (the latest) crashes on start, "Extensions storage is not
+# registered". The Spring Boot plugin sets kotlin.version to this version, and dependency management
+# forces ktlint's kotlin-compiler-embeddable (it declares 2.2.21) up to it. Raise Kotlin together
+# with a ktlint release that runs on the new compiler.
 kotlin = "2.4.10"
-spring-boot = "4.1.0"
+spring-boot = "4.1.1"
 spring-dependency-management = "1.1.7"
 ktlint-gradle = "14.2.0"
 git-properties = "4.0.1"
@@ -12,20 +16,20 @@ mapstruct-spring-extensions = "2.0.0"
 jakarta-inject-api = "2.0.1"
 uuid-creator = "6.1.1"
 testcontainers = "2.0.5"
-openapi-starter = "3.0.3"
+openapi-starter = "3.1.1"
 ktgbotapi = "36.1.0"
 # Keep in lockstep with what ktgbotapi pulls in transitively: 36.1.0 -> ktor 3.5.2 and
 # kotlinx-coroutines 1.11.0 (35.1.0 -> ktor 3.5.1). Mismatching them puts ktor out of step
 # with the library compiled against it.
 ktor = "3.5.2"
 # ktor 3.5.x and ktgbotapi 36.1.0 are built against coroutines 1.11.0, but the Spring Boot
-# 4.1.0 BOM still pins 1.10.2 -> NoSuchMethodError at runtime. The root build overrides the
+# 4.1.1 BOM still pins 1.10.2 -> NoSuchMethodError at runtime. The root build overrides the
 # BOM property kotlin-coroutines.version with this value; drop the override once a Spring
 # Boot BOM ships coroutines 1.11+.
 coroutines = "1.11.0"
-mockwebserver = "5.4.0"
+mockwebserver = "5.5.0"
 mockk = "1.14.11"
-liquibase = "5.0.3"
+liquibase = "5.0.4"
 picocli = "4.7.7"
 ktlint-tool = "1.8.0"
 jacoco = "0.8.15"

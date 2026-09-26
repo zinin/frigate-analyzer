@@ -5,9 +5,9 @@ import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.TempFileWriter
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
+import ru.zinin.frigate.analyzer.ai.description.core.VisionImage
 import ru.zinin.frigate.analyzer.ai.description.core.VisionInstructions
 import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokUnifiedLogFixtures.SID
@@ -87,8 +87,8 @@ class GrokBackendEndToEndTest {
             val request =
                 VisionRequest(
                     UUID.randomUUID(),
-                    listOf(DescriptionRequest.FrameImage(0, byteArrayOf(1, 2, 3))),
-                    VisionInstructions("sys", "pre", "epi", null),
+                    listOf(VisionImage(byteArrayOf(1, 2, 3), "Frame 0")),
+                    VisionInstructions("sys", "pre", "HEADER:", "epi", null),
                 )
 
             val e =

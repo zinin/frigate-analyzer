@@ -1,5 +1,5 @@
 ---
-paths: "modules/ai-description/**,**/handler/aisettings/**,**/judge/**,**/Verdicts*,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*,**/DescriptionAuthAlertNotifier*"
+paths: "modules/ai-description/**,**/handler/aisettings/**,**/judge/**,**/Verdicts*,**/DescriptionEditJobRunner*,**/AiDescription*,**/RichNotificationRenderer*,**/DescriptionState*,**/DescriptionAuthAlertNotifier*,**/storyboard/**"
 ---
 
 # AI Description Module
@@ -21,8 +21,14 @@ edit job. The same happens when nothing is declared at all (empty `presets` map 
 `provider`): the beans are conditional on a declaration, not only on the flag.
 
 Both CLIs are installed into the runtime container by `docker/deploy/Dockerfile` (`claude.ai/install.sh`
-and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs the chosen binary on
-`PATH` or an explicit `*_CLI_PATH`.
+and `x.ai/cli/install.sh`), each at its latest stable release when the image is built; neither updates
+itself inside a running container. If a Grok release breaks the headless call, pin a known-good one by
+setting `ARG GROK_VERSION=x.y.z` in the Dockerfile; the release workflow passes no build args. A smoke
+check in the Dockerfile parses every flag `GrokCommandBuilder` passes, and `GrokCommandBuilderTest`
+keeps the two lists in sync. A renamed or dropped flag therefore fails the image build instead of the
+judge and the Grok descriptions in production. The check does not catch effort values, conflicting
+arguments (`--help` exits before clap checks them) or a change in the JSON output; those surface on the
+first call. Local development needs the chosen binary on `PATH` or an explicit `*_CLI_PATH`.
 
 ## Layers
 
@@ -30,7 +36,7 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 |-------|-----------|----------|---------|
 | API | `DescriptionAgent` | `api/` | Single-method `suspend fun describe(request): DescriptionResult` |
 | API | `JudgeAgent` | `api/` | Single-method `suspend fun judge(request): JudgeOutcome` |
-| API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs; `DescriptionException` is provider-neutral: `Timeout`, `InvalidResponse`, `Transport`, `RateLimited`, `Unauthorized` |
+| API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs; `DescriptionException` is provider-neutral: `Timeout`, `InvalidResponse`, `Transport`, `RateLimited`, `Unauthorized`; `DescriptionRequest.storyboard` optionally carries a timed grid of the event (`Storyboard`: image, tiles, step, duration, `DetectionMark`s, missing footage before/after), worded by `DescriptionTask` — see "Storyboard" |
 | API | `JudgeRequest` / `JudgeOutcome` / `JudgeVerdict` | `api/` | Judge DTOs; `JudgeVerdict.Reason` is the five model reasons (`NEW_EVENT`, `CHANGED_SITUATION`, `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE`) |
 | API | `DescriptionProviderAuthEvent` | `api/` | Spring event `LOST` / `RESTORED`, one per transition, keyed by `authScopeId` |
 | API | `DescriptionPreset` / `DescriptionPresets` / `UnavailableReason` | `api/` | One preset as its consumers see it (`id`, `provider`, `model`, `effectiveModel`, `effort`, `authScopeId`, `unavailableReason`, `slowEffort`, `maxImageSide`) and the read-only catalog `all()` in declaration order |
@@ -41,9 +47,9 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
 | Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns `VisionResponse` (`primary` plus the provider's `fallback` representation, when it has one); takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
 | Core | `VisionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
-| Core | `VisionRequest` / `VisionInstructions` | `core/` | One vision call: frames plus `systemPrompt` / `preamble` / `epilogue` / optional `jsonSchema`; the provider inserts frames between preamble and epilogue |
-| Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, frame downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
-| Core | `DescriptionTask` / `JudgeTask` | `core/` | Build `VisionInstructions` for descriptions and for the judge |
+| Core | `VisionRequest` / `VisionInstructions` / `VisionImage` | `core/` | One vision call: images with the task's captions, in the order the model must see them, plus `systemPrompt` / `preamble` / `imagesHeader` / `epilogue` / optional `jsonSchema`; the provider prints the header and each caption with its image between preamble and epilogue and never reorders |
+| Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, image downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
+| Core | `DescriptionTask` / `JudgeTask` | `core/` | Build the whole `VisionRequest` for descriptions and for the judge: the images with their captions, in the order the model sees them, and the `VisionInstructions`, the header before the images included |
 | Core | `DescriptionResponseParser` / `JudgeResponseParser` | `core/` | Parse the raw model text into `DescriptionResult` / `JudgeVerdict` |
 | Core | `DefaultDescriptionAgent` | `core/` | Thin `DescriptionAgent`: `DescriptionTask` → `VisionCallExecutor` → `DescriptionResponseParser` |
 | Core | `DefaultJudgeAgent` | `core/` | Thin `JudgeAgent`: `JudgeTask` → `VisionCallExecutor` → `JudgeResponseParser` |
@@ -55,7 +61,8 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Core | `ProviderAuthTracker` | `core/` | Auth state machine per credential scope; publishes the events; implements `ProviderAuthStates` |
 | Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form, plus `, max-image-side=N` when the preset sets a cap, for both INFO lines about presets |
 | Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
-| Core | `FrameDownscaler` | `core/` | Optional resize to the stricter of the feature's and the preset's `max-image-side` (`effectiveMaxSide`; ImageIO, bilinear, JPEG q0.85), once per request in `VisionCallExecutor`; an unreadable frame is passed through with a WARN |
+| Core | `FrameDownscaler` | `core/` | Optional resize to the stricter of the feature's and the preset's `max-image-side` (`effectiveMaxSide`; bilinear, JPEG q0.85 via `JpegCodec`), once per request in `VisionCallExecutor`; an unreadable frame is passed through unchanged (a WARN when decoding or encoding throws; bytes no reader recognises pass silently) |
+| Core | `JpegCodec` | `core/` | In-memory JPEG decode and encode (`MemoryCacheImage*Stream`, not ImageIO's temp-file cache in `java.io.tmpdir`); `decode` returns `null` for bytes no reader claims; no default quality, each caller passes its own. Shared by `FrameDownscaler` and the storyboard composer in `core` |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
 | Claude | `ClaudeBackendFactory` | `claude/` | Token check, CLI WARN, `ANTHROPIC_MODEL` displacement, `authScopeId=claude` |
 | Claude | `ClaudeImageStager`, `ClaudePromptBuilder`, `ClaudeInvoker`/`DefaultClaudeInvoker`, `ClaudeAsyncClientFactory`, `ClaudeResponseParser`, `ClaudeExceptionMapper` | `claude/` | Claude specifics; `@Component`s gated on `enabled=true` only |
@@ -75,6 +82,11 @@ and `x.ai/cli/install.sh` pinned by `ARG GROK_VERSION`); local development needs
 | Limits | `SlidingWindowRateLimiter` | `ratelimit/` | Domain-agnostic sliding window; two named subclasses do not share a counter |
 | Limits | `DescriptionRateLimiter` | `ratelimit/` | Description throttle (`AI description`); default 30 / 1h |
 | Limits | `JudgeRateLimiter` | `ratelimit/` | Judge throttle (`AI judge`); default 200 / 1h; miss → send unjudged (`FAILOVER` / `RATE_LIMITED`) |
+
+**Captions belong to the task.** `DescriptionTask` and `JudgeTask` build the images (`images()`,
+`visionRequest()`) and word both the captions and the header; the judge keeps `Frame N` in
+`frameIndex` order under `Frames (in chronological order):`, byte for byte what the providers
+printed before, pinned by `the judge prompt keeps its shape` / `the judge blocks keep their shape`.
 
 ## Presets, catalog and resolution
 
@@ -174,10 +186,11 @@ semaphore and timeouts).
 
 ## Claude invocation
 
-`ClaudeImageStager` writes every frame to a temp `.jpg` under `application.temp-folder`, and
-`ClaudePromptBuilder` puts one `- Frame N: @/abs/path.jpg` line per frame between preamble and
-epilogue. `DefaultClaudeInvoker` then opens a bidirectional stream-json session
-(`connect(prompt).messages()`); the staged files are deleted in a `finally`.
+`ClaudeImageStager` writes every image to a temp `.jpg` under `application.temp-folder`, and
+`ClaudePromptBuilder` puts the task's header and one `- <caption>: @/abs/path.jpg` line per image,
+in the task's order, between preamble and epilogue. `DefaultClaudeInvoker` then opens a
+bidirectional stream-json session (`connect(prompt).messages()`); the staged files are deleted in a
+`finally`.
 
 **The `@` reference is not expanded by anyone — the model turns it into pixels by calling `Read`.**
 The CLI passes the line through as text, the model issues a `Read` tool_use, and the tool_result
@@ -216,9 +229,9 @@ so.
 ## Grok invocation
 
 Per recording `GrokPromptFileWriter` writes `prompt.json` (suffix mandatory: any other extension is
-read as plain text) with ACP content blocks: intro text, then `Frame N:` + `{"type":"image",
-"mimeType":"image/jpeg","data":"<base64>"}` per frame in `frameIndex` order, then the rules.
-`GrokCommandBuilder` runs:
+read as plain text) with ACP content blocks: intro text with the task's header, then `<caption>:` +
+`{"type":"image","mimeType":"image/jpeg","data":"<base64>"}` per image in the task's order, then the
+rules. `GrokCommandBuilder` runs:
 
 ```
 grok --prompt-file <file> --json-schema '{…short,detailed…}' --output-format json -m <model>
@@ -228,23 +241,20 @@ grok --prompt-file <file> --json-schema '{…short,detailed…}' --output-format
 ```
 
 with `GROK_HOME=<home>`, `GROK_DISABLE_AUTOUPDATER=1`, `GROK_MEMORY=0`, `GROK_SUBAGENTS=0` and
-`GROK_CLAUDE_*_ENABLED=0` / `GROK_CURSOR_*_ENABLED=0`. The child env is not a copy of the JVM:
+`GROK_{CLAUDE,CURSOR,CODEX}_{AGENTS,HOOKS,MCPS,RULES,SKILLS,SESSIONS}_ENABLED=0`. The child env is not a copy of the JVM:
 `ProcessBuilder` is cleared, then PATH/HOME/locale, host `GROK_*`/`XAI_*` (BYOK `env_key`), the names listed in
 `GROK_PASS_THROUGH_ENV` for BYOK keys outside those prefixes, and the command map. `--tools read_file` is an allowlist that disables default tool injection;
 `--disallowed-tools read_file` then removes that one tool. Frames are inline. `--effort` is omitted
 when blank so BYOK models without reasoning levels work.
 
-**What the isolation does not cover, and why.** `grok inspect` reports six compatibility cells per
-foreign harness. The five that actually scan the filesystem — `skills`, `rules`, `agents`, `mcps`,
-`hooks` for claude and cursor — all read `OFF (env)` under `ISOLATION_ENV`. The sixth, `sessions`,
-stays `on (default)` for claude, cursor **and** codex, and `[compat.codex]` exposes no other cell.
-That is deliberate: in 1.0.13 session cells are "staged and inert until a foreign-session scanner
-consumes them" and additionally need a `resume-claude`/`resume-codex`/`resume-cursor` skill before
-they do any filesystem I/O, while Codex's remaining cells are "reserved and currently inert — they
-do not enable `.codex` discovery" (the CLI's own `docs/user-guide/05-configuration.md`). Adding
-`GROK_*_SESSIONS_ENABLED=0` or `GROK_CODEX_*_ENABLED=0` would change the `inspect` output and
-nothing else. Re-check with `grok inspect` when `ARG GROK_VERSION` is raised — a later release may
-ship the scanner that makes those cells real.
+**Isolation from other harnesses.** `grok inspect` reports compatibility cells per foreign harness:
+`skills`, `rules`, `agents`, `mcps`, `hooks` and `sessions` for claude and cursor, and `sessions` alone for
+codex. Under `ISOLATION_ENV` every one of them reads `OFF (env)`; this was checked on 1.0.41. Some
+cells are still inert as of 1.0.41. The `sessions` cells are "staged; no scanner consumer yet". The
+binary also knows `GROK_CODEX_{SKILLS,RULES,AGENTS,MCPS,HOOKS}_ENABLED`, which `inspect` does not
+list yet. All eighteen are switched off anyway, because the image installs whatever Grok is latest and
+the container's HOME holds Claude Code's transcript of every description. When a Grok release adds a
+harness or a cell, re-check with `grok inspect`.
 
 **Models that do not support `--json-schema`.** Only xAI endpoints reliably apply the schema. BYOK
 models from `config.toml` either ignore it (the object arrives in `text`, sometimes inside a
@@ -272,7 +282,7 @@ model-agnostic:
   must not inherit this refusal). Both attempts share the agent's single `timeout`, so the very first description after
   startup may time out on a slow endpoint — the next one goes straight to the schema-less form.
 
-`GrokBackend` logs per recording at DEBUG: `model=…, effort=…, json-schema=on|off, frames=N` before
+`GrokBackend` logs per recording at DEBUG: `model=…, effort=…, json-schema=on|off, images=N` before
 the run and `model=…, effort=…, fields=structuredOutput|text, input_tokens=…` after it. It has no
 startup line of its own — one instance exists per grok preset now; the values are named at INFO by the
 catalog line once at startup and by the resolver's active-preset line on every change (see "Presets,
@@ -601,6 +611,78 @@ Callbacks `aip:j:on` / `aip:j:off` / `aip:j:set:<id>` write:
 `AppSettingsJudgeRuntimeSettings` (core) is the production implementation; `InMemoryJudgeRuntimeSettings`
 is `@ConditionalOnMissingBean`. Same per-process cache as descriptions — see `database.md`.
 
+## Storyboard
+
+Besides the full-resolution frames the description model gets a timed storyboard of the event: one
+grid of up to `tiles` (16) frames sampled evenly around the detection, reaching into the neighbouring
+Frigate segments when the event crosses a recording boundary. Without it the model usually saw 1–4
+frames of one segment and could not tell a parked car from one driving past. Built in `core`
+(`core/storyboard/`); this module only words it (`DescriptionRequest.storyboard`, `DescriptionTask`).
+
+| Component | Purpose |
+|-----------|---------|
+| `StoryboardPlanner` | Pure arithmetic: window, neighbours needed, contiguity, footage, tile moments and the segment of each, marks, grid layout, tile width, labels |
+| `AdjacentSegmentFinder` | Previous segment (one lookup); next segment polled once a second until the deadline and probed only once its file has not changed for 1 s — a failed ffprobe is retried on the next poll |
+| `StoryboardFrameSampler` | One ffmpeg run per segment: input `-ss` to the first moment, `fps=<R>:start_time=0:round=up,scale=<tile width>:-2` (`R` = 1 / step), JPEGs into the temp folder, deleted in `finally`. Each tile shows the last frame at or before its moment (the first tile: the first frame after the seek point); plain `fps=<R>` (round=near) showed every tile ≈ step/2 after its label and lost the tile at a file end |
+| `StoryboardComposer` | Java2D grid, ~2560 px wide (columns × tile width); the rows are counted from the tiles actually sampled while the columns and the tile width stay as planned, so only the last row can have empty cells. Label on a dark plate in each tile's top-left corner, a tile nearest a detection in yellow with `• detection`; one label font per grid — base `max(12, tile height / 10)`, shrunk until the widest label with its plate fits the tile (portrait 9:16 cameras). JPEG decode and encode in memory through `JpegCodec` (ai-description `core/`), quality 0.85 |
+| `StoryboardBuilder` | Orchestration; `Semaphore(2)` around the current recording's ffprobe and each ffmpeg run only (the neighbours' lookups, their ffprobe and the wait hold no permit); fail-open — any failure (`Throwable`) except cancellation → `null` + WARN; one INFO line |
+
+**Where it runs.** Inside the description supplier of `RecordingProcessingFacade`, so only when a
+description will actually be made (after the recipient filter, the rate limiter and a judge
+`PUBLISH`): storyboard, then the runtime switch, then `agent.describe`. It runs before the executor's
+semaphore and spends none of the model's timeouts; the Telegram side awaits the result with no
+timeout of its own, so the placeholder stays up through the storyboard's wait too. The builder gets
+only the frames with detections, without their bytes, and is not called at all with
+`APP_AI_DESCRIPTION_STORYBOARD_ENABLED=false`. The full-resolution frames stay within the
+user-visible collage (`selectTopFrames`, capped by `APP_AI_DESCRIPTION_MAX_FRAMES`, default 4, and by
+`LOCAL_VIZ_MAX_FRAMES`); the storyboard is deliberately wider.
+
+**Timeline.** "Recording time": the current segment is `[0, D)` (`D` from ffprobe), the previous
+`[-Dp, 0)`, the next `[D, D + Dn)`. Detection moments are `FrameData.offsetSeconds` of the frames with
+detections. Window: `[first − before, last + after]`; no detection times at all → the whole current
+recording, no neighbours. A neighbour is used only when it butts against the current recording within
+1.5 s (Frigate file names are second-precision) and is laid on the timeline by durations, so there are
+no false gaps. Tiles: up to `tiles`, evenly over the footage minus its last 0.1 s (a frame exactly at
+the end of a file is not returned), never closer than 0.5 s; fewer than 4 → no storyboard. Every time
+the model sees counts from the start of the footage (`BuiltStoryboard.zeroSeconds`): tile labels,
+detection marks and the full-resolution frames, which the facade shifts to that zero. Without a
+storyboard the frames count from the start of the recording.
+
+**Waiting for the next segment.** Deadline = `min(job start, fileCreationTimestamp + D) +
+next-segment-wait`. The pipeline takes a recording only 30 s after its file appeared
+(`findUnprocessedRecordings`: `file_creation_timestamp < now − 30 s`), so when a description starts
+the next segment has usually been in the database for a while and the first lookup finds it; waiting
+happens only when Frigate is late. A backlog recording gets exactly one lookup. A next segment that
+starts after a gap of at most 5 s (`NEXT_LOOKAHEAD`) past the expected start is not waited for —
+Frigate skipped it. A longer gap, such as a wholly skipped segment (motion-only recording), looks the
+same as a late segment: the next file starts outside the lookup window, so the finder polls until the
+deadline and the INFO line says `next: missing after N s`.
+
+**Fail-open.** Any failure (`Throwable`) except cancellation → WARN, and the description goes out
+from the frames alone, captioned with their times; a `CancellationException` always propagates. That
+covers too little footage for 4 tiles, fewer than 4 frames back from ffmpeg, a grid with no tile in
+the current recording (a recording shorter than the tile step, or `after = 0` with a detection at its
+very start), a failure on the current recording (its ffprobe, or an ffmpeg run that fails or returns
+no frames) and one in the composer.
+What the grid shows is decided by the tiles that came back, not by ffmpeg's exit code: whether ffmpeg
+fails when it writes no frame depends on the build. A neighbour whose ffmpeg run fails or returns no
+frames only drops its tiles (`missingBefore` / `missingAfter`): ffmpeg is not retried on it (the
+finder retries only the next segment's ffprobe, while it waits). After a failed next segment the
+storyboard ends at the end of the current recording, so "Footage after …s is not available" names the
+real end; after a failed previous one the footage, and its zero, start at the current recording. When
+the last segment on the grid gives fewer tiles than it was asked for (its file ends earlier than
+ffprobe said), the footage ends at the last tile that came back, and "Footage after …s is not
+available" names that moment; a shorter segment earlier in the grid only leaves a jump in the tile
+times. The model is told when footage before or after is not available, so it does not invent that a
+car "left".
+
+**Log.** One INFO line per storyboard, e.g. `Storyboard for <id>: footage -4.0..6.0 s of the recording
+(prev+current), 16 tiles 0.7 s apart, built in 1.8 s`; a missing neighbour shows as `prev: missing` /
+`next: missing after N s`, a found next one as `waited N s for the next segment`, and a neighbour
+whose sampling failed or returned no frames as `prev: sampling failed` / `next: sampling failed`. The
+parentheses list only the segments that gave at least one tile — neither such a neighbour nor a found
+next segment that no tile falls into — and the footage range is the one actually shown.
+
 ## Integration with Telegram
 
 When a notification is enqueued and AI description is enabled:
@@ -678,7 +760,8 @@ All variables documented in `.claude/rules/configuration.md` under "AI Descripti
 - `APP_AI_DESCRIPTION_LANGUAGE` — `ru` or `en`
 - `APP_AI_DESCRIPTION_SHORT_MAX` / `APP_AI_DESCRIPTION_DETAILED_MAX` — character caps for the
   short paragraph and the `<details>` body
-- `APP_AI_DESCRIPTION_MAX_FRAMES` — frames forwarded to the model per recording
+- `APP_AI_DESCRIPTION_MAX_FRAMES` — full-resolution frames forwarded next to the storyboard (default 4)
+- `APP_AI_DESCRIPTION_STORYBOARD_*` — the storyboard (`configuration.md`, "Storyboard")
 - `CLAUDE_MAX_BUFFER_SIZE` — max size of one JSON message from the Claude CLI (default 16MB). The CLI
   echoes every frame the model reads back as base64, so the SDK's 1 MiB default overflowed on
   ~800 KB frames; an oversized line is dropped with `Failed to process message (continuing)`

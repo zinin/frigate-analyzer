@@ -12,8 +12,8 @@ All settings in `modules/core/src/main/resources/application.yaml`.
 |----------|---------|---------|
 | `APP_PORT` | 8080 | Server port |
 | `TEMP_FOLDER` | /tmp/frigate-analyzer/ | Extracted frames storage |
-| `FFMPEG_PATH` | /usr/bin/ffmpeg | ffmpeg binary path |
-| `FFPROBE_PATH` | /usr/bin/ffprobe | ffprobe binary path; read by `VideoProbe` before an export is re-encoded to fit the Telegram limit. The Alpine image installs it together with ffmpeg |
+| `FFMPEG_PATH` | /usr/bin/ffmpeg | ffmpeg binary path; used by exports and by the AI description storyboard, which samples its tiles with it — without ffmpeg every AI description falls back to the frames alone with a WARN |
+| `FFPROBE_PATH` | /usr/bin/ffprobe | ffprobe binary path; read by `VideoProbe` before an export is re-encoded to fit the Telegram limit, and by the AI description storyboard for the durations of the recording and its neighbours — without ffprobe every AI description falls back to the frames alone with a WARN. The Alpine image installs it together with ffmpeg |
 
 ## Records Watcher
 
@@ -77,12 +77,15 @@ The reference form (`${FIRST_SCAN_PERIOD:${application.records-watcher.watch-per
 
 ### Frame Extraction
 
+`/extract/frames` of vision-api 3.0 selects frames by motion: a grid every `DETECT_MAX_GAP` seconds, plus every frame whose largest changed region exceeds `DETECT_MOTION_THRESHOLD` of the frame area. Frame 0 is always among them, so a successful answer never carries an empty frame list. Every default below mirrors the server's own, and every range is the server's: a value outside it comes back as 422, which `FrameExtractorProducer` turns into a recording marked processed-with-error — the validation fails the boot instead. Expect more frames per recording than 2.x returned (4.71 against 2.07 on the corpus these cameras produced) and a proportional rise in detection load: the pipeline sends one `/detect` request per frame.
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DETECT_SCENE_THRESHOLD` | 0.05 | Scene change threshold |
-| `DETECT_MIN_INTERVAL` | 1.0 | Min interval between frames (sec) |
-| `DETECT_MAX_FRAMES` | 50 | Max frames per recording |
-| `DETECT_FRAME_QUALITY` | 85 | Extracted frame JPEG quality |
+| `DETECT_MAX_GAP` | 4.0 | Grid step — the longest gap between frames, sec. Validated `0.5..30.0`. |
+| `DETECT_MOTION_THRESHOLD` | 0.001 | Motion threshold as a share of the frame area; lower = more frames. Validated `0.0001..0.1`. Below 0.001 the value goes out in scientific notation (`1.0E-4`), which the server parses. |
+| `DETECT_MIN_INTERVAL` | 1.0 | Min interval between frames (sec). Validated `0.1..30.0`. |
+| `DETECT_MAX_FRAMES` | 6 | Frames per recording — a cap, not a target. Validated `1..200`. |
+| `DETECT_FRAME_QUALITY` | 85 | Extracted frame JPEG quality. Validated `1..100`. |
 
 ### Remote Visualization
 
@@ -203,10 +206,10 @@ that will actually be used.
 | `APP_AI_DESCRIPTION_DEFAULT_PRESET` | empty | `default-preset` — see above. |
 | `APP_AI_DESCRIPTION_PROVIDER` | claude | **Legacy**, single-preset path only: `claude` or `grok`, used while the `presets` map is empty. An unknown value then leaves the deployment without an agent — a WARN at startup and every recording goes out without description blocks. |
 | `APP_AI_DESCRIPTION_LANGUAGE` | en | Reply language. `ru` or `en`. |
-| `APP_AI_DESCRIPTION_SHORT_MAX` | 200 | Max characters of the short description (the `<p>` above the frames). |
+| `APP_AI_DESCRIPTION_SHORT_MAX` | 400 | Max characters of the short description (the `<p>` above the frames). Was 200. The prompt also asks for one to three sentences with the movement in them — a length cap alone reads to the model as a ceiling and it writes a caption. |
 | `APP_AI_DESCRIPTION_DETAILED_MAX` | 1500 | Max characters of the detailed description (the `<details>` body). |
-| `APP_AI_DESCRIPTION_MAX_FRAMES` | 10 | Max frames forwarded to the model per recording. Validated `1..50`, but the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. |
-| `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | 0 | Longest frame side in pixels before the model call; `0` sends frames at camera resolution. Validated `0` or `256..8192`. Vision endpoints bill by image area, and some gateways drop an image above their own limit without saying so — the LiteLLM gateway in front of DKS-Vision ignores anything wider than 1568 px and the model answers "frame unavailable". Resizing happens once per request in `VisionCallExecutor`, before the provider attempt, so both providers get it. A preset may declare its own `max-image-side`; calls through it use the stricter of the two non-zero values, so this can stay `0` while one BYOK preset is capped. |
+| `APP_AI_DESCRIPTION_MAX_FRAMES` | 4 | Full-resolution frames forwarded next to the storyboard, top-N by detection quality — the same ranking as the collage. Validated `1..50`, the effective value is `minOf(this, LOCAL_VIZ_MAX_FRAMES)`. Was 10; with the storyboard carrying the motion, these are for detail. |
+| `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | 0 | Longest frame side in pixels before the model call; `0` sends frames at camera resolution. Validated `0` or `256..8192`. Vision endpoints bill by image area, and some gateways drop an image above their own limit without saying so — the LiteLLM gateway in front of DKS-Vision ignores anything wider than 1568 px and the model answers "frame unavailable". Resizing happens once per request in `VisionCallExecutor`, before the provider attempt, so both providers get it. It applies to the storyboard grid too, so its tiles and their time labels shrink with it: at 1568 a landscape camera's grid (2560 px wide) keeps tiles about 390 px wide, a portrait camera's (about 4500 px tall) about 220 px. A preset may declare its own `max-image-side`; calls through it use the stricter of the two non-zero values, so this can stay `0` while one BYOK preset is capped. |
 | `APP_AI_DESCRIPTION_QUEUE_TIMEOUT` | 30s | Max wait for a free concurrency slot. |
 | `APP_AI_DESCRIPTION_TIMEOUT` | 60s | Per-call describe timeout (including internal retries). Must cover the slowest **declared** preset: `grok-4.6` at `effort=xhigh` takes ~48 s, leaving nothing for either retry (transport needs 10 s of budget plus a 5 s pause, invalid-response 5 s — the latter starts and then dies on the outer timeout, reporting `Timeout` instead of `InvalidResponse`). Such a preset gets a startup WARN recommending `120s` and a 🐢 mark in `/ai`. |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | 2 | Max simultaneous description requests. Two `xhigh` calls hold both default slots for ~48 s, after which a third recording gives up on `APP_AI_DESCRIPTION_QUEUE_TIMEOUT`. |
@@ -214,6 +217,18 @@ that will actually be used.
 | `APP_AI_DESCRIPTION_RATE_LIMIT_MAX` | 30 | Max invocations within the sliding window. Counter increments when a slot is granted; failed model calls (transport errors, retries) do not refund the slot. Raised from 10 so descriptions still have budget once the judge sits in front. |
 | `CLAUDE_MAX_BUFFER_SIZE` | 16MB | Spring `DataSize`; max size of one JSON message the SDK accepts from the CLI (`CLIOptions.maxBufferSize`). In `stream-json` mode the CLI echoes every frame the model reads back as a base64 `tool_result`, so the SDK's own 1 MiB default overflows on a ~750 KB frame: the line is dropped with an ERROR log, and only the final answer being dropped would break the description. Must fit in an `Int`. |
 | `APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW` | 1h | Sliding-window length. Spring Boot `Duration` simple format takes a single suffix (`30s`, `15m`, `1h`); for compound durations use ISO-8601 (`PT2H30M`). When the limit is exceeded, the recording goes to Telegram without description blocks — no placeholders, no edit-job, no Claude call. |
+
+### Storyboard (`application.ai.description.storyboard.*`)
+
+Bound by `StoryboardProperties` in `core`; see "Storyboard" in `ai-description.md`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | true | Give the model a timed grid of frames around the detection. `false` describes from the full-resolution frames alone (still captioned with their times). Those frames are capped by `APP_AI_DESCRIPTION_MAX_FRAMES`, 4 by default (was 10): with the storyboard off, set it back to 10 so the model again sees every frame with detections, as before the storyboard. |
+| `APP_AI_DESCRIPTION_STORYBOARD_BEFORE` | 5s | Footage before the first detection, `0s..10s`: at most one neighbouring segment is taken per side, and a segment is ~10 s. |
+| `APP_AI_DESCRIPTION_STORYBOARD_AFTER` | 5s | Footage after the last detection, same range. |
+| `APP_AI_DESCRIPTION_STORYBOARD_TILES` | 16 | Most tiles in the grid, `4..25`; tiles are never closer than 0.5 s. |
+| `APP_AI_DESCRIPTION_STORYBOARD_NEXT_SEGMENT_WAIT` | 30s | How long past its expected appearance to wait for the next segment, `0s..120s`. The pipeline takes a recording 30 s after its file appeared, so the next segment is usually there already; the INFO line says `next: missing after N s` when it was not. |
 
 ### Grok provider (any preset with `provider: grok`, or the legacy `APP_AI_DESCRIPTION_PROVIDER=grok`)
 

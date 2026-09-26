@@ -14,8 +14,9 @@ class DefaultDescriptionAgent(
     private val executor: VisionCallExecutor,
     private val parser: DescriptionResponseParser,
 ) : DescriptionAgent {
-    override suspend fun describe(request: DescriptionRequest): DescriptionResult {
-        val vision = VisionRequest(request.recordingId, request.frames, DescriptionTask.instructions(request))
-        return executor.execute(vision) { raw -> parser.parse(raw, request.shortMaxLength, request.detailedMaxLength) }.value
-    }
+    override suspend fun describe(request: DescriptionRequest): DescriptionResult =
+        executor
+            .execute(DescriptionTask.visionRequest(request)) { raw ->
+                parser.parse(raw, request.shortMaxLength, request.detailedMaxLength)
+            }.value
 }

@@ -16,6 +16,7 @@ import ru.zinin.frigate.analyzer.core.config.properties.LocalVisualizationProper
 import ru.zinin.frigate.analyzer.core.config.properties.PipelineProperties
 import ru.zinin.frigate.analyzer.core.config.properties.RecordsWatcherProperties
 import ru.zinin.frigate.analyzer.core.config.properties.SignalLossProperties
+import ru.zinin.frigate.analyzer.core.config.properties.StoryboardProperties
 import ru.zinin.frigate.analyzer.service.config.NotificationCooldownProperties
 import ru.zinin.frigate.analyzer.service.config.ObjectTrackerProperties
 
@@ -33,6 +34,7 @@ private val logger = KotlinLogging.logger {}
     LocalVisualizationProperties::class,
     RecordsWatcherProperties::class,
     SignalLossProperties::class,
+    StoryboardProperties::class,
     ObjectTrackerProperties::class,
     NotificationCooldownProperties::class,
 )

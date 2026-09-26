@@ -14,7 +14,6 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
-import ru.zinin.frigate.analyzer.ai.description.core.VisionRequest
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokUnifiedLogFixtures.OTHER
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokUnifiedLogFixtures.SID
 import ru.zinin.frigate.analyzer.ai.description.grok.GrokUnifiedLogFixtures.inferenceDone
@@ -46,12 +45,7 @@ class GrokBackendTest {
             detailedMaxLength = 1500,
         )
     private val budget: Duration = Duration.ofSeconds(90)
-    private val request =
-        VisionRequest(
-            requestId = descriptionRequest.recordingId,
-            frames = descriptionRequest.frames,
-            instructions = DescriptionTask.instructions(descriptionRequest),
-        )
+    private val request = DescriptionTask.visionRequest(descriptionRequest)
 
     private fun props() =
         GrokProperties(
@@ -424,7 +418,7 @@ class GrokBackendTest {
                     },
                 )
 
-            val response = backend.complete(request.copy(frames = emptyList()), budget)
+            val response = backend.complete(request.copy(images = emptyList()), budget)
 
             assertEquals("""{"short":"Car","detailed":"A car."}""", response.primary)
         }

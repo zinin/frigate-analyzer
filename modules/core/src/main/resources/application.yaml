@@ -114,9 +114,9 @@ application:
       default-preset: ${APP_AI_DESCRIPTION_DEFAULT_PRESET:}
       common:
         language: ${APP_AI_DESCRIPTION_LANGUAGE:en}
-        short-max-length: ${APP_AI_DESCRIPTION_SHORT_MAX:200}
+        short-max-length: ${APP_AI_DESCRIPTION_SHORT_MAX:400}
         detailed-max-length: ${APP_AI_DESCRIPTION_DETAILED_MAX:1500}
-        max-frames: ${APP_AI_DESCRIPTION_MAX_FRAMES:10}
+        max-frames: ${APP_AI_DESCRIPTION_MAX_FRAMES:4}
         # Длинная сторона кадра в пикселях перед отправкой модели; 0 = отдавать как есть.
         # Кадры идут в разрешении камеры: токены считаются по площади, а некоторые
         # vision-шлюзы молча выбрасывают картинку больше своего предела (1568 px у LiteLLM).
@@ -128,6 +128,14 @@ application:
           enabled: ${APP_AI_DESCRIPTION_RATE_LIMIT_ENABLED:true}
           max-requests: ${APP_AI_DESCRIPTION_RATE_LIMIT_MAX:30}
           window: ${APP_AI_DESCRIPTION_RATE_LIMIT_WINDOW:1h}
+      # Раскадровка для описаний: сетка кадров вокруг детекции, при необходимости из соседних
+      # сегментов. Подробности — раздел Storyboard в .claude/rules/ai-description.md.
+      storyboard:
+        enabled: ${APP_AI_DESCRIPTION_STORYBOARD_ENABLED:true}
+        before: ${APP_AI_DESCRIPTION_STORYBOARD_BEFORE:5s}
+        after: ${APP_AI_DESCRIPTION_STORYBOARD_AFTER:5s}
+        tiles: ${APP_AI_DESCRIPTION_STORYBOARD_TILES:16}
+        next-segment-wait: ${APP_AI_DESCRIPTION_STORYBOARD_NEXT_SEGMENT_WAIT:30s}
       claude:
         oauth-token: ${CLAUDE_CODE_OAUTH_TOKEN:}
         model: ${CLAUDE_MODEL:opus}
@@ -216,9 +224,10 @@ application:
     default-model: ${DETECT_DEFAULT_MODEL:yolo26s.pt}
     good-model: ${DETECT_GOOD_MODEL:yolo26x.pt}
     frame-extraction:
-      scene-threshold: ${DETECT_SCENE_THRESHOLD:0.05}
+      max-gap: ${DETECT_MAX_GAP:4.0}
+      motion-threshold: ${DETECT_MOTION_THRESHOLD:0.001}
       min-interval: ${DETECT_MIN_INTERVAL:1.0}
-      max-frames: ${DETECT_MAX_FRAMES:50}
+      max-frames: ${DETECT_MAX_FRAMES:6}
       quality: ${DETECT_FRAME_QUALITY:85}
     visualize:
       max-det: ${DETECT_MAX_DET:100}

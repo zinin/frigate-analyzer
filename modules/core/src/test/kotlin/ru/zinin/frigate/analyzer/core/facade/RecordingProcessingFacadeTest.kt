@@ -28,10 +28,13 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.core.config.DescriptionCoroutineScope
 import ru.zinin.frigate.analyzer.core.config.properties.LocalVisualizationProperties
+import ru.zinin.frigate.analyzer.core.config.properties.StoryboardProperties
 import ru.zinin.frigate.analyzer.core.judge.JudgeCandidate
 import ru.zinin.frigate.analyzer.core.judge.NotificationJudgeService
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
 import ru.zinin.frigate.analyzer.core.service.LocalVisualizationService
+import ru.zinin.frigate.analyzer.core.storyboard.BuiltStoryboard
+import ru.zinin.frigate.analyzer.core.storyboard.StoryboardBuilder
 import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecision
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecisionReason
@@ -100,6 +103,17 @@ class RecordingProcessingFacadeTest {
             errorMessage = null,
         )
 
+    private val storyboard =
+        DescriptionRequest.Storyboard(
+            image = byteArrayOf(7),
+            tiles = 16,
+            stepSeconds = 1.0,
+            durationSeconds = 15.0,
+            detections = emptyList(),
+            missingBefore = false,
+            missingAfter = false,
+        )
+
     init {
         coEvery { recordingEntityService.saveProcessingResult(any()) } returns
             SavedProcessingResult(
@@ -116,6 +130,7 @@ class RecordingProcessingFacadeTest {
     private fun frameWithDetection(
         idx: Int,
         confidence: Double = 0.9,
+        offsetSeconds: Double? = null,
     ): FrameData =
         FrameData(
             recordId = recordingId,
@@ -128,6 +143,7 @@ class RecordingProcessingFacadeTest {
                     imageSize = ImageSize(1, 1),
                     model = "x",
                 ),
+            offsetSeconds = offsetSeconds,
         )
 
     private fun detectionEntity(
@@ -168,6 +184,8 @@ class RecordingProcessingFacadeTest {
         maxFrames: Int = 10,
         runtimeSettings: DescriptionRuntimeSettings = runtimeSettings(true),
         judge: NotificationJudgeService? = null,
+        storyboardBuilder: StoryboardBuilder? = null,
+        storyboardEnabled: Boolean = true,
     ): Pair<RecordingProcessingFacade, SaveProcessingResultRequest> {
         val provider = mockk<ObjectProvider<DescriptionAgent>>()
         every { provider.getIfAvailable() } returns agent
@@ -198,6 +216,8 @@ class RecordingProcessingFacadeTest {
         every { runtimeSettingsProvider.getIfAvailable() } returns runtimeSettings
         val judgeProvider = mockk<ObjectProvider<NotificationJudgeService>>()
         every { judgeProvider.getIfAvailable() } returns judge
+        val storyboardProvider = mockk<ObjectProvider<StoryboardBuilder>>()
+        every { storyboardProvider.getIfAvailable() } returns storyboardBuilder
         val facade =
             RecordingProcessingFacade(
                 recordingEntityService = recordingEntityService,
@@ -209,6 +229,8 @@ class RecordingProcessingFacadeTest {
                 notificationDecisionService = notificationDecisionService,
                 runtimeSettingsProvider = runtimeSettingsProvider,
                 judgeProvider = judgeProvider,
+                storyboardBuilderProvider = storyboardProvider,
+                storyboardProperties = StoryboardProperties(enabled = storyboardEnabled),
             )
         return facade to SaveProcessingResultRequest(recordingId = recordingId, frames = framesForRequest)
     }
@@ -220,7 +242,6 @@ class RecordingProcessingFacadeTest {
         } answers {
             @Suppress("UNCHECKED_CAST")
             captured = thirdArg<Any?>() as? (() -> Deferred<Result<DescriptionResult>>)
-            Unit
         }
         block()
         return captured
@@ -514,5 +535,95 @@ class RecordingProcessingFacadeTest {
             facade.processAndNotify(request)
 
             coVerify(exactly = 0) { judge.submit(any()) }
+        }
+
+    @Test
+    fun `the storyboard travels with the request and frame times count from its zero`() =
+        runTest {
+            val builder = mockk<StoryboardBuilder>()
+            coEvery { builder.build(any(), any()) } returns BuiltStoryboard(storyboard, zeroSeconds = -3.0)
+            val agent = mockk<DescriptionAgent>()
+            val captured = slot<DescriptionRequest>()
+            coEvery { agent.describe(capture(captured)) } returns DescriptionResult("s", "d")
+
+            val (f, req) =
+                facade(agent, framesForRequest = listOf(frameWithDetection(0, offsetSeconds = 2.0)), storyboardBuilder = builder)
+            val supplier = assertNotNull(captureSupplierDuring { f.processAndNotify(req) })
+            // Раскадровка ленивая, как и describe: иначе ffmpeg и ожидание следующего сегмента шли бы на consumer-е
+            // пайплайна, до фильтра получателей, лимитера и PUBLISH судьи.
+            coVerify(exactly = 0) { builder.build(any(), any()) }
+            supplier.invoke().await()
+
+            assertEquals(storyboard, captured.captured.storyboard)
+            assertEquals(listOf(5.0), captured.captured.frames.map { it.offsetSeconds })
+        }
+
+    @Test
+    fun `without a storyboard the frames keep the recording's time`() =
+        runTest {
+            val builder = mockk<StoryboardBuilder>()
+            coEvery { builder.build(any(), any()) } returns null
+            val agent = mockk<DescriptionAgent>()
+            val captured = slot<DescriptionRequest>()
+            coEvery { agent.describe(capture(captured)) } returns DescriptionResult("s", "d")
+
+            val (f, req) =
+                facade(agent, framesForRequest = listOf(frameWithDetection(0, offsetSeconds = 2.0)), storyboardBuilder = builder)
+            captureSupplierDuring { f.processAndNotify(req) }!!.invoke().await()
+
+            assertNull(captured.captured.storyboard)
+            assertEquals(listOf(2.0), captured.captured.frames.map { it.offsetSeconds })
+        }
+
+    /** Раскадровка может ждать следующий сегмент; выключение за это время тоже должно подействовать. */
+    @Test
+    fun `the storyboard is built before the switch is read again`() =
+        runTest {
+            val builder = mockk<StoryboardBuilder>()
+            coEvery { builder.build(any(), any()) } returns null
+            val agent = mockk<DescriptionAgent>()
+
+            val (f, req) = facade(agent, runtimeSettings = runtimeSettings(true, false), storyboardBuilder = builder)
+            val outcome = captureSupplierDuring { f.processAndNotify(req) }!!.invoke().await()
+
+            assertTrue(outcome.isFailure)
+            coVerify(exactly = 1) { builder.build(any(), any()) }
+            coVerify(exactly = 0) { agent.describe(any()) }
+        }
+
+    @Test
+    fun `a switched-off storyboard never reaches the builder`() =
+        runTest {
+            val builder = mockk<StoryboardBuilder>()
+            val agent = mockk<DescriptionAgent>()
+            coEvery { agent.describe(any()) } returns DescriptionResult("s", "d")
+
+            val (f, req) = facade(agent, storyboardBuilder = builder, storyboardEnabled = false)
+            captureSupplierDuring { f.processAndNotify(req) }!!.invoke().await()
+
+            coVerify(exactly = 0) { builder.build(any(), any()) }
+        }
+
+    @Test
+    fun `the builder gets only frames with detections, without their bytes`() =
+        runTest {
+            val builder = mockk<StoryboardBuilder>()
+            val frames = slot<List<FrameData>>()
+            coEvery { builder.build(recording, capture(frames)) } returns null
+            val agent = mockk<DescriptionAgent>()
+            coEvery { agent.describe(any()) } returns DescriptionResult("s", "d")
+            val mix = listOf(FrameData(recordingId, 0, ByteArray(5)), frameWithDetection(1, offsetSeconds = 4.0))
+
+            val (f, req) = facade(agent, framesForRequest = mix, storyboardBuilder = builder)
+            captureSupplierDuring { f.processAndNotify(req) }!!.invoke().await()
+
+            assertEquals(listOf(1), frames.captured.map { it.frameIndex })
+            assertTrue(
+                frames.captured
+                    .single()
+                    .frameBytes
+                    .isEmpty(),
+            )
+            assertEquals(4.0, frames.captured.single().offsetSeconds)
         }
 }

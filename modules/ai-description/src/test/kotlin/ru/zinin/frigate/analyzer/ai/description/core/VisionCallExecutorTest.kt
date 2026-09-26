@@ -16,7 +16,6 @@ import org.springframework.context.ApplicationEventPublisher
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionProviderAuthEvent
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.PresetChoiceSource
 import java.awt.Color
 import java.awt.image.BufferedImage
@@ -43,11 +42,11 @@ class VisionCallExecutorTest {
             maxConcurrent = 2,
             maxImageSide = 0,
         )
-    private val instructions = VisionInstructions("sys", "pre", "epi", null)
+    private val instructions = VisionInstructions("sys", "pre", "HEADER:", "epi", null)
     private val request =
         VisionRequest(
             UUID.randomUUID(),
-            listOf(DescriptionRequest.FrameImage(0, ByteArray(1))),
+            listOf(VisionImage(ByteArray(1), "Frame 0")),
             instructions,
         )
     private val events = mutableListOf<Any>()
@@ -248,10 +247,10 @@ class VisionCallExecutorTest {
                 }
 
             build(backend, limits.copy(maxImageSide = 1568))
-                .call(request.copy(frames = listOf(DescriptionRequest.FrameImage(0, big))))
+                .call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
 
             assertEquals(2, seen.size)
-            val delivered = seen.map { it.frames.single().bytes }
+            val delivered = seen.map { it.images.single().bytes }
             assertFalse(delivered.first().contentEquals(big), "backend must get the resized frame")
             // Повтор идёт по тем же байтам: уменьшение живёт до цикла попыток.
             assertTrue(delivered[0].contentEquals(delivered[1]))
@@ -266,12 +265,12 @@ class VisionCallExecutorTest {
             val executor =
                 build(
                     FakeBackend {
-                        seen = it.frames.single().bytes
+                        seen = it.images.single().bytes
                         "ok"
                     },
                 )
 
-            executor.call(request.copy(frames = listOf(DescriptionRequest.FrameImage(0, big))))
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
 
             assertSame(big, seen)
         }
@@ -284,13 +283,13 @@ class VisionCallExecutorTest {
             val executor =
                 build(
                     FakeBackend { request ->
-                        seen = request.frames.single().bytes
+                        seen = request.images.single().bytes
                         "ok"
                     },
                     presetCap = 1568,
                 )
 
-            executor.call(request.copy(frames = listOf(DescriptionRequest.FrameImage(0, big))))
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
 
             assertEquals(1568, ImageIO.read(ByteArrayInputStream(assertNotNull(seen))).width)
         }
@@ -303,14 +302,14 @@ class VisionCallExecutorTest {
             val executor =
                 build(
                     FakeBackend { request ->
-                        seen = request.frames.single().bytes
+                        seen = request.images.single().bytes
                         "ok"
                     },
                     limits.copy(maxImageSide = 1280),
                     presetCap = 1568,
                 )
 
-            executor.call(request.copy(frames = listOf(DescriptionRequest.FrameImage(0, big))))
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
 
             assertEquals(1280, ImageIO.read(ByteArrayInputStream(assertNotNull(seen))).width)
         }
@@ -323,14 +322,14 @@ class VisionCallExecutorTest {
             val executor =
                 build(
                     FakeBackend { request ->
-                        seen = request.frames.single().bytes
+                        seen = request.images.single().bytes
                         "ok"
                     },
                     limits.copy(maxImageSide = 1280),
                     presetCap = 1024,
                 )
 
-            executor.call(request.copy(frames = listOf(DescriptionRequest.FrameImage(0, big))))
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
 
             assertEquals(1024, ImageIO.read(ByteArrayInputStream(assertNotNull(seen))).width)
         }
@@ -346,7 +345,7 @@ class VisionCallExecutorTest {
             var seenByOther: ByteArray? = null
             val other =
                 FakeBackend { request ->
-                    seenByOther = request.frames.single().bytes
+                    seenByOther = request.images.single().bytes
                     "ok"
                 }
             val executor =
@@ -357,7 +356,7 @@ class VisionCallExecutorTest {
                     presetCap = 1568,
                 )
 
-            executor.call(request.copy(frames = listOf(DescriptionRequest.FrameImage(0, big))))
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
 
             assertSame(big, seenByOther)
         }
