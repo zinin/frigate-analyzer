@@ -39,7 +39,7 @@ first call. Local development needs the chosen binary on `PATH` or an explicit `
 | API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs; `DescriptionException` is provider-neutral: `Timeout`, `InvalidResponse`, `Transport`, `RateLimited`, `Unauthorized`; `DescriptionRequest.storyboard` optionally carries a timed grid of the event (`Storyboard`: image, tiles, step, duration, `DetectionMark`s, missing footage before/after), worded by `DescriptionTask` — see "Storyboard" |
 | API | `JudgeRequest` / `JudgeOutcome` / `JudgeVerdict` | `api/` | Judge DTOs; `JudgeVerdict.Reason` is the five model reasons (`NEW_EVENT`, `CHANGED_SITUATION`, `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE`) |
 | API | `DescriptionProviderAuthEvent` | `api/` | Spring event `LOST` / `RESTORED`, one per transition, keyed by `authScopeId` |
-| API | `DescriptionPreset` / `DescriptionPresets` / `UnavailableReason` | `api/` | One preset as its consumers see it (`id`, `provider`, `model`, `effectiveModel`, `effort`, `authScopeId`, `unavailableReason`, `slowEffort`) and the read-only catalog `all()` in declaration order |
+| API | `DescriptionPreset` / `DescriptionPresets` / `UnavailableReason` | `api/` | One preset as its consumers see it (`id`, `provider`, `model`, `effectiveModel`, `effort`, `authScopeId`, `unavailableReason`, `slowEffort`, `maxImageSide`) and the read-only catalog `all()` in declaration order |
 | API | `ActiveDescriptionPreset` / `ActiveJudgePreset` | `api/` | `storedId()` (the owner's choice) and `effective()` (what the next call will use) — two methods, so `/ai` can tell them apart |
 | API | `DescriptionRuntimeSettings` | `api/` | Seam for "which preset is active" + "are descriptions on": `sourceName`, `activePresetId`/`setActivePresetId`, `descriptionsEnabled`/`setDescriptionsEnabled` |
 | API | `JudgeRuntimeSettings` | `api/` | Same seam for the judge: `activePresetId`/`setActivePresetId`, `judgeEnabled`/`setJudgeEnabled` (absent = `true`) |
@@ -59,9 +59,9 @@ first call. Local development needs the chosen binary on `PATH` or an explicit `
 | Core | `ActivePresetResolver` | `core/` | Resolves the active preset per call, fail-open; implements `ActiveDescriptionPreset` |
 | Core | `InMemoryDescriptionRuntimeSettings` / `InMemoryJudgeRuntimeSettings` | `core/` | Defaults used only when `core` registers no `*RuntimeSettings`; the choice dies with the process |
 | Core | `ProviderAuthTracker` | `core/` | Auth state machine per credential scope; publishes the events; implements `ProviderAuthStates` |
-| Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form for both INFO lines about presets |
+| Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form, plus `, max-image-side=N` when the preset sets a cap, for both INFO lines about presets |
 | Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
-| Core | `FrameDownscaler` | `core/` | Optional resize to `max-image-side` (bilinear, JPEG q0.85 via `JpegCodec`), once per request in `VisionCallExecutor`; an unreadable frame is passed through unchanged (a WARN when decoding or encoding throws; bytes no reader recognises pass silently) |
+| Core | `FrameDownscaler` | `core/` | Optional resize to the stricter of the feature's and the preset's `max-image-side` (`effectiveMaxSide`; bilinear, JPEG q0.85 via `JpegCodec`), once per request in `VisionCallExecutor`; an unreadable frame is passed through unchanged (a WARN when decoding or encoding throws; bytes no reader recognises pass silently) |
 | Core | `JpegCodec` | `core/` | In-memory JPEG decode and encode (`MemoryCacheImage*Stream`, not ImageIO's temp-file cache in `java.io.tmpdir`); `decode` returns `null` for bytes no reader claims; no default quality, each caller passes its own. Shared by `FrameDownscaler` and the storyboard composer in `core` |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
 | Claude | `ClaudeBackendFactory` | `claude/` | Token check, CLI WARN, `ANTHROPIC_MODEL` displacement, `authScopeId=claude` |
@@ -72,6 +72,7 @@ first call. Local development needs the chosen binary on `PATH` or an explicit `
 | Grok | `GrokCommandBuilder`, `GrokProcessRunner`/`DefaultGrokProcessRunner` | `grok/` | argv + isolated env; `ProcessBuilder` with stdout/stderr redirected to temp files and a cancellation-safe kill |
 | Grok | `GrokOutputParser`, `GrokExceptionMapper` | `grok/` | JSON stdout, error envelope, classification |
 | Grok | `GrokHomeGuard`, `GrokHomeSweeper` | `grok/` | shared/exclusive lock on `GROK_HOME`; hourly cleanup of `sessions/` and `logs/`, skipped when no declared preset uses grok |
+| Grok | `GrokImageStripDetector` | `grok/` | Reads the last 1 MiB of `GROK_HOME/logs/unified.jsonl` after each run; a `shell.turn.images_stripped` entry of the run's `sessionId` makes `GrokBackend` reject the answer as `InvalidResponse` |
 | Config | `AiDescriptionAutoConfiguration` | `config/` | Registers properties; nested `PresetBeans` holds description beans; nested `JudgeBeans` holds judge beans under `application.ai.judge.enabled=true` plus the catalog |
 | Config | `DescriptionProperties` / `ClaudeProperties` / `GrokProperties` | `config/` | `@ConfigurationProperties` for `application.ai.description.*`; both provider sections bind always |
 | Config | `JudgeProperties` | `config/` | `@ConfigurationProperties` for `application.ai.judge.*` (sibling of `description`, not nested in it); binds even when the judge is off |
@@ -89,10 +90,16 @@ printed before, pinned by `the judge prompt keeps its shape` / `the judge blocks
 
 ## Presets, catalog and resolution
 
-**Declaration.** `application.ai.description.presets` is a map `id → {provider, model, effort}`; the
+**Declaration.** `application.ai.description.presets` is a map `id → {provider, model, effort, max-image-side}`; the
 id must match `[a-z0-9][a-z0-9-]{0,31}` (it travels in `callback_data`, 64 bytes for everything).
 `effort` is grok-only and must be empty or one of `low|medium|high|xhigh|max`; a non-empty `effort`
-on a claude preset fails startup. `default-preset` names the preset that is active until the owner
+on a claude preset fails startup.
+`max-image-side` is optional for any provider, `0` (no cap) or `256..8192`: frames of calls through
+the preset are downscaled to the stricter of the non-zero values of the preset and the calling
+feature (`common.max-image-side` for descriptions, `judge.max-image-side` for the judge). A preset
+states the limit of its model or gateway, so it can tighten the feature's value but never lift it;
+`logSignature()` appends `, max-image-side=N` when it is set.
+`default-preset` names the preset that is active until the owner
 picks one; it must exist in a non-empty map, and with an **empty** map it is only a WARN — the
 documented migration is "set it in `.env` first, declare the map in yaml afterwards".
 
@@ -299,6 +306,28 @@ through `TempFileWriter` and reads them after `onExit()`: stdout whole (up to `S
 above which it is `Transport`), stderr as its last `STDERR_TAIL_BYTES`. The files are deleted under
 `NonCancellable`, and a descendant still holding them changes nothing.
 
+**Dropped images.** When an endpoint answers a request carrying images with an error grok attributes
+to the images (`413 Payload Too Large` from nginx in front of vLLM, `reason=payload_heuristic`), grok
+1.0.41 removes the images, puts "The server could not process an image, so it was left out of this
+request." in their place and repeats the request. The process exits 0 with an ordinary answer —
+typically a valid JSON saying the frames are unavailable — and the only machine-readable trace is a
+line in `GROK_HOME/logs/unified.jsonl`: `"sid":"<sessionId>","msg":"shell.turn.images_stripped",
+"ctx":{"stripped":N,"reason":…}`. `GrokImageStripDetector.capture()` reads the last 1 MiB of that
+file right after the process exits, inside the same `GrokHomeGuard.shared` as the run, so the hourly
+sweep cannot delete it in between. The tail, not an offset remembered before the run: grok trims the
+file itself by rewriting it, which would leave an old offset pointing into a foreign line, while the
+newest entries — the run's own — survive the trim. `inspect()` keeps the lines whose `sid` equals the
+`sessionId` from stdout: a strip event → `Stripped`, and `GrokBackend` logs a WARN with the first 300
+characters of the answer and throws `InvalidResponse` (the executor retries it once, like any
+unusable answer); lines of the session without the event → `Clean`; no lines of the session at all →
+`Blind` — a WARN once per process and the answer is accepted as before, because a missing log or a
+changed format must not turn into refusals. `Clean` is no proof of delivery: a renamed strip event,
+or lines of the run lost when a parallel grok trims the file mid-run, end in the same silent `Clean`
+as a run without a strip. Any strip rejects the answer, partial ones included: the count is exact,
+and the inserted notice ends up paraphrased in the description. The DEBUG line `Grok call …` carries
+`strip=clean|stripped|blind`. The file is grok-internal: re-check the event name and fields when
+`ARG GROK_VERSION` changes, as with `grok inspect`.
+
 **GROK_HOME hygiene.** Every headless run persists a session under `GROK_HOME/sessions/<cwd>/<id>/`
 with the base64 frames, and `sessions/session_search.sqlite` grows ~9 KB per run without shrinking.
 `GrokHomeSweeper` runs one minute after startup and then hourly on its own IO scope under
@@ -308,6 +337,8 @@ plus the files in `logs/`. `auth.json` and `config.toml` are never touched. The 
 user of that `GROK_HOME`; `grok login` creates no sessions. The sweep is skipped entirely when no
 declared preset uses grok — `GROK_HOME` is set and mounted on every deployment, so otherwise a
 claude-only deployment would hourly empty a directory the operator may be using by hand.
+`logs/unified.jsonl` is also read after every run by `GrokImageStripDetector`; the hourly deletion
+is harmless — grok recreates the file, and the read happens under the same shared lock as the run.
 
 **Credentials.** OAuth via `grok login --device-code` inside the container; the access token lives
 6 hours and refreshes itself, the refresh token rotates, so `auth.json` must never be copied from
@@ -755,3 +786,9 @@ are contract: change either format and a test names it. `AiDescriptionAutoConfig
 the legacy paths (`provider=claude`, `provider=grok`, mixed case, unknown), a declared map with a
 partially unusable catalog, the "all unusable fails startup" rule and a supplied runtime-settings
 implementation.
+`GrokImageStripDetectorTest` pins the tail read (the window boundary, multi-byte text cut by it, an
+unterminated last line) and the three outcomes on fixture lines captured from grok 1.0.41
+(`GrokUnifiedLogFixtures` — refresh them when `ARG GROK_VERSION` changes); `GrokBackendEndToEndTest`
+(POSIX) runs a stub `grok` through the real runner and checks that the detector reads the same
+`GROK_HOME` the process got. `VisionCallExecutorTest` pins the stricter-cap rule and that a cap on
+one preset never reaches calls resolved to another.

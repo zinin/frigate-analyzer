@@ -72,4 +72,13 @@ class FrameDownscalerTest {
         assertSame(garbage, FrameDownscaler.downscale(garbage, 1568))
         assertSame(empty, FrameDownscaler.downscale(empty, 1568))
     }
+
+    @Test
+    fun `the effective side is the stricter of the non-zero caps`() {
+        assertEquals(0, FrameDownscaler.effectiveMaxSide(featureCap = 0, presetCap = 0))
+        assertEquals(1568, FrameDownscaler.effectiveMaxSide(featureCap = 0, presetCap = 1568))
+        assertEquals(1280, FrameDownscaler.effectiveMaxSide(featureCap = 1280, presetCap = 0))
+        assertEquals(1280, FrameDownscaler.effectiveMaxSide(featureCap = 1280, presetCap = 1568))
+        assertEquals(1024, FrameDownscaler.effectiveMaxSide(featureCap = 1280, presetCap = 1024))
+    }
 }

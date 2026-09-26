@@ -1,16 +1,27 @@
 package ru.zinin.frigate.analyzer.ai.description.grok
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.io.TempDir
+import org.slf4j.LoggerFactory
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.config.GrokProperties
 import ru.zinin.frigate.analyzer.ai.description.core.DescriptionTask
+import ru.zinin.frigate.analyzer.ai.description.grok.GrokUnifiedLogFixtures.OTHER
+import ru.zinin.frigate.analyzer.ai.description.grok.GrokUnifiedLogFixtures.SID
+import ru.zinin.frigate.analyzer.ai.description.grok.GrokUnifiedLogFixtures.inferenceDone
+import ru.zinin.frigate.analyzer.ai.description.grok.GrokUnifiedLogFixtures.stripped
 import ru.zinin.frigate.analyzer.ai.description.testsupport.TestObjectMappers
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import java.time.Duration
 import java.util.UUID
 import kotlin.test.Test
@@ -61,6 +72,7 @@ class GrokBackendTest {
             outputParser = GrokOutputParser(TestObjectMappers.internalMapper()),
             exceptionMapper = GrokExceptionMapper(),
             guard = GrokHomeGuard(),
+            stripDetector = GrokImageStripDetector(properties, TestObjectMappers.internalMapper()),
         )
     }
 
@@ -69,6 +81,29 @@ class GrokBackendTest {
         stdout: String,
         stderr: String = "",
     ) = GrokProcessResult(exitCode, stdout, stderr)
+
+    /** Что grok дописал бы в `unified.jsonl` за время запуска: фейк-runner зовёт это из `run`. */
+    private fun appendToGrokLog(vararg entries: String) {
+        val log = tempDir.resolve("home/logs/unified.jsonl")
+        Files.createDirectories(log.parent)
+        Files.writeString(log, entries.joinToString("") { "$it\n" }, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+    }
+
+    private fun answerOf(sessionId: String) =
+        """{"stopReason":"end_turn","sessionId":"$sessionId","structuredOutput":{"short":"Car","detailed":"A car."}}"""
+
+    private suspend fun warningsDuring(block: suspend () -> Unit): List<String> {
+        val root = LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        root.addAppender(appender)
+        try {
+            block()
+        } finally {
+            root.detachAppender(appender)
+            appender.stop()
+        }
+        return appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
+    }
 
     @Test
     fun `success returns normalized structured output and deletes the prompt file`() =
@@ -254,6 +289,138 @@ class GrokBackendTest {
             val backend = backend(GrokProcessRunner { throw DescriptionException.Transport(detail = "cannot start") })
             assertFailsWith<DescriptionException.Transport> { backend.complete(request, budget) }
             coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
+    fun `an answer produced after grok dropped the frames is rejected`() =
+        runTest {
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        appendToGrokLog(inferenceDone(SID), stripped(SID, 1))
+                        result(0, answerOf(SID))
+                    },
+                )
+
+            val e = assertFailsWith<DescriptionException.InvalidResponse> { backend.complete(request, budget) }
+
+            assertTrue(e.message!!.contains("dropped 1 of 1"), e.message)
+            assertTrue(e.message!!.contains("max-image-side"), e.message)
+            coVerify(exactly = 1) { promptFileWriter.delete(promptFile) }
+        }
+
+    @Test
+    fun `a run whose session has no strip returns the answer`() =
+        runTest {
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        appendToGrokLog(stripped(OTHER, 10), inferenceDone(SID))
+                        result(0, answerOf(SID))
+                    },
+                )
+
+            assertEquals("""{"short":"Car","detailed":"A car."}""", backend.complete(request, budget).primary)
+        }
+
+    @Test
+    fun `an unverifiable run returns the answer and warns once per process`() =
+        runTest {
+            val backend = backend(GrokProcessRunner { result(0, answerOf(SID)) })
+
+            val warnings =
+                warningsDuring {
+                    backend.complete(request, budget)
+                    backend.complete(request, budget)
+                }
+
+            assertEquals(1, warnings.count { it.startsWith("Cannot verify frame delivery") }, warnings.toString())
+        }
+
+    /** Review Focus 4: ответа нет вовсе, но отчёт обязан назвать выброс, а не стоп-причину. */
+    @Test
+    fun `a strip is reported even when grok returned no answer`() =
+        runTest {
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        appendToGrokLog(stripped(SID, 1))
+                        result(0, """{"stopReason":"max_tokens","sessionId":"$SID"}""")
+                    },
+                )
+
+            val e = assertFailsWith<DescriptionException.InvalidResponse> { backend.complete(request, budget) }
+
+            assertTrue(e.message!!.contains("dropped 1 of 1"), e.message)
+        }
+
+    @Test
+    fun `an error envelope is classified even when the log holds a strip of the session`() =
+        runTest {
+            val stdout =
+                """{"type":"error","message":"Not signed in. To authenticate without a browser, """ +
+                    """run:\n  grok login --device-code"}"""
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        appendToGrokLog(stripped(SID, 1))
+                        result(1, stdout, "Error: Not signed in")
+                    },
+                )
+
+            assertFailsWith<DescriptionException.Unauthorized> { backend.complete(request, budget) }
+        }
+
+    @Test
+    fun `a non-zero exit is classified even when the log holds a strip of the session`() =
+        runTest {
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        appendToGrokLog(stripped(SID, 1))
+                        result(1, "", "connection reset")
+                    },
+                )
+
+            assertFailsWith<DescriptionException.Transport> { backend.complete(request, budget) }
+        }
+
+    @Test
+    fun `after a schema retry the run whose answer is used is the one inspected`() =
+        runTest {
+            val schemaError = """{"type":"error","message":"litellm.BadRequestError: failed to parse grammar"}"""
+            val textAnswer = """{"stopReason":"end_turn","sessionId":"$SID","text":"{\"short\":\"a\",\"detailed\":\"b\"}"}"""
+            val backend =
+                backend(
+                    GrokProcessRunner { command ->
+                        if (command.argv.contains("--json-schema")) {
+                            result(1, schemaError)
+                        } else {
+                            // Записи сессии появляются только во втором запуске: хвост, снятый после
+                            // первого, их бы не содержал, и выброс прошёл бы незамеченным.
+                            appendToGrokLog(inferenceDone(SID), stripped(SID, 1))
+                            result(0, textAnswer)
+                        }
+                    },
+                )
+
+            assertFailsWith<DescriptionException.InvalidResponse> { backend.complete(request, budget) }
+        }
+
+    @Test
+    fun `a request without frames is not checked for dropped frames`() =
+        runTest {
+            val backend =
+                backend(
+                    GrokProcessRunner {
+                        appendToGrokLog(stripped(SID, 1))
+                        result(0, answerOf(SID))
+                    },
+                )
+
+            val response = backend.complete(request.copy(images = emptyList()), budget)
+
+            assertEquals("""{"short":"Car","detailed":"A car."}""", response.primary)
         }
 
     @Test

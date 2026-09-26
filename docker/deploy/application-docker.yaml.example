@@ -31,6 +31,9 @@ application:
   #       grok-fast:   { provider: grok,   model: grok-4.6,   effort: low }
   #       grok-deep:   { provider: grok,   model: grok-4.6,   effort: xhigh }
   #       claude-opus: { provider: claude, model: opus }
+  #       # BYOK-модель за шлюзом с лимитом на размер запроса: кадры этого пресета уменьшаются до
+  #       # меньшего из max-image-side пресета и настройки фичи. Без ключа пресет шлёт кадры как фича.
+  #       byok-vision: { provider: grok,   model: my-vision, effort: low, max-image-side: 1568 }
   #   judge:
   #     # Заметки владельца о сцене каждой камеры попадают в контекст судьи как есть.
   #     cameras:

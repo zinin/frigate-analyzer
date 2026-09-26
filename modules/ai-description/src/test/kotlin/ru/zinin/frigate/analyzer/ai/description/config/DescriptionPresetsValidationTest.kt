@@ -116,4 +116,38 @@ class DescriptionPresetsValidationTest {
     fun `an empty map with a blank default-preset is allowed`() {
         assertEquals(emptyMap(), props(emptyMap()).presets)
     }
+
+    @Test
+    fun `a preset max-image-side below 256 is rejected with the preset id`() {
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                props(mapOf("byok" to DescriptionProperties.Preset(provider = "grok", model = "m", maxImageSide = 100)))
+            }
+        assertTrue(e.message!!.contains("byok"), e.message)
+        assertTrue(e.message!!.contains("max-image-side"), e.message)
+    }
+
+    @Test
+    fun `a preset max-image-side above 8192 is rejected`() {
+        assertFailsWith<IllegalArgumentException> {
+            props(mapOf("byok" to DescriptionProperties.Preset(provider = "grok", model = "m", maxImageSide = 9000)))
+        }
+    }
+
+    /** Потолок не зависит от провайдера: claude за сторонним шлюзом нуждается в нём так же, как BYOK-grok. */
+    @Test
+    fun `a preset max-image-side of zero or within range is accepted for any provider`() {
+        val parsed =
+            props(
+                mapOf(
+                    "byok" to DescriptionProperties.Preset(provider = "grok", model = "m", maxImageSide = 1568),
+                    "gateway" to DescriptionProperties.Preset(provider = "claude", model = "opus", maxImageSide = 256),
+                    "plain" to DescriptionProperties.Preset(provider = "grok", model = "m"),
+                ),
+            )
+
+        assertEquals(1568, parsed.presets.getValue("byok").maxImageSide)
+        assertEquals(256, parsed.presets.getValue("gateway").maxImageSide)
+        assertEquals(0, parsed.presets.getValue("plain").maxImageSide)
+    }
 }

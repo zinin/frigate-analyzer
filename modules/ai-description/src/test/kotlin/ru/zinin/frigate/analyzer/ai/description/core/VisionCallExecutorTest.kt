@@ -29,6 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.TimeSource
@@ -91,6 +92,15 @@ class VisionCallExecutorTest {
         }
     }
 
+    /** Выбор владельца, закреплённый на одном пресете. */
+    private class FixedChoice(
+        private val id: String,
+    ) : PresetChoiceSource {
+        override val sourceName = "fixed choice"
+
+        override suspend fun activePresetId(): String = id
+    }
+
     private fun build(
         backend: FakeBackend,
         customLimits: VisionLimits = limits,
@@ -98,10 +108,11 @@ class VisionCallExecutorTest {
         eventPublisher: ApplicationEventPublisher = publisher,
         extraPresets: List<Pair<String, VisionBackend>> = emptyList(),
         settings: PresetChoiceSource = InMemoryDescriptionRuntimeSettings(),
+        presetCap: Int = 0,
     ) = VisionCallExecutor(
         resolver =
             ActivePresetResolver(
-                catalogOf("test" to backend, *extraPresets.toTypedArray()),
+                catalogOf("test" to backend, *extraPresets.toTypedArray(), firstPresetCap = presetCap),
                 settings,
                 fallbackId = "test",
                 label = "test",
@@ -112,10 +123,16 @@ class VisionCallExecutorTest {
         timeSource = timeSource,
     )
 
-    /** По пресету на backend; первый объявленный — пресет по умолчанию, он же fallback каталога. */
-    private fun catalogOf(vararg backends: Pair<String, VisionBackend>): DescriptionPresetCatalog =
+    /**
+     * По пресету на backend; первый объявленный — пресет по умолчанию, он же fallback каталога.
+     * [firstPresetCap] — `max-image-side` первого пресета; у остальных потолка нет.
+     */
+    private fun catalogOf(
+        vararg backends: Pair<String, VisionBackend>,
+        firstPresetCap: Int = 0,
+    ): DescriptionPresetCatalog =
         DescriptionPresetCatalog(
-            backends.map { (id, backend) ->
+            backends.mapIndexed { index, (id, backend) ->
                 DescriptionPresetCatalog.Entry(
                     DescriptionPreset(
                         id = id,
@@ -125,6 +142,7 @@ class VisionCallExecutorTest {
                         effort = "",
                         authScopeId = backend.authScopeId,
                         unavailableReason = null,
+                        maxImageSide = if (index == 0) firstPresetCap else 0,
                     ),
                     backend,
                 )
@@ -255,6 +273,92 @@ class VisionCallExecutorTest {
             executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
 
             assertSame(big, seen)
+        }
+
+    @Test
+    fun `the preset cap applies when the task sets none`() =
+        runTest {
+            val big = jpeg(1920, 1080)
+            var seen: ByteArray? = null
+            val executor =
+                build(
+                    FakeBackend { request ->
+                        seen = request.images.single().bytes
+                        "ok"
+                    },
+                    presetCap = 1568,
+                )
+
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
+
+            assertEquals(1568, ImageIO.read(ByteArrayInputStream(assertNotNull(seen))).width)
+        }
+
+    @Test
+    fun `the task cap wins when it is stricter than the preset cap`() =
+        runTest {
+            val big = jpeg(1920, 1080)
+            var seen: ByteArray? = null
+            val executor =
+                build(
+                    FakeBackend { request ->
+                        seen = request.images.single().bytes
+                        "ok"
+                    },
+                    limits.copy(maxImageSide = 1280),
+                    presetCap = 1568,
+                )
+
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
+
+            assertEquals(1280, ImageIO.read(ByteArrayInputStream(assertNotNull(seen))).width)
+        }
+
+    @Test
+    fun `the preset cap wins when it is stricter than the task cap`() =
+        runTest {
+            val big = jpeg(1920, 1080)
+            var seen: ByteArray? = null
+            val executor =
+                build(
+                    FakeBackend { request ->
+                        seen = request.images.single().bytes
+                        "ok"
+                    },
+                    limits.copy(maxImageSide = 1280),
+                    presetCap = 1024,
+                )
+
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
+
+            assertEquals(1024, ImageIO.read(ByteArrayInputStream(assertNotNull(seen))).width)
+        }
+
+    /**
+     * Review Focus 5: executor один на фичу, а пресет резолвится на каждый вызов. Потолок пресета
+     * с лимитом не должен доставаться вызовам, которые владелец переключил на пресет без лимита.
+     */
+    @Test
+    fun `a cap on one preset does not reach calls resolved to another`() =
+        runTest {
+            val big = jpeg(1920, 1080)
+            var seenByOther: ByteArray? = null
+            val other =
+                FakeBackend { request ->
+                    seenByOther = request.images.single().bytes
+                    "ok"
+                }
+            val executor =
+                build(
+                    FakeBackend { "capped" },
+                    extraPresets = listOf("other" to other),
+                    settings = FixedChoice("other"),
+                    presetCap = 1568,
+                )
+
+            executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
+
+            assertSame(big, seenByOther)
         }
 
     @Test

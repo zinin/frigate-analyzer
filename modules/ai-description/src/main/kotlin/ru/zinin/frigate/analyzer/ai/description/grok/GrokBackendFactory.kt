@@ -35,6 +35,7 @@ class GrokBackendFactory(
     private val outputParser: GrokOutputParser,
     private val exceptionMapper: GrokExceptionMapper,
     private val guard: GrokHomeGuard,
+    private val stripDetector: GrokImageStripDetector,
 ) : VisionBackendFactory {
     override val providerId: String = GrokBackend.PROVIDER_ID
 
@@ -63,6 +64,7 @@ class GrokBackendFactory(
             outputParser = outputParser,
             exceptionMapper = exceptionMapper,
             guard = guard,
+            stripDetector = stripDetector,
         )
 
     /**

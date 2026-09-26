@@ -119,6 +119,7 @@ object DescriptionPresetCatalogBuilder {
                 authScopeId = factory?.authScopeId(preset) ?: preset.provider,
                 unavailableReason = reason,
                 slowEffort = slowEffort,
+                maxImageSide = preset.maxImageSide,
             )
         if (reason != null) {
             logger.warn { "Description preset '$id' (${preset.provider}/${preset.model}) is unavailable: $reason" }

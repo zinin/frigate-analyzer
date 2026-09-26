@@ -12,6 +12,8 @@ import ru.zinin.frigate.analyzer.ai.description.api.DescriptionPreset
  * называет WARN `DescriptionPresetCatalogBuilder.warnAboutDisplacedModels`.
  *
  * Пустой `effort` опускается, а не печатается пустым сегментом: у claude его не бывает вовсе.
+ * Потолок кадра дописывается через запятую и только если задан: у большинства пресетов его нет.
  */
 internal fun DescriptionPreset.logSignature(): String =
-    listOfNotNull(provider, effectiveModel, effort.takeIf { it.isNotBlank() }).joinToString("/")
+    listOfNotNull(provider, effectiveModel, effort.takeIf { it.isNotBlank() }).joinToString("/") +
+        if (maxImageSide > 0) ", max-image-side=$maxImageSide" else ""

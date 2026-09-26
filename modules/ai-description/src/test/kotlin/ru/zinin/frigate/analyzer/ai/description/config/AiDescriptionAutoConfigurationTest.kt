@@ -236,6 +236,25 @@ class AiDescriptionAutoConfigurationTest {
             }
     }
 
+    /** Ключ пишется в yaml kebab-case; relaxed binding обязан довести его до поля пресета. */
+    @Test
+    fun `a preset max-image-side binds from the kebab-case key and reaches the catalog`() {
+        runner
+            .withPropertyValues(
+                *properties(enabled = true, provider = "grok"),
+                "application.ai.description.presets.byok.provider=grok",
+                "application.ai.description.presets.byok.model=my-vision",
+                "application.ai.description.presets.byok.effort=low",
+                "application.ai.description.presets.byok.max-image-side=1568",
+                "application.ai.description.presets.grok-fast.provider=grok",
+                "application.ai.description.presets.grok-fast.model=grok-4.6",
+            ).run { context ->
+                val presets = catalog(context).all().associateBy { it.id }
+                assertEquals(1568, presets.getValue("byok").maxImageSide)
+                assertEquals(0, presets.getValue("grok-fast").maxImageSide)
+            }
+    }
+
     @Test
     fun `a claude preset without a token stays listed while grok keeps working`() {
         runner
