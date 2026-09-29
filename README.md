@@ -229,6 +229,10 @@ The `presets` map replaces `APP_AI_DESCRIPTION_PROVIDER`, `GROK_MODEL`, `GROK_EF
 map turns them off. `ANTHROPIC_MODEL`, when set, still displaces the model of every `claude` preset —
 `/ai` shows the model that will actually be used.
 
+A Claude alias (`opus`, `sonnet`, `haiku`) means whatever the Claude Code CLI in the image makes of it,
+and that CLI never updates itself. A model Anthropic ships later reaches a running container only with
+the next image; an explicit id such as `claude-sonnet-5` pins a preset instead.
+
 **Frame size per preset.** Some endpoints limit the request size or the image resolution; others do
 not. A preset may carry its own `max-image-side`, and frames sent through it are downscaled to the
 stricter of that value and the feature's own setting — `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` for
