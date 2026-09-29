@@ -9,9 +9,9 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 FROM azul/zulu-openjdk-alpine:25
 WORKDIR /application
 
-# Grok Build (xAI): the latest stable release at image build, like the Claude CLI below. Empty means
-# latest; set x.y.z here to pin a known-good release if one breaks the headless call (the release
-# workflow passes no build args).
+# Grok Build (xAI): the latest stable release at image build (the Claude CLI below takes its `latest`
+# channel, not `stable`). Empty means latest; set x.y.z here to pin a known-good release if one breaks
+# the headless call (the release workflow passes no build args).
 ARG GROK_VERSION=
 
 # Runtime deps: ffmpeg/fontconfig (existing) + bash/libgcc/libstdc++/ripgrep (Claude CLI on musl per Anthropic docs).
@@ -35,7 +35,9 @@ RUN chmod +x /application/docker-entrypoint.sh && \
 
 # Install Claude Code CLI as appuser (native installer puts the binary in ~/.local/bin).
 # Also drop a settings.json disabling the built-in ripgrep (use the apk one above) and the
-# auto-updater (deterministic image — new CLI arrives only through a rebuilt image).
+# auto-updater (deterministic image — new CLI arrives only through a rebuilt image). Model aliases
+# (opus, sonnet) resolve inside this CLI, so a new Claude model reaches a running container only with
+# the next image.
 # NB: WORKDIR /tmp during install — Anthropic docs note the installer's filesystem scan
 # can hang or OOM if WORKDIR has a large tree (e.g. our /application with JAR + AOT cache).
 WORKDIR /tmp

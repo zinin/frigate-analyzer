@@ -21,14 +21,34 @@ edit job. The same happens when nothing is declared at all (empty `presets` map 
 `provider`): the beans are conditional on a declaration, not only on the flag.
 
 Both CLIs are installed into the runtime container by `docker/deploy/Dockerfile` (`claude.ai/install.sh`
-and `x.ai/cli/install.sh`), each at its latest stable release when the image is built; neither updates
-itself inside a running container. If a Grok release breaks the headless call, pin a known-good one by
-setting `ARG GROK_VERSION=x.y.z` in the Dockerfile; the release workflow passes no build args. A smoke
-check in the Dockerfile parses every flag `GrokCommandBuilder` passes, and `GrokCommandBuilderTest`
-keeps the two lists in sync. A renamed or dropped flag therefore fails the image build instead of the
-judge and the Grok descriptions in production. The check does not catch effort values, conflicting
-arguments (`--help` exits before clap checks them) or a change in the JSON output; those surface on the
-first call. Local development needs the chosen binary on `PATH` or an explicit `*_CLI_PATH`.
+and `x.ai/cli/install.sh`) when the image is built: Claude from its `latest` channel, not `stable`, and
+Grok at its latest stable release. Neither updates itself inside a running container. If a Grok release
+breaks the headless call, pin a known-good one by setting `ARG GROK_VERSION=x.y.z` in the Dockerfile;
+the release workflow passes no build args. A smoke check in the Dockerfile parses every flag
+`GrokCommandBuilder` passes, and `GrokCommandBuilderTest` keeps the two lists in sync. A renamed or
+dropped flag therefore fails the image build instead of the judge and the Grok descriptions in
+production. The check does not catch effort values, conflicting arguments (`--help` exits before clap
+checks them) or a change in the JSON output; those surface on the first call. Local development needs
+the chosen binary on `PATH` or an explicit `*_CLI_PATH`.
+
+**A Claude alias means what the image's CLI makes of it.** A preset's `model: opus` or `model: sonnet`
+reaches the CLI verbatim as `--model`, and the CLI resolves it from the model list compiled into its
+own release; a model that release does not know is skipped even when Anthropic's catalog already lists
+it. A model Anthropic ships later therefore reaches a running container only through a rebuilt image,
+and since the image is built only for a `v*` tag, that takes a release even with no code change. On
+2026-09-29, the day Sonnet 5.5 shipped, CLI 2.1.283 in the image still resolved `sonnet` to
+`claude-sonnet-5`, while 2.1.284 resolves it to `claude-sonnet-5-5`. An explicit id such as
+`claude-sonnet-5` pins a preset against that drift. To see what the running CLI makes of every alias
+without a model call, send it only the SDK `initialize` control request; the response lists each alias
+with its `resolvedModel` (run in `docker/deploy` on the host):
+
+```sh
+docker compose exec -T frigate-analyzer sh -c '
+  { echo "{\"type\":\"control_request\",\"request_id\":\"p\",\"request\":{\"subtype\":\"initialize\"}}"; sleep 10; } |
+    HTTP_PROXY="$CLAUDE_HTTP_PROXY" HTTPS_PROXY="$CLAUDE_HTTPS_PROXY" NO_PROXY="$CLAUDE_NO_PROXY" \
+    CLAUDE_CODE_ENTRYPOINT=sdk-java claude --input-format stream-json --output-format stream-json --verbose' |
+  grep -o '"value":"[^"]*","resolvedModel":"[^"]*"'
+```
 
 ## Layers
 
