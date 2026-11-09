@@ -18,6 +18,7 @@ import ru.zinin.frigate.analyzer.core.config.properties.StoryboardProperties
 import ru.zinin.frigate.analyzer.core.judge.JudgeCandidate
 import ru.zinin.frigate.analyzer.core.judge.NotificationJudgeService
 import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
+import ru.zinin.frigate.analyzer.core.storyboard.RecordingStoryboard
 import ru.zinin.frigate.analyzer.core.storyboard.StoryboardBuilder
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
@@ -96,16 +97,22 @@ class RecordingProcessingFacade(
             }
             return
         }
+        // Одна раскадровка на событие, общая у judge и описания: собирает её тот, кто попросит первым, — judge перед
+        // своей моделью или описание после PUBLISH, — остальные получают тот же результат. Здесь объект только
+        // создаётся: видео он не читает, и consumer пайплайна ffmpeg не ждёт. Выключатели описаний его не отменяют —
+        // judge нужен временной контекст и тогда, когда описаний нет.
+        val recordingStoryboard =
+            storyboardBuilderProvider.getIfAvailable()?.let { builder -> RecordingStoryboard(recording, request.frames, builder) }
         // Build supplier for lazy describe-job kick-off; invoked by Telegram layer
         // AFTER subscriber filtering so AI tokens are not wasted on zero-recipient recordings.
-        val descriptionSupplier = buildDescriptionSupplier(recording, request)
+        val descriptionSupplier = buildDescriptionSupplier(recording, request, recordingStoryboard)
         val judge = judgeProvider.getIfAvailable()
         if (judge != null) {
-            // Судья держит кандидата на время ответа модели, поэтому уходит в свой scope: consumer
-            // pipeline возвращается к кадрам сразу. Приостановиться здесь можно только когда у судьи
-            // уже предельное число кандидатов в работе — тогда пайплайн намеренно притормаживает,
-            // иначе застрявшие кандидаты копили бы кадры без границы. Отправка при PUBLISH — внутри
-            // судьи, тем же supplier-ом описания, что построен выше.
+            // Судья держит кандидата на время подготовки раскадровки и ответа модели, поэтому уходит
+            // в свой scope: consumer pipeline возвращается к кадрам сразу. Приостановиться здесь можно
+            // только когда у судьи уже предельное число кандидатов в работе — тогда пайплайн намеренно
+            // притормаживает, иначе застрявшие кандидаты копили бы кадры без границы. Отправка при
+            // PUBLISH — внутри судьи, тем же supplier-ом описания, что построен выше.
             judge.submit(
                 JudgeCandidate(
                     recording = recording,
@@ -117,6 +124,7 @@ class RecordingProcessingFacade(
                     frames = request.frames.map { it.copy(frameBytes = ByteArray(0)) },
                     visualizedFrames = visualizedFrames,
                     descriptionSupplier = descriptionSupplier,
+                    storyboard = recordingStoryboard,
                 ),
             )
             return
@@ -170,12 +178,14 @@ class RecordingProcessingFacade(
      * frames with detections are available.
      * When non-null, the supplier returns a non-null Deferred when invoked — the rate limiter
      * has already consumed a slot at the call site, and a null return would silently waste it.
-     * Inside the job the storyboard is built first (it may wait for the next segment), then the
-     * runtime switch is read again, then the model is called.
+     * Inside the job the event's storyboard comes first — taken from [recordingStoryboard] as the
+     * judge left it, or built now (it may wait for the next segment) — then the runtime switch is
+     * read again, then the model is called.
      */
     private suspend fun buildDescriptionSupplier(
         recording: RecordingDto,
         request: SaveProcessingResultRequest,
+        recordingStoryboard: RecordingStoryboard?,
     ): (() -> Deferred<Result<DescriptionResult>>)? {
         val recordingId = recording.id
         val agent = descriptionAgentProvider.getIfAvailable() ?: return null
@@ -202,18 +212,17 @@ class RecordingProcessingFacade(
             return null
         }
 
-        // Раскадровке нужны только время и детекции; байты кадров в замыкании не держим.
-        val detectionFrames =
-            request.frames
-                .filter { it.detectResponse?.detections?.isNotEmpty() == true }
-                .map { it.copy(frameBytes = ByteArray(0)) }
-        val storyboardBuilder = if (storyboardProperties.enabled) storyboardBuilderProvider.getIfAvailable() else null
+        // Выключатель раскадровки описаний решает только, брать ли сетку в описание; раскадровку judge он не трогает.
+        val storyboard = if (storyboardProperties.enabled) recordingStoryboard else null
 
         return {
             descriptionScope.async {
                 // Раскадровка до выключателя: он остаётся вплотную к вызову модели, а раскадровка может
                 // ждать следующий сегмент — выключение за это время тоже должно подействовать.
-                val built = storyboardBuilder?.build(recording, detectionFrames)
+                // Результат, который уже подготовил judge, берётся как есть — и без сетки, и по истёкшему бюджету:
+                // второй сборки нет. Первым (judge нет или он сетку не брал) её собирает описание, как и раньше:
+                // без своего бюджета и с ожиданием следующего сегмента.
+                val built = storyboard?.get()?.built
                 // Вторая проверка выключателя, вплотную к вызову модели: между сборкой supplier-а и
                 // его вызовом лежат фильтрация получателей и rate limiter, поэтому одной проверки
                 // хватало бы лишь на «подействует со следующей записи», а кнопку жмут тогда, когда

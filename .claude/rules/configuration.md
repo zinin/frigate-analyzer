@@ -12,8 +12,8 @@ All settings in `modules/core/src/main/resources/application.yaml`.
 |----------|---------|---------|
 | `APP_PORT` | 8080 | Server port |
 | `TEMP_FOLDER` | /tmp/frigate-analyzer/ | Extracted frames storage |
-| `FFMPEG_PATH` | /usr/bin/ffmpeg | ffmpeg binary path; used by exports and by the AI description storyboard, which samples its tiles with it — without ffmpeg every AI description falls back to the frames alone with a WARN |
-| `FFPROBE_PATH` | /usr/bin/ffprobe | ffprobe binary path; read by `VideoProbe` before an export is re-encoded to fit the Telegram limit, and by the AI description storyboard for the durations of the recording and its neighbours — without ffprobe every AI description falls back to the frames alone with a WARN. The Alpine image installs it together with ffmpeg |
+| `FFMPEG_PATH` | /usr/bin/ffmpeg | ffmpeg binary path; used by exports and by the event storyboard of AI descriptions and the LLM judge, which samples its tiles with it — without ffmpeg every storyboard fails with a WARN, and descriptions and the judge go on from their frames alone |
+| `FFPROBE_PATH` | /usr/bin/ffprobe | ffprobe binary path; read by `VideoProbe` before an export is re-encoded to fit the Telegram limit, and by the event storyboard of AI descriptions and the LLM judge for the durations of the recording and its neighbours — without ffprobe every storyboard fails with a WARN, and descriptions and the judge go on from their frames alone. The Alpine image installs it together with ffmpeg |
 
 ## Records Watcher
 
@@ -220,11 +220,15 @@ that will actually be used.
 
 ### Storyboard (`application.ai.description.storyboard.*`)
 
-Bound by `StoryboardProperties` in `core`; see "Storyboard" in `ai-description.md`.
+Bound by `StoryboardProperties` in `core`; see "Storyboard" in `ai-description.md`. One grid per
+event serves both the description and the LLM judge, so the window and tile count below shape the
+judge's grid too; the next-segment wait applies only when the description builds the grid first (the
+judge never waits). `ENABLED` is the description's switch alone — the judge has its own,
+`APP_AI_JUDGE_STORYBOARD_ENABLED`, and its own cap and budget (see "AI Judge").
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | true | Give the model a timed grid of frames around the detection. `false` describes from the full-resolution frames alone (still captioned with their times). Those frames are capped by `APP_AI_DESCRIPTION_MAX_FRAMES`, 4 by default (was 10): with the storyboard off, set it back to 10 so the model again sees every frame with detections, as before the storyboard. |
+| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | true | Give the description model a timed grid of frames around the detection. `false` describes from the full-resolution frames alone (still captioned with their times); it decides for descriptions only — the storyboard builder stays, and the judge keeps its grid under `APP_AI_JUDGE_STORYBOARD_ENABLED`. Those frames are capped by `APP_AI_DESCRIPTION_MAX_FRAMES`, 4 by default (was 10): with the storyboard off, set it back to 10 so the model again sees every frame with detections, as before the storyboard. |
 | `APP_AI_DESCRIPTION_STORYBOARD_BEFORE` | 5s | Footage before the first detection, `0s..10s`: at most one neighbouring segment is taken per side, and a segment is ~10 s. |
 | `APP_AI_DESCRIPTION_STORYBOARD_AFTER` | 5s | Footage after the last detection, same range. |
 | `APP_AI_DESCRIPTION_STORYBOARD_TILES` | 16 | Most tiles in the grid, `4..25`; tiles are never closer than 0.5 s. |
@@ -266,9 +270,12 @@ failure sends the notification unjudged.
 | `APP_AI_JUDGE_QUEUE_TIMEOUT` | 30s | Max wait for a free judge concurrency slot. |
 | `APP_AI_JUDGE_TIMEOUT` | 60s | Per-call judge timeout including the executor's retries. Size it for the **judge** preset, not the slowest description preset. |
 | `APP_AI_JUDGE_MAX_CONCURRENT` | 2 | Max simultaneous judge calls. Separate semaphore from descriptions. Validated `1..10`. |
-| `APP_AI_JUDGE_MAX_IN_FLIGHT` | 32 | Candidates the judge may hold at once across all cameras — a memory ceiling, not a throughput knob. Each candidate pins its annotated frames **and** the originals held by the description supplier, so size it by camera resolution. Beyond the ceiling the recording is sent unjudged (`FAILOVER` / `TRANSPORT`) by the calling coroutine, which is also what back-pressures the pipeline. Validated `1..512`. |
+| `APP_AI_JUDGE_MAX_IN_FLIGHT` | 32 | Candidates the judge may hold at once across all cameras — a memory ceiling, not a throughput knob. Each candidate pins its annotated frames, the originals held by the description supplier **and**, once it is built, the storyboard grid's JPEG (one copy, shared with the description), so size it by camera resolution. Beyond the ceiling the recording is sent unjudged (`FAILOVER` / `TRANSPORT`) by the calling coroutine, which is also what back-pressures the pipeline. Validated `1..512`. |
 | `APP_AI_JUDGE_MAX_FRAMES` | 4 | Annotated frames forwarded to the judge, first N of the visualization ranking then chronological. Validated `1..10`. |
-| `APP_AI_JUDGE_MAX_IMAGE_SIDE` | 1280 | Longest frame side before the judge call; `0` = as-is. Validated `0` or `256..8192`. A preset's own `max-image-side` can only tighten it: the judge uses the stricter non-zero value. |
+| `APP_AI_JUDGE_MAX_IMAGE_SIDE` | 1280 | Longest frame side before the judge call; `0` = as-is. Validated `0` or `256..8192`. A preset's own `max-image-side` can only tighten it: the judge uses the stricter non-zero value. Frames only — the storyboard grid has its own cap, `APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE`. |
+| `APP_AI_JUDGE_STORYBOARD_ENABLED` | true | Give the judge the event's timed storyboard: the grid goes first, then the annotated frames, on one timeline. It is prepared only after the judge's runtime switch, snooze, recipient, context and rate-limit checks, right before the model call, and without waiting for the next segment. `false` = the annotated frames alone, as before the storyboard — the rollback without a rebuild: set it and restart the container. Independent of `APP_AI_DESCRIPTION_STORYBOARD_ENABLED`, which decides only for descriptions; the window and tile count come from `APP_AI_DESCRIPTION_STORYBOARD_{BEFORE,AFTER,TILES}`. With `APP_AI_JUDGE_ENABLED=false` nothing of this runs. The preparation delays the verdict and the notification, and every judge call that gets a grid carries one image more. |
+| `APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE` | 2560 | Longest side of the judge's storyboard grid, its own cap: under `APP_AI_JUDGE_MAX_IMAGE_SIDE` (1280) a 2560 px grid would be halved, tiles and time labels with it. `0` = no cap of the feature; otherwise `256..8192`, anything else fails startup. A preset's `max-image-side` still applies, also with `0`: the grid gets the stricter non-zero value, so with `max-image-side: 1568` (the LiteLLM gateway in front of DKS-Vision) it is at most 1568 px. It bounds the longest side, not the width — a portrait camera's grid is taller than wide. In pixels a 2560 px grid is about four 1280 px frames of the same camera, which doubles the image area of a four-frame request; for an endpoint that limits the request size or the resolution, lower it or turn the judge's storyboard off. |
+| `APP_AI_JUDGE_STORYBOARD_TIMEOUT` | 10s | Budget of one grid build when the judge asks for it first: the wait for the two builder permits, the neighbour lookups, ffprobe, ffmpeg and the composition. Positive, at least `1ms`. When it runs out the build is cancelled, the judge decides from the frames (`visual_input` status `timeout`) and the description of the same event does not build again. The time spent is in `visual_input.preparation_ms` of the stored context, not in `latency_ms`, which measures the model call alone. |
 | `APP_AI_JUDGE_RATE_LIMIT_ENABLED` | true | Sliding-window throttle on judge invocations. |
 | `APP_AI_JUDGE_RATE_LIMIT_MAX` | 200 | Protective ceiling. Beyond it candidates are sent unjudged (`FAILOVER` / `RATE_LIMITED`). |
 | `APP_AI_JUDGE_RATE_LIMIT_WINDOW` | 1h | Sliding-window length (same Duration syntax as descriptions). |

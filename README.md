@@ -42,7 +42,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 - **Object tracking** — cross-recording IoU matching suppresses duplicate notifications when the same object lingers across consecutive recordings
 - **Signal-loss detection** — polls the database for last recording per camera and alerts (Telegram) on signal loss / recovery
 - **AI description (optional)** — generates short and detailed natural-language descriptions of detections via Claude Code CLI or Grok Build CLI from a timed storyboard of the event (frames around the detection, reaching into neighbouring segments) plus full-resolution frames, edited into the notification message
-- **LLM notification judge (optional)** — third gate after the object tracker: a fast model looks at the annotated frames and database context and decides PUBLISH/SUPPRESS; every verdict is stored and visible in `/status` and `/verdicts`
+- **LLM notification judge (optional)** — third gate after the object tracker: a fast model looks at a timed storyboard of the event, the annotated frames and database context and decides PUBLISH/SUPPRESS; every verdict is stored and visible in `/status` and `/verdicts`
 - **Telegram bot** — real-time notifications with annotated images, inline quick-export buttons, video export (raw or annotated), per-user and global notification toggles, timezone support, user management
 - **Reactive stack** — built on Spring WebFlux, R2DBC, and Kotlin Coroutines for non-blocking I/O throughout
 
@@ -119,8 +119,8 @@ All settings use environment variables with sensible defaults. Key variables:
 | `DISABLE_FIRST_SCAN` | `true` | Startup scan is an opt-in backfill — set to `false` to run it once |
 | `WATCH_PERIOD` | `P1D` | ISO-8601 duration — how far back to watch for recordings |
 | `FIRST_SCAN_PERIOD` | = `WATCH_PERIOD`, truncated to whole days | ISO-8601 duration — how far back the startup backfill indexes files (whole days, UTC; `P0D` = today only) |
-| `FFMPEG_PATH` | `/usr/bin/ffmpeg` | Path to ffmpeg binary — used by exports and by the AI description storyboard; without it every AI description falls back to the frames alone with a WARN |
-| `FFPROBE_PATH` | `/usr/bin/ffprobe` | Path to ffprobe binary — reads the parameters of an export before it is re-encoded to fit the Telegram 50 MB limit, and the video durations the AI description storyboard needs; without it every AI description falls back to the frames alone with a WARN |
+| `FFMPEG_PATH` | `/usr/bin/ffmpeg` | Path to ffmpeg binary — used by exports and by the event storyboard of AI descriptions and the notification judge; without it every storyboard fails with a WARN, and descriptions and the judge work from the frames alone |
+| `FFPROBE_PATH` | `/usr/bin/ffprobe` | Path to ffprobe binary — reads the parameters of an export before it is re-encoded to fit the Telegram 50 MB limit, and the video durations the event storyboard needs; without it every storyboard fails with a WARN, and descriptions and the judge work from the frames alone |
 | `EXPORT_COMPRESS_PRESET` | `fast` | libx264 preset for that re-encode (`ultrafast` … `placebo`): speed versus compression |
 | `EXPORT_COMPRESS_CRF` | `23` | libx264 quality target (0–51) for that re-encode; the bitrate cap from the size budget still applies |
 | `EXPORT_COMPRESS_MIN_BITS_PER_PIXEL` | `0.1` | Smallest bits-per-pixel a candidate height (1080/720/540, never above the source) may have before the next smaller one is tried |
@@ -185,7 +185,7 @@ them into the notification. Two providers: the Claude Code CLI (`claude`) and th
 | `APP_AI_DESCRIPTION_DEFAULT_PRESET` | *(empty)* | Preset that is active until the owner picks one in `/ai`; empty = the first usable preset |
 | `APP_AI_DESCRIPTION_PROVIDER` | `claude` | Single-preset path only — `claude` or `grok`, used while no `presets` map is declared |
 | `APP_AI_DESCRIPTION_LANGUAGE` | `en` | `ru` or `en` |
-| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | `true` | Give the model a timed storyboard of the event; `false` describes from the frames alone; then also set `APP_AI_DESCRIPTION_MAX_FRAMES=10` to give the model every frame with detections again (the default is now 4) |
+| `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` | `true` | Give the description model a timed storyboard of the event; `false` describes from the frames alone; then also set `APP_AI_DESCRIPTION_MAX_FRAMES=10` to give the model every frame with detections again (the default is now 4). Descriptions only: the judge has its own `APP_AI_JUDGE_STORYBOARD_ENABLED` |
 | `APP_AI_DESCRIPTION_TIMEOUT` | `60s` | Per-call budget for the model and the agent's retries — see "Timeout ceiling" below |
 | `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` | `0` | Longest frame side before the model call; `0` = camera resolution. A preset may declare a stricter cap of its own — see "Frame size per preset" below |
 | `APP_AI_DESCRIPTION_MAX_CONCURRENT` | `2` | Max simultaneous model requests |
@@ -234,9 +234,10 @@ and that CLI never updates itself. A model Anthropic ships later reaches a runni
 the next image; an explicit id such as `claude-sonnet-5` pins a preset instead.
 
 **Frame size per preset.** Some endpoints limit the request size or the image resolution; others do
-not. A preset may carry its own `max-image-side`, and frames sent through it are downscaled to the
+not. A preset may carry its own `max-image-side`, and images sent through it are downscaled to the
 stricter of that value and the feature's own setting — `APP_AI_DESCRIPTION_MAX_IMAGE_SIDE` for
-descriptions, `APP_AI_JUDGE_MAX_IMAGE_SIDE` for the judge — where `0` means no cap:
+descriptions (frames and storyboard alike), `APP_AI_JUDGE_MAX_IMAGE_SIDE` for the judge's frames and
+`APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE` for its storyboard — where `0` means no cap:
 
 ```yaml
         byok-vision: { provider: grok, model: my-vision, effort: low, max-image-side: 1568 }
@@ -282,16 +283,19 @@ If the endpoint rejects the images — a gateway answering `413 Payload Too Larg
 `grok` drops them, repeats the request without them and returns an answer about frames the model
 never saw. The application reads that from `grok-home/logs/unified.jsonl` and rejects the answer:
 the notification shows "⚠ Описание недоступно", the judge sends it unjudged, and the log WARN
-suggests `max-image-side` on the preset.
+suggests `max-image-side` on the preset. If the judge started sending notifications unjudged for this
+reason once its storyboard was on, lower `APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE` or turn the judge's
+storyboard off with `APP_AI_JUDGE_STORYBOARD_ENABLED=false`.
 
 ### AI notification judge (optional)
 
 Third gate between the object tracker and Telegram, on the **same** preset catalog as descriptions.
-A fast model looks at the annotated frames and a JSON context from the database and answers
-`PUBLISH` or `SUPPRESS`. Fail-open: any judge failure sends the notification as today. Every verdict
-is stored in `notification_verdicts` (no cleanup) and shown to the owner in `/status` and `/verdicts`.
-The recipient never sees the verdict. Requires `APP_AI_DESCRIPTION_ENABLED=true`. Scene notes per
-camera live in `application-docker.yaml` (`application.ai.judge.cameras.<cam>.notes`), not in `.env`.
+A fast model looks at a timed storyboard of the event, the annotated frames and a JSON context from
+the database and answers `PUBLISH` or `SUPPRESS`. Fail-open: any judge failure sends the notification
+as today. Every verdict is stored in `notification_verdicts` (no cleanup) and shown to the owner in
+`/status` and `/verdicts`. The recipient never sees the verdict. Requires
+`APP_AI_DESCRIPTION_ENABLED=true`. Scene notes per camera live in `application-docker.yaml`
+(`application.ai.judge.cameras.<cam>.notes`), not in `.env`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -302,6 +306,9 @@ camera live in `application-docker.yaml` (`application.ai.judge.cameras.<cam>.no
 | `APP_AI_JUDGE_MAX_CONCURRENT` | `2` | Max simultaneous judge calls (separate from descriptions) |
 | `APP_AI_JUDGE_MAX_FRAMES` | `4` | Annotated frames sent to the model |
 | `APP_AI_JUDGE_MAX_IMAGE_SIDE` | `1280` | Longest frame side; `0` = as-is |
+| `APP_AI_JUDGE_STORYBOARD_ENABLED` | `true` | Give the judge the event's storyboard before the model call; `false` = the annotated frames alone, as before. Descriptions keep their own switch |
+| `APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE` | `2560` | Longest side of the judge's storyboard; `0` = no cap of its own (a preset's `max-image-side` still applies), otherwise `256..8192` |
+| `APP_AI_JUDGE_STORYBOARD_TIMEOUT` | `10s` | Budget for building the storyboard when the judge asks for it first; once it runs out the judge decides from the frames |
 | `APP_AI_JUDGE_RATE_LIMIT_MAX` | `200` | Protective ceiling; beyond it candidates go out unjudged |
 | `APP_AI_JUDGE_RATE_LIMIT_WINDOW` | `1h` | Sliding-window length |
 | `APP_AI_JUDGE_MAX_SNOOZE` | `PT30M` | Ceiling on `snooze_minutes` from the model |
@@ -310,6 +317,26 @@ camera live in `application-docker.yaml` (`application.ai.judge.cameras.<cam>.no
 | `APP_AI_JUDGE_HISTORY_WINDOW` | `PT6H` | `±` window of recent verdicts in the prompt |
 | `APP_AI_JUDGE_HISTORY_LIMIT` | `10` | Max verdict rows in that context |
 | `APP_AI_JUDGE_ZONE` | *(empty)* | Local-time zone of the prompt; empty = owner's `/timezone`, then the JVM zone (UTC in the container) |
+
+**Storyboard for the judge.** The judge sees the event's timed storyboard first and its annotated
+frames after it, all on one timeline — the same grid the description gets, built once per event and
+shared — so it sees how the scene changed, not only the frames with detections. The grid is
+prepared only after the judge's own checks (runtime switch, snooze, recipients, database context,
+rate limit), within `APP_AI_JUDGE_STORYBOARD_TIMEOUT` and without waiting for the next segment. A grid
+that cannot be built, or not in time, is no error: the judge decides from the frames, and the
+description of that event does not try again. Its window and tile count are the description settings
+`APP_AI_DESCRIPTION_STORYBOARD_BEFORE`, `_AFTER` and `_TILES`, while
+`APP_AI_DESCRIPTION_STORYBOARD_ENABLED` decides for descriptions only.
+
+Two costs come with it. The preparation delays the verdict and therefore the notification — the 21
+grids the descriptions built in production (28.10–09.11) took 1.5 s on average and 2.2 s at most;
+the budget is the ceiling. And every judge call that gets a grid carries one image more: a 2560 px
+grid has about the pixels of four 1280 px frames, so in pixels the judge's image input doubles with
+four frames and grows fivefold with one — and vision endpoints bill by image area. A grid is now
+also built for events the judge suppresses. A verdict's `latency_ms` still measures only the model
+call; the preparation time is in `visual_input.preparation_ms` of its stored `context_json`. To roll
+back without a rebuild, set `APP_AI_JUDGE_STORYBOARD_ENABLED=false` and restart the container;
+descriptions keep their own setting.
 
 Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
 [`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.

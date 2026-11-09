@@ -17,12 +17,9 @@ import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
-import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeAgent
-import ru.zinin.frigate.analyzer.ai.description.api.JudgeRequest
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeVerdict
-import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.ai.description.config.JudgeProperties
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.JudgeRateLimiter
 import ru.zinin.frigate.analyzer.model.dto.NewNotificationVerdict
@@ -54,7 +51,7 @@ class NotificationJudgeService(
     private val telegram: TelegramNotificationService,
     private val properties: JudgeProperties,
     private val trackerProperties: ObjectTrackerProperties,
-    private val descriptionProperties: DescriptionProperties,
+    private val requestFactory: JudgeRequestFactory,
     private val scope: JudgeCoroutineScope,
     private val clock: Clock,
 ) {
@@ -271,10 +268,19 @@ class NotificationJudgeService(
             return
         }
         val agent = agentProvider.getIfAvailable()
+        // Строка вердикта хранит контекст, с которым judge шёл к модели: пока запроса нет — исходный, а с запросом —
+        // его, с `visual_input`. Поэтому и строка сбоя модели показывает, какие изображения были в запросе.
+        var contextJson = context.json
         val outcome =
             try {
                 checkNotNull(agent) { "no JudgeAgent bean: the AI preset catalog is not available" }
-                agent.judge(judgeRequest(candidate, context))
+                // Запрос, а с ним и раскадровка события (ffmpeg), готовится только здесь — после всех отсечек выше, так
+                // что ни одна их ветка раскадровку для judge не строит. Время подготовки — в `visual_input.preparation_ms`;
+                // `latency_ms` по-прежнему меряет один вызов модели. Отмена подготовки уходит в ветку отмены process(),
+                // как и отмена самого вызова.
+                val request = requestFactory.create(candidate, context)
+                contextJson = request.contextJson
+                agent.judge(request)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -284,7 +290,7 @@ class NotificationJudgeService(
                 }
                 record(
                     base(VerdictStage.FAILOVER, VerdictDecision.PUBLISH, reason)
-                        .copy(contextJson = context.json, error = e.describe()),
+                        .copy(contextJson = contextJson, error = e.describe()),
                 )
                 send(candidate, handedOver)
                 return
@@ -318,28 +324,11 @@ class NotificationJudgeService(
                         .toMillis()
                         .coerceAtMost(Int.MAX_VALUE.toLong())
                         .toInt(),
-                contextJson = context.json,
+                contextJson = contextJson,
             ),
         )
         if (decision == VerdictDecision.PUBLISH) send(candidate, handedOver)
     }
-
-    private fun judgeRequest(
-        candidate: JudgeCandidate,
-        context: JudgeContextResult,
-    ): JudgeRequest =
-        JudgeRequest(
-            recordingId = candidate.recording.id,
-            camId = candidate.recording.camId,
-            frames =
-                candidate.visualizedFrames
-                    .take(properties.maxFrames)
-                    .sortedBy { it.frameIndex }
-                    .map { DescriptionRequest.FrameImage(it.frameIndex, it.visualizedBytes) },
-            contextJson = context.json,
-            language = descriptionProperties.common.language,
-            maxSnoozeMinutes = properties.maxSnoozeMinutes,
-        )
 
     private suspend fun judgeEnabled(recordingId: UUID): Boolean =
         try {
