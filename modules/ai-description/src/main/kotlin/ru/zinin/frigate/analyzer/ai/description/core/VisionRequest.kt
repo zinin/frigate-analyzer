@@ -18,22 +18,30 @@ data class VisionInstructions(
 )
 
 /**
- * Одна картинка vision-вызова: байты и подпись, которой задача её представляет. Порядок картинок в
- * [VisionRequest.images] — порядок, в котором их увидит модель; провайдер его не меняет.
+ * Одна картинка vision-вызова: байты, подпись, которой задача её представляет, и роль. Порядок картинок
+ * в [VisionRequest.images] — порядок, в котором их увидит модель; провайдер его не меняет.
  */
 data class VisionImage(
     val bytes: ByteArray,
     val caption: String,
+    /**
+     * По роли [VisionCallExecutor] выбирает потолок длинной стороны: у сетки он может быть свой. Модели
+     * роль не печатается — что перед ней, говорит подпись.
+     */
+    val role: Role = Role.FRAME,
 ) {
+    /** [FRAME] — обычный кадр события, [STORYBOARD] — раскадровка: сетка кадров с подписями времени. */
+    enum class Role { FRAME, STORYBOARD }
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is VisionImage) return false
-        return caption == other.caption && bytes.contentEquals(other.bytes)
+        return caption == other.caption && role == other.role && bytes.contentEquals(other.bytes)
     }
 
-    override fun hashCode(): Int = 31 * caption.hashCode() + bytes.contentHashCode()
+    override fun hashCode(): Int = 31 * (31 * caption.hashCode() + role.hashCode()) + bytes.contentHashCode()
 
-    override fun toString(): String = "VisionImage(caption=$caption, bytes=${bytes.size}B)"
+    override fun toString(): String = "VisionImage(caption=$caption, role=$role, bytes=${bytes.size}B)"
 }
 
 data class VisionRequest(

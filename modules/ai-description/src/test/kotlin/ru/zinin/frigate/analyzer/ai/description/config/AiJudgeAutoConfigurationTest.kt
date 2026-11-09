@@ -14,10 +14,12 @@ import ru.zinin.frigate.analyzer.ai.description.core.JudgePresetResolver
 import ru.zinin.frigate.analyzer.ai.description.core.VisionCallExecutor
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.JudgeRateLimiter
 import java.nio.file.Path
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 class AiJudgeAutoConfigurationTest {
     @TempDir
@@ -108,6 +110,57 @@ class AiJudgeAutoConfigurationTest {
                 assertThat(context).doesNotHaveBean(JudgeRateLimiter::class.java)
                 assertThat(context).doesNotHaveBean(JudgeRuntimeSettings::class.java)
                 assertThat(context.getBeansOfType(JudgeProperties::class.java)).isNotEmpty()
+            }
+    }
+
+    /** Раскадровка судьи биндится вместе с остальными свойствами, но без master-флага не создаёт ничего. */
+    @Test
+    fun `storyboard settings bind while the judge is off and bring no judge beans`() {
+        runner
+            .withPropertyValues(
+                *properties(enabled = true, provider = "claude"),
+                "application.ai.judge.enabled=false",
+                "application.ai.judge.storyboard.enabled=false",
+                "application.ai.judge.storyboard.max-image-side=1568",
+                "application.ai.judge.storyboard.timeout=3s",
+            ).run { context ->
+                assertThat(context).hasNotFailed()
+                assertEquals(
+                    JudgeProperties.StoryboardSettings(enabled = false, maxImageSide = 1568, timeout = Duration.ofSeconds(3)),
+                    context.getBean(JudgeProperties::class.java).storyboard,
+                )
+                assertThat(context).doesNotHaveBean(JudgeAgent::class.java)
+                assertThat(context).doesNotHaveBean(ActiveJudgePreset::class.java)
+                assertThat(context).doesNotHaveBean(JudgeRateLimiter::class.java)
+                assertThat(context).doesNotHaveBean(JudgeRuntimeSettings::class.java)
+                assertThat(context).doesNotHaveBean("judgeVisionCallExecutor")
+            }
+    }
+
+    /**
+     * VisionCallExecutorTest собирает executor сам, поэтому перепутанный или забытый аргумент здесь, в
+     * проводке, поймает только этот тест. Значения потолков нарочно разные: перестановка двух из них
+     * тоже видна.
+     */
+    @Test
+    fun `only the judge executor gets its own storyboard cap`() {
+        runner
+            .withPropertyValues(
+                *properties(enabled = true, provider = "claude"),
+                "application.ai.description.common.max-image-side=1024",
+                "application.ai.judge.enabled=true",
+                "application.ai.judge.default-preset=claude",
+                "application.ai.judge.max-image-side=1280",
+                "application.ai.judge.storyboard.max-image-side=1568",
+            ).run { context ->
+                assertThat(context).hasNotFailed()
+                val judge = context.getBean("judgeVisionCallExecutor", VisionCallExecutor::class.java).limits
+                assertEquals(1280, judge.maxImageSide)
+                assertEquals(1568, judge.storyboardMaxImageSide)
+                // У описаний своего потолка сетки нет: она подчиняется common.max-image-side, как раньше.
+                val description = context.getBean("descriptionVisionCallExecutor", VisionCallExecutor::class.java).limits
+                assertEquals(1024, description.maxImageSide)
+                assertNull(description.storyboardMaxImageSide)
             }
     }
 

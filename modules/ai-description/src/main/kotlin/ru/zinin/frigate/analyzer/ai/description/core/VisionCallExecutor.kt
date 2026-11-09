@@ -25,9 +25,9 @@ data class VisionOutcome<T>(
 /**
  * Провайдер-нейтральное исполнение одной vision-задачи: резолюция пресета до семафора, семафор,
  * queueTimeout, timeout, retry по InvalidResponse и Transport с проверкой остатка бюджета, downscale
- * картинок до меньшего из потолков фичи и пресета, отчёт в ProviderAuthTracker. Разбор ответа
- * ([parse]) выполняется внутри цикла повторов: InvalidResponse из парсера повторяет вызов так же,
- * как раньше повторял его backend.
+ * каждой картинки до меньшего из потолков фичи (своего у роли картинки) и пресета, отчёт в
+ * ProviderAuthTracker. Разбор ответа ([parse]) выполняется внутри цикла повторов: InvalidResponse
+ * из парсера повторяет вызов так же, как раньше повторял его backend.
  *
  * У каждой фазы вызова свой потолок, и `withTimeout` покрывает не весь вызов: резолюция пресета
  * ограничена собственным потолком [ActivePresetResolver] (его истечение даёт пресет по умолчанию, а
@@ -53,7 +53,8 @@ data class VisionOutcome<T>(
 class VisionCallExecutor(
     private val resolver: ActivePresetResolver,
     private val authTracker: ProviderAuthTracker,
-    private val limits: VisionLimits,
+    /** `internal`, а не `private`: какие потолки достались какому бину, проверяет тест автоконфигурации. */
+    internal val limits: VisionLimits,
     private val label: String,
     private val timeSource: TimeSource = TimeSource.Monotonic,
 ) {
@@ -129,29 +130,51 @@ class VisionCallExecutor(
     }
 
     /**
-     * Один проход на запрос, до повторов: провайдер получает уже готовые картинки. Потолок — меньшее из
-     * ненулевых значений фичи ([VisionLimits.maxImageSide]) и пресета, выбранного для этого вызова.
+     * Один проход на запрос, до повторов: провайдер получает уже готовые картинки. Потолок у каждой
+     * картинки свой — меньшее из ненулевых значений фичи для её роли и пресета, выбранного для этого
+     * вызова: у кадров фича задаёт [VisionLimits.maxImageSide], у сетки —
+     * [VisionLimits.storyboardMaxImageSide], а если он не задан, тот же потолок кадров. Поэтому нет
+     * и раннего выхода по одному лишь потолку кадров: кадры без него — не повод отдать сетку модели
+     * в полном разрешении.
      */
     private suspend fun downscaleImages(
         request: VisionRequest,
         presetCap: Int,
     ): VisionRequest {
-        val maxSide = FrameDownscaler.effectiveMaxSide(limits.maxImageSide, presetCap)
-        if (maxSide <= 0 || request.images.isEmpty()) return request
+        val maxSides =
+            request.images.map { image ->
+                val featureCap =
+                    when (image.role) {
+                        VisionImage.Role.FRAME -> limits.maxImageSide
+                        VisionImage.Role.STORYBOARD -> limits.storyboardMaxImageSide ?: limits.maxImageSide
+                    }
+                FrameDownscaler.effectiveMaxSide(featureCap, presetCap)
+            }
+        if (maxSides.none { it > 0 }) return request
         val before = request.images.sumOf { it.bytes.size }
         val images =
             withContext(Dispatchers.Default) {
-                request.images.map { image -> image.copy(bytes = FrameDownscaler.downscale(image.bytes, maxSide)) }
+                // Картинке без потолка (0) FrameDownscaler возвращает её же байты.
+                request.images.zip(maxSides) { image, maxSide ->
+                    image.copy(bytes = FrameDownscaler.downscale(image.bytes, maxSide))
+                }
             }
         val after = images.sumOf { it.bytes.size }
         if (after != before) {
             logger.debug {
-                "Downscaled ${images.size} images of ${request.requestId} to <=$maxSide px: " +
+                val caps = request.images.zip(maxSides) { image, maxSide -> capLabel(image.role, maxSide) }.distinct()
+                "Downscaled ${images.size} images of ${request.requestId} (${caps.joinToString()}): " +
                     "$before -> $after bytes"
             }
         }
         return request.copy(images = images)
     }
+
+    /** `STORYBOARD <=2560 px` или `FRAME as is` — для DEBUG-строки об уменьшении. */
+    private fun capLabel(
+        role: VisionImage.Role,
+        maxSide: Int,
+    ): String = if (maxSide > 0) "$role <=$maxSide px" else "$role as is"
 
     private suspend fun <T> executeWithRetry(
         backend: VisionBackend,

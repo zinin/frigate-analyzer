@@ -188,7 +188,17 @@ application:
       max-in-flight: ${APP_AI_JUDGE_MAX_IN_FLIGHT:32}
       # Кадры с рамками, первые N по ранжированию визуализации, в хронологическом порядке.
       max-frames: ${APP_AI_JUDGE_MAX_FRAMES:4}
+      # Длинная сторона этих кадров; у раскадровки свой потолок — storyboard.max-image-side.
       max-image-side: ${APP_AI_JUDGE_MAX_IMAGE_SIDE:1280}
+      # Раскадровка для судьи. Окно, число клеток и ожидание следующего сегмента общие с описаниями
+      # (application.ai.description.storyboard); здесь только своё включение, потолок и бюджет.
+      storyboard:
+        # false — судья решает по одним кадрам с рамками; описаний это не касается.
+        enabled: ${APP_AI_JUDGE_STORYBOARD_ENABLED:true}
+        # Длинная сторона сетки: 0 (без потолка фичи; потолок пресета действует и тогда) или 256..8192.
+        max-image-side: ${APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE:2560}
+        # Бюджет одной сборки, когда первым её потребителем оказывается судья.
+        timeout: ${APP_AI_JUDGE_STORYBOARD_TIMEOUT:10s}
       rate-limit:
         enabled: ${APP_AI_JUDGE_RATE_LIMIT_ENABLED:true}
         max-requests: ${APP_AI_JUDGE_RATE_LIMIT_MAX:200}

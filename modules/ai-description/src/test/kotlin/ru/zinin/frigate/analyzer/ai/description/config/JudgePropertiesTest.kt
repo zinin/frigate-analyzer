@@ -55,4 +55,49 @@ class JudgePropertiesTest {
             }
         assertTrue(e.message!!.contains("static-iou") || e.message!!.contains("staticIou"), e.message)
     }
+
+    @Test
+    fun `storyboard defaults match the documented judge settings`() {
+        val storyboard = JudgeProperties().storyboard
+        assertEquals(true, storyboard.enabled)
+        assertEquals(2560, storyboard.maxImageSide)
+        assertEquals(Duration.ofSeconds(10), storyboard.timeout)
+    }
+
+    @Test
+    fun `storyboard max-image-side accepts 0 and the bounds of 256 to 8192`() {
+        listOf(0, 256, 8192).forEach { cap ->
+            val props = JudgeProperties(storyboard = JudgeProperties.StoryboardSettings(maxImageSide = cap))
+            assertEquals(cap, props.storyboard.maxImageSide)
+        }
+    }
+
+    @Test
+    fun `storyboard max-image-side outside 0 and 256 to 8192 is rejected`() {
+        listOf(-1, 255, 8193).forEach { cap ->
+            val e =
+                assertFailsWith<IllegalArgumentException>("max-image-side=$cap") {
+                    JudgeProperties(storyboard = JudgeProperties.StoryboardSettings(maxImageSide = cap))
+                }
+            assertTrue(e.message!!.contains("storyboard.max-image-side"), e.message)
+        }
+    }
+
+    /**
+     * Бюджет считается в целых миллисекундах, как и остальные таймауты судьи: положительное значение
+     * меньше миллисекунды стало бы нулём и обрывало бы каждую сборку, поэтому отклоняется вместе с
+     * нулём и отрицательным.
+     */
+    @Test
+    fun `a storyboard timeout that is not a positive number of milliseconds is rejected`() {
+        listOf(Duration.ZERO, Duration.ofSeconds(-1), Duration.ofNanos(999_999)).forEach { timeout ->
+            val e =
+                assertFailsWith<IllegalArgumentException>("timeout=$timeout") {
+                    JudgeProperties(storyboard = JudgeProperties.StoryboardSettings(timeout = timeout))
+                }
+            assertTrue(e.message!!.contains("storyboard.timeout"), e.message)
+        }
+        val oneMillisecond = JudgeProperties.StoryboardSettings(timeout = Duration.ofMillis(1))
+        assertEquals(Duration.ofMillis(1), JudgeProperties(storyboard = oneMillisecond).storyboard.timeout)
+    }
 }
