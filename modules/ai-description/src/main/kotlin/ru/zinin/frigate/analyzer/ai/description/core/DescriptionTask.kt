@@ -1,9 +1,8 @@
 package ru.zinin.frigate.analyzer.ai.description.core
 
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
-import java.util.Locale
 
-/** Тексты задачи описаний. Единственное место, где живут формулировки для обоих провайдеров. */
+/** Тексты задачи описаний, одни для обоих провайдеров; объяснение раскадровки общее с судьёй — [StoryboardPromptFormat]. */
 object DescriptionTask {
     /**
      * Правила про инструменты здесь нет намеренно. Кадры до провайдеров доезжают по-разному:
@@ -31,8 +30,8 @@ object DescriptionTask {
     fun images(request: DescriptionRequest): List<VisionImage> {
         val frames = request.frames.sortedBy { it.frameIndex }
         val storyboard = request.storyboard ?: return frames.map { VisionImage(it.bytes, frameCaption(it)) }
-        return listOf(VisionImage(storyboard.image, storyboardCaption(storyboard))) +
-            frames.map { VisionImage(it.bytes, fullFrameCaption(it)) }
+        val grid = VisionImage(storyboard.image, StoryboardPromptFormat.caption(storyboard), VisionImage.Role.STORYBOARD)
+        return listOf(grid) + frames.map { VisionImage(it.bytes, fullFrameCaption(it)) }
     }
 
     fun instructions(request: DescriptionRequest): VisionInstructions {
@@ -79,17 +78,7 @@ object DescriptionTask {
             appendLine("You are analyzing surveillance camera footage around an object detection event.")
             appendLine("Write both descriptions in $languageName.")
             appendLine()
-            appendLine(
-                "The first image is a storyboard: ${storyboard.tiles} frames taken every ${seconds(storyboard.stepSeconds)} " +
-                    "over ${seconds(storyboard.durationSeconds)} of footage, read left to right, top to bottom. " +
-                    "Each tile is labeled with its time in seconds from the start of the footage; " +
-                    "tiles labeled \"detection\" are the ones closest to a detection.",
-            )
-            if (storyboard.detections.isNotEmpty()) {
-                appendLine("The detector found: ${detectionsLine(storyboard.detections)}.")
-            }
-            if (storyboard.missingBefore) appendLine("Earlier footage is not available.")
-            if (storyboard.missingAfter) appendLine("Footage after ${seconds(storyboard.durationSeconds)} is not available.")
+            appendLine(StoryboardPromptFormat.explanation(storyboard))
             if (hasFrames) appendLine("The remaining images are full-resolution frames for details.")
             appendLine()
             append(
@@ -98,21 +87,10 @@ object DescriptionTask {
             )
         }
 
-    private fun detectionsLine(marks: List<DescriptionRequest.DetectionMark>): String =
-        marks.joinToString("; ") { mark ->
-            val base = "${mark.className} ${String.format(Locale.US, "%.2f", mark.confidence)}"
-            mark.offsetSeconds?.let { "$base at ${seconds(it)}" } ?: base
-        }
-
-    private fun storyboardCaption(storyboard: DescriptionRequest.Storyboard): String =
-        "Storyboard: ${storyboard.tiles} frames, ${seconds(storyboard.stepSeconds)} apart, left to right, top to bottom"
-
     private fun fullFrameCaption(frame: DescriptionRequest.FrameImage): String =
-        frame.offsetSeconds?.let { "Full-resolution frame at ${seconds(it)}" } ?: "Full-resolution frame ${frame.frameIndex}"
+        frame.offsetSeconds?.let { "Full-resolution frame at ${StoryboardPromptFormat.seconds(it)}" }
+            ?: "Full-resolution frame ${frame.frameIndex}"
 
     private fun frameCaption(frame: DescriptionRequest.FrameImage): String =
-        frame.offsetSeconds?.let { "Frame at ${seconds(it)}" } ?: "Frame ${frame.frameIndex}"
-
-    /** `5.0s`: одна цифра после точки, точка при любой локали JVM. */
-    internal fun seconds(value: Double): String = String.format(Locale.US, "%.1fs", value)
+        frame.offsetSeconds?.let { "Frame at ${StoryboardPromptFormat.seconds(it)}" } ?: "Frame ${frame.frameIndex}"
 }

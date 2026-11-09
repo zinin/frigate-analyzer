@@ -10,4 +10,9 @@ data class JudgeRequest(
     val contextJson: String,
     val language: String,
     val maxSnoozeMinutes: Int,
+    /**
+     * Раскадровка события; `null` — модель получает только [frames]. Времена сетки и `offsetSeconds` кадров
+     * отсчитаны от одного нуля, который выбирает вызывающая сторона: задача их только печатает.
+     */
+    val storyboard: DescriptionRequest.Storyboard? = null,
 )
