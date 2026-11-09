@@ -762,6 +762,24 @@ class NotificationJudgeServiceTest {
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
         }
 
+    /** Обычный сбой подготовки — как сбой модели: FAILOVER / TRANSPORT с исходным контекстом, одна рассылка, модель не вызывается. */
+    @Test
+    fun `a failing preparation fails over with the original context`() =
+        runTest {
+            val s = service()
+            coEvery { requestFactory.create(any(), any()) } throws IllegalStateException("preparation exploded")
+
+            s.process(candidate())
+
+            val v = recorded.single()
+            assertEquals(VerdictStage.FAILOVER, v.stage)
+            assertEquals(VerdictReason.TRANSPORT, v.reason)
+            assertEquals(VerdictDecision.PUBLISH, v.verdict)
+            assertEquals("{}", v.contextJson)
+            coVerify(exactly = 0) { agent.judge(any()) }
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
     /**
      * В строку вердикта идёт контекст подготовленного запроса — с `visual_input`, то есть с тем, с чем judge шёл к
      * модели, — а не исходный JSON: и у решения модели (PUBLISH, SUPPRESS), и у её сбоя.

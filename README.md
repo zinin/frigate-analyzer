@@ -319,24 +319,24 @@ as today. Every verdict is stored in `notification_verdicts` (no cleanup) and sh
 | `APP_AI_JUDGE_ZONE` | *(empty)* | Local-time zone of the prompt; empty = owner's `/timezone`, then the JVM zone (UTC in the container) |
 
 **Storyboard for the judge.** The judge sees the event's timed storyboard first and its annotated
-frames after it, all on one timeline — the same grid the description gets, built once per event and
-shared — so it sees how the scene changed, not only the frames with detections. The grid is
-prepared only after the judge's own checks (runtime switch, snooze, recipients, database context,
-rate limit), within `APP_AI_JUDGE_STORYBOARD_TIMEOUT` and without waiting for the next segment. A grid
-that cannot be built, or not in time, is no error: the judge decides from the frames, and the
-description of that event does not try again. Its window and tile count are the description settings
-`APP_AI_DESCRIPTION_STORYBOARD_BEFORE`, `_AFTER` and `_TILES`, while
-`APP_AI_DESCRIPTION_STORYBOARD_ENABLED` decides for descriptions only.
+frames after it, all on one timeline — the same grid the description gets when it uses one, since a
+finished build is shared and never repeated for the event — so it sees how the scene changed, not
+only the frames with detections. The grid is prepared only after the judge's own checks (runtime
+switch, snooze, recipients, database context, rate limit), within `APP_AI_JUDGE_STORYBOARD_TIMEOUT`
+and without waiting for the next segment. A grid that cannot be built, or not in time, is no error:
+the judge decides from the frames, and the description of that event does not try again. Its window
+and tile count are the description settings `APP_AI_DESCRIPTION_STORYBOARD_BEFORE`, `_AFTER` and
+`_TILES`, while `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` decides for descriptions only.
 
 Two costs come with it. The preparation delays the verdict and therefore the notification — the 21
-grids the descriptions built in production (28.10–09.11) took 1.5 s on average and 2.2 s at most;
-the budget is the ceiling. And every judge call that gets a grid carries one image more: a 2560 px
-grid has about the pixels of four 1280 px frames, so in pixels the judge's image input doubles with
-four frames and grows fivefold with one — and vision endpoints bill by image area. A grid is now
-also built for events the judge suppresses. A verdict's `latency_ms` still measures only the model
-call; the preparation time is in `visual_input.preparation_ms` of its stored `context_json`. To roll
-back without a rebuild, set `APP_AI_JUDGE_STORYBOARD_ENABLED=false` and restart the container;
-descriptions keep their own setting.
+grids the descriptions built in production (2026-10-28 to 2026-11-09) took 1.5 s on average and
+2.2 s at most; the budget is the ceiling. And every judge call that gets a grid carries one image
+more: a 2560 px grid has about the pixels of four 1280 px frames, so in pixels the judge's image
+input doubles with four frames and grows fivefold with one — and vision endpoints bill by image
+area. A grid is now also built for events the judge suppresses. A verdict's `latency_ms` still
+measures only the model call; the preparation time is in `visual_input.preparation_ms` of its stored
+`context_json`. To roll back without a rebuild, set `APP_AI_JUDGE_STORYBOARD_ENABLED=false` and
+restart the container; descriptions keep their own setting.
 
 Full list of variables (notification dedup, ffmpeg tuning, detection thresholds, etc.) lives in
 [`.claude/rules/configuration.md`](.claude/rules/configuration.md) and `docker/deploy/.env.example`.

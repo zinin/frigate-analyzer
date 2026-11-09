@@ -629,9 +629,11 @@ knows nothing about Telegram.
   `wanted` are the same with or without a grid; the grid adds evidence, not policy.
 
 **`visual_input`.** The factory appends one block to the context JSON, so it reaches both the model
-and `notification_verdicts.context_json` (no migration): the selected frames (`index`,
-`offset_seconds`, `null` when unknown), the storyboard's `status` — `available`, `disabled`,
-`unavailable` or `timeout` — with `tiles`, `step_seconds`, `duration_seconds`,
+and `notification_verdicts.context_json` (no migration): the selected frames (`index`, and
+`offset_seconds` on the request's one timeline — from the grid's zero when the storyboard is
+available, so the time in the recording is `offset_seconds + zero_recording_seconds`, otherwise from
+the start of the recording — `null` when unknown), the storyboard's `status` — `available`,
+`disabled`, `unavailable` or `timeout` — with `tiles`, `step_seconds`, `duration_seconds`,
 `zero_recording_seconds`, `missing_before` and `missing_after` only when it is available, then
 `preparation_ms` and `image_count` (the frames plus the grid). It describes the prepared request, not
 proof that an endpoint received the images, and holds no image bytes, base64, paths or secrets.
@@ -640,13 +642,13 @@ object) the context goes on without the block, with a WARN, and the images are u
 line per judged candidate tells the outcome apart, e.g.
 `Judge input: cam=cam1 storyboard=available preparation=2000ms images=3 recording=<id>`.
 
-**Time and cost.** The preparation delays the verdict and so the notification: in production logs of
-28.10–09.11 the description built 21 grids, 1.5 s on average and 2.2 s at most, and the ceiling is
-the budget. `latency_ms` of the verdict is still the vision call alone, so it does not show this
-delay — `visual_input.preparation_ms` does; more images can lengthen the call itself, and that
-`latency_ms` does show. A storyboard is now also built for events the judge goes on to suppress — the
-price of context before the decision. Model calls per candidate stay the same; images and input
-tokens grow.
+**Time and cost.** The preparation delays the verdict and so the notification: in production logs
+from 2026-10-28 to 2026-11-09 the description built 21 grids, 1.5 s on average and 2.2 s at most,
+and the ceiling is the budget. `latency_ms` of the verdict is still the vision call alone, so it
+does not show this delay — `visual_input.preparation_ms` does; more images can lengthen the call
+itself, and that `latency_ms` does show. A storyboard is now also built for events the judge goes on
+to suppress — the price of context before the decision. Model calls per candidate stay the same;
+images and input tokens grow.
 
 ### Snooze
 
@@ -707,7 +709,8 @@ Besides their frames, the description model and the judge get a timed storyboard
 grid of up to `tiles` (16) frames sampled evenly around the detection, reaching into the neighbouring
 Frigate segments when the event crosses a recording boundary. Without it the model usually saw 1–4
 frames of one segment and could not tell a parked car from one driving past. Built in `core`
-(`core/storyboard/`), once per event for both; this module only words it (`DescriptionRequest.storyboard`
+(`core/storyboard/`), at most one finished build per event, shared by both consumers when both take
+it (see "Where it runs"); this module only words it (`DescriptionRequest.storyboard`
 and `JudgeRequest.storyboard`, through `DescriptionTask`, `JudgeTask` and the shared
 `StoryboardPromptFormat`).
 
