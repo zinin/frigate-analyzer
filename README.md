@@ -473,7 +473,7 @@ Module dependencies: main chain `core` → `telegram` → `service` → `model` 
 ## Tech Stack
 
 - **Kotlin 2.4.10** + **Coroutines** + **Channels**
-- **Spring Boot 4.1.1** + **WebFlux** (reactive)
+- **Spring Boot 4.1.2** + **WebFlux** (reactive)
 - **R2DBC** + **PostgreSQL** (non-blocking database access)
 - **Liquibase 5** (database migrations)
 - **MapStruct** (entity mapping)
