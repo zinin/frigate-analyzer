@@ -140,6 +140,47 @@ class JudgeTaskTest {
         assertFalse(earlierMissing.contains("exact", ignoreCase = true))
     }
 
+    /**
+     * Вступление с сеткой стало обычным промптом судьи, а проверки по фрагментам не заметили бы, что из него пропало
+     * начало — камера и задача. Поэтому оно закреплено байт в байт, со всеми переводами строк: с кадрами детектора
+     * и всеми необязательными строками о сетке — и без кадров и без единой такой строки.
+     */
+    @Test
+    fun `the storyboard preamble keeps its wording byte for byte`() {
+        val intro =
+            "A YOLO detector flagged objects in a short recording from camera `cam2`. Your job is to decide whether " +
+                "the household should be notified about this recording. Context assembled from the database follows " +
+                "the images.\n\n"
+        val grid =
+            "The first image is a storyboard: 16 frames taken every 0.7s over 10.0s of footage, " +
+                "read left to right, top to bottom. " +
+                "Each tile is labeled with its time in seconds from the start of the footage; " +
+                "tiles labeled \"detection\" are the ones closest to a detection."
+        val frames =
+            "\nThe remaining images are frames where the detector found objects, with its boxes drawn on them, " +
+                "captioned with the frame index used in the context and, when known, the frame's time on the " +
+                "storyboard's scale. The storyboard tiles carry no boxes, and a tile labeled \"detection\" is " +
+                "only the tile nearest to a detection in time, not necessarily the frame the detector saw."
+        val detections =
+            listOf(
+                DescriptionRequest.DetectionMark("bird", 0.6697, 5.04),
+                DescriptionRequest.DetectionMark("person", 0.71, null),
+            )
+        val full = request.copy(storyboard = storyboard(missingBefore = true, missingAfter = true, detections = detections))
+        val bare = request.copy(frames = emptyList(), storyboard = storyboard(detections = emptyList()))
+
+        assertEquals(
+            intro +
+                grid +
+                "\nThe detector found: bird 0.67 at 5.0s; person 0.71." +
+                "\nEarlier footage is not available." +
+                "\nFootage after 10.0s is not available." +
+                frames,
+            JudgeTask.instructions(full).preamble,
+        )
+        assertEquals(intro + grid, JudgeTask.instructions(bare).preamble)
+    }
+
     /** Без сетки — прежний режим: то же вступление, тот же заголовок и `Frame N` у кадра без времени. */
     @Test
     fun `without storyboard keeps legacy header and unknown times`() {
