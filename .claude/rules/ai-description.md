@@ -724,7 +724,8 @@ and `JudgeRequest.storyboard`, through `DescriptionTask`, `JudgeTask` and the sh
 `RecordingStoryboard` for the event whenever the builder bean exists, whatever the description
 switches say, and hands the same object to the `JudgeCandidate` and to the description supplier.
 Creating it reads no video and starts nothing, so the pipeline consumer never waits for ffmpeg. The
-grid is built by whoever asks first, and nobody builds it twice:
+grid is built by whoever asks first, and once that attempt has finished — with a grid, without one
+or with its budget spent — nobody builds it again:
 
 - **The judge**, when it is on and `APP_AI_JUDGE_STORYBOARD_ENABLED=true`, asks first — after its
   checks and right before the model (step 6 of "Seven steps"), within

@@ -306,7 +306,7 @@ as today. Every verdict is stored in `notification_verdicts` (no cleanup) and sh
 | `APP_AI_JUDGE_MAX_CONCURRENT` | `2` | Max simultaneous judge calls (separate from descriptions) |
 | `APP_AI_JUDGE_MAX_FRAMES` | `4` | Annotated frames sent to the model |
 | `APP_AI_JUDGE_MAX_IMAGE_SIDE` | `1280` | Longest frame side; `0` = as-is |
-| `APP_AI_JUDGE_STORYBOARD_ENABLED` | `true` | Give the judge the event's storyboard before the model call; `false` = the annotated frames alone, as before. Descriptions keep their own switch |
+| `APP_AI_JUDGE_STORYBOARD_ENABLED` | `true` | Give the judge the event's storyboard before the model call; `false` = no grid: the annotated frames alone (still captioned with their times), and `visual_input` in the judge's context reports `disabled`. Descriptions keep their own switch |
 | `APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE` | `2560` | Longest side of the judge's storyboard; `0` = no cap of its own (a preset's `max-image-side` still applies), otherwise `256..8192` |
 | `APP_AI_JUDGE_STORYBOARD_TIMEOUT` | `10s` | Budget for building the storyboard when the judge asks for it first; once it runs out the judge decides from the frames |
 | `APP_AI_JUDGE_RATE_LIMIT_MAX` | `200` | Protective ceiling; beyond it candidates go out unjudged |
