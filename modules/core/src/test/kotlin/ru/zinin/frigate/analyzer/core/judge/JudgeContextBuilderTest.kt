@@ -1,8 +1,11 @@
 package ru.zinin.frigate.analyzer.core.judge
 
+import io.mockk.Called
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import ru.zinin.frigate.analyzer.ai.description.config.JudgeProperties
 import ru.zinin.frigate.analyzer.core.testsupport.TestObjectMappers
@@ -32,6 +35,7 @@ import java.time.ZoneId
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class JudgeContextBuilderTest {
@@ -228,4 +232,54 @@ class JudgeContextBuilderTest {
             assertEquals("", root["camera_notes"].asString())
             assertEquals(false, root["active_tracks"][0]["matched_now"].asBoolean())
         }
+
+    /**
+     * `visual_input` дописывается к уже собранному контексту: разбор и запись JSON, без единого запроса к базе.
+     * Прежние блоки и деградации остаются как были, новый блок встаёт последним.
+     */
+    @Test
+    fun `visual input is added without database reads`() =
+        runTest {
+            happyStubs()
+            // Контекст из build с одной деградацией: она должна пережить дописывание блока.
+            val context = builder.build(candidate, objects, zone).copy(errors = listOf("recent_verdicts"))
+            clearMocks(stats, tracks, verdicts, answers = false)
+            val visualInput =
+                mapOf(
+                    "frames" to listOf(mapOf("index" to 0, "offset_seconds" to null)),
+                    "storyboard" to mapOf("status" to "disabled"),
+                    "preparation_ms" to 0L,
+                    "image_count" to 1,
+                )
+
+            val result = builder.withVisualInput(context, visualInput, recordingId)
+
+            verify { listOf(stats, tracks, verdicts) wasNot Called }
+            assertEquals(listOf("recent_verdicts"), result.errors)
+            val before = mapper.readTree(context.json)
+            val after = mapper.readTree(result.json)
+            assertEquals(before.propertyNames() + "visual_input", after.propertyNames().toList())
+            before.propertyNames().forEach { name -> assertEquals(before[name], after[name], name) }
+            assertEquals(mapper.readTree(mapper.writeValueAsString(visualInput)), after["visual_input"])
+        }
+
+    /**
+     * Сбой диагностики — не сбой judge: исходный JSON не разобрать, он не объект или блок не записать — WARN и тот же
+     * исходный объект, без исключения. Вызов вне корутины: дописывание не приостанавливается.
+     */
+    @Test
+    fun `broken diagnostic context returns original`() {
+        listOf(
+            JudgeContextResult("{\"recording\":", listOf("objects.static")) to mapOf("image_count" to 1),
+            JudgeContextResult("[]", emptyList()) to mapOf("image_count" to 1),
+            JudgeContextResult("{}", emptyList()) to mapOf("image_count" to Unwritable()),
+        ).forEach { (context, visualInput) ->
+            assertSame(context, builder.withVisualInput(context, visualInput, recordingId), context.json)
+        }
+    }
+
+    /** Значение, которое Jackson не запишет: геттер бросает. */
+    private class Unwritable {
+        val value: Int get() = error("not writable")
+    }
 }
