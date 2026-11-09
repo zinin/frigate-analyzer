@@ -23,6 +23,9 @@ object JudgeTask {
     /** Заголовок перед картинками, когда первой идёт раскадровка. */
     const val IMAGES_HEADER = "Images:"
 
+    /** Только когда время хоть одного кадра известно: с неизвестными временами промпт остаётся прежним. */
+    private const val FRAME_TIMES_NOTE = "Times in the frame captions are in seconds from the start of the recording."
+
     fun visionRequest(request: JudgeRequest): VisionRequest = VisionRequest(request.recordingId, images(request), instructions(request))
 
     /** Раскадровка первой, затем кадры с рамками по `frameIndex`; без раскадровки — одни кадры. */
@@ -41,8 +44,11 @@ object JudgeTask {
                 "whether the household should be notified about this recording."
         val preamble =
             if (storyboard == null) {
-                "$intro The frames below have the detector's boxes drawn on them. " +
-                    "Context assembled from the database follows the frames."
+                buildString {
+                    append("$intro The frames below have the detector's boxes drawn on them. ")
+                    if (request.frames.any { it.offsetSeconds != null }) append("$FRAME_TIMES_NOTE ")
+                    append("Context assembled from the database follows the frames.")
+                }
             } else {
                 storyboardPreamble(intro, storyboard, hasFrames = request.frames.isNotEmpty())
             }

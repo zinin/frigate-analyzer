@@ -205,4 +205,28 @@ class JudgeTaskTest {
             vision.instructions.preamble,
         )
     }
+
+    /** Без сетки, когда время кадра известно, вступление говорит, от чего оно считается; заголовок прежний. */
+    @Test
+    fun `without storyboard known times are explained`() {
+        val judge =
+            request.copy(
+                frames =
+                    listOf(
+                        DescriptionRequest.FrameImage(2, byteArrayOf(2), offsetSeconds = 5.0),
+                        DescriptionRequest.FrameImage(0, byteArrayOf(0)),
+                    ),
+            )
+
+        val instructions = JudgeTask.instructions(judge)
+
+        assertEquals(
+            "A YOLO detector flagged objects in a short recording from camera `cam2`. Your job is to decide whether " +
+                "the household should be notified about this recording. The frames below have the detector's boxes " +
+                "drawn on them. Times in the frame captions are in seconds from the start of the recording. " +
+                "Context assembled from the database follows the frames.",
+            instructions.preamble,
+        )
+        assertEquals("Frames (in chronological order):", instructions.imagesHeader)
+    }
 }

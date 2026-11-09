@@ -111,7 +111,8 @@ the frames in `frameIndex` order; the grid's caption and its explanation come fr
 known; an index never stands in for an unknown time. Without a storyboard the judge keeps the header
 `Frames (in chronological order):`, and with frames of unknown time its prompt is byte for byte what
 the providers printed before, pinned by `the judge prompt keeps its shape` / `the judge blocks keep
-their shape`.
+their shape`. When a frame's time is known, that preamble adds one sentence: the caption times count
+from the start of the recording.
 
 ## Presets, catalog and resolution
 
