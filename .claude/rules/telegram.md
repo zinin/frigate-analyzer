@@ -158,24 +158,30 @@ Photos are collected recursively (`RichBlock.subBlocks`), not by filtering the t
 two or more frames go out inside `<tg-collage>`, which comes back as a `RichBlockCollage` container
 with the photos one level below.
 
-### Do not emit Bot API 10.3 constructs
+### Do not emit Bot API 10.3 constructs without a live check
 
-**Verified live: `<tg-button>`.** Telegram accepts it and the message arrives, but ktgbotapi 36.1.0
-throws while deserializing the response — `RawMessage$$serializer` does not know the entity. The bot
-then sees a failed send for a message already in the chat, and `RetryHelper.retryBounded` sends it
-again — a deserialization failure counts as an error answer, so up to three copies, not an endless
-stream. Keep buttons in `reply_markup` until the library ships 10.3.
+**Verified live on 36.1.0: `<tg-button>`.** Telegram accepted it and the message arrived, but
+ktgbotapi 36.1.0 threw while deserializing the response — `RawMessage$$serializer` did not know the
+entity. The bot then saw a failed send for a message already in the chat, and `RetryHelper.retryBounded`
+sent it again — a deserialization failure counts as an error answer, so up to three copies, not an
+endless stream.
+
+**37.0.0 models Bot API 10.3.** In 37.1.0 the rich-text serializer knows `RichTextButton` (`button`),
+and `RichBlockSerializer` knows `RichBlockButtons`, `RichBlockDocument` and
+`RichBlockExpandableBlockQuotation`. That removes the cause above on paper, but nothing has been
+checked live on 37.1.0: keep buttons in `reply_markup` until a live check shows the bot reads back
+its own 10.3 message.
 
 **What fails is a block or entity *type* the library does not model.** `RichBlockSerializer`
-dispatches on `type` and errors on an unknown one, so every 10.3 block or entity type
-(`<tg-document>`, `<tg-button>`) fails as above. Unknown *fields* on a known type are ignored — the
+dispatches on `type` and errors on an unknown one, so a type newer than the library fails as above —
+on 36.1.0 every 10.3 type did (`<tg-document>`, `<tg-button>`). Unknown *fields* on a known type are ignored — the
 executor's JSON format is lenient — which is why `<table bordered striped compact>` is fine:
 `compact` (`is_compact`) is a 10.3 addition, and the 2026-08-31 live check rendered and echoed it
 correctly (recorded in the plan at `d2b8f4f:docs/superpowers/plans/2026-08-31-rich-message-notification.md`,
 git history only). `<blockquote expandable>` inside a rich message is untested — the expandable
-blockquote did work in plain messages before this branch, so the tag itself is not the problem — but a
-new entity type would fail the same way, and that failure mode — a duplicate notification — is not
-worth probing in production.
+blockquote did work in plain messages before this branch, so the tag itself is not the problem — but on
+36.1.0 a new entity type would fail the same way, and that failure mode — a duplicate notification — is
+not worth probing in production.
 
 ## User Management
 
@@ -259,7 +265,7 @@ The router (`FrigateAnalyzerBot.registerRoutes()`) does an exhaustive `when` ove
 
 Disable for development: `java -Dapplication.telegram.enabled=false ...`
 
-## ktgbotapi Waiter API (v36.1.0)
+## ktgbotapi Waiter API (v37.1.0)
 
 Source: https://github.com/InsanusMokrassar/ktgbotapi
 

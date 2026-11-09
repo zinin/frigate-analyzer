@@ -235,7 +235,7 @@ class TelegramNotificationSender(
      * и одиночное фото (рекурсия вырождается), и остальные контейнеры. Порядок обхода документный,
      * то есть тот же, в котором рендерер раздал `mediaId(0..n)`.
      *
-     * **Граница рекурсии конечна.** [subBlocks] в 36.1.0 разбирает ровно пять типов —
+     * **Граница рекурсии конечна.** [subBlocks] в 37.1.0, как и в 36.1.0, разбирает ровно пять типов —
      * `RichBlockList` (разворачивая `items` своих `RichBlockListItem`), `RichBlockBlockQuotation`,
      * `RichBlockCollage`, `RichBlockSlideshow`, `RichBlockDetails`, — а для всего прочего отдаёт
      * пустой список. `RichBlockListItem` собственным случаем НЕ является: встреченный на верхнем
@@ -243,6 +243,8 @@ class TelegramNotificationSender(
      * `RichBlockTable` и `RichBlockFooter` в него НЕ входят. Сегодня рендерер фото туда не кладёт,
      * но если положит, обход их не увидит: `fileIds` недосчитается, сработает guard в [sendRecording],
      * и получатель навсегда останется с плейсхолдером. Новую обёртку с фото обязан сопровождать тест.
+     * Блоки Bot API 10.3, появившиеся в 37.0.0, — `RichBlockButtons`, `RichBlockDocument`,
+     * `RichBlockExpandableBlockQuotation` — вложенных блоков не держат вовсе.
      */
     private fun RichBlock.photosInOrder(): List<RichBlockPhoto> =
         if (this is RichBlockPhoto) listOf(this) else subBlocks.flatMap { it.photosInOrder() }
