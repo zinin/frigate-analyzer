@@ -54,200 +54,30 @@
 
 ### Task 1: Независимые caps сетки и кадров, конфигурация judge
 
-**Files:**
-- Modify: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/core/VisionRequest.kt`
-- Modify: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/core/VisionLimits.kt`
-- Modify: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/core/VisionCallExecutor.kt`
-- Modify: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/config/JudgeProperties.kt`
-- Modify: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/config/AiDescriptionAutoConfiguration.kt`
-- Modify: `modules/core/src/main/resources/application.yaml`
-- Create/Test: `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/core/VisionImageTest.kt`
-- Test: `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/core/VisionCallExecutorTest.kt`
-- Test: `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/config/JudgePropertiesTest.kt`
-- Test: `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/config/AiJudgeAutoConfigurationTest.kt`
-
-**Interfaces:**
-- Consumes: существующие `FrameDownscaler.effectiveMaxSide(featureCap: Int, presetCap: Int): Int`, `ActivePresetResolver.resolve()` и fake backend в тестах.
-- Produces: `VisionImage(bytes: ByteArray, caption: String, role: VisionImage.Role = VisionImage.Role.FRAME)` с вложенным `enum class Role { FRAME, STORYBOARD }`.
-- Produces: новый последний параметр `VisionLimits.storyboardMaxImageSide: Int? = null`.
-- Produces: новый последний параметр `JudgeProperties.storyboard: JudgeProperties.StoryboardSettings = StoryboardSettings()`; вложенный тип с `enabled: Boolean = true`, `maxImageSide: Int = 2560`, `timeout: java.time.Duration = Duration.ofSeconds(10)`.
-
-- [ ] **Step 1: Написать RED-тесты caps и свойств.** В `VisionCallExecutorTest` переиспользовать существующие `jpeg`, `FakeBackend`, `build` и `call`; тест `storyboardAndFramesHaveIndependentCaps` передаёт два JPEG 4000×3000 с ролями FRAME/STORYBOARD и проверяет размеры у backend. Добавить именованные случаи с такими assertions:
-
-```kotlin
-// storyboardAndFramesHaveIndependentCaps: feature 1280/2560, preset 0
-assertEquals(listOf(1280, 2560), longestSides)
-// presetCapLimitsBothRoles: feature 1280/2560, preset 1568
-assertEquals(listOf(1280, 1568), longestSides)
-// portraitStoryboardUsesLongestSide: source 1200×4000
-assertEquals(768, image.width)
-assertEquals(2560, image.height)
-// inheritedStoryboardCap: storyboardMaxImageSide=null, maxImageSide=1280
-assertEquals(1280, storyboardLongestSide)
-// disabledStoryboardFeatureCap: storyboardMaxImageSide=0, presetCap=1568
-assertEquals(1568, storyboardLongestSide)
-// storyboardCapWorksWithUnlimitedFrames: maxImageSide=0, storyboardMaxImageSide=2560
-assertEquals(listOf(4000, 2560), longestSides)
-```
-
-В `smallImagesAreNotUpscaled` проверить неизменность байтов JPEG 240×160; в `retryReusesPreparedImagesForBothRoles` — одинаковые prepared bytes в обеих попытках; в `storyboardCapDoesNotLeakAcrossPresets` — вызовы пресетов с cap 1568 и без него дают 1568 и 2560 для одной исходной сетки. В `differentPresetsDoNotMutateSourceStoryboard` до вызовов сделать `val originalGridBytes = sourceGrid.copyOf()`, передать sourceGrid обоим вызовам и после них проверить `assertContentEquals(originalGridBytes, sourceGrid)`. В `VisionImageTest` проверить default FRAME, equality/hashCode одинакового содержимого с одинаковой ролью, неравенство разных ролей и отсутствие дампа байтов в `toString`.
-
-В `JudgePropertiesTest` проверить defaults true/2560/10s, допустимые caps 0/256/8192, отказ для −1/255/8193 и timeout 0/−1s. В `AiJudgeAutoConfigurationTest` проверить binding значений false/1568/3s и сохранение отсутствия judge beans при master off. Там же проверить проводку executor-ов: у `judgeVisionCallExecutor` cap сетки равен `storyboard.max-image-side`, у `descriptionVisionCallExecutor` — `null`. Для этого `VisionCallExecutor.limits` становится `internal val`. `VisionCallExecutorTest` создаёт executor напрямую, поэтому перепутанный или забытый аргумент в `AiDescriptionAutoConfiguration` иначе не поймал бы ни один тест.
-
-- [ ] **Step 2: Запустить RED через build-runner.** Команда: `./gradlew :frigate-analyzer-ai-description:test --tests '*.VisionImageTest' --tests '*.VisionCallExecutorTest' --tests '*.JudgePropertiesTest' --tests '*.AiJudgeAutoConfigurationTest'`. Ожидается провал новых проверок/отсутствие новых контрактов; сбои окружения не считать подтверждением RED.
-- [ ] **Step 3: Реализовать контракты.** Учитывать role в equality/hashCode/toString; выбирать feature cap по роли внутри `VisionCallExecutor.downscaleImages`. Нельзя выходить по `limits.maxImageSide == 0`, пока у STORYBOARD есть свой cap. Применять preset cap к каждой роли и готовить изображения один раз до retry; DEBUG содержит роль/cap, не содержимое. Настройки пометить `@Valid`, валидировать диапазон и `timeout.toMillis() > 0`; положительные sub-ms значения, которые округляются в 0, отклонять. Только judge executor получает отдельный cap; description executor сохраняет `null`. Добавить три env-backed значения под `application.ai.judge.storyboard` в yaml.
-- [ ] **Step 4: Повторить команду Step 2 через build-runner.** Ожидается `BUILD SUCCESSFUL`, все новые и прежние проверки проходят, ни одного живого backend-вызова.
-- [ ] **Step 5: Закоммитить только Files задачи.** Сообщение: `feat(ai): разделить лимиты кадров и раскадровки judge`.
+✅ Done — see commit(s): `0f8702d5`
 
 ### Task 2: Временная раскадровка в запросе и промпте judge
 
-**Files:**
-- Modify: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/api/JudgeRequest.kt`
-- Modify: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/core/JudgeTask.kt`
-- Modify: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/core/DescriptionTask.kt`
-- Create: `modules/ai-description/src/main/kotlin/ru/zinin/frigate/analyzer/ai/description/core/StoryboardPromptFormat.kt`
-- Test: `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/core/JudgeTaskTest.kt`
-- Test: `modules/ai-description/src/test/kotlin/ru/zinin/frigate/analyzer/ai/description/core/DescriptionTaskTest.kt`
-
-**Interfaces:**
-- Consumes: `VisionImage.Role` задачи 1; существующие `DescriptionRequest.Storyboard`, `FrameImage.offsetSeconds` и `DetectionMark`.
-- Produces: новый последний параметр `JudgeRequest.storyboard: DescriptionRequest.Storyboard? = null`.
-- Produces: `internal object StoryboardPromptFormat` с `caption(storyboard: DescriptionRequest.Storyboard): String`, `explanation(storyboard: DescriptionRequest.Storyboard): String`, `seconds(value: Double): String`. `explanation` — общий блок текущего `DescriptionTask` от “The first image is a storyboard” до строк о недоступном видео включительно, без политики задачи. Фраза об остальных картинках в общий блок не входит: у задач она разная. Описание сохраняет прежнюю “The remaining images are full-resolution frames for details.”. Judge пишет свою, о кадрах детектора с нарисованными рамками: его кадры аннотированы и уменьшены до 1280 px, и «full-resolution» про них неверно.
-
-- [ ] **Step 1: Написать RED-тесты представления.** В `JudgeTaskTest` добавить `storyboardPrecedesChronologicalDetailFrames`: сетка с 16 клетками, step 0.66, duration 10.0, детекцией bird 0.6697 в 5.0s; крупные кадры переданы в порядке 3/0, у 3 offset 5.0, у 0 время неизвестно. Assertions:
-
-```kotlin
-assertEquals(listOf(VisionImage.Role.STORYBOARD, VisionImage.Role.FRAME, VisionImage.Role.FRAME), vision.images.map { it.role })
-assertEquals(listOf("Storyboard: 16 frames, 0.7s apart, left to right, top to bottom", "Frame 0", "Frame 3 at 5.0s"), vision.images.map { it.caption })
-assertEquals("Images:", vision.instructions.imagesHeader)
-assertTrue(vision.instructions.preamble.contains("closest to a detection"))
-assertTrue(vision.instructions.epilogue.contains("When in doubt about a person, PUBLISH"))
-```
-
-Добавить `storyboardExplainsMissingFootageAndDetectionTimes`: флаги missing-before/after отражаются в тексте, время детекции имеет точку и одну цифру после неё, нет утверждения о точном совпадении клетки с детекцией. `withoutStoryboardKeepsLegacyHeaderAndUnknownTimes` сохраняет старый заголовок и `Frame N` для неизвестного offset. Обновить намеренно устаревающий тест `frames are captioned Frame N...`: известный offset теперь даёт `Frame 2 at 5.0s`; его комментарий о полном игнорировании времени больше неверен. В `DescriptionTaskTest` проверить роль сетки, прежние captions/порядок и прежние формулировки; schema, policy, snooze ceiling и provider tool rules не менять.
-
-- [ ] **Step 2: Запустить RED через build-runner.** `./gradlew :frigate-analyzer-ai-description:test --tests '*.JudgeTaskTest' --tests '*.DescriptionTaskTest' --tests '*.DefaultJudgeAgentTest' --tests '*.ClaudePromptBuilderTest' --tests '*.GrokPromptFileWriterTest'`. Ожидается провал новых проверок DTO/представления, не инфраструктурная ошибка.
-- [ ] **Step 3: Реализовать представление.** Добавить поле DTO. Вынести только общее форматирование сетки из `DescriptionTask`, сохранив его тексты байт в байт. Внешних вызовов у `DescriptionTask.seconds` нет, делегат для совместимости не нужен. Обе задачи помечают сетку ролью STORYBOARD. В `JudgeTask` сетка идёт первой, кадры сортируются по индексу; caption кадра — `Frame N at X.Xs`, если offset известен, иначе `Frame N`. При сетке preamble своей фразой о кадрах после сетки различает неаннотированный обзор и аннотированные detail frames, объясняет шкалу и ограничения; без неё сохраняет прежний режим. Не добавлять новый policy о снеге, количестве кадров или исчезновении объекта.
-- [ ] **Step 4: Повторить команду Step 2 через build-runner.** Ожидается `BUILD SUCCESSFUL`; оба provider renderer продолжают получать готовый упорядоченный список изображений без специальной логики раскадровки в backend.
-- [ ] **Step 5: Закоммитить только Files задачи.** Сообщение: `feat(ai): добавить раскадровку во вход judge`.
+✅ Done — see commit(s): `18df269b`
 
 ### Task 3: Ленивый результат раскадровки одного события
 
-**Files:**
-- Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/storyboard/StoryboardPreparation.kt`
-- Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/storyboard/RecordingStoryboard.kt`
-- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/storyboard/StoryboardBuilder.kt`
-- Create/Test: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/storyboard/RecordingStoryboardTest.kt`
-- Test: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/storyboard/StoryboardBuilderTest.kt`
-
-**Interfaces:**
-- Consumes/changes: `suspend StoryboardBuilder.build(recording: RecordingDto, detectionFrames: List<FrameData>, waitForNextSegment: Boolean = true): BuiltStoryboard?` — новый последний параметр. При `false` срок поиска следующего сегмента — момент старта сборки, то есть ровно одна проверка, как у записи из бэклога; planner, sampler, composer и правила стыковки не меняются. `BuiltStoryboard` остаётся в `StoryboardBuilder.kt`.
-- Produces: `data class StoryboardPreparation(val status: Status, val built: BuiltStoryboard?, val elapsed: java.time.Duration)` с вложенным `enum class Status { AVAILABLE, UNAVAILABLE, TIMEOUT }`; AVAILABLE означает ненулевой built, остальные — null.
-- Produces: `class RecordingStoryboard(recording: RecordingDto, detectionFrames: List<FrameData>, builder: StoryboardBuilder, timeSource: kotlin.time.TimeSource = TimeSource.Monotonic)` и `suspend fun get(timeout: java.time.Duration? = null, waitForNextSegment: Boolean = true): StoryboardPreparation`. Флаг уходит в builder при первой сборке; запомненный результат от флага последующих вызовов не зависит.
-
-- [ ] **Step 1: Написать RED-тесты жизненного цикла.** Использовать `runTest`, `CompletableDeferred` и mock builder, без настоящего ffmpeg/ожидания стены. Минимальные private recording/frame fixtures взять по образцу существующих storyboard-тестов. `constructionDoesNotBuild` проверяет ноль вызовов до get. `concurrentConsumersShareOneResult` запускает два get через один gate:
-
-```kotlin
-assertSame(firstResult, secondResult)
-assertEquals(StoryboardPreparation.Status.AVAILABLE, firstResult.status)
-coVerify(exactly = 1) { builder.build(any(), any(), any()) }
-```
-
-`unavailableResultIsMemoized`: builder возвращает null, оба get дают UNAVAILABLE и один вызов. `ownTimeoutIsMemoized` задерживает builder на 11 s виртуального времени, вызывает get с 10 s, затем get без бюджета: TIMEOUT/null, один build. `parentTimeoutIsNotOwnTimeout` оборачивает get(10 s) во внешний 1 s timeout: наружу выходит отмена, последующий живой get успешно повторяет build. `cancelledMutexWaiterDoesNotInvalidateOwner` отменяет только второго ожидающего потребителя: первый завершает сборку, третий получает тот же объект, всего один build. `cancelledBuilderCanBeRetried` отменяет первый активный get и проверяет успешную вторую попытку. `builderReceivesOnlyDetectionMetadata` захватывает аргумент: исходные JPEG пусты у всех элементов, offsets/детекции сохранены, исходные входные FrameData не изменены. `elapsedUsesInjectedMonotonicSource` проверяет elapsed через `TestTimeSource`, а не часы сервера. `waitFlagReachesBuilder`: флаг первого вызова доходит до builder, второй вызов с другим флагом получает тот же результат без новой сборки.
-
-В `StoryboardBuilderTest` добавить `withoutWaitTheNextSegmentIsCheckedOnce`: при `waitForNextSegment=false` finder получает срок не позже старта сборки, и без следующего сегмента сетка кончается на текущей записи с `missingAfter`. Со значением по умолчанию срок прежний (`nextDeadline`).
-
-- [ ] **Step 2: Запустить RED через build-runner.** `./gradlew :frigate-analyzer-core:test --tests '*.RecordingStoryboardTest' --tests '*.StoryboardBuilderTest'`. Ожидается отсутствие нового helper/провал его новых проверок.
-- [ ] **Step 3: Реализовать helper.** Сразу создать собственный список только кадров с детекциями с `frameBytes=ByteArray(0)`, не удерживать исходный список в closure. Синхронизировать get через Mutex, кэшировать ненулевой `StoryboardPreparation`, включая UNAVAILABLE/TIMEOUT. Бюджет применяется к первой сборке внутри mutex, включая все ожидания builder; повторное обращение не запускает новый бюджет. Отличать null builder от собственного timeout ненулевой обёрткой результата внутри `withTimeoutOrNull`; не ловить произвольный `TimeoutCancellationException` как собственный timeout. Отмену родителя не кэшировать. Обычный сбой builder уже превращает в null по его контракту. Измерять monotonic elapsed; не создавать scope/async. При собственном timeout писать одну WARN-строку с recording id, бюджетом и elapsed. На отмене builder ничего не пишет, а его INFO-строка появляется только при успехе, так что без этой WARN причины частых timeout не измерить. Изменить только consumer-specific WARN-формулировки builder и KDoc класса («для описания», «описание уйдёт по одним кадрам») на нейтральные, сохранив INFO и sampling. Добавить `waitForNextSegment` в `build`: при `false` передавать в `finder.next` срок, равный моменту старта сборки.
-- [ ] **Step 4: Повторить команду Step 2 через build-runner.** Ожидается `BUILD SUCCESSFUL`, нет виртуально зависших корутин или реальных задержек 10 s.
-- [ ] **Step 5: Закоммитить только Files задачи.** Сообщение: `feat(core): мемоизировать раскадровку события для двух потребителей`.
+✅ Done — see commit(s): `9d2711be`
 
 ### Task 4: Сборка JudgeRequest и диагностического visual_input
 
-**Files:**
-- Create: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/judge/JudgeRequestFactory.kt`
-- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/judge/JudgeCandidate.kt`
-- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/judge/JudgeContextBuilder.kt`
-- Create/Test: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/judge/JudgeRequestFactoryTest.kt`
-- Test: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/judge/JudgeContextBuilderTest.kt`
-
-**Interfaces:**
-- Consumes: контракты задач 1–3, `JudgeContextResult(json: String, errors: List<String>)` из `JudgeContext.kt` и существующие `DescriptionProperties.common.language`/`JudgeProperties.maxSnoozeMinutes`.
-- Produces: новый последний параметр `JudgeCandidate.storyboard: RecordingStoryboard? = null`.
-- Produces: `@Component` с тем же judge-enabled условием, что у NotificationJudgeService: `class JudgeRequestFactory(properties: JudgeProperties, descriptionProperties: DescriptionProperties, contextBuilder: JudgeContextBuilder)`; метод `suspend fun create(candidate: JudgeCandidate, context: JudgeContextResult): JudgeRequest`.
-- Produces: несуспендирующий `JudgeContextBuilder.withVisualInput(context: JudgeContextResult, visualInput: Map<String, Any?>, recordingId: UUID): JudgeContextResult`; он не делает SQL и возвращает исходный context при диагностической ошибке, с WARN.
-
-- [ ] **Step 1: Написать RED-тесты выбора и времени.** В `JudgeRequestFactoryTest` использовать реальный RecordingStoryboard с mock builder и существующий `TestObjectMappers.internalMapper()` для проверки JSON. `selectedFramesShareStoryboardZero` задаёт maxFrames=2, ranked visualized frames 3/1/2 с offsets соответственно 2.0/null/8.0 и built.zeroSeconds=−3.0:
-
-```kotlin
-assertEquals(listOf(1, 3), result.frames.map { it.frameIndex })
-assertEquals(listOf(null, 5.0), result.frames.map { it.offsetSeconds })
-assertSame(built.storyboard, result.storyboard)
-assertEquals(3, json["visual_input"]["image_count"].asInt())
-assertEquals("available", json["visual_input"]["storyboard"]["status"].asText())
-assertEquals(-3.0, json["visual_input"]["storyboard"]["zero_recording_seconds"].asDouble())
-```
-
-`unknownOffsetsStayUnknown` не превращает индекс в секунды; `withoutStoryboardTimesStartAtRecordingZero` оставляет исходный +2.0 без сдвига. `judgeStoryboardSwitchDoesNotAccessHandle` при enabled=false даёт disabled, ноль build, только кадры; `missingHandleIsUnavailable` даёт unavailable без исключения. `unavailableAndTimedOutBuildStillProduceJudgeRequest` проверяет оба исхода задачи 3. `visualInputMatchesActualSelection` сверяет выбранные индексы/времена, image_count, flags, tiles/step/duration и отсутствие bytes/base64/path в JSON. `parentCancellationEscapesFactory` не превращает отмену в готовый запрос. `existsOnlyWithJudgeEnabled`: `ApplicationContextRunner` с `JudgeRequestFactory` и моками её зависимостей; bean есть при `application.ai.judge.enabled=true` и отсутствует при `false` и без свойства. Ни один тест core не поднимает контекст с бинами пакета judge, поэтому условие, разошедшееся с `NotificationJudgeService`, проявилось бы только падением старта в проде с включённым judge. `judgeDoesNotWaitForNextSegment`: builder вызывается с `waitForNextSegment = false`.
-
-В `JudgeContextBuilderTest` добавить `visualInputIsAddedWithoutDatabaseReads`: исходные блоки и errors сохранены, вызовов stats/tracks/verdicts нет; `brokenDiagnosticContextReturnsOriginal`: невалидный исходный JSON возвращает исходный объект, без исключения. В factory-тесте с таким контекстом изображения всё равно готовы.
-
-- [ ] **Step 2: Запустить RED через build-runner.** `./gradlew :frigate-analyzer-core:test --tests '*.JudgeRequestFactoryTest' --tests '*.JudgeContextBuilderTest'`. Ожидается отсутствие нового factory/провал новых assertions.
-- [ ] **Step 3: Реализовать factory и локальную диагностику.** Выбор кадров точно как прежде: `candidate.visualizedFrames.take(maxFrames).sortedBy { it.frameIndex }`, затем присоединить известные offsets из candidate.frames по индексу. Только при judge.storyboard.enabled вызвать `handle.get(properties.storyboard.timeout, waitForNextSegment = false)`. В отсутствие handle статус unavailable; при выключателе disabled, без get. Сдвигать времена на built.zeroSeconds или 0.0. Factory не читает БД и не знает о Telegram.
-
-Зафиксировать JSON-форму, используя Map с явными snake_case ключами: `visual_input.frames=[{"index":3,"offset_seconds":5.0}]`, `visual_input.storyboard={"status":"available","tiles":16,"step_seconds":0.66,"duration_seconds":10.0,"zero_recording_seconds":-3.0,"missing_before":false,"missing_after":false}`, `visual_input.preparation_ms` и `visual_input.image_count`. Неизвестное время — JSON null. Для disabled/unavailable/timeout у storyboard остаётся только status; preparation_ms — 0 при отсутствии попытки, иначе elapsed из общего результата. Добавлять блок через withVisualInput; он сохраняет errors, ловит ошибку parse/serialize и возвращает исходный context, не выдавая диагностический сбой за сбой judge. Factory возвращает один окончательный JudgeRequest с этим contextJson, языком и maxSnoozeMinutes; отмена пробрасывается. Лог подготовки содержит recording id, статус, elapsed и количество изображений, но не содержимое.
-
-- [ ] **Step 4: Повторить команду Step 2 через build-runner.** Ожидается `BUILD SUCCESSFUL`; отключённый/missing/timeout storyboard не мешает построить запрос по кадрам.
-- [ ] **Step 5: Закоммитить только Files задачи.** Сообщение: `feat(core): собирать временной вход и диагностику judge`.
+✅ Done — see commit(s): `8a002bbe`
 
 ### Task 5: Подключение общего результата к judge и описаниям
 
-**Files:**
-- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/facade/RecordingProcessingFacade.kt`
-- Modify: `modules/core/src/main/kotlin/ru/zinin/frigate/analyzer/core/judge/NotificationJudgeService.kt`
-- Test: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/facade/RecordingProcessingFacadeTest.kt`
-- Test: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/judge/NotificationJudgeServiceTest.kt`
-- Test: `modules/core/src/test/kotlin/ru/zinin/frigate/analyzer/core/storyboard/StoryboardWiringTest.kt`
-- Modify: `README.md`
-- Modify: `.claude/rules/ai-description.md`
-- Modify: `.claude/rules/configuration.md`
-- Modify: `.claude/rules/pipeline.md`
-- Modify: `docker/deploy/.env.example`
-- Modify: `CLAUDE.md` (только строка **LLM judge**)
-
-**Interfaces:**
-- Consumes: `RecordingStoryboard`, `StoryboardPreparation.built`, `JudgeCandidate.storyboard`, `JudgeRequestFactory.create` задач 3–4.
-- Produces: прежние `processAndNotify`, `submit` и `descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)?` без изменения внешних сигнатур. У NotificationJudgeService новый constructor dependency `requestFactory: JudgeRequestFactory` вместо его единственного использования DescriptionProperties.
-- Produces: приватный `RecordingProcessingFacade.buildDescriptionSupplier(recording: RecordingDto, request: SaveProcessingResultRequest, recordingStoryboard: RecordingStoryboard?): (() -> Deferred<Result<DescriptionResult>>)?`; оба потребителя получают тот же handle.
-
-- [ ] **Step 1: Написать RED-тесты общего объекта.** В `RecordingProcessingFacadeTest` захватить реальный JudgeCandidate из submit: проверить, что до обращения к нему builder не вызван. `judgeAndDescriptionSharePreparedStoryboard` получает результат через candidate.storyboard.get(10s), затем запускает descriptionSupplier и сравнивает `assertSame(prepared.built!!.storyboard, capturedDescription.storyboard)`, времена и `coVerify(exactly=1) { builder.build(any(), any(), any()) }`. Передавать в builder все кадры с детекциями с пустыми bytes, даже если image caps потребителей меньше их числа. `judgeWorksWhenRuntimeDescriptionsAreOff` даёт ненулевой handle и null descriptionSupplier; `descriptionStoryboardOffDoesNotDisableJudgeHandle` не добавляет сетку в описание, но handle для judge существует. `unavailablePreparationIsNotRetriedByDescription` проверить для UNAVAILABLE и TIMEOUT. Сохранить прежние тесты lazy запуска и повторного чтения runtime switch; при отсутствующем judge описание остаётся ленивым и использует свой обычный бюджет. `descriptionFirstWaitsForNextSegment`: без judge и при его обходе описание вызывает builder с `waitForNextSegment = true`, как раньше. Существующие стабы и `coVerify` вида `builder.build(any(), any())` после изменения сигнатуры подставляют default и матчат только `true`. Там, где важен вызов из judge или его отсутствие, третий аргумент задавать через `any()`, иначе `exactly = 0` пропустит вызов с `false`. До запуска потребителей сохранить независимую копию `val originalGridBytes = built.storyboard.image.copyOf()`; после judge/description проверить `assertContentEquals(originalGridBytes, prepared.built!!.storyboard.image)`. Сам downscale одного исходного JPEG через разные пресеты отдельно проверен в задаче 1; здесь не дублировать executor fixtures.
-
-- [ ] **Step 2: Написать RED-тесты порядка judge и сохранения контекста.** В `NotificationJudgeServiceTest` внедрить mock factory в существующий `TestScope.service`, сохранив смысл старых fixtures. По умолчанию mock строит запрос из кандидата, как прежний `judgeRequest`: тест порядка камер читает `firstArg<JudgeRequest>().camId`. `requestIsPreparedOnlyAfterAllGates` подтверждает порядок context build → limiter → factory → agent. Для JUDGE_OFF, snooze, NO_RECIPIENTS, CONTEXT_ERROR, RATE_LIMITED, queue overflow и in-flight overflow проверять `coVerify(exactly=0) { requestFactory.create(any(), any()) }`. `missingAgentSkipsPreparation` сохраняет прежний failover без вызова factory.
-
-Для `preparedContextIsPersistedOnPublishSuppressAndModelFailure` factory возвращает JudgeRequest с отличимым `contextJson`, а агент по очереди даёт PUBLISH, SUPPRESS и DescriptionException.Transport; в каждой проверке `assertEquals(preparedRequest.contextJson, recorded.single().contextJson)`, не исходный JSON. `cancellationDuringPreparationSendsOnce` останавливает create на gate, отменяет job и проверяет ровно одну строку FAILOVER/TRANSPORT и одну отправку. Старые тесты отмены во время записи verdict/fan-out оставить. В `StoryboardWiringTest` подтвердить, что builder bean есть и при `application.ai.description.storyboard.enabled=false`: он нужен judge, хотя описания сетку не берут. Без master-каталога builder по-прежнему отсутствует. Runtime-выключатели хранятся в `app_settings` и на набор бинов не влияют. Тест сканирует только пакет storyboard, поэтому условие `JudgeRequestFactory` проверяет задача 4.
-
-- [ ] **Step 3: Запустить RED через build-runner.** `./gradlew :frigate-analyzer-core:test --tests '*.RecordingProcessingFacadeTest' --tests '*.NotificationJudgeServiceTest' --tests '*.StoryboardWiringTest'`. Ожидается провал новых проверок wiring/повторного использования/контекста, а не внешнего PostgreSQL или модельного endpoint.
-- [ ] **Step 4: Подключить потребителей.** В facade после положительного решения трекера создать handle при наличии builder независимо от включённости описаний, передать его и в candidate, и в supplier. Внутри supplier вызывать get() только при description storyboard enabled, а затем сохранить существующее повторное чтение runtime switch и сдвиг времён. Результат с built=null не пересобирать. Не запускать helper в constructor/submit/pipeline consumer.
-
-В NotificationJudgeService заменить private judgeRequest на factory. Вызов create находится после rate limiter, внутри уже существующего try вызова модели и после проверки наличия JudgeAgent. Сохранить итоговый request.contextJson в локальной переменной перед agent.judge и использовать её как для JUDGE, так и для модельного FAILOVER; до готовности request остаётся исходный context.json. Не менять границы NonCancellable, handedOver, record, send, per-camera mutex и in-flight permit. Обновить только затронутые constructor fixtures, не переписывать старые тесты под новый смысл.
-
-- [ ] **Step 5: Обновить документацию вместе с рабочим подключением.** В README — новый визуальный вход, три настройки, откат, дополнительная стоимость изображений и задержка уведомления на время подготовки. В ai-description.md — новый этап подготовки между rate limit и моделью, общий lazy handle, timeout/cancellation, временная шкала и диагностика. В configuration.md — точные env defaults, 0/null semantics, независимые switches и общие sampling-настройки под старым description prefix. В pipeline.md — consumer по-прежнему не ждёт judge, подготовка после лимитов. В `docker/deploy/.env.example` — три новые закомментированные переменные рядом с `APP_AI_JUDGE_MAX_IMAGE_SIDE`. В корневом `CLAUDE.md` — только строка **LLM judge**: на её вход теперь идёт и раскадровка. Чужие локальные документы не трогать.
-
-Добавить новый текст мало: часть прежних утверждений станет неверной, их надо найти и исправить.
-
-- ai-description.md: абзац **Captions belong to the task** (judge держит `Frame N` байт в байт); в разделе Storyboard — вступление («the description model gets»), **Where it runs** (сетка строится только в supplier описания после `PUBLISH`; builder не вызывается при `APP_AI_DESCRIPTION_STORYBOARD_ENABLED=false`) и **Fail-open** («the description goes out from the frames alone»); в разделе Judge — «looks at the annotated frames», память кандидата в **Two different limits** (теперь и JPEG сетки), **Six steps** (подготовка между rate limit и моделью); строки таблицы слоёв `JudgeRequest`, `VisionRequest / VisionInstructions / VisionImage`, `VisionCallExecutor`, `FrameDownscaler`, `StoryboardBuilder`; раздел Testing про caps.
-- configuration.md: `FFMPEG_PATH` и `FFPROBE_PATH` (без них fallback теперь и у judge), `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` (управляет только описаниями), `APP_AI_JUDGE_MAX_IN_FLIGHT` (кандидат держит и сетку).
-- README: строка judge в Features, `FFMPEG_PATH`/`FFPROBE_PATH`, `APP_AI_DESCRIPTION_STORYBOARD_ENABLED`, абзац **Frame size per preset** (cap сетки judge), абзац о BYOK-шлюзе с `413`: если после включения judge начал отклонять ответы из-за вырезанных картинок, уменьшить `APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE` или выключить раскадровку judge.
-- `.env.example`: комментарии блока judge («looks at the annotated frames») и раскадровки («for the description model»).
-- [ ] **Step 6: Повторить команду Step 3 через build-runner.** Ожидается `BUILD SUCCESSFUL`; все новые проверки и существующие гарантии отмены/рассылки проходят. Далее через того же агента запустить `./gradlew :frigate-analyzer-ai-description:test :frigate-analyzer-core:test`; ожидается `BUILD SUCCESSFUL`, включая прежние storyboard/provider-тесты. О сбое инфраструктуры сообщать отдельно, не объявлять тесты зелёными.
-- [ ] **Step 7: Закоммитить только Files задачи.** Сообщение: `feat(core): дать judge общий временной контекст до уведомления`.
+✅ Done — see commit(s): `5257a3d1`
 
 ## Итоговая проверка и передача
 
-- [ ] Самостоятельно сверить diff с дизайном: пять пунктов Review Focus имеют названные тесты; sampling/policy/schema/Telegram API/БД не изменены; все новые файлы добавлены явно.
-- [ ] Использовать `superpowers:requesting-code-review` для свежего whole-branch review относительно базового `74d99f0b`; модель — Opus, не Fable. Типа агента `superpowers:code-reviewer` из проектного правила в superpowers 7.0.0 нет. 2026-11-09 пользователь согласовал эквивалент: `general-purpose` с `model: opus` и шаблоном `requesting-code-review/code-reviewer.md` — так ревьюера запускает сам навык. Исправить критичные замечания, повторить до чистого результата. При subagent-driven исполнении это дополняет проверки задач; при Native это первая независимая проверка всей реализации.
-- [ ] После review делегировать `build-forge:build-runner` (`model: opus`) полный `./gradlew build`. Ожидается `BUILD SUCCESSFUL` и отсутствие упавших тестов. При ktlint errors тот же агент выполняет `./gradlew ktlintFormat`; просмотреть весь diff форматирования, не включать посторонние изменения, явно git add только файлы задачи и повторить review существенных правок, затем build.
-- [ ] Использовать `superpowers:verification-before-completion`; подтвердить итоговый diff/commit list и состояние чужих staged/untracked файлов. Не заявлять о снижении false positives только по unit-тестам: подтверждено добавление контекста, а не качество живой модели.
+- [x] Самостоятельно сверить diff с дизайном: пять пунктов Review Focus имеют названные тесты; sampling/policy/schema/Telegram API/БД не изменены; все новые файлы добавлены явно.
+- [x] Использовать `superpowers:requesting-code-review` для свежего whole-branch review относительно базового `74d99f0b`; модель — Opus, не Fable. Типа агента `superpowers:code-reviewer` из проектного правила в superpowers 7.0.0 нет. 2026-11-09 пользователь согласовал эквивалент: `general-purpose` с `model: opus` и шаблоном `requesting-code-review/code-reviewer.md` — так ревьюера запускает сам навык. Исправить критичные замечания, повторить до чистого результата. При subagent-driven исполнении это дополняет проверки задач; при Native это первая независимая проверка всей реализации.
+- [x] После review делегировать `build-forge:build-runner` (`model: opus`) полный `./gradlew build`. Ожидается `BUILD SUCCESSFUL` и отсутствие упавших тестов. При ktlint errors тот же агент выполняет `./gradlew ktlintFormat`; просмотреть весь diff форматирования, не включать посторонние изменения, явно git add только файлы задачи и повторить review существенных правок, затем build.
+- [x] Использовать `superpowers:verification-before-completion`; подтвердить итоговый diff/commit list и состояние чужих staged/untracked файлов. Не заявлять о снижении false positives только по unit-тестам: подтверждено добавление контекста, а не качество живой модели.
 - [ ] Живое сравнение старого/нового входа на исходной записи и настоящих событиях, отправка кадров провайдерам, deploy/push/PR — только после отдельного разрешения. Не запускать их автоматически по завершении build. В живую проверку входит и то, что judge-эндпоинт принимает запрос с сеткой: нет `413`, вырезанных картинок, отказа из-за размера и обрезки контекста. По пикселям сетка удваивает запрос с четырьмя крупными кадрами и увеличивает впятеро запрос с одним.
 - [ ] Перед PR выполнить проектное правило удаления design/plan: `git rm -- docs/superpowers/specs/2026-11-08-judge-storyboard-design.md docs/superpowers/plans/2026-11-08-judge-storyboard.md`, отдельный коммит только этих удалений. Существующие чужие untracked-файлы внутри docs/superpowers не трогать; убедиться, что ни одного docs/superpowers файла нет в PR diff. Документы сохранятся в истории ветки.
 
