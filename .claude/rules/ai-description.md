@@ -57,7 +57,7 @@ docker compose exec -T frigate-analyzer sh -c '
 | API | `DescriptionAgent` | `api/` | Single-method `suspend fun describe(request): DescriptionResult` |
 | API | `JudgeAgent` | `api/` | Single-method `suspend fun judge(request): JudgeOutcome` |
 | API | `DescriptionRequest` / `DescriptionResult` / `DescriptionException` | `api/` | Public DTOs; `DescriptionException` is provider-neutral: `Timeout`, `InvalidResponse`, `Transport`, `RateLimited`, `Unauthorized`; `DescriptionRequest.storyboard` optionally carries a timed grid of the event (`Storyboard`: image, tiles, step, duration, `DetectionMark`s, missing footage before/after), worded by `DescriptionTask` — see "Storyboard" |
-| API | `JudgeRequest` / `JudgeOutcome` / `JudgeVerdict` | `api/` | Judge DTOs; `JudgeVerdict.Reason` is the five model reasons (`NEW_EVENT`, `CHANGED_SITUATION`, `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE`) |
+| API | `JudgeRequest` / `JudgeOutcome` / `JudgeVerdict` | `api/` | Judge DTOs; `JudgeRequest.storyboard` optionally carries the event's grid (the same `DescriptionRequest.Storyboard` the description gets), and its times and the frames' `offsetSeconds` count from one zero picked by the caller, worded by `JudgeTask` — see "Visual input"; `JudgeVerdict.Reason` is the five model reasons (`NEW_EVENT`, `CHANGED_SITUATION`, `FALSE_POSITIVE`, `STATIC_OBJECT`, `DUPLICATE`) |
 | API | `DescriptionProviderAuthEvent` | `api/` | Spring event `LOST` / `RESTORED`, one per transition, keyed by `authScopeId` |
 | API | `DescriptionPreset` / `DescriptionPresets` / `UnavailableReason` | `api/` | One preset as its consumers see it (`id`, `provider`, `model`, `effectiveModel`, `effort`, `authScopeId`, `unavailableReason`, `slowEffort`, `maxImageSide`) and the read-only catalog `all()` in declaration order |
 | API | `ActiveDescriptionPreset` / `ActiveJudgePreset` | `api/` | `storedId()` (the owner's choice) and `effective()` (what the next call will use) — two methods, so `/ai` can tell them apart |
@@ -67,8 +67,8 @@ docker compose exec -T frigate-analyzer sh -c '
 | API | `TempFileWriter` | `api/` | Filesystem abstraction for staging files (implemented in core) |
 | Core | `VisionBackend` | `core/` | Provider SPI: one attempt, no semaphore, no retry; returns `VisionResponse` (`primary` plus the provider's `fallback` representation, when it has one); takes the call budget (`complete(request, timeout)`) so a provider with its own timeout machinery sizes it from the calling task, not from the description settings; carries `providerId`, `authScopeId`, `authRecoveryHint` |
 | Core | `VisionBackendFactory` | `core/` | Provider SPI for the catalog: `availability()`, `effectiveModel(preset)`, `authScopeId(preset)`, `create(preset)` |
-| Core | `VisionRequest` / `VisionInstructions` / `VisionImage` | `core/` | One vision call: images with the task's captions, in the order the model must see them, plus `systemPrompt` / `preamble` / `imagesHeader` / `epilogue` / optional `jsonSchema`; the provider prints the header and each caption with its image between preamble and epilogue and never reorders |
-| Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, image downscale; hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
+| Core | `VisionRequest` / `VisionInstructions` / `VisionImage` | `core/` | One vision call: images with the task's captions, in the order the model must see them, plus `systemPrompt` / `preamble` / `imagesHeader` / `epilogue` / optional `jsonSchema`; the provider prints the header and each caption with its image between preamble and epilogue and never reorders. `VisionImage.role` is `FRAME` by default and `STORYBOARD` for the grid; it is part of `equals`/`hashCode`, never printed to the model, and picks the image's size cap in the executor |
+| Core | `VisionCallExecutor` | `core/` | Preset resolution, semaphore, queue/work timeouts, retry policy, image downscale per role (`VisionLimits.maxImageSide` for frames, `storyboardMaxImageSide` for the grid — `judge.storyboard.max-image-side` on the judge's executor, unset on the description's, whose grid follows `common.max-image-side`); hands each outcome to the tracker. Two beans (`descriptionVisionCallExecutor`, `judgeVisionCallExecutor`) with independent semaphores |
 | Core | `DescriptionTask` / `JudgeTask` | `core/` | Build the whole `VisionRequest` for descriptions and for the judge: the images with their captions, in the order the model sees them, and the `VisionInstructions`, the header before the images included |
 | Core | `DescriptionResponseParser` / `JudgeResponseParser` | `core/` | Parse the raw model text into `DescriptionResult` / `JudgeVerdict` |
 | Core | `DefaultDescriptionAgent` | `core/` | Thin `DescriptionAgent`: `DescriptionTask` → `VisionCallExecutor` → `DescriptionResponseParser` |
@@ -81,7 +81,7 @@ docker compose exec -T frigate-analyzer sh -c '
 | Core | `ProviderAuthTracker` | `core/` | Auth state machine per credential scope; publishes the events; implements `ProviderAuthStates` |
 | Core | `logSignature()` (`PresetLogFormat.kt`) | `core/` | One `provider/model/effort` form, plus `, max-image-side=N` when the preset sets a cap, for both INFO lines about presets |
 | Core | `ResultNormalizer` / `LanguageNames` / `JsonBlockExtractor` | `core/` | Blank-field check + `…` truncation; language names; JSON object cut out of free-form text |
-| Core | `FrameDownscaler` | `core/` | Optional resize to the stricter of the feature's and the preset's `max-image-side` (`effectiveMaxSide`; bilinear, JPEG q0.85 via `JpegCodec`), once per request in `VisionCallExecutor`; an unreadable frame is passed through unchanged (a WARN when decoding or encoding throws; bytes no reader recognises pass silently) |
+| Core | `FrameDownscaler` | `core/` | Optional resize of each image to the stricter of the feature's cap for its role and the preset's `max-image-side` (`effectiveMaxSide`; bilinear, JPEG q0.85 via `JpegCodec`), once per request in `VisionCallExecutor`, before the first attempt, so a retry reuses the resized images; an unreadable image is passed through unchanged (a WARN when decoding or encoding throws; bytes no reader recognises pass silently) |
 | Core | `JpegCodec` | `core/` | In-memory JPEG decode and encode (`MemoryCacheImage*Stream`, not ImageIO's temp-file cache in `java.io.tmpdir`); `decode` returns `null` for bytes no reader claims; no default quality, each caller passes its own. Shared by `FrameDownscaler` and the storyboard composer in `core` |
 | Claude | `ClaudeBackend` | `claude/` | stage jpg → prompt with `@/abs/path` → SDK → parse |
 | Claude | `ClaudeBackendFactory` | `claude/` | Token check, CLI WARN, `ANTHROPIC_MODEL` displacement, `authScopeId=claude` |
@@ -104,9 +104,15 @@ docker compose exec -T frigate-analyzer sh -c '
 | Limits | `JudgeRateLimiter` | `ratelimit/` | Judge throttle (`AI judge`); default 200 / 1h; miss → send unjudged (`FAILOVER` / `RATE_LIMITED`) |
 
 **Captions belong to the task.** `DescriptionTask` and `JudgeTask` build the images (`images()`,
-`visionRequest()`) and word both the captions and the header; the judge keeps `Frame N` in
-`frameIndex` order under `Frames (in chronological order):`, byte for byte what the providers
-printed before, pinned by `the judge prompt keeps its shape` / `the judge blocks keep their shape`.
+`visionRequest()`) and word both the captions and the header. With a storyboard both put the grid
+first — `Storyboard: N frames, X.Xs apart, left to right, top to bottom`, under `Images:` — and then
+the frames in `frameIndex` order; the grid's caption and its explanation come from the shared
+`StoryboardPromptFormat`. The judge captions a frame `Frame N`, or `Frame N at X.Xs` when its time is
+known; an index never stands in for an unknown time. Without a storyboard the judge keeps the header
+`Frames (in chronological order):`, and with frames of unknown time its prompt is byte for byte what
+the providers printed before, pinned by `the judge prompt keeps its shape` / `the judge blocks keep
+their shape`. When a frame's time is known, that preamble adds one sentence: the caption times count
+from the start of the recording.
 
 ## Presets, catalog and resolution
 
@@ -114,11 +120,13 @@ printed before, pinned by `the judge prompt keeps its shape` / `the judge blocks
 id must match `[a-z0-9][a-z0-9-]{0,31}` (it travels in `callback_data`, 64 bytes for everything).
 `effort` is grok-only and must be empty or one of `low|medium|high|xhigh|max`; a non-empty `effort`
 on a claude preset fails startup.
-`max-image-side` is optional for any provider, `0` (no cap) or `256..8192`: frames of calls through
+`max-image-side` is optional for any provider, `0` (no cap) or `256..8192`: images of calls through
 the preset are downscaled to the stricter of the non-zero values of the preset and the calling
-feature (`common.max-image-side` for descriptions, `judge.max-image-side` for the judge). A preset
-states the limit of its model or gateway, so it can tighten the feature's value but never lift it;
-`logSignature()` appends `, max-image-side=N` when it is set.
+feature's cap for that image — `common.max-image-side` for descriptions (frames and storyboard
+alike), `judge.max-image-side` for the judge's frames and `judge.storyboard.max-image-side` for its
+storyboard. A preset states the limit of its model or gateway, so it can tighten the feature's value
+but never lift it, for the grid as for the frames; `logSignature()` appends `, max-image-side=N` when
+it is set.
 `default-preset` names the preset that is active until the owner
 picks one; it must exist in a non-empty map, and with an **empty** map it is only a WARN — the
 documented migration is "set it in `.env` first, declare the map in yaml afterwards".
@@ -447,8 +455,9 @@ triage, not fixed.
 
 ## Judge
 
-Optional third gate between the object tracker and Telegram. A fast, cheap model looks at the
-annotated frames and a JSON context assembled from the database and answers `PUBLISH` or `SUPPRESS`.
+Optional third gate between the object tracker and Telegram. A fast, cheap model looks at a timed
+storyboard of the event, the annotated frames and a JSON context assembled from the database and
+answers `PUBLISH` or `SUPPRESS`.
 The verdict is **not** shown to recipients and does not change the notification text. There is no
 feedback button and no agentic access to the database: context is a fixed dump (`JudgeContextBuilder`),
 and the model's `wanted` field is stored and ignored.
@@ -462,7 +471,8 @@ descriptions default). `JudgeAgentSanityChecker` WARNs when the flag is on but n
 exists.
 
 When the bean exists, `RecordingProcessingFacade` hands a `JudgeCandidate` to
-`NotificationJudgeService.submit` and returns; the pipeline consumer does not wait for the model.
+`NotificationJudgeService.submit` and returns; the pipeline consumer waits neither for the storyboard
+nor for the model.
 `JudgeCoroutineScope` (IO + `SupervisorJob`, `@PreDestroy` cancel) runs the work. Without the bean
 the facade sends as today. Candidates of one camera are serialized on a per-camera mutex; cameras
 run in parallel. A queue deeper than 20 on one camera logs a WARN and sends the overflow unjudged.
@@ -482,7 +492,9 @@ the back-pressure that existed before the judge, when the facade called `sendRec
 inline and a full `TelegramNotificationQueue` channel stalled the pipeline.
 
 Size the ceiling by camera resolution: a candidate pins its annotated frames **and** the originals
-held by the description supplier's closure, so it is several megabytes on a 4K camera, not two.
+held by the description supplier's closure, so it is several megabytes on a 4K camera, not two. The
+event's storyboard adds frame metadata only until it is built; after that its grid JPEG stays with
+the candidate too, one copy shared with the description.
 
 `submit` launches with `CoroutineStart.ATOMIC`. The default mode returns an already-cancelled job
 whose body never runs, so a candidate submitted into a scope cancelled a moment earlier would never
@@ -492,10 +504,11 @@ them, which is what opens that window). ATOMIC also makes releasing the in-fligh
 `finally` safe: a body that never started would never release it.
 
 Frames sent to the model are the first `APP_AI_JUDGE_MAX_FRAMES` visualized frames (the same ranking
-as Telegram) re-ordered by `frameIndex`. Local times in the prompt use `APP_AI_JUDGE_ZONE`; empty =
-the owner's `/timezone`, then the JVM zone (UTC in the container).
+as Telegram) re-ordered by `frameIndex`; with a storyboard they follow the grid — see "Visual input".
+Local times in the prompt use `APP_AI_JUDGE_ZONE`; empty = the owner's `/timezone`, then the JVM zone
+(UTC in the container).
 
-### Six steps (`NotificationJudgeService.judgeLocked`)
+### Seven steps (`NotificationJudgeService.judgeLocked`)
 
 1. **Runtime switch.** `JudgeRuntimeSettings.judgeEnabled()`, fail-open to on, 5 s bound. Off →
    record `BYPASS` / `PUBLISH` / `JUDGE_OFF` and send.
@@ -520,10 +533,19 @@ the owner's `/timezone`, then the JVM zone (UTC in the container).
    Failure → `FAILOVER` / `PUBLISH` / `CONTEXT_ERROR` and send.
 5. **Rate limit.** `JudgeRateLimiter.tryAcquire()`. Miss → `FAILOVER` / `PUBLISH` / `RATE_LIMITED`
    and send unjudged. The slot is not refunded on a later model failure.
-6. **Model.** `JudgeAgent.judge`. Success → `JUDGE` plus the model's decision/reason; `SnoozeRegistry.set`
+6. **Request.** `JudgeRequestFactory.create` builds the request, storyboard included — see "Visual
+   input". It runs only here, after every check above and once a `JudgeAgent` exists: no branch
+   above prepares a storyboard for the judge, and with no agent bean the candidate goes straight to
+   `FAILOVER` / `PUBLISH` / `TRANSPORT`. It runs in the judge's own coroutine, under the camera mutex
+   and the in-flight permit but before the executor's semaphore and timeouts. A storyboard that is
+   unavailable or not ready within its budget is no failure — the model gets the frames alone — and a
+   cancellation propagates into the cancellation fallback below, like one during the model call.
+7. **Model.** `JudgeAgent.judge`. Success → `JUDGE` plus the model's decision/reason; `SnoozeRegistry.set`
    runs **only on this branch** (`FAILOVER` / `BYPASS` / `SNOOZE` do not arm or extend snooze).
    `PUBLISH` sends, `SUPPRESS` does not. Agent failure → `FAILOVER` / `PUBLISH` with the reason
-   below, and send.
+   below, and send. Both rows store the request's context, `visual_input` included, in
+   `context_json`; the `RATE_LIMITED` row and the missing-agent `FAILOVER`, written before a request
+   exists, store the context without it. `latency_ms` is the model call alone.
 
 A failed write to `notification_verdicts` is logged at ERROR and the decision (send or not) is
 applied anyway; the write is bounded by 5 s so that a *stalled* one is treated the same as a failed
@@ -577,6 +599,57 @@ recipients would get a duplicate message and the recording a second verdict row,
 registry itself is never pruned by the clock: `covers` measures the window from the *recording*
 timestamp, so a newest-first backlog still matches entries whose `until` has passed in wall-clock
 time.
+
+### Visual input
+
+`JudgeRequestFactory` (core, `judge/`, under the same `application.ai.judge.enabled=true` as the
+service) turns the candidate and its context into the final `JudgeRequest`; it reads no database and
+knows nothing about Telegram.
+
+- **Storyboard.** With `APP_AI_JUDGE_STORYBOARD_ENABLED=true` (the default) it asks the event's
+  storyboard — `JudgeCandidate.storyboard`, the object the facade shares with the description, see
+  "Where it runs" under "Storyboard" — for its result, with `APP_AI_JUDGE_STORYBOARD_TIMEOUT` (10 s)
+  as the budget of the build and without waiting for the next segment. With the switch off it never
+  touches the storyboard. Window and tile count are the description's `APP_AI_DESCRIPTION_STORYBOARD_*`
+  settings — `NEXT_SEGMENT_WAIT` matters only when the description builds first — and
+  `APP_AI_DESCRIPTION_STORYBOARD_ENABLED` decides only for descriptions.
+- **Frames.** The same selection as before: the first `APP_AI_JUDGE_MAX_FRAMES` visualized frames,
+  then by `frameIndex`, annotated, with their original indices.
+- **One timeline.** The grid's tile labels, its detection marks and the frames' times count from the
+  start of the footage the grid shows (`BuiltStoryboard.zeroSeconds`); without a grid the frames
+  count from the start of the recording. A frame's time is `FrameData.offsetSeconds` of the same
+  index, and an unknown time stays unknown.
+- **Images.** The grid first, then the frames — see "Captions belong to the task". The grid has its
+  own cap, `APP_AI_JUDGE_STORYBOARD_MAX_IMAGE_SIDE` (2560), while the frames keep
+  `APP_AI_JUDGE_MAX_IMAGE_SIDE` (1280): under 1280 a 2560 px grid would be halved, its tiles and time
+  labels with it. A preset's `max-image-side` caps both, so with `max-image-side: 1568` the grid is at
+  most 1568 px. In pixels a 2560 px grid is about four 1280 px frames of the same camera: a request
+  with four frames doubles, one with a single frame grows fivefold. An executor retry reuses the
+  prepared images and runs no ffmpeg.
+- **Unchanged.** The decision rules, the response schema, the caution about people, snooze and
+  `wanted` are the same with or without a grid; the grid adds evidence, not policy.
+
+**`visual_input`.** The factory appends one block to the context JSON, so it reaches both the model
+and `notification_verdicts.context_json` (no migration): the selected frames (`index`, and
+`offset_seconds` on the request's one timeline — from the grid's zero when the storyboard is
+available, so the time in the recording is `offset_seconds + zero_recording_seconds`, otherwise from
+the start of the recording — `null` when unknown), the storyboard's `status` — `available`,
+`disabled`, `unavailable` or `timeout` — with `tiles`, `step_seconds`, `duration_seconds`,
+`zero_recording_seconds`, `missing_before` and `missing_after` only when it is available, then
+`preparation_ms` and `image_count` (the frames plus the grid). It describes the prepared request, not
+proof that an endpoint received the images, and holds no image bytes, base64, paths or secrets.
+Appending it reads no database; when that fails (a context that does not parse or is not a JSON
+object) the context goes on without the block, with a WARN, and the images are unaffected. One INFO
+line per judged candidate tells the outcome apart, e.g.
+`Judge input: cam=cam1 storyboard=available preparation=2000ms images=3 recording=<id>`.
+
+**Time and cost.** The preparation delays the verdict and so the notification: in production logs
+from 2026-10-28 to 2026-11-09 the description built 21 grids, 1.5 s on average and 2.2 s at most,
+and the ceiling is the budget. `latency_ms` of the verdict is still the vision call alone, so it
+does not show this delay — `visual_input.preparation_ms` does; more images can lengthen the call
+itself, and that `latency_ms` does show. A storyboard is now also built for events the judge goes on
+to suppress — the price of context before the decision. Model calls per candidate stay the same;
+images and input tokens grow.
 
 ### Snooze
 
@@ -633,11 +706,14 @@ is `@ConditionalOnMissingBean`. Same per-process cache as descriptions — see `
 
 ## Storyboard
 
-Besides the full-resolution frames the description model gets a timed storyboard of the event: one
+Besides their frames, the description model and the judge get a timed storyboard of the event: one
 grid of up to `tiles` (16) frames sampled evenly around the detection, reaching into the neighbouring
 Frigate segments when the event crosses a recording boundary. Without it the model usually saw 1–4
 frames of one segment and could not tell a parked car from one driving past. Built in `core`
-(`core/storyboard/`); this module only words it (`DescriptionRequest.storyboard`, `DescriptionTask`).
+(`core/storyboard/`), at most one finished build per event, shared by both consumers when both take
+it (see "Where it runs"); this module only words it (`DescriptionRequest.storyboard`
+and `JudgeRequest.storyboard`, through `DescriptionTask`, `JudgeTask` and the shared
+`StoryboardPromptFormat`).
 
 | Component | Purpose |
 |-----------|---------|
@@ -645,17 +721,41 @@ frames of one segment and could not tell a parked car from one driving past. Bui
 | `AdjacentSegmentFinder` | Previous segment (one lookup); next segment polled once a second until the deadline and probed only once its file has not changed for 1 s — a failed ffprobe is retried on the next poll |
 | `StoryboardFrameSampler` | One ffmpeg run per segment: input `-ss` to the first moment, `fps=<R>:start_time=0:round=up,scale=<tile width>:-2` (`R` = 1 / step), JPEGs into the temp folder, deleted in `finally`. Each tile shows the last frame at or before its moment (the first tile: the first frame after the seek point); plain `fps=<R>` (round=near) showed every tile ≈ step/2 after its label and lost the tile at a file end |
 | `StoryboardComposer` | Java2D grid, ~2560 px wide (columns × tile width); the rows are counted from the tiles actually sampled while the columns and the tile width stay as planned, so only the last row can have empty cells. Label on a dark plate in each tile's top-left corner, a tile nearest a detection in yellow with `• detection`; one label font per grid — base `max(12, tile height / 10)`, shrunk until the widest label with its plate fits the tile (portrait 9:16 cameras). JPEG decode and encode in memory through `JpegCodec` (ai-description `core/`), quality 0.85 |
-| `StoryboardBuilder` | Orchestration; `Semaphore(2)` around the current recording's ffprobe and each ffmpeg run only (the neighbours' lookups, their ffprobe and the wait hold no permit); fail-open — any failure (`Throwable`) except cancellation → `null` + WARN; one INFO line |
+| `StoryboardBuilder` | Orchestration; `Semaphore(2)` around the current recording's ffprobe and each ffmpeg run only (the neighbours' lookups, their ffprobe and the wait hold no permit); `waitForNextSegment = false` (the judge's build) looks the next segment up once instead of waiting for it; fail-open — any failure (`Throwable`) except cancellation → `null` + WARN; one INFO line |
+| `RecordingStoryboard` / `StoryboardPreparation` | One event's storyboard for both consumers: created by the facade, built by the first `get(timeout, waitForNextSegment)` under a mutex, and every later `get` returns the same finished result — `AVAILABLE` with the grid, `UNAVAILABLE` (the builder returned `null`) or `TIMEOUT` (its own budget expired and the build was cancelled) — with `elapsed` on a monotonic clock. A caller's cancellation, a parent's timeout included, propagates and is not remembered. Holds the frames with detections without their JPEG, plus the grid once built |
 
-**Where it runs.** Inside the description supplier of `RecordingProcessingFacade`, so only when a
-description will actually be made (after the recipient filter, the rate limiter and a judge
-`PUBLISH`): storyboard, then the runtime switch, then `agent.describe`. It runs before the executor's
-semaphore and spends none of the model's timeouts; the Telegram side awaits the result with no
-timeout of its own, so the placeholder stays up through the storyboard's wait too. The builder gets
-only the frames with detections, without their bytes, and is not called at all with
-`APP_AI_DESCRIPTION_STORYBOARD_ENABLED=false`. The full-resolution frames stay within the
-user-visible collage (`selectTopFrames`, capped by `APP_AI_DESCRIPTION_MAX_FRAMES`, default 4, and by
-`LOCAL_VIZ_MAX_FRAMES`); the storyboard is deliberately wider.
+**Where it runs.** After a positive tracker decision `RecordingProcessingFacade` creates one
+`RecordingStoryboard` for the event whenever the builder bean exists, whatever the description
+switches say, and hands the same object to the `JudgeCandidate` and to the description supplier.
+Creating it reads no video and starts nothing, so the pipeline consumer never waits for ffmpeg. The
+grid is built by whoever asks first, and once that attempt has finished — with a grid, without one
+or with its budget spent — nobody builds it again:
+
+- **The judge**, when it is on and `APP_AI_JUDGE_STORYBOARD_ENABLED=true`, asks first — after its
+  checks and right before the model (step 6 of "Seven steps"), within
+  `APP_AI_JUDGE_STORYBOARD_TIMEOUT` and without waiting for the next segment. A description after
+  its `PUBLISH` takes that result as it is: the same source JPEG and zero (each call only downscales
+  it by its own caps), a grid that stops at the current recording because the next segment was not
+  there yet, and also "no grid" or the judge's expired budget, after which it goes on from its frames
+  instead of building again.
+- **The description** builds it otherwise — without the judge, or when the judge did not take the
+  grid (a branch before its model, or its storyboard switched off): inside the description supplier,
+  so only when a description will actually be made (after the recipient filter and the rate
+  limiter), as before with no budget of its own and waiting for the next segment. The supplier asks
+  for it before the second runtime-switch read, then calls `agent.describe`.
+
+Either way it runs before the executor's semaphore and spends none of the model's timeouts. On the
+judge's path the notification itself waits for it, since it goes out only after the verdict; on the
+description's path the Telegram side awaits the description with no timeout of its own, so the
+placeholder stays up through the storyboard's wait too. The builder gets all the frames with
+detections, without their bytes, however many frames the consumers send.
+`APP_AI_DESCRIPTION_STORYBOARD_ENABLED=false` keeps the grid out of descriptions only — the supplier
+never asks for it, while the judge still does and the builder bean stays;
+`APP_AI_JUDGE_STORYBOARD_ENABLED=false` keeps it out of the judge only. The runtime switches in `/ai`
+do not touch it: with descriptions off at runtime the judge still gets its grid. The full-resolution
+frames stay within the user-visible collage (`selectTopFrames`, capped by
+`APP_AI_DESCRIPTION_MAX_FRAMES`, default 4, and by `LOCAL_VIZ_MAX_FRAMES`); the storyboard is
+deliberately wider.
 
 **Timeline.** "Recording time": the current segment is `[0, D)` (`D` from ffprobe), the previous
 `[-Dp, 0)`, the next `[D, D + Dn)`. Detection moments are `FrameData.offsetSeconds` of the frames with
@@ -665,21 +765,27 @@ recording, no neighbours. A neighbour is used only when it butts against the cur
 no false gaps. Tiles: up to `tiles`, evenly over the footage minus its last 0.1 s (a frame exactly at
 the end of a file is not returned), never closer than 0.5 s; fewer than 4 → no storyboard. Every time
 the model sees counts from the start of the footage (`BuiltStoryboard.zeroSeconds`): tile labels,
-detection marks and the full-resolution frames, which the facade shifts to that zero. Without a
-storyboard the frames count from the start of the recording.
+detection marks and the frames of both consumers, which the facade (description) and
+`JudgeRequestFactory` (judge) shift to that zero. Without a storyboard the frames count from the start
+of the recording; a frame with an unknown time stays without one.
 
 **Waiting for the next segment.** Deadline = `min(job start, fileCreationTimestamp + D) +
 next-segment-wait`. The pipeline takes a recording only 30 s after its file appeared
 (`findUnprocessedRecordings`: `file_creation_timestamp < now − 30 s`), so when a description starts
 the next segment has usually been in the database for a while and the first lookup finds it; waiting
-happens only when Frigate is late. A backlog recording gets exactly one lookup. A next segment that
-starts after a gap of at most 5 s (`NEXT_LOOKAHEAD`) past the expected start is not waited for —
-Frigate skipped it. A longer gap, such as a wholly skipped segment (motion-only recording), looks the
-same as a late segment: the next file starts outside the lookup window, so the finder polls until the
-deadline and the INFO line says `next: missing after N s`.
+happens only when Frigate is late. A backlog recording gets exactly one lookup, and so does the
+judge's build (`waitForNextSegment = false`: the deadline is the build's start), where a next segment
+that is not there yet is an ordinary missing neighbour (`missingAfter`), not a timeout. A next
+segment that starts after a gap of at most 5 s (`NEXT_LOOKAHEAD`) past the expected start is not
+waited for — Frigate skipped it. A longer gap, such as a wholly skipped segment (motion-only
+recording), looks the same as a late segment: the next file starts outside the lookup window, so the
+finder polls until the deadline and the INFO line says `next: missing after N s`.
 
-**Fail-open.** Any failure (`Throwable`) except cancellation → WARN, and the description goes out
-from the frames alone, captioned with their times; a `CancellationException` always propagates. That
+**Fail-open.** Any failure (`Throwable`) except cancellation → WARN, and both consumers go on from
+their frames alone, captioned with their times: the description goes out without the grid, and the
+judge calls its model with the annotated frames (`visual_input` status `unavailable`) instead of
+failing over. A build that outlasts the judge's budget is cancelled and ends the same way, with
+status `timeout`. A `CancellationException` always propagates. That
 covers too little footage for 4 tiles, fewer than 4 frames back from ffmpeg, a grid with no tile in
 the current recording (a recording shorter than the tile step, or `after = 0` with a detection at its
 very start), a failure on the current recording (its ffprobe, or an ffmpeg run that fails or returns
@@ -701,7 +807,10 @@ car "left".
 `next: missing after N s`, a found next one as `waited N s for the next segment`, and a neighbour
 whose sampling failed or returned no frames as `prev: sampling failed` / `next: sampling failed`. The
 parentheses list only the segments that gave at least one tile — neither such a neighbour nor a found
-next segment that no tile falls into — and the footage range is the one actually shown.
+next segment that no tile falls into — and the footage range is the one actually shown. A cancelled
+build logs nothing of its own, so an expired judge budget gets a WARN, `Storyboard for <id>: not ready
+within the 10.0 s budget, gave up after N s; using the frames alone`; the judge's `Judge input: …`
+line (see "Visual input") names the outcome of every judged candidate.
 
 ## Integration with Telegram
 
@@ -781,7 +890,8 @@ All variables documented in `.claude/rules/configuration.md` under "AI Descripti
 - `APP_AI_DESCRIPTION_SHORT_MAX` / `APP_AI_DESCRIPTION_DETAILED_MAX` — character caps for the
   short paragraph and the `<details>` body
 - `APP_AI_DESCRIPTION_MAX_FRAMES` — full-resolution frames forwarded next to the storyboard (default 4)
-- `APP_AI_DESCRIPTION_STORYBOARD_*` — the storyboard (`configuration.md`, "Storyboard")
+- `APP_AI_DESCRIPTION_STORYBOARD_*` — the storyboard (`configuration.md`, "Storyboard"): window,
+  tiles and next-segment wait for both consumers, `ENABLED` for descriptions only
 - `CLAUDE_MAX_BUFFER_SIZE` — max size of one JSON message from the Claude CLI (default 16MB). The CLI
   echoes every frame the model reads back as base64, so the SDK's 1 MiB default overflowed on
   ~800 KB frames; an oversized line is dropped with `Failed to process message (continuing)`
@@ -789,6 +899,8 @@ All variables documented in `.claude/rules/configuration.md` under "AI Descripti
   section, see `configuration.md`
 - `APP_AI_JUDGE_ENABLED` — master gate for the notification judge (requires descriptions on)
 - `APP_AI_JUDGE_DEFAULT_PRESET` — judge preset until the owner picks one in `/ai`
+- `APP_AI_JUDGE_STORYBOARD_ENABLED` / `_MAX_IMAGE_SIDE` / `_TIMEOUT` — the judge's own storyboard
+  switch, grid cap and build budget (`configuration.md`, "AI Judge"; see "Visual input")
 
 ## Testing
 
@@ -811,4 +923,8 @@ unterminated last line) and the three outcomes on fixture lines captured from gr
 (`GrokUnifiedLogFixtures` — refresh them when `ARG GROK_VERSION` changes); `GrokBackendEndToEndTest`
 (POSIX) runs a stub `grok` through the real runner and checks that the detector reads the same
 `GROK_HOME` the process got. `VisionCallExecutorTest` pins the stricter-cap rule and that a cap on
-one preset never reaches calls resolved to another.
+one preset never reaches calls resolved to another, and the caps per role: the grid and the frames
+capped independently (`storyboard and frames have independent caps`), a grid with no cap of its own
+following the frames' (`inherited storyboard cap`), `0` lifting only the feature's cap and not the
+preset's (`disabled storyboard feature cap`), a preset's cap limiting both roles (`preset cap limits
+both roles`) and a retry reusing the prepared images (`retry reuses prepared images for both roles`).

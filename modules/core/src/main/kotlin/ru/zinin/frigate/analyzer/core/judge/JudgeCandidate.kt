@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.core.judge
 
 import kotlinx.coroutines.Deferred
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionResult
+import ru.zinin.frigate.analyzer.core.storyboard.RecordingStoryboard
 import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecision
 import ru.zinin.frigate.analyzer.model.dto.RecordingDto
@@ -17,4 +18,9 @@ data class JudgeCandidate(
     /** Кадры с рамками в порядке ранжирования визуализации — те же, что уйдут в Telegram. */
     val visualizedFrames: List<VisualizedFrameData>,
     val descriptionSupplier: (() -> Deferred<Result<DescriptionResult>>)?,
+    /**
+     * Раскадровка события, общая с замыканием описания: собирает её тот, кто обратится первым, остальные получают
+     * готовый результат. `null` — раскадровки у события нет, и judge решает по одним кадрам.
+     */
+    val storyboard: RecordingStoryboard? = null,
 )

@@ -124,6 +124,7 @@ open class AiDescriptionAutoConfiguration {
             return VisionCallExecutor(
                 resolver = resolver.resolver,
                 authTracker = authTracker,
+                // Без отдельного потолка сетки: у описаний она подчиняется common.max-image-side, как кадры.
                 limits = VisionLimits(common.queueTimeout, common.timeout, common.maxConcurrent, common.maxImageSide),
                 label = "description",
             )
@@ -226,10 +227,12 @@ open class AiDescriptionAutoConfiguration {
                 authTracker = authTracker,
                 limits =
                     VisionLimits(
-                        judgeProperties.queueTimeout,
-                        judgeProperties.timeout,
-                        judgeProperties.maxConcurrent,
-                        judgeProperties.maxImageSide,
+                        queueTimeout = judgeProperties.queueTimeout,
+                        timeout = judgeProperties.timeout,
+                        maxConcurrent = judgeProperties.maxConcurrent,
+                        maxImageSide = judgeProperties.maxImageSide,
+                        // Свой потолок у сетки: под потолком крупных кадров она ужалась бы вдвое.
+                        storyboardMaxImageSide = judgeProperties.storyboard.maxImageSide,
                     ),
                 label = "judge",
             )

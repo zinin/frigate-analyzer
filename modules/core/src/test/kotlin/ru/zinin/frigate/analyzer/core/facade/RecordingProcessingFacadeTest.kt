@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.core.facade
 
+import io.mockk.CapturingSlot
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -18,6 +19,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.ObjectProvider
@@ -35,6 +37,7 @@ import ru.zinin.frigate.analyzer.core.service.FrameVisualizationService
 import ru.zinin.frigate.analyzer.core.service.LocalVisualizationService
 import ru.zinin.frigate.analyzer.core.storyboard.BuiltStoryboard
 import ru.zinin.frigate.analyzer.core.storyboard.StoryboardBuilder
+import ru.zinin.frigate.analyzer.core.storyboard.StoryboardPreparation
 import ru.zinin.frigate.analyzer.model.dto.FrameData
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecision
 import ru.zinin.frigate.analyzer.model.dto.NotificationDecisionReason
@@ -54,10 +57,12 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.util.UUID
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -246,6 +251,18 @@ class RecordingProcessingFacadeTest {
         block()
         return captured
     }
+
+    /** Мок судьи, запоминающий кандидата: дальше тест сам играет судью над настоящим объектом, который отдал фасад. */
+    private fun judgeCapturing(): Pair<NotificationJudgeService, CapturingSlot<JudgeCandidate>> {
+        val judge = mockk<NotificationJudgeService>()
+        val submitted = slot<JudgeCandidate>()
+        coEvery { judge.submit(capture(submitted)) } returns Job()
+        return judge to submitted
+    }
+
+    /** Так раскадровку берёт judge (`JudgeRequestFactory`): со своим бюджетом 10 с и без ожидания следующего сегмента. */
+    private suspend fun prepareAsJudge(candidate: JudgeCandidate): StoryboardPreparation =
+        assertNotNull(candidate.storyboard, "no storyboard for the judge").get(Duration.ofSeconds(10), waitForNextSegment = false)
 
     @Test
     fun `recording notification settings failure happens before processed state is saved`() =
@@ -550,8 +567,8 @@ class RecordingProcessingFacadeTest {
                 facade(agent, framesForRequest = listOf(frameWithDetection(0, offsetSeconds = 2.0)), storyboardBuilder = builder)
             val supplier = assertNotNull(captureSupplierDuring { f.processAndNotify(req) })
             // Раскадровка ленивая, как и describe: иначе ffmpeg и ожидание следующего сегмента шли бы на consumer-е
-            // пайплайна, до фильтра получателей, лимитера и PUBLISH судьи.
-            coVerify(exactly = 0) { builder.build(any(), any()) }
+            // пайплайна, до фильтра получателей, лимитера и PUBLISH судьи. Три матчера: два матчили бы только `true`.
+            coVerify(exactly = 0) { builder.build(any(), any(), any()) }
             supplier.invoke().await()
 
             assertEquals(storyboard, captured.captured.storyboard)
@@ -601,7 +618,7 @@ class RecordingProcessingFacadeTest {
             val (f, req) = facade(agent, storyboardBuilder = builder, storyboardEnabled = false)
             captureSupplierDuring { f.processAndNotify(req) }!!.invoke().await()
 
-            coVerify(exactly = 0) { builder.build(any(), any()) }
+            coVerify(exactly = 0) { builder.build(any(), any(), any()) }
         }
 
     @Test
@@ -625,5 +642,186 @@ class RecordingProcessingFacadeTest {
                     .isEmpty(),
             )
             assertEquals(4.0, frames.captured.single().offsetSeconds)
+        }
+
+    /**
+     * Одна раскадровка на событие. Фасад её только создаёт, первым её берёт judge, а описание после PUBLISH получает
+     * тот же объект: ту же сетку и тот же ноль, без второй сборки. Builder получает все кадры с детекциями без JPEG,
+     * сколько бы кадров ни брали сами потребители.
+     */
+    @Test
+    fun `judge and description share prepared storyboard`() =
+        runTest {
+            val built = BuiltStoryboard(storyboard.copy(image = byteArrayOf(1, 2, 3, 4)), zeroSeconds = -3.0)
+            val originalGridBytes = built.storyboard.image.copyOf()
+            val builder = mockk<StoryboardBuilder>()
+            val builderFrames = slot<List<FrameData>>()
+            coEvery { builder.build(recording, capture(builderFrames), any()) } returns built
+            val agent = mockk<DescriptionAgent>()
+            val described = slot<DescriptionRequest>()
+            coEvery { agent.describe(capture(described)) } returns DescriptionResult("s", "d")
+            val (judge, submitted) = judgeCapturing()
+            val frames =
+                listOf(
+                    frameWithDetection(0, confidence = 0.9, offsetSeconds = 1.0),
+                    FrameData(recordingId, 1, ByteArray(5)), // без детекций: раскадровке не нужен
+                    frameWithDetection(2, confidence = 0.5, offsetSeconds = 3.0),
+                    frameWithDetection(3, confidence = 0.6, offsetSeconds = 5.0),
+                    frameWithDetection(4, confidence = 0.95, offsetSeconds = 7.0),
+                    frameWithDetection(5, confidence = 0.4, offsetSeconds = 9.0),
+                )
+            // Потолок крупных кадров описания — два, а кадров с детекциями пять.
+            val (f, req) = facade(agent, framesForRequest = frames, maxFrames = 2, judge = judge, storyboardBuilder = builder)
+
+            f.processAndNotify(req)
+            val candidate = submitted.captured
+            // Consumer пайплайна сетку не строит: её собирает первый потребитель, когда до неё дойдёт.
+            coVerify(exactly = 0) { builder.build(any(), any(), any()) }
+            val prepared = prepareAsJudge(candidate)
+            val outcome = assertNotNull(candidate.descriptionSupplier).invoke().await()
+
+            assertTrue(outcome.isSuccess)
+            assertSame(prepared.built!!.storyboard, described.captured.storyboard)
+            // Крупные кадры описания — лучшие два, 0 и 4 (1.0 и 7.0 с записи), — отсчитаны от нуля той же сетки (−3.0).
+            assertEquals(listOf(4.0, 10.0), described.captured.frames.map { it.offsetSeconds })
+            coVerify(exactly = 1) { builder.build(any(), any(), any()) }
+            coVerify(exactly = 1) { builder.build(recording, any(), false) }
+            assertEquals(listOf(0, 2, 3, 4, 5), builderFrames.captured.map { it.frameIndex })
+            assertTrue(builderFrames.captured.all { it.frameBytes.isEmpty() })
+            assertContentEquals(originalGridBytes, prepared.built.storyboard.image)
+        }
+
+    /** Выключенные на лету описания не лишают judge временного контекста: supplier-а нет, раскадровка есть. */
+    @Test
+    fun `judge works when runtime descriptions are off`() =
+        runTest {
+            val builder = mockk<StoryboardBuilder>()
+            coEvery { builder.build(any(), any(), any()) } returns BuiltStoryboard(storyboard, zeroSeconds = -3.0)
+            val (judge, submitted) = judgeCapturing()
+            val (f, req) =
+                facade(
+                    agent = mockk(relaxed = true),
+                    runtimeSettings = runtimeSettings(false),
+                    judge = judge,
+                    storyboardBuilder = builder,
+                )
+
+            f.processAndNotify(req)
+
+            assertNull(submitted.captured.descriptionSupplier)
+            assertEquals(StoryboardPreparation.Status.AVAILABLE, prepareAsJudge(submitted.captured).status)
+        }
+
+    /**
+     * `APP_AI_DESCRIPTION_STORYBOARD_ENABLED=false` касается только описания: judge свою раскадровку получает, а в
+     * описание сетка не попадает, и его кадры считают время от начала записи, а не от нуля чужой сетки.
+     */
+    @Test
+    fun `description storyboard off does not disable judge handle`() =
+        runTest {
+            val builder = mockk<StoryboardBuilder>()
+            coEvery { builder.build(any(), any(), any()) } returns BuiltStoryboard(storyboard, zeroSeconds = -3.0)
+            val agent = mockk<DescriptionAgent>()
+            val described = slot<DescriptionRequest>()
+            coEvery { agent.describe(capture(described)) } returns DescriptionResult("s", "d")
+            val (judge, submitted) = judgeCapturing()
+            val (f, req) =
+                facade(
+                    agent,
+                    framesForRequest = listOf(frameWithDetection(0, offsetSeconds = 2.0)),
+                    judge = judge,
+                    storyboardBuilder = builder,
+                    storyboardEnabled = false,
+                )
+
+            f.processAndNotify(req)
+            val prepared = prepareAsJudge(submitted.captured)
+            assertNotNull(submitted.captured.descriptionSupplier).invoke().await()
+
+            assertEquals(StoryboardPreparation.Status.AVAILABLE, prepared.status)
+            assertNull(described.captured.storyboard)
+            assertEquals(listOf(2.0), described.captured.frames.map { it.offsetSeconds })
+            coVerify(exactly = 1) { builder.build(any(), any(), any()) }
+        }
+
+    /**
+     * «Сетки нет» — тоже итог: и UNAVAILABLE, и истёкший бюджет judge (TIMEOUT) описание принимает как есть. Оно идёт
+     * по одним кадрам со временем от начала записи и сетку заново не собирает, так что уведомление не ждёт вторую
+     * сборку.
+     */
+    @Test
+    fun `unavailable preparation is not retried by description`() =
+        runTest {
+            assertDescriptionTakesNoGrid(StoryboardPreparation.Status.UNAVAILABLE) { null }
+            assertDescriptionTakesNoGrid(StoryboardPreparation.Status.TIMEOUT) {
+                // Дольше 10 с бюджета judge: сборку отменят, и сетки, которую builder отдал бы позже, не будет.
+                delay(11_000)
+                BuiltStoryboard(storyboard, zeroSeconds = -3.0)
+            }
+        }
+
+    private suspend fun TestScope.assertDescriptionTakesNoGrid(
+        expected: StoryboardPreparation.Status,
+        builds: suspend () -> BuiltStoryboard?,
+    ) {
+        val builder = mockk<StoryboardBuilder>()
+        coEvery { builder.build(any(), any(), any()) } coAnswers { builds() }
+        val agent = mockk<DescriptionAgent>()
+        val described = slot<DescriptionRequest>()
+        coEvery { agent.describe(capture(described)) } returns DescriptionResult("s", "d")
+        val (judge, submitted) = judgeCapturing()
+        val (f, req) =
+            facade(
+                agent,
+                framesForRequest = listOf(frameWithDetection(0, offsetSeconds = 2.0)),
+                judge = judge,
+                storyboardBuilder = builder,
+            )
+
+        f.processAndNotify(req)
+        val prepared = prepareAsJudge(submitted.captured)
+        val judgedAt = currentTime
+        assertNotNull(submitted.captured.descriptionSupplier).invoke().await()
+
+        assertEquals(expected, prepared.status)
+        assertNull(described.captured.storyboard, "$expected")
+        assertEquals(listOf(2.0), described.captured.frames.map { it.offsetSeconds }, "$expected")
+        assertEquals(judgedAt, currentTime, "$expected: the description must not wait for a second build")
+        coVerify(exactly = 1) { builder.build(any(), any(), any()) }
+    }
+
+    /**
+     * Без judge и когда judge раскадровку обошёл (выключатель, лимит, нет модели), первым её просит описание, как
+     * раньше: с ожиданием следующего сегмента и без чужого бюджета. Сборка, ждавшая сегмент 35 с, всё равно попадает в
+     * описание.
+     */
+    @Test
+    fun `description first waits for next segment`() =
+        runTest {
+            val agent = mockk<DescriptionAgent>()
+            val described = slot<DescriptionRequest>()
+            coEvery { agent.describe(capture(described)) } returns DescriptionResult("s", "d")
+
+            val alone = mockk<StoryboardBuilder>()
+            coEvery { alone.build(any(), any(), any()) } coAnswers {
+                delay(35_000)
+                BuiltStoryboard(storyboard, zeroSeconds = -3.0)
+            }
+            val (withoutJudge, request) = facade(agent, storyboardBuilder = alone)
+            assertNotNull(captureSupplierDuring { withoutJudge.processAndNotify(request) }).invoke().await()
+
+            assertSame(storyboard, described.captured.storyboard)
+            coVerify(exactly = 1) { alone.build(recording, any(), true) }
+            coVerify(exactly = 0) { alone.build(any(), any(), false) }
+
+            val bypassed = mockk<StoryboardBuilder>()
+            coEvery { bypassed.build(any(), any(), any()) } returns BuiltStoryboard(storyboard, zeroSeconds = -3.0)
+            val (judge, submitted) = judgeCapturing()
+            val (withJudge, judgedRequest) = facade(agent, judge = judge, storyboardBuilder = bypassed)
+            withJudge.processAndNotify(judgedRequest)
+            assertNotNull(submitted.captured.descriptionSupplier).invoke().await()
+
+            coVerify(exactly = 1) { bypassed.build(recording, any(), true) }
+            coVerify(exactly = 0) { bypassed.build(any(), any(), false) }
         }
 }

@@ -17,10 +17,12 @@ import ru.zinin.frigate.analyzer.service.repository.ObjectTrackRepository
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
 import tools.jackson.databind.node.NullNode
+import tools.jackson.databind.node.ObjectNode
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.roundToInt
 
@@ -81,6 +83,32 @@ class JudgeContextBuilder(
         root.put("camera_notes", properties.cameras[recording.camId]?.notes.orEmpty())
         return JudgeContextResult(mapper.writeValueAsString(root), errors)
     }
+
+    /**
+     * Дописывает к собранному контексту блок `visual_input` — какие изображения вошли в запрос модели. Это описание
+     * подготовленного запроса, а не подтверждение доставки. Блок появляется после подготовки раскадровки, когда
+     * контекст уже собран, поэтому это локальная правка JSON: без SQL и без приостановки. [JudgeContextResult.errors]
+     * остаются прежними. Сбой разбора или записи — WARN и исходный [context] без блока: сбой диагностики не должен
+     * стать сбоем judge.
+     */
+    fun withVisualInput(
+        context: JudgeContextResult,
+        visualInput: Map<String, Any?>,
+        recordingId: UUID,
+    ): JudgeContextResult =
+        try {
+            val root = mapper.readTree(context.json)
+            if (root is ObjectNode) {
+                root.set("visual_input", mapper.valueToTree<JsonNode>(visualInput))
+                context.copy(json = mapper.writeValueAsString(root))
+            } else {
+                logger.warn { "Judge context for $recordingId is not a JSON object; sending it without visual_input" }
+                context
+            }
+        } catch (e: Exception) {
+            logger.warn(e) { "Judge context for $recordingId: visual_input could not be added; sending the context without it" }
+            context
+        }
 
     private suspend fun objectBlock(
         candidate: JudgeCandidate,

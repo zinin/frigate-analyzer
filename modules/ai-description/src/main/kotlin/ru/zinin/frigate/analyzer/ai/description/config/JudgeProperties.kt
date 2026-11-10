@@ -41,14 +41,47 @@ data class JudgeProperties(
      * Предохранитель памяти, а не регулятор пропускной способности: кандидат сверх потолка уходит
      * получателям неосуждённым, как и переполнение очереди камеры. Считать его нужно по кадрам —
      * каждый кандидат держит и визуализированные кадры, и оригиналы, удерживаемые замыканием
-     * supplier-а описания: на 4K-камере это единицы, а не два мегабайта.
+     * supplier-а описания, а после сборки раскадровки события — и JPEG её сетки, одну копию
+     * на judge и описание: на 4K-камере это единицы, а не два мегабайта.
      */
     @field:Min(1) @field:Max(512)
     val maxInFlight: Int = 32,
+    /**
+     * Раскадровка для судьи. Окно, число клеток и ожидание соседнего сегмента — общие с описаниями
+     * (`application.ai.description.storyboard`); здесь только своё включение, потолок и бюджет сборки.
+     */
+    @field:Valid
+    val storyboard: StoryboardSettings = StoryboardSettings(),
 ) {
     data class CameraSection(
         val notes: String = "",
     )
+
+    data class StoryboardSettings(
+        /** `false` — судья решает по одним крупным кадрам, как до раскадровки; описаний это не касается. */
+        val enabled: Boolean = true,
+        /**
+         * Потолок длинной стороны сетки; `0` — фича сетку не ограничивает, но потолок пресета действует
+         * и тогда. Отдельный от [JudgeProperties.maxImageSide]: под общими 1280 px сетка шириной 2560
+         * ужалась бы вдвое, а с ней её клетки и подписи времени.
+         */
+        @field:Min(0) @field:Max(8192)
+        val maxImageSide: Int = 2560,
+        /** Бюджет одной сборки сетки, когда первым её потребителем оказывается судья. */
+        val timeout: Duration = Duration.ofSeconds(10),
+    ) {
+        init {
+            // Здесь, а не только в аннотациях: bean validation не видит ни прямого конструирования,
+            // ни промежутка 1..255 между «без потолка» и минимумом.
+            require(maxImageSide == 0 || maxImageSide in 256..8192) {
+                "application.ai.judge.storyboard.max-image-side must be 0 (no cap) or 256..8192, was $maxImageSide"
+            }
+            // toMillis, а не isPositive: значение меньше миллисекунды дало бы нулевой бюджет.
+            require(timeout.toMillis() > 0) {
+                "application.ai.judge.storyboard.timeout must be at least 1ms, was $timeout"
+            }
+        }
+    }
 
     init {
         require(queueTimeout.toMillis() > 0) { "application.ai.judge.queue-timeout must be positive" }

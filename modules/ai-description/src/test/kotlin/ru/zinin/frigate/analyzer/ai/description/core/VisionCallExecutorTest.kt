@@ -26,6 +26,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -42,6 +43,9 @@ class VisionCallExecutorTest {
             maxConcurrent = 2,
             maxImageSide = 0,
         )
+
+    /** Дефолты судьи: крупные кадры до 1280 px, раскадровка до 2560 px по длинной стороне. */
+    private val judgeLimits = limits.copy(maxImageSide = 1280, storyboardMaxImageSide = 2560)
     private val instructions = VisionInstructions("sys", "pre", "HEADER:", "epi", null)
     private val request =
         VisionRequest(
@@ -174,6 +178,68 @@ class VisionCallExecutorTest {
         val out = ByteArrayOutputStream()
         ImageIO.write(image, "jpeg", out)
         return out.toByteArray()
+    }
+
+    private fun frame(bytes: ByteArray) = VisionImage(bytes, "Frame 0")
+
+    private fun storyboard(bytes: ByteArray) = VisionImage(bytes, "Storyboard", VisionImage.Role.STORYBOARD)
+
+    private fun decoded(bytes: ByteArray): BufferedImage = assertNotNull(ImageIO.read(ByteArrayInputStream(bytes)))
+
+    private fun longestSide(bytes: ByteArray): Int = decoded(bytes).let { maxOf(it.width, it.height) }
+
+    /** Один вызов с [images]; возвращает картинки в том виде, в каком их получил backend. */
+    private suspend fun delivered(
+        images: List<VisionImage>,
+        customLimits: VisionLimits = judgeLimits,
+        presetCap: Int = 0,
+    ): List<VisionImage> {
+        var seen: List<VisionImage>? = null
+        val executor =
+            build(
+                FakeBackend { request ->
+                    seen = request.images
+                    "ok"
+                },
+                customLimits,
+                presetCap = presetCap,
+            )
+        executor.call(request.copy(images = images))
+        return assertNotNull(seen)
+    }
+
+    /**
+     * Одна исходная сетка двумя вызовами одного executor-а с [judgeLimits]: первый резолвится в пресет
+     * по умолчанию `test` с потолком 1568, второй, после переключения владельцем, — в `other` без
+     * потолка. Возвращает сетку в том виде, в каком её получил каждый из двух backend-ов.
+     */
+    private suspend fun gridsThroughCappedThenUncappedPreset(sourceGrid: ByteArray): Pair<ByteArray, ByteArray> {
+        val settings = InMemoryDescriptionRuntimeSettings()
+        var seenByCapped: ByteArray? = null
+        var seenByUncapped: ByteArray? = null
+        val uncapped =
+            FakeBackend { request ->
+                seenByUncapped = request.images.single().bytes
+                "ok"
+            }
+        val executor =
+            build(
+                FakeBackend { request ->
+                    seenByCapped = request.images.single().bytes
+                    "ok"
+                },
+                judgeLimits,
+                extraPresets = listOf("other" to uncapped),
+                settings = settings,
+                presetCap = 1568,
+            )
+        val gridRequest = request.copy(images = listOf(storyboard(sourceGrid)))
+
+        executor.call(gridRequest)
+        settings.setActivePresetId("other", changedBy = "owner")
+        executor.call(gridRequest)
+
+        return assertNotNull(seenByCapped) to assertNotNull(seenByUncapped)
     }
 
     private fun authEvents() = events.filterIsInstance<DescriptionProviderAuthEvent>()
@@ -359,6 +425,154 @@ class VisionCallExecutorTest {
             executor.call(request.copy(images = listOf(VisionImage(big, "Frame 0"))))
 
             assertSame(big, seenByOther)
+        }
+
+    /**
+     * Каждая роль уменьшается до своего потолка: у судьи крупные кадры остаются на 1280 px, а сетка —
+     * до 2560, иначе её клетки и подписи времени ужались бы вдвое.
+     */
+    @Test
+    fun `storyboard and frames have independent caps`() =
+        runTest {
+            val images = delivered(listOf(frame(jpeg(4000, 3000)), storyboard(jpeg(4000, 3000))))
+
+            val longestSides = images.map { longestSide(it.bytes) }
+            assertEquals(listOf(1280, 2560), longestSides)
+            // Роль переживает уменьшение: провайдер получает те же роли в том же порядке.
+            assertEquals(listOf(VisionImage.Role.FRAME, VisionImage.Role.STORYBOARD), images.map { it.role })
+        }
+
+    /** Потолок пресета — предел модели или шлюза: его не обходит ни одна роль. */
+    @Test
+    fun `preset cap limits both roles`() =
+        runTest {
+            val images = delivered(listOf(frame(jpeg(4000, 3000)), storyboard(jpeg(4000, 3000))), presetCap = 1568)
+
+            val longestSides = images.map { longestSide(it.bytes) }
+            assertEquals(listOf(1280, 1568), longestSides)
+        }
+
+    /** 2560 — предел длинной стороны, а не обещание ширины: портретная сетка упирается высотой. */
+    @Test
+    fun `portrait storyboard uses longest side`() =
+        runTest {
+            val image = decoded(delivered(listOf(storyboard(jpeg(1200, 4000)))).single().bytes)
+
+            assertEquals(768, image.width)
+            assertEquals(2560, image.height)
+        }
+
+    /** `null` — своего потолка у сетки нет, и она подчиняется потолку кадров, как у описаний. */
+    @Test
+    fun `inherited storyboard cap`() =
+        runTest {
+            val images =
+                delivered(
+                    listOf(storyboard(jpeg(4000, 3000))),
+                    limits.copy(maxImageSide = 1280, storyboardMaxImageSide = null),
+                )
+
+            val storyboardLongestSide = longestSide(images.single().bytes)
+            assertEquals(1280, storyboardLongestSide)
+        }
+
+    /**
+     * `0` снимает у сетки только потолок фичи: потолок кадров она при этом не наследует (это
+     * значение `null`), а потолок пресета действует по-прежнему.
+     */
+    @Test
+    fun `disabled storyboard feature cap`() =
+        runTest {
+            val images =
+                delivered(
+                    listOf(storyboard(jpeg(4000, 3000))),
+                    limits.copy(maxImageSide = 1280, storyboardMaxImageSide = 0),
+                    presetCap = 1568,
+                )
+
+            val storyboardLongestSide = longestSide(images.single().bytes)
+            assertEquals(1568, storyboardLongestSide)
+        }
+
+    /** Кадры без потолка — не повод пропустить уменьшение: у сетки потолок свой. */
+    @Test
+    fun `storyboard cap works with unlimited frames`() =
+        runTest {
+            val images =
+                delivered(
+                    listOf(frame(jpeg(4000, 3000)), storyboard(jpeg(4000, 3000))),
+                    limits.copy(maxImageSide = 0, storyboardMaxImageSide = 2560),
+                )
+
+            val longestSides = images.map { longestSide(it.bytes) }
+            assertEquals(listOf(4000, 2560), longestSides)
+        }
+
+    /** Потолок — только верхняя граница: маленькая картинка любой роли уходит байт в байт. */
+    @Test
+    fun `small images are not upscaled`() =
+        runTest {
+            val smallFrame = jpeg(240, 160)
+            val smallGrid = jpeg(240, 160)
+
+            val images = delivered(listOf(frame(smallFrame), storyboard(smallGrid)), presetCap = 1568)
+
+            assertContentEquals(smallFrame, images[0].bytes)
+            assertContentEquals(smallGrid, images[1].bytes)
+        }
+
+    /** Обе роли готовятся один раз, до цикла попыток: повтор получает те же уменьшенные байты. */
+    @Test
+    fun `retry reuses prepared images for both roles`() =
+        runTest {
+            val seen = mutableListOf<VisionRequest>()
+            var first = true
+            val backend =
+                FakeBackend { request ->
+                    seen += request
+                    if (first) {
+                        first = false
+                        throw DescriptionException.InvalidResponse(detail = "retry me")
+                    }
+                    "ok"
+                }
+
+            build(backend, judgeLimits)
+                .call(request.copy(images = listOf(frame(jpeg(4000, 3000)), storyboard(jpeg(4000, 3000)))))
+
+            assertEquals(2, seen.size)
+            val (firstAttempt, retry) = seen.map { it.images }
+            assertEquals(listOf(1280, 2560), firstAttempt.map { longestSide(it.bytes) })
+            firstAttempt.zip(retry).forEach { (prepared, reused) ->
+                assertSame(prepared.bytes, reused.bytes, "the retry must reuse the ${prepared.role} prepared before it")
+            }
+        }
+
+    /**
+     * Executor один на фичу, а пресет резолвится на каждый вызов: потолок пресета 1568 не должен
+     * доставаться сетке вызова, который владелец переключил на пресет без потолка.
+     */
+    @Test
+    fun `storyboard cap does not leak across presets`() =
+        runTest {
+            val (capped, uncapped) = gridsThroughCappedThenUncappedPreset(jpeg(4000, 3000))
+
+            assertEquals(1568, longestSide(capped))
+            assertEquals(2560, longestSide(uncapped))
+        }
+
+    /** Уменьшение работает с копией: исходная сетка вызывающего не меняется ни одним из вызовов. */
+    @Test
+    fun `different presets do not mutate source storyboard`() =
+        runTest {
+            val sourceGrid = jpeg(4000, 3000)
+            val originalGridBytes = sourceGrid.copyOf()
+
+            val (capped, uncapped) = gridsThroughCappedThenUncappedPreset(sourceGrid)
+
+            assertContentEquals(originalGridBytes, sourceGrid)
+            // Иначе проверка выше ничего бы не значила: оба вызова действительно уменьшали сетку.
+            assertEquals(listOf(1568, 2560), listOf(longestSide(capped), longestSide(uncapped)))
         }
 
     @Test

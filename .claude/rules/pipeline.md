@@ -16,7 +16,7 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 | RecordingTracker | `core/pipeline/frame/` | Thread-safe state management |
 | RecordingState | `core/pipeline/frame/` | Per-recording state data class |
 | FrameTask | `core/pipeline/frame/` | Frame processing task data class |
-| RecordingProcessingFacade | `core/facade/` | Orchestrates save + notify + visualize; when the judge bean exists, hands the candidate to it and does not send itself |
+| RecordingProcessingFacade | `core/facade/` | Orchestrates save + notify + visualize; creates the event's lazy storyboard shared by the judge and the description; when the judge bean exists, hands the candidate to it and does not send itself |
 | JudgeCoroutineScope | `core/judge/` | IO + SupervisorJob for `NotificationJudgeService`; `@PreDestroy` cancels in-flight jobs |
 
 ## FrameAnalysisPipeline
@@ -30,7 +30,7 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 
 - Queries DB for unprocessed recordings in batches (configurable)
 - Sends frame extraction requests to detection servers
-- Keeps each frame's `timestamp` from vision-api as `FrameData.offsetSeconds` (seconds from the start of the recording, `toFrameData`) — the only record of when a frame was taken once the list is renumbered; the AI description storyboard places detections on its timeline with it
+- Keeps each frame's `timestamp` from vision-api as `FrameData.offsetSeconds` (seconds from the start of the recording, `toFrameData`) — the only record of when a frame was taken once the list is renumbered; the event storyboard places detections on its timeline with it, and the AI description and the LLM judge time their frames by it
 - Registers recordings with RecordingTracker
 - Configurable idle/error delays between batches
 
@@ -53,9 +53,15 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 
 - Saves processing results to DB
 - Orchestrates frame visualization for notifications
+- After a positive tracker decision creates one `RecordingStoryboard` for the event (whenever the
+  storyboard builder exists) and hands it to both the judge candidate and the description supplier.
+  Creating it reads no video: the grid is built later by its first consumer — the judge, after its
+  runtime-switch, snooze, recipient, context and rate-limit checks, or the description supplier —
+  never on the pipeline consumer. See "Storyboard" in `ai-description.md`.
 - When `application.ai.judge.enabled=true`, hands the candidate to `NotificationJudgeService.submit`
-  and returns (the pipeline consumer does not wait for the model; send-or-not happens inside the
-  judge on `JudgeCoroutineScope`). Without that bean, sends the Telegram notification itself.
+  and returns (the pipeline consumer waits neither for the storyboard nor for the model; send-or-not
+  happens inside the judge on `JudgeCoroutineScope`). Without that bean, sends the Telegram
+  notification itself.
   Beyond `APP_AI_JUDGE_MAX_IN_FLIGHT` candidates in memory, `submit` sends the recording unjudged
   from the consumer's own coroutine rather than queueing another one — that bounds memory and puts
   the back-pressure back where it was before the judge. See "Two different limits" in

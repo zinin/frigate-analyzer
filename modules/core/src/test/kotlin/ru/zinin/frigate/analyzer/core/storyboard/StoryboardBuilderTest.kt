@@ -206,6 +206,30 @@ class StoryboardBuilderTest {
             assertEquals(Instant.parse("2026-09-23T10:00:54Z"), deadline.captured)
         }
 
+    /**
+     * Путь judge: срок поиска — старт сборки, и finder проверяет следующий сегмент один раз, как у записи из бэклога.
+     * Файл появился 2 с назад, так что по умолчанию срок был бы на 30 с позже старта. Сегмента нет — сетка
+     * кончается на конце записи, 5.0..12.0 с.
+     */
+    @Test
+    fun `without wait the next segment is checked once`() =
+        runTest {
+            val deadlines = mutableListOf<Instant>()
+            coEvery { finder.next(any(), any(), capture(deadlines)) } returns null
+            val fresh = recording(fileCreated = now.minusSeconds(2))
+            val builder = builder()
+
+            val built = assertNotNull(builder.build(fresh, listOf(frame(4, 10.0)), waitForNextSegment = false))
+
+            assertFalse(deadlines.single().isAfter(now))
+            assertTrue(built.storyboard.missingAfter)
+            assertEquals(12.0, built.zeroSeconds + built.storyboard.durationSeconds, 1e-9)
+
+            builder.build(fresh, listOf(frame(4, 10.0)))
+
+            assertEquals(builder.nextDeadline(fresh, 12.0, now), deadlines.last())
+        }
+
     /** Файл появился в 10:00:12, следующий ожидался в 10:00:24, задача стартовала в 10:01:00. */
     @Test
     fun `the next-segment deadline counts from the expected appearance once that has passed`() {

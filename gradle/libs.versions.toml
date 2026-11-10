@@ -3,36 +3,39 @@
 # registered". The Spring Boot plugin sets kotlin.version to this version, and dependency management
 # forces ktlint's kotlin-compiler-embeddable (it declares 2.2.21) up to it. Raise Kotlin together
 # with a ktlint release that runs on the new compiler.
+# The same management holds kotlin-stdlib at 2.4.10 although ktgbotapi 37.1.0 and its micro_utils
+# 0.32.0 ask for 2.4.21 and KSLog 2.1.0 for 2.4.20. The tests pass on 2.4.10; the next Kotlin raise
+# lifts this downgrade too.
 kotlin = "2.4.10"
-spring-boot = "4.1.1"
+spring-boot = "4.1.2"
 spring-dependency-management = "1.1.7"
 ktlint-gradle = "14.2.0"
 git-properties = "4.0.1"
 
-kotlin-logging = "8.0.4"
-postgresql = "42.7.13"
+kotlin-logging = "8.0.6"
+postgresql = "42.7.14"
 mapstruct = "1.6.3"
 mapstruct-spring-extensions = "2.0.0"
 jakarta-inject-api = "2.0.1"
 uuid-creator = "6.1.1"
 testcontainers = "2.0.5"
-openapi-starter = "3.1.1"
-ktgbotapi = "36.1.0"
-# Keep in lockstep with what ktgbotapi pulls in transitively: 36.1.0 -> ktor 3.5.2 and
-# kotlinx-coroutines 1.11.0 (35.1.0 -> ktor 3.5.1). Mismatching them puts ktor out of step
+openapi-starter = "3.2.0"
+ktgbotapi = "37.1.0"
+# Keep in lockstep with what ktgbotapi pulls in transitively: 37.1.0 -> ktor 3.6.0 and
+# kotlinx-coroutines 1.11.0 (36.1.0 -> ktor 3.5.2). Mismatching them puts ktor out of step
 # with the library compiled against it.
-ktor = "3.5.2"
-# ktor 3.5.x and ktgbotapi 36.1.0 are built against coroutines 1.11.0, but the Spring Boot
-# 4.1.1 BOM still pins 1.10.2 -> NoSuchMethodError at runtime. The root build overrides the
+ktor = "3.6.0"
+# ktor 3.6.x and ktgbotapi 37.1.0 are built against coroutines 1.11.0, but the Spring Boot
+# 4.1.2 BOM still pins 1.10.2 -> NoSuchMethodError at runtime. The root build overrides the
 # BOM property kotlin-coroutines.version with this value; drop the override once a Spring
 # Boot BOM ships coroutines 1.11+.
 coroutines = "1.11.0"
-mockwebserver = "5.5.0"
-mockk = "1.14.11"
+mockwebserver = "5.5.1"
+mockk = "1.14.12"
 liquibase = "5.0.4"
 picocli = "4.7.7"
 ktlint-tool = "1.8.0"
-jacoco = "0.8.15"
+jacoco = "0.8.16"
 spring-ai-claude-code-sdk = "1.0.0"
 
 [libraries]

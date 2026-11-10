@@ -28,8 +28,8 @@ data class BuiltStoryboard(
 )
 
 /**
- * Строит раскадровку для описания: окно вокруг детекций, соседние сегменты, нарезка ffmpeg-ом, сетка.
- * Любой сбой, кроме отмены, — WARN и `null`: описание уйдёт по одним кадрам.
+ * Строит раскадровку события: окно вокруг детекций, соседние сегменты, нарезка ffmpeg-ом, сетка.
+ * Любой сбой, кроме отмены, — WARN и `null`: модель получит одни кадры.
  *
  * Семафор ограничивает только ffprobe текущей записи и запуски ffmpeg; поиск соседей, их ffprobe и
  * ожидание следующего сегмента идут без него, иначе две записи, ждущие по 30 с, задержали бы третью,
@@ -47,21 +47,26 @@ class StoryboardBuilder(
 ) {
     private val permits = Semaphore(MAX_CONCURRENT_BUILDS)
 
-    /** [detectionFrames] — кадры записи с детекциями; байты не нужны, только время и детекции. */
+    /**
+     * [detectionFrames] — кадры записи с детекциями; байты не нужны, только время и детекции.
+     * [waitForNextSegment] = `false` — следующий сегмент проверяется один раз, без ожидания: срок поиска — момент
+     * старта сборки, как у записи из бэклога.
+     */
     suspend fun build(
         recording: RecordingDto,
         detectionFrames: List<FrameData>,
+        waitForNextSegment: Boolean = true,
     ): BuiltStoryboard? {
         val startedAt = clock.instant()
         val started = TimeSource.Monotonic.markNow()
         return try {
-            assemble(recording, detectionFrames, startedAt, started)
+            assemble(recording, detectionFrames, startedAt, started, waitForNextSegment)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
             // Throwable, а не Exception: Error — OOM на большой сетке, LinkageError в Java2D — вышел бы из
-            // сборщика и погубил бы всё описание, а не одну раскадровку.
-            logger.warn(e) { "Storyboard for ${recording.id} failed; describing from the frames alone" }
+            // сборщика и погубил бы весь запрос к модели, а не одну раскадровку.
+            logger.warn(e) { "Storyboard for ${recording.id} failed; using the frames alone" }
             null
         }
     }
@@ -87,6 +92,7 @@ class StoryboardBuilder(
         detectionFrames: List<FrameData>,
         startedAt: Instant,
         started: TimeSource.Monotonic.ValueTimeMark,
+        waitForNextSegment: Boolean,
     ): BuiltStoryboard? {
         val currentPath = Path.of(recording.filePath)
         val duration = permits.withPermit { videoProbe.probe(currentPath) }.durationSeconds
@@ -102,8 +108,10 @@ class StoryboardBuilder(
         val previousWanted = StoryboardPlanner.needsPrevious(window)
         val nextWanted = StoryboardPlanner.needsNext(window, duration)
         val previous = if (previousWanted) finder.previous(recording) else null
+        // Без ожидания срок — старт сборки: он уже прошёл, и finder проверяет следующий сегмент ровно один раз.
+        val deadline = if (waitForNextSegment) nextDeadline(recording, duration, startedAt) else startedAt
         val waitStarted = TimeSource.Monotonic.markNow()
-        val next = if (nextWanted) finder.next(recording, duration, nextDeadline(recording, duration, startedAt)) else null
+        val next = if (nextWanted) finder.next(recording, duration, deadline) else null
         val waited = waitStarted.elapsedNow()
 
         val footage = StoryboardPlanner.footage(window, duration, previous?.info?.durationSeconds, next?.info?.durationSeconds)
@@ -111,7 +119,7 @@ class StoryboardBuilder(
         if (grid == null) {
             logger.warn {
                 "Storyboard for ${recording.id}: ${fmt(footage.range.length)} s of footage is too little; " +
-                    "describing from the frames alone"
+                    "using the frames alone"
             }
             return null
         }
@@ -135,7 +143,7 @@ class StoryboardBuilder(
         // или когда `after = 0` встречает детекцию в самом начале записи.
         if (SegmentRole.CURRENT !in groups) {
             logger.warn {
-                "Storyboard for ${recording.id}: no tile falls into the current recording; describing from the frames alone"
+                "Storyboard for ${recording.id}: no tile falls into the current recording; using the frames alone"
             }
             return null
         }
@@ -171,7 +179,7 @@ class StoryboardBuilder(
         }
         if (sampled.size < StoryboardPlanner.MIN_TILES) {
             logger.warn {
-                "Storyboard for ${recording.id}: ffmpeg returned ${sampled.size} frames, too few; describing from the frames alone"
+                "Storyboard for ${recording.id}: ffmpeg returned ${sampled.size} frames, too few; using the frames alone"
             }
             return null
         }

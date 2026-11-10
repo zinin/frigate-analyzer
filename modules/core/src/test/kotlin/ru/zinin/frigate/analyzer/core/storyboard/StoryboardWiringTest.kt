@@ -94,6 +94,31 @@ class StoryboardWiringTest {
             }
     }
 
+    /**
+     * Раскадровку берёт и judge, поэтому `application.ai.description.storyboard.enabled=false` убирает сетку только из
+     * описаний, а builder остаётся. Без каталога описаний его нет, как и раньше, что бы ни говорили выключатели
+     * раскадровки. Runtime-выключатели живут в `app_settings` и набор бинов не меняют; условие `JudgeRequestFactory`
+     * проверяет её собственный тест, этот сканирует только пакет раскадровки.
+     */
+    @Test
+    fun `with the description storyboard off the builder stays for the judge`() {
+        runner
+            .withPropertyValues("application.ai.description.enabled=true", "application.ai.description.storyboard.enabled=false")
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                assertThat(context).hasSingleBean(StoryboardBuilder::class.java)
+            }
+        runner
+            .withPropertyValues(
+                "application.ai.description.enabled=false",
+                "application.ai.description.storyboard.enabled=true",
+                "application.ai.judge.storyboard.enabled=true",
+            ).run { context ->
+                assertThat(context).hasNotFailed()
+                assertThat(context).doesNotHaveBean(StoryboardBuilder::class.java)
+            }
+    }
+
     @Test
     fun `with descriptions off or unset the context holds no storyboard bean`() {
         listOf(emptyArray<String>(), arrayOf("application.ai.description.enabled=false")).forEach { properties ->

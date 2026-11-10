@@ -142,6 +142,18 @@ class DescriptionTaskTest {
         assertEquals("Images:", DescriptionTask.instructions(request).imagesHeader)
     }
 
+    /** По роли исполнитель ставит сетке её собственный потолок стороны; кадры остаются кадрами. */
+    @Test
+    fun `the storyboard alone is marked with the storyboard role`() {
+        val withStoryboard = request().copy(storyboard = storyboard())
+
+        assertEquals(
+            listOf(VisionImage.Role.STORYBOARD, VisionImage.Role.FRAME),
+            DescriptionTask.images(withStoryboard).map { it.role },
+        )
+        assertEquals(listOf(VisionImage.Role.FRAME), DescriptionTask.images(request()).map { it.role })
+    }
+
     @Test
     fun `the storyboard preamble explains the timeline and lists detections with times`() {
         val detections =
@@ -221,5 +233,43 @@ class DescriptionTaskTest {
                 "Write both descriptions in English.",
             DescriptionTask.instructions(request("en")).preamble,
         )
+    }
+
+    /**
+     * Блок о сетке общий с судьёй; описание получает его байт в байт, со своей фразой о полноразмерных кадрах
+     * и всеми переводами строк — и когда все необязательные строки на месте, и когда их нет ни одной.
+     */
+    @Test
+    fun `the storyboard preamble keeps its wording byte for byte`() {
+        val intro =
+            "You are analyzing surveillance camera footage around an object detection event.\n" +
+                "Write both descriptions in English.\n\n"
+        val grid =
+            "The first image is a storyboard: 16 frames taken every 1.0s over 15.0s of footage, " +
+                "read left to right, top to bottom. " +
+                "Each tile is labeled with its time in seconds from the start of the footage; " +
+                "tiles labeled \"detection\" are the ones closest to a detection.\n"
+        val task =
+            "\nDescribe how the scene develops over time: where objects come from, where they move, " +
+                "whether they stop or leave. An object that stays in the same place in every tile is stationary."
+        val detections =
+            listOf(
+                DescriptionRequest.DetectionMark("car", 0.87, 5.0),
+                DescriptionRequest.DetectionMark("person", 0.71, null),
+            )
+        val full = request().copy(storyboard = storyboard(missingBefore = true, missingAfter = true, detections = detections))
+        val bare = request().copy(frames = emptyList(), storyboard = storyboard(detections = emptyList()))
+
+        assertEquals(
+            intro +
+                grid +
+                "The detector found: car 0.87 at 5.0s; person 0.71.\n" +
+                "Earlier footage is not available.\n" +
+                "Footage after 15.0s is not available.\n" +
+                "The remaining images are full-resolution frames for details.\n" +
+                task,
+            DescriptionTask.instructions(full).preamble,
+        )
+        assertEquals(intro + grid + task, DescriptionTask.instructions(bare).preamble)
     }
 }

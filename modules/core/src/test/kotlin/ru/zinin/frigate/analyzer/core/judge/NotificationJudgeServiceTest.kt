@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.core.judge
 
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -21,12 +22,12 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.springframework.beans.factory.ObjectProvider
 import ru.zinin.frigate.analyzer.ai.description.api.DescriptionException
+import ru.zinin.frigate.analyzer.ai.description.api.DescriptionRequest
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeAgent
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeOutcome
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeRequest
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeRuntimeSettings
 import ru.zinin.frigate.analyzer.ai.description.api.JudgeVerdict
-import ru.zinin.frigate.analyzer.ai.description.config.DescriptionProperties
 import ru.zinin.frigate.analyzer.ai.description.config.JudgeProperties
 import ru.zinin.frigate.analyzer.ai.description.ratelimit.JudgeRateLimiter
 import ru.zinin.frigate.analyzer.model.dto.BboxCluster
@@ -62,6 +63,7 @@ class NotificationJudgeServiceTest {
     private val cap = 4
 
     private val agent = mockk<JudgeAgent>()
+    private val requestFactory = mockk<JudgeRequestFactory>()
     private val runtimeSettings = mockk<JudgeRuntimeSettings>()
     private val contextBuilder = mockk<JudgeContextBuilder>()
     private val zoneResolver = mockk<JudgeZoneResolver>()
@@ -146,20 +148,25 @@ class NotificationJudgeServiceTest {
     private fun TestScope.service(
         scopeJob: Job = SupervisorJob(),
         maxInFlight: Int = 64,
+        judgeAgent: JudgeAgent? = agent,
     ): NotificationJudgeService {
         val agentProvider =
             mockk<ObjectProvider<JudgeAgent>>().also {
-                every { it.getIfAvailable() } returns agent
+                every { it.getIfAvailable() } returns judgeAgent
             }
         val limiterProvider =
             mockk<ObjectProvider<JudgeRateLimiter>>().also {
                 every { it.getIfAvailable() } returns limiter
             }
+        val properties = JudgeProperties(enabled = true, maxInFlight = maxInFlight)
         coEvery { runtimeSettings.judgeEnabled() } returns true
         coEvery { limiter.tryAcquire() } returns true
         coEvery { zoneResolver.resolve() } returns ZoneId.of("UTC")
         coEvery { telegram.hasRecordingRecipients() } returns true
         coEvery { contextBuilder.build(any(), any(), any()) } returns JudgeContextResult("{}", emptyList())
+        coEvery { requestFactory.create(any(), any()) } answers {
+            requestOf(firstArg<JudgeCandidate>(), secondArg<JudgeContextResult>(), properties)
+        }
         coEvery { verdicts.record(capture(recorded)) } answers { mockk() }
         return NotificationJudgeService(
             agentProvider,
@@ -169,13 +176,45 @@ class NotificationJudgeServiceTest {
             verdicts,
             limiterProvider,
             telegram,
-            JudgeProperties(enabled = true, maxInFlight = maxInFlight),
+            properties,
             ObjectTrackerProperties(),
-            DescriptionProperties(enabled = true, provider = "claude", common = commonSection()),
+            requestFactory,
             JudgeCoroutineScope(CoroutineScope(UnconfinedTestDispatcher(testScheduler) + scopeJob)),
             clock,
         )
     }
+
+    /**
+     * Запрос, каким его строил прежний `judgeRequest`: крупные кадры кандидата и исходный контекст. Тестам, которым
+     * подготовка не важна, factory так прозрачна — тест порядка камер по-прежнему читает `camId` из запроса.
+     */
+    private fun requestOf(
+        candidate: JudgeCandidate,
+        context: JudgeContextResult,
+        properties: JudgeProperties,
+    ) = JudgeRequest(
+        recordingId = candidate.recording.id,
+        camId = candidate.recording.camId,
+        frames =
+            candidate.visualizedFrames
+                .take(properties.maxFrames)
+                .sortedBy { it.frameIndex }
+                .map { DescriptionRequest.FrameImage(it.frameIndex, it.visualizedBytes) },
+        contextJson = context.json,
+        language = "ru",
+        maxSnoozeMinutes = properties.maxSnoozeMinutes,
+    )
+
+    /** Запрос «из factory» с отличимым контекстом: в нём `visual_input`, которого нет в исходном JSON (`{}`). */
+    private fun preparedRequestFor(candidate: JudgeCandidate) =
+        JudgeRequest(
+            recordingId = candidate.recording.id,
+            camId = candidate.recording.camId,
+            frames = listOf(DescriptionRequest.FrameImage(0, ByteArray(1), 2.0)),
+            contextJson = """{"visual_input":{"storyboard":{"status":"available"},"image_count":2}}""",
+            language = "ru",
+            maxSnoozeMinutes = 30,
+        )
 
     @Test
     fun `PUBLISH records a JUDGE verdict, sets the snooze and sends`() =
@@ -233,10 +272,12 @@ class NotificationJudgeServiceTest {
                 outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT, snooze = 15)
             val s = service()
             s.process(candidate())
-            s.process(candidate(at = ts.plusSeconds(60)))
+            val snoozed = candidate(at = ts.plusSeconds(60))
+            s.process(snoozed)
             assertEquals(VerdictStage.SNOOZE, recorded[1].stage)
             assertEquals(VerdictReason.SNOOZED, recorded[1].reason)
             coVerify(exactly = 1) { agent.judge(any()) }
+            coVerify(exactly = 0) { requestFactory.create(snoozed, any()) }
             s.process(candidate(classes = listOf("person", "person"), at = ts.plusSeconds(120)))
             coVerify(exactly = 2) { agent.judge(any()) }
         }
@@ -258,6 +299,7 @@ class NotificationJudgeServiceTest {
             assertEquals(VerdictDecision.SUPPRESS, v.verdict)
             coVerify(exactly = 0) { agent.judge(any()) }
             coVerify(exactly = 0) { limiter.tryAcquire() }
+            coVerify(exactly = 0) { requestFactory.create(any(), any()) }
             coVerify(exactly = 0) { telegram.sendRecordingNotification(any(), any(), any()) }
         }
 
@@ -299,6 +341,7 @@ class NotificationJudgeServiceTest {
             assertEquals(VerdictStage.BYPASS, recorded.single().stage)
             assertEquals(VerdictReason.JUDGE_OFF, recorded.single().reason)
             coVerify(exactly = 0) { agent.judge(any()) }
+            coVerify(exactly = 0) { requestFactory.create(any(), any()) }
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
         }
 
@@ -334,6 +377,7 @@ class NotificationJudgeServiceTest {
             s.process(candidate())
             assertEquals(VerdictReason.RATE_LIMITED, recorded.single().reason)
             coVerify(exactly = 0) { agent.judge(any()) }
+            coVerify(exactly = 0) { requestFactory.create(any(), any()) }
         }
 
     @Test
@@ -343,6 +387,7 @@ class NotificationJudgeServiceTest {
             coEvery { contextBuilder.build(any(), any(), any()) } throws IllegalStateException("db down")
             s.process(candidate())
             assertEquals(VerdictReason.CONTEXT_ERROR, recorded.single().reason)
+            coVerify(exactly = 0) { requestFactory.create(any(), any()) }
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
         }
 
@@ -453,7 +498,8 @@ class NotificationJudgeServiceTest {
                 outcome(JudgeVerdict.Decision.SUPPRESS, JudgeVerdict.Reason.DUPLICATE)
             }
             val s = service()
-            val jobs = (1..21).map { i -> s.submit(candidate(at = ts.plusSeconds(i.toLong()))) }
+            val candidates = (1..21).map { i -> candidate(at = ts.plusSeconds(i.toLong())) }
+            val jobs = candidates.map { s.submit(it) }
             runCurrent()
             assertEquals(VerdictStage.FAILOVER, recorded.single().stage)
             assertEquals(VerdictReason.TRANSPORT, recorded.single().reason)
@@ -461,6 +507,8 @@ class NotificationJudgeServiceTest {
             gate.complete(Unit)
             jobs.joinAll()
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+            // Переполнил очередь двадцать первый: его отправили, не готовя запрос, остальные судились как обычно.
+            coVerify(exactly = 0) { requestFactory.create(candidates.last(), any()) }
         }
 
     @Test
@@ -487,6 +535,7 @@ class NotificationJudgeServiceTest {
             // Рассылку несёт корутина вызывающего — это и есть давление на пайплайн, вернувшееся на
             // место того, что было до судьи.
             assertTrue(waiting.isActive, "the caller carries the fan-out itself")
+            coVerify(exactly = 0) { requestFactory.create(any(), any()) }
 
             gate.complete(Unit)
             waiting.join()
@@ -667,14 +716,123 @@ class NotificationJudgeServiceTest {
             coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
         }
 
-    private fun commonSection() =
-        DescriptionProperties.CommonSection(
-            language = "ru",
-            shortMaxLength = 200,
-            detailedMaxLength = 1500,
-            maxFrames = 10,
-            queueTimeout = Duration.ofSeconds(30),
-            timeout = Duration.ofSeconds(60),
-            maxConcurrent = 2,
-        )
+    /**
+     * Подготовка запроса — раскадровка с ffmpeg — стоит денег и времени, поэтому идёт после всех отсечек: выключатель,
+     * получатели, контекст из базы, слот лимитера. Factory получает тот самый контекст, а модель — ровно её запрос.
+     */
+    @Test
+    fun `request is prepared only after all gates`() =
+        runTest {
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            val s = service()
+            val context = JudgeContextResult("""{"recording":{"cam":"cam2"}}""", emptyList())
+            coEvery { contextBuilder.build(any(), any(), any()) } returns context
+            val c = candidate()
+            val prepared = preparedRequestFor(c)
+            coEvery { requestFactory.create(any(), any()) } returns prepared
+
+            s.process(c)
+
+            coVerifyOrder {
+                runtimeSettings.judgeEnabled()
+                telegram.hasRecordingRecipients()
+                contextBuilder.build(c, any(), any())
+                limiter.tryAcquire()
+                requestFactory.create(c, context)
+                agent.judge(prepared)
+            }
+        }
+
+    /** Нет JudgeAgent — прежний failover, а запрос для модели, которой нет, не готовится: ни раскадровки, ни ffmpeg. */
+    @Test
+    fun `missing agent skips preparation`() =
+        runTest {
+            val s = service(judgeAgent = null)
+
+            s.process(candidate())
+
+            val v = recorded.single()
+            assertEquals(VerdictStage.FAILOVER, v.stage)
+            assertEquals(VerdictReason.TRANSPORT, v.reason)
+            assertEquals(VerdictDecision.PUBLISH, v.verdict)
+            // Запроса не было — в строке исходный контекст.
+            assertEquals("{}", v.contextJson)
+            coVerify(exactly = 0) { requestFactory.create(any(), any()) }
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    /** Обычный сбой подготовки — как сбой модели: FAILOVER / TRANSPORT с исходным контекстом, одна рассылка, модель не вызывается. */
+    @Test
+    fun `a failing preparation fails over with the original context`() =
+        runTest {
+            val s = service()
+            coEvery { requestFactory.create(any(), any()) } throws IllegalStateException("preparation exploded")
+
+            s.process(candidate())
+
+            val v = recorded.single()
+            assertEquals(VerdictStage.FAILOVER, v.stage)
+            assertEquals(VerdictReason.TRANSPORT, v.reason)
+            assertEquals(VerdictDecision.PUBLISH, v.verdict)
+            assertEquals("{}", v.contextJson)
+            coVerify(exactly = 0) { agent.judge(any()) }
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
+
+    /**
+     * В строку вердикта идёт контекст подготовленного запроса — с `visual_input`, то есть с тем, с чем judge шёл к
+     * модели, — а не исходный JSON: и у решения модели (PUBLISH, SUPPRESS), и у её сбоя.
+     */
+    @Test
+    fun `prepared context is persisted on publish suppress and model failure`() =
+        runTest {
+            val s = service()
+            val preparedRequest = preparedRequestFor(candidate())
+            coEvery { requestFactory.create(any(), any()) } returns preparedRequest
+
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.PUBLISH, JudgeVerdict.Reason.NEW_EVENT)
+            s.process(candidate())
+            assertEquals(VerdictStage.JUDGE to VerdictDecision.PUBLISH, recorded.single().let { it.stage to it.verdict })
+            assertEquals(preparedRequest.contextJson, recorded.single().contextJson)
+
+            recorded.clear()
+            coEvery { agent.judge(any()) } returns
+                outcome(JudgeVerdict.Decision.SUPPRESS, JudgeVerdict.Reason.STATIC_OBJECT)
+            s.process(candidate())
+            assertEquals(VerdictStage.JUDGE to VerdictDecision.SUPPRESS, recorded.single().let { it.stage to it.verdict })
+            assertEquals(preparedRequest.contextJson, recorded.single().contextJson)
+
+            recorded.clear()
+            coEvery { agent.judge(any()) } throws DescriptionException.Transport()
+            s.process(candidate())
+            assertEquals(VerdictStage.FAILOVER to VerdictReason.TRANSPORT, recorded.single().let { it.stage to it.reason })
+            assertEquals(preparedRequest.contextJson, recorded.single().contextJson)
+        }
+
+    /**
+     * docker stop посреди подготовки, например на ffmpeg раскадровки. Запись уже помечена обработанной, поэтому она
+     * уходит неосуждённой: ровно одна строка FAILOVER / TRANSPORT и одна рассылка, модель не вызывается.
+     */
+    @Test
+    fun `cancellation during preparation sends once`() =
+        runTest {
+            val s = service()
+            val gate = CompletableDeferred<JudgeRequest>()
+            coEvery { requestFactory.create(any(), any()) } coAnswers { gate.await() }
+
+            val job = s.submit(candidate())
+            runCurrent()
+            job.cancel()
+            job.join()
+
+            val v = recorded.single()
+            assertEquals(VerdictStage.FAILOVER, v.stage)
+            assertEquals(VerdictReason.TRANSPORT, v.reason)
+            assertEquals(VerdictDecision.PUBLISH, v.verdict)
+            coVerify(exactly = 1) { requestFactory.create(any(), any()) }
+            coVerify(exactly = 0) { agent.judge(any()) }
+            coVerify(exactly = 1) { telegram.sendRecordingNotification(any(), any(), any()) }
+        }
 }
