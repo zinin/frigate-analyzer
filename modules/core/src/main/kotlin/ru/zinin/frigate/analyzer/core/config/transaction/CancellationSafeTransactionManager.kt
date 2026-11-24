@@ -31,21 +31,27 @@ class CancellationSafeTransactionManager(
 ) : ReactiveTransactionManager by delegate {
     override fun getReactiveTransaction(definition: TransactionDefinition?): Mono<ReactiveTransaction> {
         val opening = delegate.getReactiveTransaction(definition)
-        return if (definition?.propagationBehavior == PROPAGATION_NESTED) opening else UncancellableOpening(opening)
+        return if (definition?.propagationBehavior == PROPAGATION_NESTED) {
+            opening
+        } else {
+            UncancellableOpening(opening, definition?.name ?: "unnamed")
+        }
     }
 }
 
 private class UncancellableOpening(
     source: Mono<ReactiveTransaction>,
+    private val transactionName: String,
 ) : MonoOperator<ReactiveTransaction, ReactiveTransaction>(source) {
     override fun subscribe(actual: CoreSubscriber<in ReactiveTransaction>) {
-        source.subscribe(Opening(actual))
+        source.subscribe(Opening(actual, transactionName))
     }
 
     private enum class State { NOT_STARTED, STARTED, CANCELLED_BEFORE_START, CANCELLED_AFTER_START }
 
     private class Opening(
         private val caller: CoreSubscriber<in ReactiveTransaction>,
+        private val transactionName: String,
     ) : CoreSubscriber<ReactiveTransaction>,
         Subscription {
         private val state = AtomicReference(State.NOT_STARTED)
@@ -74,14 +80,14 @@ private class UncancellableOpening(
         /** Отдаётся и после отмены: откатить транзакцию может только `usingWhen`, который её ждал. */
         override fun onNext(transaction: ReactiveTransaction) {
             if (state.get() == State.CANCELLED_AFTER_START) {
-                logger.info { "Transaction was opened after its caller had been cancelled, rolling it back" }
+                logger.info { "Transaction was opened after its caller had been cancelled, rolling it back: $transactionName" }
             }
             caller.onNext(transaction)
         }
 
         override fun onError(error: Throwable) {
             if (state.get() == State.CANCELLED_AFTER_START) {
-                logger.debug(error) { "Transaction whose caller had been cancelled could not be opened" }
+                logger.debug(error) { "Transaction whose caller had been cancelled could not be opened: $transactionName" }
             } else {
                 caller.onError(error)
             }

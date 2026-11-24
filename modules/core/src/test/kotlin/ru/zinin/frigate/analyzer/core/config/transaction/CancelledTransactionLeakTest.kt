@@ -3,6 +3,7 @@ package ru.zinin.frigate.analyzer.core.config.transaction
 import io.r2dbc.pool.ConnectionPool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
@@ -44,6 +45,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.assertFailsWith
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
@@ -116,13 +118,14 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     @Test
     fun `body of a transaction whose BEGIN was cancelled does not run`() {
         runBlocking {
-            val request = recordingRequest()
-            cancelWhileBeginIsInFlight { recordings.createRecording(request) }
+            val ran = AtomicBoolean()
+            val operator = TransactionalOperator.create(transactionManager)
+            cancelWhileBeginIsInFlight { operator.executeAndAwait { ran.set(true) } }
 
             proxy.hold(Hold.NOTHING)
             await("the abandoned transaction must be rolled back") { transactionsOnServer().isEmpty() }
 
-            assertThat(outside("SELECT id FROM recordings WHERE file_path = '${request.filePath}'")).isEmpty()
+            assertThat(ran).isFalse()
         }
     }
 
@@ -228,7 +231,7 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     ) {
         val job = scope.launch { read() }
         await("$name must take a connection") { acquiredConnections() == 1 }
-        job.cancelAndJoin()
+        cancelAtOnce(job)
         await("$name must give its connection back") { acquiredConnections() == 0 }
     }
 
@@ -238,8 +241,13 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
         val beginsBefore = proxy.beginsSent
         val job = scope.launch { call() }
         await("the call must send BEGIN") { proxy.beginsSent > beginsBefore }
-        job.cancelAndJoin()
+        cancelAtOnce(job)
         await("the server must open the transaction") { transactionsOnServer() == listOf("BEGIN READ WRITE") }
+    }
+
+    /** Отмена, которая ждала бы ответа базы, повесила бы тест: прокси открывает `@AfterEach`, а до него дело не дошло бы. */
+    private suspend fun cancelAtOnce(job: Job) {
+        withTimeoutOrNull(AWAIT_LIMIT) { job.cancelAndJoin() } ?: fail("a cancelled call must not wait for the database")
     }
 
     private suspend fun await(
