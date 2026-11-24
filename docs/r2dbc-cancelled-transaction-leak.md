@@ -1,0 +1,134 @@
+# Соединение R2DBC возвращается в пул с открытой транзакцией после отмены
+
+Если корутину отменили, пока `BEGIN` её транзакции был в пути, соединение возвращается в пул с открытой транзакцией, и
+следующий, кто его возьмёт, работает внутри неё. Это дефект Spring Framework и r2dbc-pool, а не нашего кода:
+[spring-framework#36344](https://github.com/spring-projects/spring-framework/issues/36344),
+[r2dbc-pool#237](https://github.com/r2dbc/r2dbc-pool/pull/237). На 24.11.2026 исправления нет: в Spring 7.0.10, 7.0.11,
+7.1.0 и `main` код открытия транзакции один и тот же, а r2dbc-pool 1.0.2 — последняя версия.
+
+Защита — `CancellationSafeTransactionManager` (`core/config/transaction`): начатое открытие транзакции отменить нельзя, и
+отменённая откатывается, не попав в пул.
+
+## Чем это грозит
+
+Без защиты следующий, кто возьмёт такое соединение:
+
+- после `BEGIN READ ONLY` не может писать: `cannot execute INSERT in a read-only transaction`. Хуже всего это для
+  `createRecording`: watcher пишет WARN и не повторяет, сегмент не попадёт в анализ. `findUnprocessedRecordings`
+  повторится через 5 с, `saveProcessingResult` — через 15 минут;
+- если писал вне транзакции, оставляет её прерванной: следующие получают `current transaction is aborted`, пока
+  транзакционный вызов её не откатит;
+- после `BEGIN READ WRITE` запись вне транзакции (`app_settings`, `notification_verdicts`) уходит в чужую: вызов успешен,
+  но другие соединения строку не видят, пока следующая транзакция на том же соединении не зафиксирует её.
+
+## Как это происходит
+
+1. `@Transactional` на suspend-функции и `TransactionalOperator` Spring выполняет через `usingWhen`: ресурс —
+   транзакция, на отмену — откат.
+2. Открывая транзакцию, `R2dbcTransactionManager.doBegin` берёт соединение из пула и шлёт `BEGIN`.
+3. Корутину отменяют (`withTimeout`, `Job.cancel`), пока `BEGIN` в пути. Ресурса у `usingWhen` ещё нет, поэтому откатывать
+   ему нечего: он отменяет того, кто ресурс создаёт, а `doBegin` отмену не обрабатывает.
+4. Отмена доходит до `ConnectionPool.create()`, и тот возвращает соединение в пул напрямую, минуя
+   `PooledConnection.close()`: ни откат, ни `preRelease` не выполняются.
+5. Драйвер дочитывает ответ на `BEGIN`. Транзакция на сервере открыта, и драйвер считает соединение «в транзакции».
+6. Пул выдаёт соединения в порядке MRU, так что следующий чаще всего получает именно это. Его `BEGIN` драйвер
+   пропускает.
+
+Окно — время ответа на `BEGIN`, на локальной базе около 0,2 мс, и попасть в него почти невозможно. Если база зависла
+дольше таймаута, `BEGIN` виснет первым, и транзакцию бросает каждый вызов, прерванный на нём.
+
+## Где у нас есть отмена
+
+Транзакцию открывают только `@Transactional` и `TransactionalOperator`. Вызовы репозиториев вне них (CRUD, `@Query`) и
+`DatabaseClient` шлют запросы без `BEGIN`: `R2dbcRepositoryFactoryBean` не подключает перехватчик транзакций, и
+`@Transactional` на `SimpleR2dbcRepository` не действует. Поэтому `/status`, запись вердиктов и `app_settings` транзакцию
+бросить не могут, но могли бы попасть в брошенную.
+
+| Место | Граница | Что в транзакции |
+|---|---|---|
+| `NotificationJudgeService.hasRecipients` | 5 с | `getAuthorizedUsersWithZones` |
+| Контекст судьи, `NotificationJudgeService.judgeLocked` | 10 с | `JudgeZoneResolver`, если `APP_AI_JUDGE_ZONE` пуст |
+| Раскадровка судьи, `RecordingStoryboard` | `APP_AI_JUDGE_STORYBOARD_TIMEOUT`, 10 с | `findPreviousSegment`, `findNextSegment` |
+| `StartupTelegramNotifier`, `DescriptionAuthAlertNotifier` | 5 с | `findByUsernameIgnoreCase` в `sendOwnerMessage` |
+| Диалоги Telegram: `/language`, `/timezone`, ввод зоны в `/notifications` | 60–120 с | чтения и записи `TelegramUserService` |
+| Обработчики Telegram | падение long polling | чтения и записи `TelegramUserService` |
+| Пайплайн, watcher | остановка приложения | `createRecording`, `findUnprocessedRecordings` и другие |
+
+## Как устроена защита
+
+`TransactionManagerConfiguration` объявляет бин `ReactiveTransactionManager`, поэтому Spring Boot свой
+`R2dbcTransactionManager` не создаёт, а наш обёрнут в `CancellationSafeTransactionManager`. Через этот бин идут и
+`@Transactional`, и `TransactionalOperator`.
+
+Обёртка меняет одно: отмену, пришедшую после начала открытия, она не пропускает в `getReactiveTransaction()`. Остальное
+делает код самого Spring:
+
+1. Вызывающий получает отмену сразу и ничего не ждёт.
+2. `BEGIN` доводится до конца, соединение всё это время занято и в пул не возвращается.
+3. Транзакция приходит в уже отменённый `usingWhen`. Тот сразу откатывает её и возвращает соединение через
+   `PooledConnection.close()`. Тело транзакции не выполняется.
+
+Лишних обменов с сервером в обычной работе нет. Открытие с `PROPAGATION_NESTED` обёртка не трогает: точка сохранения
+открывается внутри чужой транзакции, и откат к ней после отмены стёр бы то, что внешняя успела записать. В проекте NESTED
+нет.
+
+## Граница
+
+Отменённый вызов держит соединение, пока база не ответит на `BEGIN` и откат, а если соединения он ещё ждал, остаётся в
+очереди пула, не дольше двух попыток по `max-acquire-time`. На зависшей базе новых соединений не создать, поэтому, когда
+прерванных вызовов станет столько же, сколько живых соединений (пул создаёт 10 и закрывает простаивающие полчаса),
+следующие получат отказ в выдаче через 10 с. Вызовы, прерванные посреди транзакции, ведут себя так и без защиты: их откат
+тоже ждёт базу.
+
+Чтение вне транзакции при отмене возвращает соединение сразу. Поэтому снять `@Transactional(readOnly = true)` с чтений из
+одного запроса полезно и здесь: почти все вызовы из таблицы выше — такие чтения.
+
+## Почему так, а не иначе
+
+- **Проверять соединение при каждой выдаче** (`Lifecycle.postAllocate()`: `SELECT 1`, затем откат). Лечит последствие, и
+  выдача ограничена `max-acquire-time`: 5 с и одна повторная попытка. База, зависшая дольше 10 с, роняла бы все вызовы,
+  хотя сейчас они её дожидаются, и watcher терял бы записи.
+- **Проверять только соединения с незаконченной транзакцией.** Зависшая база роняет тех, кому досталось такое соединение,
+  а пул в порядке MRU отдаёт его первым. К тому же проверку отменяют вместе с выдачей: запоздавшая снимает отметку с
+  чужой транзакции, а в редком случае откатывает живую.
+- **`validation-query`, `validation-depth: remote`.** Обмениваются с сервером при каждой выдаче, но транзакцию не
+  откатывают.
+- **`Lifecycle.preRelease()`.** При такой отмене не вызывается.
+- **`NonCancellable` вокруг транзакций.** Лишил бы смысла `withTimeout`, который и стоит на случай зависшей базы.
+- **Только снять `@Transactional(readOnly = true)` с чтений из одного запроса.** Закроет почти все места из таблицы и
+  сэкономит `BEGIN` и `COMMIT`, но не закроет остальные.
+
+Оба варианта с проверкой при выдаче отвергает тест
+`call started while the database still stalls after a cut-off one waits for it`.
+
+## Эксплуатация
+
+Строка INFO значит, что вызов отменили, пока его транзакция открывалась: ждала соединения или ответа на `BEGIN`. Во втором
+случае без защиты она ушла бы в пул открытой:
+
+```
+Transaction was opened after its caller had been cancelled, rolling it back
+```
+
+Частые строки значат, что база отвечает или пул выдаёт соединения дольше наших таймаутов. Ошибок
+`in a read-only transaction` быть не должно, а сессии ниже живут только до отката:
+
+```sql
+SELECT pid, now() - xact_start AS in_transaction, left(query, 40) AS last_query
+FROM pg_stat_activity
+WHERE state = 'idle in transaction' AND query ILIKE 'BEGIN%';
+```
+
+В журнале PostgreSQL прод-сервера за 13.09–24.11.2026 симптомов нет: защита поставлена заранее.
+
+## Тесты
+
+- `CancelledTransactionLeakTest` — сам дефект на настоящей PostgreSQL: `GatedDbProxy` держит ответ на `BEGIN`, пока тест
+  отменяет вызов. Без защиты падают тесты об утечке; тест о зависшей базе не даёт вернуться к проверке при выдаче.
+- `CancellationSafeTransactionManagerTest` — обёртка вместе с настоящим `TransactionalOperator`.
+
+## Когда убрать
+
+Когда дефект исправят в Spring или r2dbc-pool: удалить `CancellationSafeTransactionManager`,
+`TransactionManagerConfiguration` и `CancellationSafeTransactionManagerTest`, а `CancelledTransactionLeakTest` оставить. Он
+проверяет поведение, а не защиту, и должен проходить без неё.
