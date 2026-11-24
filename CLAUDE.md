@@ -80,6 +80,6 @@ Detailed docs in `.claude/rules/` with conditional loading via `paths:` frontmat
 | telegram-notifications.md | `/notifications` dialog, `nfs:*` callbacks, per-user/global flag storage | `**/handler/notifications/**` |
 | ai-description.md | Presets and catalog, provider SPI and factories, Claude and Grok backends, `/ai` dialog, auth alerts, rate limiter, LLM notification judge, storyboard (description and judge) | `modules/ai-description/**`, `**/handler/aisettings/**`, `**/judge/**`, `**/Verdicts*`, `**/storyboard/**` |
 | configuration.md | All environment variables | `**/application.yaml` |
-| database.md | Schema, migrations | `**/liquibase/**`, `**/repository/**`, `**/entity/**`, `**/persistent/**` |
+| database.md | Schema, migrations, connection pool, cancellation-safe transactions | `**/liquibase/**`, `**/repository/**`, `**/entity/**`, `**/persistent/**`, `**/config/transaction/**` |
 | telegram-timeout-bug.md | ktgbotapi long-polling timeout workaround status | `**/TelegramAutoConfiguration*` |
 

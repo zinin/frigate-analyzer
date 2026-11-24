@@ -127,17 +127,14 @@ class RecordingEntityServiceImpl(
         )
     }
 
-    @Transactional(readOnly = true)
     override suspend fun getRecording(id: UUID): RecordingDto? = repository.findById(id)?.let { mapper.toDto(it) }
 
-    @Transactional(readOnly = true)
     override suspend fun findPreviousSegment(
         camId: String,
         from: Instant,
         before: Instant,
     ): RecordingDto? = repository.findPreviousSegment(camId, from, before)?.let { mapper.toDto(it) }
 
-    @Transactional(readOnly = true)
     override suspend fun findNextSegment(
         camId: String,
         after: Instant,

@@ -1,5 +1,5 @@
 ---
-paths: "docker/liquibase/**,**/repository/**,**/entity/**,**/persistent/**"
+paths: "docker/liquibase/**,**/repository/**,**/entity/**,**/persistent/**,**/config/transaction/**"
 ---
 
 # Database
@@ -165,6 +165,28 @@ under `NonCancellable` inside a pipeline consumer, where an unbounded suspension
 nothing at all, shutdown included. With the bound, starvation surfaces as an exception, which every
 path already handles. It covers only handing out a connection; a statement that hangs with one in
 hand is still up to the caller's own `withTimeout` — see the judge's in `ai-description.md`.
+
+**A cancelled `BEGIN` cannot leak its transaction into the pool.** Spring cancels the opening of a
+transaction together with its caller and cleans nothing up, so a coroutine cancelled while its
+`BEGIN` is in flight (a `withTimeout` on a stalled database is enough) would put the connection back
+with the transaction open — spring-framework#36344, unfixed upstream — and the next borrower would
+work inside it: autocommit writes stay uncommitted, and after a `BEGIN READ ONLY` every write fails.
+`CancellationSafeTransactionManager` (`core/config/transaction`), the only `ReactiveTransactionManager`
+bean, lets a started opening run to its end, and `usingWhen` then rolls back the transaction that
+arrived after the cancel. The caller is not delayed; its connection stays acquired until the rollback,
+so on a long stall cut-off calls can use up the live connections.
+`PROPAGATION_NESTED` is rejected with `NestedTransactionNotSupportedException` (a late rollback to a
+savepoint would erase writes of the outer transaction, and without an outer one NESTED is a plain
+`BEGIN`). INFO `Transaction was opened after its caller had been cancelled` marks a call
+cancelled while its transaction was being opened. Do not check connections on acquisition instead
+(`postAllocate`, `validation-query`): bounded by `max-acquire-time`, that round trip turns a database
+stall into failures. Why and how: `docs/r2dbc-cancelled-transaction-leak.md`.
+
+**A read made of one query carries no `@Transactional`.** One statement sees one snapshot anyway, and
+without a transaction a cut-off read gives its connection back at once instead of holding it until
+the stalled database answers `BEGIN` and `ROLLBACK`. Open a transaction only for several statements
+that must agree, or for a write. `CancelledTransactionLeakTest` checks the 14 reads that used to
+carry one, listed there by name: add a new read made of one query to that list.
 
 ## Patterns
 
