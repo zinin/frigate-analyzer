@@ -32,6 +32,7 @@ import org.springframework.transaction.ReactiveTransactionManager
 import org.springframework.transaction.reactive.TransactionalOperator
 import org.springframework.transaction.reactive.executeAndAwait
 import org.springframework.transaction.support.DefaultTransactionDefinition
+import reactor.core.publisher.Mono
 import ru.zinin.frigate.analyzer.core.IntegrationTestBase
 import ru.zinin.frigate.analyzer.core.testsupport.GatedDbProxy
 import ru.zinin.frigate.analyzer.core.testsupport.GatedDbProxy.Hold
@@ -133,13 +134,15 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     @Test
     fun `connection taken while the cancelled BEGIN is in flight is outside its transaction`() {
         runBlocking {
-            cancelWhileBeginIsInFlight { recordings.incrementProcessAttempts(UUID.randomUUID()) }
+            withOnlyTheAbandonedConnection {
+                cancelWhileBeginIsInFlight { recordings.incrementProcessAttempts(UUID.randomUUID()) }
 
-            val insideTransaction = scope.async { insideTransaction() }
-            delay(ANSWER_TRAVEL_TIME)
-            proxy.hold(Hold.NOTHING)
+                val insideTransaction = scope.async { insideTransaction() }
+                delay(ANSWER_TRAVEL_TIME)
+                proxy.hold(Hold.NOTHING)
 
-            assertThat(insideTransaction.await()).isFalse()
+                assertThat(insideTransaction.await()).isFalse()
+            }
         }
     }
 
@@ -147,31 +150,35 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     @Test
     fun `write after a read-only transaction cut off by a timeout succeeds`() {
         runBlocking {
-            val readOnly = TransactionalOperator.create(transactionManager, DefaultTransactionDefinition().apply { isReadOnly = true })
-            proxy.hold(Hold.BEGIN_ANSWERS)
-            assertFailsWith<TimeoutCancellationException> {
-                withTimeout(1.seconds) { readOnly.executeAndAwait { recordings.findNextSegment(CAMERA, FROM, BEFORE) } }
+            withOnlyTheAbandonedConnection {
+                val readOnly = TransactionalOperator.create(transactionManager, DefaultTransactionDefinition().apply { isReadOnly = true })
+                proxy.hold(Hold.BEGIN_ANSWERS)
+                assertFailsWith<TimeoutCancellationException> {
+                    withTimeout(1.seconds) { readOnly.executeAndAwait { recordings.findNextSegment(CAMERA, FROM, BEFORE) } }
+                }
+                assertThat(transactionsOnServer()).containsExactly("BEGIN READ ONLY")
+
+                proxy.hold(Hold.NOTHING)
+                delay(ANSWER_TRAVEL_TIME)
+
+                assertThat(recordings.createRecording(recordingRequest())).isNotNull()
             }
-            assertThat(transactionsOnServer()).containsExactly("BEGIN READ ONLY")
-
-            proxy.hold(Hold.NOTHING)
-            delay(ANSWER_TRAVEL_TIME)
-
-            assertThat(recordings.createRecording(recordingRequest())).isNotNull()
         }
     }
 
     @Test
     fun `autocommit write after a cancelled write transaction is visible to other connections`() {
         runBlocking {
-            val key = "test.${UUID.randomUUID()}"
-            cancelWhileBeginIsInFlight { recordings.incrementProcessAttempts(UUID.randomUUID()) }
+            withOnlyTheAbandonedConnection {
+                val key = "test.${UUID.randomUUID()}"
+                cancelWhileBeginIsInFlight { recordings.incrementProcessAttempts(UUID.randomUUID()) }
 
-            proxy.hold(Hold.NOTHING)
-            delay(ANSWER_TRAVEL_TIME)
-            settings.upsert(key, "1", Instant.now(), "test")
+                proxy.hold(Hold.NOTHING)
+                delay(ANSWER_TRAVEL_TIME)
+                settings.upsert(key, "1", Instant.now(), "test")
 
-            assertThat(outside("SELECT setting_value FROM app_settings WHERE setting_key = '$key'")).containsExactly("1")
+                assertThat(outside("SELECT setting_value FROM app_settings WHERE setting_key = '$key'")).containsExactly("1")
+            }
         }
     }
 
@@ -248,6 +255,19 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     /** Отмена, которая ждала бы ответа базы, повесила бы тест: прокси открывает `@AfterEach`, а до него дело не дошло бы. */
     private suspend fun cancelAtOnce(job: Job) {
         withTimeoutOrNull(AWAIT_LIMIT) { job.cancelAndJoin() } ?: fail("a cancelled call must not wait for the database")
+    }
+
+    /**
+     * Держит второе соединение пула, пока идёт тест: следующему вызову остаётся только брошенное, в каком бы порядке пул
+     * их ни выдавал, и пройдёт он, лишь когда оно вернётся.
+     */
+    private suspend fun withOnlyTheAbandonedConnection(test: suspend () -> Unit) {
+        val other = pool.create().awaitSingle()
+        try {
+            test()
+        } finally {
+            Mono.from(other.close()).awaitSingleOrNull()
+        }
     }
 
     private suspend fun await(
