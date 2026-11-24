@@ -5,6 +5,7 @@ import io.mockk.mockk
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.reactivestreams.Subscription
+import org.springframework.transaction.NestedTransactionNotSupportedException
 import org.springframework.transaction.ReactiveTransaction
 import org.springframework.transaction.ReactiveTransactionManager
 import org.springframework.transaction.TransactionDefinition.PROPAGATION_NESTED
@@ -97,15 +98,14 @@ class CancellationSafeTransactionManagerTest {
         assertThat(events).containsExactly("begin cancelled")
     }
 
-    /** Откат к точке сохранения, появившейся после отмены, стёр бы то, что внешняя транзакция успела записать. */
+    /** Внутри внешней транзакции это точка сохранения, без внешней — обычный `BEGIN`: ни то ни другое не защищено. */
     @Test
-    fun `cancel of a nested opening reaches it`() {
-        val caller = Caller { subscription -> subscription.request(1) }
-        manager.getReactiveTransaction(DefaultTransactionDefinition(PROPAGATION_NESTED)).subscribe(caller)
+    fun `nested opening is rejected`() {
+        val nested = TransactionalOperator.create(manager, DefaultTransactionDefinition(PROPAGATION_NESTED))
 
-        caller.subscription.cancel()
+        assertFailsWith<NestedTransactionNotSupportedException> { nested.transactional(work).block(LIMIT) }
 
-        assertThat(events).containsExactly("begin", "begin cancelled")
+        assertThat(events).isEmpty()
     }
 
     /** Ошибку уже некому обработать: ушедший вызывающий отдал бы её в `onErrorDropped`. */

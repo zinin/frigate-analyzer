@@ -175,8 +175,9 @@ work inside it: autocommit writes stay uncommitted, and after a `BEGIN READ ONLY
 bean, lets a started opening run to its end, and `usingWhen` then rolls back the transaction that
 arrived after the cancel. The caller is not delayed; its connection stays acquired until the rollback,
 so on a long stall cut-off calls can use up the live connections.
-`PROPAGATION_NESTED` is left as it is (a late rollback to a savepoint would erase writes of the outer
-transaction). INFO `Transaction was opened after its caller had been cancelled` marks a call
+`PROPAGATION_NESTED` is rejected with `NestedTransactionNotSupportedException` (a late rollback to a
+savepoint would erase writes of the outer transaction, and without an outer one NESTED is a plain
+`BEGIN`). INFO `Transaction was opened after its caller had been cancelled` marks a call
 cancelled while its transaction was being opened. Do not check connections on acquisition instead
 (`postAllocate`, `validation-query`): bounded by `max-acquire-time`, that round trip turns a database
 stall into failures. Why and how: `docs/r2dbc-cancelled-transaction-leak.md`.

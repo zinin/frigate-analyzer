@@ -2,6 +2,7 @@ package ru.zinin.frigate.analyzer.core.config.transaction
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.reactivestreams.Subscription
+import org.springframework.transaction.NestedTransactionNotSupportedException
 import org.springframework.transaction.ReactiveTransaction
 import org.springframework.transaction.ReactiveTransactionManager
 import org.springframework.transaction.TransactionDefinition
@@ -23,20 +24,22 @@ private val logger = KotlinLogging.logger {}
  * откатит транзакцию, появившуюся после отмены, и вернёт соединение как положено. Вызывающий этого не ждёт: для него
  * отмена срабатывает сразу.
  *
- * `PROPAGATION_NESTED` остаётся как есть: точка сохранения открывается внутри чужой транзакции, и откат к ней после отмены
- * стёр бы то, что внешняя успела записать.
+ * `PROPAGATION_NESTED` отвергается. Внутри внешней транзакции это точка сохранения, и откат к ней после отмены стёр бы то,
+ * что внешняя успела записать, а без внешней — обычный `BEGIN`. В проекте NESTED нет, и различать эти случаи незачем.
  */
 class CancellationSafeTransactionManager(
     private val delegate: ReactiveTransactionManager,
 ) : ReactiveTransactionManager by delegate {
-    override fun getReactiveTransaction(definition: TransactionDefinition?): Mono<ReactiveTransaction> {
-        val opening = delegate.getReactiveTransaction(definition)
-        return if (definition?.propagationBehavior == PROPAGATION_NESTED) {
-            opening
+    override fun getReactiveTransaction(definition: TransactionDefinition?): Mono<ReactiveTransaction> =
+        if (definition?.propagationBehavior == PROPAGATION_NESTED) {
+            Mono.error(
+                NestedTransactionNotSupportedException(
+                    "PROPAGATION_NESTED is not supported: see docs/r2dbc-cancelled-transaction-leak.md",
+                ),
+            )
         } else {
-            UncancellableOpening(opening, definition?.name ?: "unnamed")
+            UncancellableOpening(delegate.getReactiveTransaction(definition), definition?.name ?: "unnamed")
         }
-    }
 }
 
 private class UncancellableOpening(
