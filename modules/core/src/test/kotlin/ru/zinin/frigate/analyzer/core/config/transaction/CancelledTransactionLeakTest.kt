@@ -1,5 +1,6 @@
 package ru.zinin.frigate.analyzer.core.config.transaction
 
+import io.r2dbc.pool.ConnectionPool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,12 +27,18 @@ import org.springframework.r2dbc.core.DatabaseClient
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.context.junit.jupiter.SpringExtension
+import org.springframework.transaction.ReactiveTransactionManager
+import org.springframework.transaction.reactive.TransactionalOperator
+import org.springframework.transaction.reactive.executeAndAwait
+import org.springframework.transaction.support.DefaultTransactionDefinition
 import ru.zinin.frigate.analyzer.core.IntegrationTestBase
 import ru.zinin.frigate.analyzer.core.testsupport.GatedDbProxy
 import ru.zinin.frigate.analyzer.core.testsupport.GatedDbProxy.Hold
 import ru.zinin.frigate.analyzer.model.request.CreateRecordingRequest
+import ru.zinin.frigate.analyzer.service.DetectionEntityService
 import ru.zinin.frigate.analyzer.service.RecordingEntityService
 import ru.zinin.frigate.analyzer.service.repository.AppSettingRepository
+import ru.zinin.frigate.analyzer.telegram.service.TelegramUserService
 import java.sql.DriverManager
 import java.time.Instant
 import java.time.LocalDate
@@ -56,10 +63,22 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     private lateinit var recordings: RecordingEntityService
 
     @Autowired
+    private lateinit var detections: DetectionEntityService
+
+    @Autowired
+    private lateinit var users: TelegramUserService
+
+    @Autowired
     private lateinit var settings: AppSettingRepository
 
     @Autowired
     private lateinit var databaseClient: DatabaseClient
+
+    @Autowired
+    private lateinit var pool: ConnectionPool
+
+    @Autowired
+    private lateinit var transactionManager: ReactiveTransactionManager
 
     @Value("\${spring.r2dbc.username}")
     private lateinit var username: String
@@ -86,7 +105,7 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     @Test
     fun `cancelled transaction is rolled back as soon as its BEGIN is answered`() {
         runBlocking {
-            cancelWhileBeginIsInFlight("BEGIN READ ONLY") { recordings.findPreviousSegment(CAMERA, FROM, BEFORE) }
+            cancelWhileBeginIsInFlight { recordings.incrementProcessAttempts(UUID.randomUUID()) }
 
             proxy.hold(Hold.NOTHING)
 
@@ -98,7 +117,7 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     fun `body of a transaction whose BEGIN was cancelled does not run`() {
         runBlocking {
             val request = recordingRequest()
-            cancelWhileBeginIsInFlight("BEGIN READ WRITE") { recordings.createRecording(request) }
+            cancelWhileBeginIsInFlight { recordings.createRecording(request) }
 
             proxy.hold(Hold.NOTHING)
             await("the abandoned transaction must be rolled back") { transactionsOnServer().isEmpty() }
@@ -111,7 +130,7 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     @Test
     fun `connection taken while the cancelled BEGIN is in flight is outside its transaction`() {
         runBlocking {
-            cancelWhileBeginIsInFlight("BEGIN READ ONLY") { recordings.findPreviousSegment(CAMERA, FROM, BEFORE) }
+            cancelWhileBeginIsInFlight { recordings.incrementProcessAttempts(UUID.randomUUID()) }
 
             val insideTransaction = scope.async { insideTransaction() }
             delay(ANSWER_TRAVEL_TIME)
@@ -121,13 +140,14 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
         }
     }
 
-    /** Форма вызова судьи: чтение под `withTimeout`, а база ответить не успела. */
+    /** Таких транзакций в проекте сейчас нет, но брошенная вредит больше прочих: соединение не может писать. */
     @Test
-    fun `write after a read cut off by a timeout succeeds`() {
+    fun `write after a read-only transaction cut off by a timeout succeeds`() {
         runBlocking {
+            val readOnly = TransactionalOperator.create(transactionManager, DefaultTransactionDefinition().apply { isReadOnly = true })
             proxy.hold(Hold.BEGIN_ANSWERS)
             assertFailsWith<TimeoutCancellationException> {
-                withTimeout(1.seconds) { recordings.findNextSegment(CAMERA, FROM, BEFORE) }
+                withTimeout(1.seconds) { readOnly.executeAndAwait { recordings.findNextSegment(CAMERA, FROM, BEFORE) } }
             }
             assertThat(transactionsOnServer()).containsExactly("BEGIN READ ONLY")
 
@@ -142,7 +162,7 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     fun `autocommit write after a cancelled write transaction is visible to other connections`() {
         runBlocking {
             val key = "test.${UUID.randomUUID()}"
-            cancelWhileBeginIsInFlight("BEGIN READ WRITE") { recordings.incrementProcessAttempts(UUID.randomUUID()) }
+            cancelWhileBeginIsInFlight { recordings.incrementProcessAttempts(UUID.randomUUID()) }
 
             proxy.hold(Hold.NOTHING)
             delay(ANSWER_TRAVEL_TIME)
@@ -161,7 +181,7 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
         runBlocking {
             proxy.hold(Hold.ALL_ANSWERS)
             assertFailsWith<TimeoutCancellationException> {
-                withTimeout(300.milliseconds) { recordings.findNextSegment(CAMERA, FROM, BEFORE) }
+                withTimeout(300.milliseconds) { recordings.incrementProcessAttempts(UUID.randomUUID()) }
             }
 
             val write = scope.async { recordings.createRecording(recordingRequest()) }
@@ -172,17 +192,54 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
         }
     }
 
-    /** Запускает вызов и отменяет его, когда [begin] уже выполнен сервером, а ответ на него держит прокси. */
-    private suspend fun cancelWhileBeginIsInFlight(
-        begin: String,
-        call: suspend () -> Unit,
+    /**
+     * Транзакции у чтения из одного запроса нет, и отмена сразу возвращает его соединение: прерванные на зависшей базе
+     * чтения соединений не копят. Следующий получает соединение вместе с недочитанными ответами и просто ждёт их.
+     */
+    @Test
+    fun `read made of one query gives its connection back as soon as it is cut off`() {
+        runBlocking {
+            proxy.hold(Hold.ALL_ANSWERS)
+
+            cutOff("getRecording") { recordings.getRecording(UUID.randomUUID()) }
+            cutOff("findPreviousSegment") { recordings.findPreviousSegment(CAMERA, FROM, BEFORE) }
+            cutOff("findNextSegment") { recordings.findNextSegment(CAMERA, FROM, BEFORE) }
+            cutOff("findByRecordingId") { detections.findByRecordingId(UUID.randomUUID()) }
+            cutOff("findByUsername") { users.findByUsername(USERNAME) }
+            cutOff("findByUsernameIgnoreCase") { users.findByUsernameIgnoreCase(USERNAME) }
+            cutOff("findActiveByUsername") { users.findActiveByUsername(USERNAME) }
+            cutOff("getAllUsers") { users.getAllUsers() }
+            cutOff("getAllActiveChatIds") { users.getAllActiveChatIds() }
+            cutOff("findByChatIdAsDto") { users.findByChatIdAsDto(CHAT_ID) }
+            cutOff("findByUsernameAsDto") { users.findByUsernameAsDto(USERNAME) }
+            cutOff("getUserZone") { users.getUserZone(CHAT_ID) }
+            cutOff("getAuthorizedUsersWithZones") { users.getAuthorizedUsersWithZones() }
+            cutOff("getUserLanguage") { users.getUserLanguage(CHAT_ID) }
+
+            proxy.hold(Hold.NOTHING)
+            assertThat(recordings.createRecording(recordingRequest())).isNotNull()
+        }
+    }
+
+    /** Отменяет чтение, когда оно уже взяло соединение, и ждёт, что соединение вернётся, хотя база молчит. */
+    private suspend fun cutOff(
+        name: String,
+        read: suspend () -> Unit,
     ) {
+        val job = scope.launch { read() }
+        await("$name must take a connection") { acquiredConnections() == 1 }
+        job.cancelAndJoin()
+        await("$name must give its connection back") { acquiredConnections() == 0 }
+    }
+
+    /** Запускает вызов и отменяет его, когда `BEGIN` уже выполнен сервером, а ответ на него держит прокси. */
+    private suspend fun cancelWhileBeginIsInFlight(call: suspend () -> Unit) {
         proxy.hold(Hold.BEGIN_ANSWERS)
         val beginsBefore = proxy.beginsSent
         val job = scope.launch { call() }
         await("the call must send BEGIN") { proxy.beginsSent > beginsBefore }
         job.cancelAndJoin()
-        await("the server must open the transaction") { transactionsOnServer() == listOf(begin) }
+        await("the server must open the transaction") { transactionsOnServer() == listOf("BEGIN READ WRITE") }
     }
 
     private suspend fun await(
@@ -197,6 +254,8 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
     private suspend fun onEveryConnection(call: suspend () -> Unit) {
         coroutineScope { repeat(POOL_SIZE) { launch { call() } } }
     }
+
+    private fun acquiredConnections(): Int = pool.metrics.orElseThrow().acquiredSize()
 
     /** Простой запрос вне транзакции: в автокоммите обе метки времени совпадают. */
     private suspend fun insideTransaction(): Boolean =
@@ -235,6 +294,8 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
 
     companion object {
         private const val CAMERA = "cam1"
+        private const val USERNAME = "nobody"
+        private const val CHAT_ID = 1L
         private const val DATABASE = "frigate_analyzer"
         private const val POOL_SIZE = 2
         private val FROM = Instant.parse("2026-11-01T00:00:00Z")

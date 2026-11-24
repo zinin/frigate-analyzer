@@ -170,16 +170,22 @@ hand is still up to the caller's own `withTimeout` — see the judge's in `ai-de
 transaction together with its caller and cleans nothing up, so a coroutine cancelled while its
 `BEGIN` is in flight (a `withTimeout` on a stalled database is enough) would put the connection back
 with the transaction open — spring-framework#36344, unfixed upstream — and the next borrower would
-work inside it: writes fail with `cannot execute INSERT in a read-only transaction`, autocommit
-writes stay uncommitted. `CancellationSafeTransactionManager` (`core/config/transaction`), the only
-`ReactiveTransactionManager` bean, lets a started opening run to its end, and `usingWhen` then rolls
-back the transaction that arrived after the cancel. The caller is not delayed; its connection stays
-acquired until the rollback, so on a long stall cut-off calls can use up the live connections.
+work inside it: autocommit writes stay uncommitted, and after a `BEGIN READ ONLY` every write fails.
+`CancellationSafeTransactionManager` (`core/config/transaction`), the only `ReactiveTransactionManager`
+bean, lets a started opening run to its end, and `usingWhen` then rolls back the transaction that
+arrived after the cancel. The caller is not delayed; its connection stays acquired until the rollback,
+so on a long stall cut-off calls can use up the live connections.
 `PROPAGATION_NESTED` is left as it is (a late rollback to a savepoint would erase writes of the outer
 transaction). INFO `Transaction was opened after its caller had been cancelled` marks a call
 cancelled while its transaction was being opened. Do not check connections on acquisition instead
 (`postAllocate`, `validation-query`): bounded by `max-acquire-time`, that round trip turns a database
 stall into failures. Why and how: `docs/r2dbc-cancelled-transaction-leak.md`.
+
+**A read made of one query carries no `@Transactional`.** One statement sees one snapshot anyway, and
+without a transaction a cut-off read gives its connection back at once instead of holding it until
+the stalled database answers `BEGIN` and `ROLLBACK`. Open a transaction only for several statements
+that must agree, or for a write. `CancelledTransactionLeakTest` checks every existing read of this
+kind.
 
 ## Patterns
 

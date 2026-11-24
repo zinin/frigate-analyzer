@@ -13,13 +13,14 @@
 
 Без защиты следующий, кто возьмёт такое соединение:
 
+- после `BEGIN READ WRITE` пишет в чужую транзакцию. Запись вне транзакции (`app_settings`, `notification_verdicts`)
+  успешна, но другие соединения строку не видят, пока следующая транзакция на том же соединении не зафиксирует её, а
+  если та откатится, строка пропадёт;
 - после `BEGIN READ ONLY` не может писать: `cannot execute INSERT in a read-only transaction`. Хуже всего это для
-  `createRecording`: watcher пишет WARN и не повторяет, сегмент не попадёт в анализ. `findUnprocessedRecordings`
-  повторится через 5 с, `saveProcessingResult` — через 15 минут;
-- если писал вне транзакции, оставляет её прерванной: следующие получают `current transaction is aborted`, пока
-  транзакционный вызов её не откатит;
-- после `BEGIN READ WRITE` запись вне транзакции (`app_settings`, `notification_verdicts`) уходит в чужую: вызов успешен,
-  но другие соединения строку не видят, пока следующая транзакция на том же соединении не зафиксирует её.
+  `createRecording`: watcher пишет WARN и не повторяет, сегмент не попадёт в анализ. Сейчас таких транзакций у нас нет
+  (см. «Граница»);
+- получив ошибку вне транзакции, оставляет чужую прерванной: следующие получают `current transaction is aborted`, пока
+  транзакционный вызов её не откатит.
 
 ## Как это происходит
 
@@ -46,13 +47,12 @@
 
 | Место | Граница | Что в транзакции |
 |---|---|---|
-| `NotificationJudgeService.hasRecipients` | 5 с | `getAuthorizedUsersWithZones` |
-| Контекст судьи, `NotificationJudgeService.judgeLocked` | 10 с | `JudgeZoneResolver`, если `APP_AI_JUDGE_ZONE` пуст |
-| Раскадровка судьи, `RecordingStoryboard` | `APP_AI_JUDGE_STORYBOARD_TIMEOUT`, 10 с | `findPreviousSegment`, `findNextSegment` |
-| `StartupTelegramNotifier`, `DescriptionAuthAlertNotifier` | 5 с | `findByUsernameIgnoreCase` в `sendOwnerMessage` |
-| Диалоги Telegram: `/language`, `/timezone`, ввод зоны в `/notifications` | 60–120 с | чтения и записи `TelegramUserService` |
-| Обработчики Telegram | падение long polling | чтения и записи `TelegramUserService` |
+| Диалоги Telegram `/language`, `/timezone` | 60 и 120 с | `updateLanguage`, `updateTimezone` |
+| Обработчики Telegram | падение long polling | записи `TelegramUserService` |
 | Пайплайн, watcher | остановка приложения | `createRecording`, `findUnprocessedRecordings` и другие |
+
+Чтения под `withTimeout` в 5–10 с — судья, раскадровка, сообщения владельцу — транзакцию не открывают: каждое состоит из
+одного запроса.
 
 ## Как устроена защита
 
@@ -80,8 +80,10 @@
 следующие получат отказ в выдаче через 10 с. Вызовы, прерванные посреди транзакции, ведут себя так и без защиты: их откат
 тоже ждёт базу.
 
-Чтение вне транзакции при отмене возвращает соединение сразу. Поэтому снять `@Transactional(readOnly = true)` с чтений из
-одного запроса полезно и здесь: почти все вызовы из таблицы выше — такие чтения.
+Поэтому у чтений из одного запроса `@Transactional` нет. На зависшей базе прерываются прежде всего они, а чтение вне
+транзакции при отмене возвращает соединение сразу, и прерванные вызовы соединений не копят. Следующий получает такое
+соединение вместе с недочитанным ответом и ждёт его, но на зависшей базе ждут все. Самому чтению транзакция ничего не
+даёт: один `SELECT` и без неё видит один снимок.
 
 ## Почему так, а не иначе
 
@@ -95,8 +97,8 @@
   откатывают.
 - **`Lifecycle.preRelease()`.** При такой отмене не вызывается.
 - **`NonCancellable` вокруг транзакций.** Лишил бы смысла `withTimeout`, который и стоит на случай зависшей базы.
-- **Только снять `@Transactional(readOnly = true)` с чтений из одного запроса.** Закроет почти все места из таблицы и
-  сэкономит `BEGIN` и `COMMIT`, но не закроет остальные.
+- **Только снять `@Transactional(readOnly = true)` с чтений из одного запроса.** Снято, но одного этого мало: остаются
+  места из таблицы выше.
 
 Оба варианта с проверкой при выдаче отвергает тест
 `call started while the database still stalls after a cut-off one waits for it`.
@@ -110,8 +112,8 @@
 Transaction was opened after its caller had been cancelled, rolling it back
 ```
 
-Частые строки значат, что база отвечает или пул выдаёт соединения дольше наших таймаутов. Ошибок
-`in a read-only transaction` быть не должно, а сессии ниже живут только до отката:
+Частые строки значат, что база отвечает или пул выдаёт соединения слишком долго. Ошибок `in a read-only transaction` быть
+не должно, а сессии ниже живут только до отката:
 
 ```sql
 SELECT pid, now() - xact_start AS in_transaction, left(query, 40) AS last_query
@@ -124,7 +126,8 @@ WHERE state = 'idle in transaction' AND query ILIKE 'BEGIN%';
 ## Тесты
 
 - `CancelledTransactionLeakTest` — сам дефект на настоящей PostgreSQL: `GatedDbProxy` держит ответ на `BEGIN`, пока тест
-  отменяет вызов. Без защиты падают тесты об утечке; тест о зависшей базе не даёт вернуться к проверке при выдаче.
+  отменяет вызов. Без защиты падают тесты об утечке; тест о зависшей базе не даёт вернуться к проверке при выдаче, а тест
+  о прерванных чтениях — вернуть им `@Transactional`.
 - `CancellationSafeTransactionManagerTest` — обёртка вместе с настоящим `TransactionalOperator`.
 
 ## Когда убрать

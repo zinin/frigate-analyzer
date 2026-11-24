@@ -39,6 +39,5 @@ class DetectionEntityServiceImpl(
         return saved
     }
 
-    @Transactional(readOnly = true)
     override suspend fun findByRecordingId(recordingId: UUID): List<DetectionEntity> = repository.findByRecordingId(recordingId)
 }

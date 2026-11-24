@@ -27,14 +27,11 @@ class TelegramUserServiceImpl(
     private val clock: Clock,
     private val telegramProperties: TelegramProperties,
 ) : TelegramUserService {
-    @Transactional(readOnly = true)
     override suspend fun findByUsername(username: String): TelegramUserDto? = repository.findByUsername(username)?.toDto()
 
-    @Transactional(readOnly = true)
     override suspend fun findByUsernameIgnoreCase(username: String): TelegramUserDto? =
         repository.findByUsernameIgnoreCase(username)?.toDto()
 
-    @Transactional(readOnly = true)
     override suspend fun findActiveByUsername(username: String): TelegramUserDto? =
         repository.findByUsernameAndStatus(username, UserStatus.ACTIVE.name)?.toDto()
 
@@ -102,19 +99,14 @@ class TelegramUserServiceImpl(
         return false
     }
 
-    @Transactional(readOnly = true)
     override suspend fun getAllUsers(): List<TelegramUserDto> = repository.findAll().map { it.toDto() }.toList()
 
-    @Transactional(readOnly = true)
     override suspend fun getAllActiveChatIds(): List<Long> = repository.findAllActiveChatIds()
 
-    @Transactional(readOnly = true)
     override suspend fun findByChatIdAsDto(chatId: Long): TelegramUserDto? = repository.findByChatId(chatId)?.toDto()
 
-    @Transactional(readOnly = true)
     override suspend fun findByUsernameAsDto(username: String): TelegramUserDto? = repository.findByUsername(username)?.toDto()
 
-    @Transactional(readOnly = true)
     override suspend fun getUserZone(chatId: Long): ZoneId {
         val user = repository.findByChatId(chatId)
         if (user == null) {
@@ -146,7 +138,6 @@ class TelegramUserServiceImpl(
         return true
     }
 
-    @Transactional(readOnly = true)
     override suspend fun getAuthorizedUsersWithZones(): List<UserZoneInfo> =
         repository
             .findAllByStatus(UserStatus.ACTIVE.name)
@@ -168,7 +159,6 @@ class TelegramUserServiceImpl(
                 )
             }
 
-    @Transactional(readOnly = true)
     override suspend fun getUserLanguage(chatId: Long): String? {
         val user = repository.findByChatId(chatId)
         return user?.languageCode
