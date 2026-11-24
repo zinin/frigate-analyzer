@@ -185,8 +185,8 @@ stall into failures. Why and how: `docs/r2dbc-cancelled-transaction-leak.md`.
 **A read made of one query carries no `@Transactional`.** One statement sees one snapshot anyway, and
 without a transaction a cut-off read gives its connection back at once instead of holding it until
 the stalled database answers `BEGIN` and `ROLLBACK`. Open a transaction only for several statements
-that must agree, or for a write. `CancelledTransactionLeakTest` checks every existing read of this
-kind.
+that must agree, or for a write. `CancelledTransactionLeakTest` checks the 14 reads that used to
+carry one, listed there by name: add a new read made of one query to that list.
 
 ## Patterns
 
