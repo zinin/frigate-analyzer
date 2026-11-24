@@ -4,15 +4,12 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 /**
- * TCP-прокси до базы, который по команде теста придерживает её ответы: на `BEGIN`, чтобы тест попал в окно между
- * отправкой `BEGIN` и ответом на него (на локальной базе это доли миллисекунды), или все сразу, как у зависшей базы.
- * Запросы проходят как есть.
+ * TCP-прокси до базы, который по команде теста придерживает все её ответы, как у зависшей базы. Так тест попадает в
+ * окно между отправкой `BEGIN` и ответом на него: на локальной базе это доли миллисекунды. Запросы проходят как есть.
  *
  * Потоки виртуальные, то есть демоны, и закрывать прокси не нужно: контекст Spring закрывает свой пул уже после
  * методов `@AfterAll`.
@@ -21,18 +18,14 @@ class GatedDbProxy(
     private val targetHost: String,
     private val targetPort: Int,
 ) {
-    enum class Hold { NOTHING, BEGIN_ANSWERS, ALL_ANSWERS }
+    enum class Hold { NOTHING, ALL_ANSWERS }
 
     private val serverSocket = ServerSocket(0, BACKLOG, InetAddress.getLoopbackAddress())
-    private val begins = AtomicInteger()
     private val lock = ReentrantLock()
     private val holdChanged = lock.newCondition()
     private var hold = Hold.NOTHING
 
     val port: Int get() = serverSocket.localPort
-
-    /** Сколько `BEGIN` ушло на сервер с запуска прокси. */
-    val beginsSent: Int get() = begins.get()
 
     init {
         Thread.ofVirtual().start {
@@ -54,36 +47,23 @@ class GatedDbProxy(
             val server = Socket(targetHost, targetPort)
             client.tcpNoDelay = true
             server.tcpNoDelay = true
-            val beginUnanswered = AtomicBoolean()
-            Thread.ofVirtual().start {
-                pump(client, server) { chunk, send ->
-                    val begin = "BEGIN" in chunk
-                    if (begin) beginUnanswered.set(true)
-                    send()
-                    if (begin) begins.incrementAndGet()
-                }
-            }
-            Thread.ofVirtual().start {
-                pump(server, client) { _, send ->
-                    awaitPass(answersBegin = beginUnanswered.getAndSet(false))
-                    send()
-                }
-            }
+            Thread.ofVirtual().start { pump(client, server) { } }
+            Thread.ofVirtual().start { pump(server, client) { awaitPass() } }
         } catch (_: IOException) {
             client.close()
         }
     }
 
-    private fun awaitPass(answersBegin: Boolean) {
+    private fun awaitPass() {
         lock.withLock {
-            while (hold == Hold.ALL_ANSWERS || (hold == Hold.BEGIN_ANSWERS && answersBegin)) holdChanged.await()
+            while (hold == Hold.ALL_ANSWERS) holdChanged.await()
         }
     }
 
     private fun pump(
         from: Socket,
         to: Socket,
-        forward: (chunk: String, send: () -> Unit) -> Unit,
+        beforeSend: () -> Unit,
     ) {
         val buffer = ByteArray(BUFFER_SIZE)
         try {
@@ -92,7 +72,8 @@ class GatedDbProxy(
                     while (true) {
                         val read = from.getInputStream().read(buffer)
                         if (read < 0) return
-                        forward(String(buffer, 0, read, Charsets.ISO_8859_1)) { to.getOutputStream().write(buffer, 0, read) }
+                        beforeSend()
+                        to.getOutputStream().write(buffer, 0, read)
                     }
                 }
             }

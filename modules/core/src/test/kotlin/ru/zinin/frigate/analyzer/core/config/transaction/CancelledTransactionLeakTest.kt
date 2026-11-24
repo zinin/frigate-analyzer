@@ -57,7 +57,7 @@ import kotlin.time.toJavaDuration
  * Транзакция, открытие которой отменили посреди `BEGIN`, откатывается и не достаётся следующему, кто берёт соединение из
  * пула (spring-framework#36344, `docs/r2dbc-cancelled-transaction-leak.md`).
  *
- * Прокси держит ответ на `BEGIN`, пока тест отменяет вызов, а по серверу видно, что транзакция там открыта: окно отмены
+ * Прокси держит ответы базы, пока тест отменяет вызов, а по серверу видно, что транзакция там открыта: окно отмены
  * поймано.
  */
 @ExtendWith(SpringExtension::class)
@@ -152,7 +152,7 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
         runBlocking {
             withOnlyTheAbandonedConnection {
                 val readOnly = TransactionalOperator.create(transactionManager, DefaultTransactionDefinition().apply { isReadOnly = true })
-                proxy.hold(Hold.BEGIN_ANSWERS)
+                proxy.hold(Hold.ALL_ANSWERS)
                 assertFailsWith<TimeoutCancellationException> {
                     withTimeout(1.seconds) { readOnly.executeAndAwait { recordings.findNextSegment(CAMERA, FROM, BEFORE) } }
                 }
@@ -244,12 +244,10 @@ class CancelledTransactionLeakTest : IntegrationTestBase() {
 
     /** Запускает вызов и отменяет его, когда `BEGIN` уже выполнен сервером, а ответ на него держит прокси. */
     private suspend fun cancelWhileBeginIsInFlight(call: suspend () -> Unit) {
-        proxy.hold(Hold.BEGIN_ANSWERS)
-        val beginsBefore = proxy.beginsSent
+        proxy.hold(Hold.ALL_ANSWERS)
         val job = scope.launch { call() }
-        await("the call must send BEGIN") { proxy.beginsSent > beginsBefore }
-        cancelAtOnce(job)
         await("the server must open the transaction") { transactionsOnServer() == listOf("BEGIN READ WRITE") }
+        cancelAtOnce(job)
     }
 
     /** Отмена, которая ждала бы ответа базы, повесила бы тест: прокси открывает `@AfterEach`, а до него дело не дошло бы. */

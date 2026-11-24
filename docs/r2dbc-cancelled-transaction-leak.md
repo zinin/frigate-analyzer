@@ -134,7 +134,7 @@ WHERE state = 'idle in transaction' AND query ILIKE 'BEGIN%';
 
 ## Тесты
 
-- `CancelledTransactionLeakTest` — сам дефект на настоящей PostgreSQL: `GatedDbProxy` держит ответ на `BEGIN`, пока тест
+- `CancelledTransactionLeakTest` — сам дефект на настоящей PostgreSQL: `GatedDbProxy` держит ответы базы, пока тест
   отменяет вызов. Без защиты падают тесты об утечке; тест о зависшей базе не даёт вернуться к проверке при выдаче, а тест
   о прерванных чтениях — вернуть им `@Transactional`.
 - `CancellationSafeTransactionManagerTest` — обёртка вместе с настоящим `TransactionalOperator`.
