@@ -9,7 +9,9 @@ import ru.zinin.frigate.analyzer.model.dto.FrameData
 import java.awt.Color
 import java.awt.Graphics2D
 import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
 import java.util.UUID
+import javax.imageio.ImageIO
 
 /**
  * Картинки синтетические: однотонный фон с фигурами. Дневной кадр — цветной, ИК-кадр ночной камеры —
@@ -42,7 +44,8 @@ class ChangedFrameDetectorTest {
     fun `a slightly tinted grey frame is still monochrome`() {
         val tinted = Color(101, 100, 100)
 
-        val result = detector.detect(frames(jpeg(tinted), jpeg(tinted) { box(400, 400, 160, 80, dark) }))
+        // PNG: без потерь разброс каналов ровно 1, а не как после округления цветности в JPEG — на пороге.
+        val result = detector.detect(frames(png(tinted), jpeg(tinted) { box(400, 400, 160, 80, dark) }))
 
         assertThat(result.skip).isEqualTo(ChangedFrames.Skip.MONOCHROME)
     }
@@ -81,6 +84,36 @@ class ChangedFrameDetectorTest {
         val result = detector.detect(frames(jpeg(day), jpeg(day) { box(0, 300, 1280, 660, dark) }))
 
         assertThat(result.indexes).containsExactly(1)
+    }
+
+    @Test
+    fun `small specks over much of the picture count as changed`() {
+        // Метель: каждое пятнышко меньше наименьшей области, но вместе они занимают заметную часть кадра.
+        val snow =
+            jpeg(day) {
+                for (x in 12 until 1280 step 32) {
+                    for (y in 12 until 960 step 32) {
+                        box(x, y, 8, 8, dark)
+                    }
+                }
+            }
+
+        val result = detector.detect(frames(jpeg(day), snow))
+
+        assertThat(result.indexes).containsExactly(1)
+    }
+
+    @Test
+    fun `the warning about unreadable frames names the first cause`() {
+        val recordId = UUID.randomUUID()
+
+        val message =
+            unreadableFramesWarning(
+                recordId,
+                listOf(FrameFailure(2, "IIOException: broken"), FrameFailure(3, "not a recognised image")),
+            )
+
+        assertThat(message).contains("[2, 3]", recordId.toString(), "IIOException: broken")
     }
 
     @Test
@@ -150,6 +183,22 @@ class ChangedFrameDetectorTest {
             graphics.dispose()
         }
         return JpegCodec.encode(image, 0.95f)
+    }
+
+    private fun png(
+        color: Color,
+        width: Int = 1280,
+        height: Int = 960,
+    ): ByteArray {
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+        val graphics = image.createGraphics()
+        try {
+            graphics.color = color
+            graphics.fillRect(0, 0, width, height)
+        } finally {
+            graphics.dispose()
+        }
+        return ByteArrayOutputStream().also { ImageIO.write(image, "png", it) }.toByteArray()
     }
 
     private fun Graphics2D.box(

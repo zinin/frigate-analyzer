@@ -64,15 +64,16 @@ class FrameExtractorProducerChangedFramesTest {
         }
 
     @Test
-    fun `the log suffix names the outcome`() {
-        assertThat(changedFramesSuffix(ChangedFrames(indexes = setOf(2)), total = 4))
-            .isEqualTo("; changed 1/3 -> good model")
-        assertThat(changedFramesSuffix(ChangedFrames(skip = ChangedFrames.Skip.MONOCHROME), total = 4))
-            .isEqualTo("; monochrome, changed-frame check skipped")
-        assertThat(changedFramesSuffix(ChangedFrames(skip = ChangedFrames.Skip.FAILED), total = 4))
-            .isEqualTo("; changed-frame check failed")
-        assertThat(changedFramesSuffix(ChangedFrames(skip = ChangedFrames.Skip.DISABLED), total = 4)).isEmpty()
-        assertThat(changedFramesSuffix(ChangedFrames(skip = ChangedFrames.Skip.NOTHING_TO_COMPARE), total = 1))
+    fun `the log suffix names the outcome and what the comparison cost`() {
+        assertThat(changedFramesSuffix(ChangedFrames(indexes = setOf(2)), total = 4, millis = 240))
+            .isEqualTo("; changed 1/3 -> good model (240 ms)")
+        assertThat(changedFramesSuffix(ChangedFrames(skip = ChangedFrames.Skip.MONOCHROME), total = 4, millis = 40))
+            .isEqualTo("; monochrome, changed-frame check skipped (40 ms)")
+        assertThat(changedFramesSuffix(ChangedFrames(skip = ChangedFrames.Skip.FAILED), total = 4, millis = 3))
+            .isEqualTo("; changed-frame check failed (3 ms)")
+        assertThat(changedFramesSuffix(ChangedFrames(skip = ChangedFrames.Skip.DISABLED), total = 4, millis = 0))
+            .isEmpty()
+        assertThat(changedFramesSuffix(ChangedFrames(skip = ChangedFrames.Skip.NOTHING_TO_COMPARE), total = 1, millis = 0))
             .isEmpty()
     }
 

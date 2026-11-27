@@ -7,11 +7,26 @@ import ru.zinin.frigate.analyzer.core.config.properties.DetectProperties
 import ru.zinin.frigate.analyzer.model.dto.FrameData
 import java.awt.image.BufferedImage
 import java.awt.image.DataBufferByte
+import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.pow
 
 private val logger = KotlinLogging.logger {}
+
+/** Кадр, который не удалось прочитать или сравнить, и почему. */
+internal data class FrameFailure(
+    val frameIndex: Int,
+    val cause: String,
+)
+
+/** Один WARN на запись с первой причиной: без неё режим мог бы молча перестать работать. */
+internal fun unreadableFramesWarning(
+    recordId: UUID,
+    failures: List<FrameFailure>,
+): String =
+    "Changed-frame check: could not read frames ${failures.map { it.frameIndex }} of recording $recordId " +
+        "(first cause: ${failures.first().cause}); analyzing them as usual"
 
 /** Какие кадры записи отличаются от первого и почему сравнение не делалось, если не делалось. */
 data class ChangedFrames(
@@ -40,7 +55,7 @@ class ChangedFrameDetector(
         if (!detectProperties.changedFrames.enabled) return ChangedFrames(skip = ChangedFrames.Skip.DISABLED)
         if (frames.size < 2) return ChangedFrames(skip = ChangedFrames.Skip.NOTHING_TO_COMPARE)
 
-        val failed = mutableListOf<Int>()
+        val failed = mutableListOf<FrameFailure>()
         val reference = attempt(frames.first(), failed) { read(it) }
         val result =
             when {
@@ -66,10 +81,7 @@ class ChangedFrameDetector(
             }
 
         if (failed.isNotEmpty()) {
-            logger.warn {
-                "Changed-frame check: could not read frames $failed of recording ${frames.first().recordId}; " +
-                    "analyzing them as usual"
-            }
+            logger.warn { unreadableFramesWarning(frames.first().recordId, failed) }
         }
         return result
     }
@@ -77,15 +89,20 @@ class ChangedFrameDetector(
     /** `null` — кадр не прочитан или не сравнён: он обрабатывается как раньше, а запись не страдает. */
     private fun <T : Any> attempt(
         frame: FrameData,
-        failed: MutableList<Int>,
+        failed: MutableList<FrameFailure>,
         block: (FrameData) -> T?,
-    ): T? =
-        try {
-            block(frame)
-        } catch (e: Exception) {
-            logger.debug(e) { "Changed-frame check: frame ${frame.frameIndex} of recording ${frame.recordId}" }
-            null
-        }.also { if (it == null) failed += frame.frameIndex }
+    ): T? {
+        val result =
+            try {
+                block(frame)
+            } catch (e: Exception) {
+                logger.debug(e) { "Changed-frame check: frame ${frame.frameIndex} of recording ${frame.recordId}" }
+                failed += FrameFailure(frame.frameIndex, "${e.javaClass.simpleName}: ${e.message}")
+                return null
+            }
+        if (result == null) failed += FrameFailure(frame.frameIndex, "not a recognised image")
+        return result
+    }
 
     private fun read(frame: FrameData): WorkingFrame? = JpegCodec.decode(frame.frameBytes)?.let(::workingFrame)
 

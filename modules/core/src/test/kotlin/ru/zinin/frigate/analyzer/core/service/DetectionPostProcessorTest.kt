@@ -44,6 +44,16 @@ class DetectionPostProcessorTest {
             assertThat(result.model).isEqualTo("good.pt")
             assertThat(result.detections.map { it.className }).containsExactly("car")
             coVerify(exactly = 1) { detectService.detectWithRetry(any(), any(), any(), any(), any()) }
+            // Те же conf и imgsz, что и всегда: иначе параллельные вызовы vision-api подменят их друг другу.
+            coVerify {
+                detectService.detectWithRetry(
+                    bytes,
+                    properties.defaultConfidence,
+                    properties.defaultImgSize,
+                    "good.pt",
+                    any(),
+                )
+            }
         }
 
     @Test
@@ -75,6 +85,15 @@ class DetectionPostProcessorTest {
             assertThat(result.model).isEqualTo("small.pt")
             assertThat(result.detections).isEmpty()
             coVerify(exactly = 1) { detectService.detectWithRetry(any(), any(), any(), "good.pt", any()) }
+            coVerify {
+                detectService.detectWithRetry(
+                    bytes,
+                    properties.defaultConfidence,
+                    properties.defaultImgSize,
+                    "small.pt",
+                    any(),
+                )
+            }
         }
 
     @Test
