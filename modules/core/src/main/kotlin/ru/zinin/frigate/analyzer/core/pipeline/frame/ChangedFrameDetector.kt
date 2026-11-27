@@ -112,15 +112,23 @@ class ChangedFrameDetector(
         val blue = IntArray(width * height)
         val green = IntArray(width * height)
         val red = IntArray(width * height)
+        // Это самый горячий цикл: без деления на каждый пиксель и с суммой по строке блока.
         for (y in 0 until height * factor) {
             var offset = y * source.width * BGR_BYTES
             val row = (y / factor) * width
-            for (x in 0 until width * factor) {
-                val i = row + x / factor
-                blue[i] += data[offset].toInt() and BYTE_MASK
-                green[i] += data[offset + 1].toInt() and BYTE_MASK
-                red[i] += data[offset + 2].toInt() and BYTE_MASK
-                offset += BGR_BYTES
+            for (column in 0 until width) {
+                var b = 0
+                var g = 0
+                var r = 0
+                repeat(factor) {
+                    b += data[offset].toInt() and BYTE_MASK
+                    g += data[offset + 1].toInt() and BYTE_MASK
+                    r += data[offset + 2].toInt() and BYTE_MASK
+                    offset += BGR_BYTES
+                }
+                blue[row + column] += b
+                green[row + column] += g
+                red[row + column] += r
             }
         }
 
@@ -175,23 +183,31 @@ class ChangedFrameDetector(
         return hasRegion(cleaned, width, height, minRegion)
     }
 
+    /** Размытие 3×3 с повтором краевых пикселей, в два прохода: сначала по строкам, потом по столбцам. */
     private fun blur(
         pixels: IntArray,
         width: Int,
         height: Int,
-    ): IntArray =
-        IntArray(pixels.size) { i ->
-            val x = i % width
-            val y = i / width
-            var sum = 0
-            for (dy in -1..1) {
-                val row = (y + dy).coerceIn(0, height - 1) * width
-                for (dx in -1..1) {
-                    sum += pixels[row + (x + dx).coerceIn(0, width - 1)]
-                }
+    ): IntArray {
+        val rows = IntArray(pixels.size)
+        for (y in 0 until height) {
+            val row = y * width
+            for (x in 0 until width) {
+                rows[row + x] =
+                    pixels[row + max(0, x - 1)] + pixels[row + x] + pixels[row + minOf(width - 1, x + 1)]
             }
-            (sum + 4) / 9
         }
+        val result = IntArray(pixels.size)
+        for (y in 0 until height) {
+            val above = max(0, y - 1) * width
+            val row = y * width
+            val below = minOf(height - 1, y + 1) * width
+            for (x in 0 until width) {
+                result[row + x] = (rows[above + x] + rows[row + x] + rows[below + x] + 4) / 9
+            }
+        }
+        return result
+    }
 
     private fun median(values: IntArray): Int {
         val histogram = IntArray(BYTE_MASK + 1)
@@ -204,41 +220,52 @@ class ChangedFrameDetector(
         return BYTE_MASK
     }
 
+    /** Пиксель остаётся, только если всё окно `(2r+1)×(2r+1)` отмечено. */
     private fun erode(
         mask: BooleanArray,
         width: Int,
         height: Int,
         radius: Int,
-    ) = morph(mask, width, height, radius, keep = true)
+    ) = window(window(mask, width, height, radius, spread = false, alongRows = true), width, height, radius, false, false)
 
+    /** Пиксель отмечается, если в окне `(2r+1)×(2r+1)` есть отмеченный. */
     private fun dilate(
         mask: BooleanArray,
         width: Int,
         height: Int,
         radius: Int,
-    ) = morph(mask, width, height, radius, keep = false)
+    ) = window(window(mask, width, height, radius, spread = true, alongRows = true), width, height, radius, true, false)
 
-    /** Прямоугольная морфология в два прохода: `keep = true` — эрозия, `false` — расширение. */
-    private fun morph(
+    /**
+     * Один проход прямоугольной морфологии скользящим окном: пиксель получает значение [spread], если
+     * оно есть хотя бы в одном пикселе окна вдоль строки (или столбца), иначе обратное. Край кадра не
+     * дополняется — повтор краевого пикселя ничего не изменил бы.
+     */
+    private fun window(
         mask: BooleanArray,
         width: Int,
         height: Int,
         radius: Int,
-        keep: Boolean,
+        spread: Boolean,
+        alongRows: Boolean,
     ): BooleanArray {
-        val horizontal =
-            BooleanArray(mask.size) { i ->
-                val x = i % width
-                val row = i - x
-                val hit = (-radius..radius).any { mask[row + (x + it).coerceIn(0, width - 1)] != keep }
-                if (hit) !keep else keep
+        val result = BooleanArray(mask.size)
+        val lines = if (alongRows) height else width
+        val length = if (alongRows) width else height
+        val step = if (alongRows) 1 else width
+        for (line in 0 until lines) {
+            val start = if (alongRows) line * width else line
+            var hits = 0
+            for (k in 0..minOf(radius, length - 1)) if (mask[start + k * step] == spread) hits++
+            for (k in 0 until length) {
+                result[start + k * step] = if (hits > 0) spread else !spread
+                val entering = k + radius + 1
+                if (entering < length && mask[start + entering * step] == spread) hits++
+                val leaving = k - radius
+                if (leaving >= 0 && mask[start + leaving * step] == spread) hits--
             }
-        return BooleanArray(mask.size) { i ->
-            val x = i % width
-            val y = i / width
-            val hit = (-radius..radius).any { horizontal[(y + it).coerceIn(0, height - 1) * width + x] != keep }
-            if (hit) !keep else keep
         }
+        return result
     }
 
     /** Есть ли 8-связная область не меньше [minSize] пикселей. */
