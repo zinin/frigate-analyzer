@@ -56,6 +56,21 @@ internal fun toFrameData(
     }
 }
 
+/**
+ * Хвост той же строки про сравнение с первым кадром: сколько кадров из `total - 1` уйдут сразу в
+ * good-model или почему сравнения не было. По нему после выката видно, сколько стоит режим.
+ */
+internal fun changedFramesSuffix(
+    changes: ChangedFrames,
+    total: Int,
+): String =
+    when (changes.skip) {
+        null -> "; changed ${changes.indexes.size}/${total - 1} -> good model"
+        ChangedFrames.Skip.MONOCHROME -> "; monochrome, changed-frame check skipped"
+        ChangedFrames.Skip.FAILED -> "; changed-frame check failed"
+        ChangedFrames.Skip.DISABLED, ChangedFrames.Skip.NOTHING_TO_COMPARE -> ""
+    }
+
 @Component
 class FrameExtractorProducer(
     private val detectService: DetectService,
@@ -63,6 +78,7 @@ class FrameExtractorProducer(
     private val recordingTracker: RecordingTracker,
     private val pipelineProperties: PipelineProperties,
     private val detectProperties: DetectProperties,
+    private val changedFrameDetector: ChangedFrameDetector,
 ) {
     /**
      * Main producer loop. Extracts frames from video and sends them to the channel.
@@ -122,9 +138,12 @@ class FrameExtractorProducer(
 
         try {
             val response = extractFramesFromVideo(record)
+            val frameDataList = toFrameData(record.id, response.frames)
+            // Декодирование и сравнение картинок — работа для CPU, а не для потоков ввода-вывода.
+            val changes = withContext(Dispatchers.Default) { changedFrameDetector.detect(frameDataList) }
             logger.info {
                 "Extracted ${response.frames.size} frames for recording ${record.id}" +
-                    frameReasonSuffix(response.frames)
+                    frameReasonSuffix(response.frames) + changedFramesSuffix(changes, frameDataList.size)
             }
 
             // Still reachable although the server always returns frame 0: the zero-byte file path
@@ -137,12 +156,17 @@ class FrameExtractorProducer(
                 return
             }
 
-            val frameDataList = toFrameData(record.id, response.frames)
-
             recordingTracker.registerRecording(record.id, frameDataList)
 
             for (frameData in frameDataList) {
-                channel.send(FrameTask(frameData.recordId, frameData.frameIndex, frameData.frameBytes))
+                channel.send(
+                    FrameTask(
+                        frameData.recordId,
+                        frameData.frameIndex,
+                        frameData.frameBytes,
+                        changed = frameData.frameIndex in changes.indexes,
+                    ),
+                )
             }
 
             logger.debug { "Sent ${frameDataList.size} frame tasks for recording ${record.id}" }

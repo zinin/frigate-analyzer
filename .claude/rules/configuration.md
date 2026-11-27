@@ -68,6 +68,7 @@ The reference form (`${FIRST_SCAN_PERIOD:${application.records-watcher.watch-per
 | `DETECT_DEFAULT_IMG_SIZE` | 2016       | Default image size |
 | `DETECT_DEFAULT_MODEL` | yolo26s.pt | Default YOLO model |
 | `DETECT_GOOD_MODEL` | yolo26x.pt | High-quality YOLO model |
+| `DETECT_CHANGED_FRAMES_ENABLED` | true | Frames of a daylight recording that differ from its first frame go straight to `DETECT_GOOD_MODEL` — see "Changed Frames" |
 | `DETECT_RETRY_DELAY` | 500ms      | Retry delay on failure |
 | `DETECT_FRAME_TIMEOUT` | 60s        | Single frame detection timeout |
 | `DETECT_FRAME_EXTRACTION_TIMEOUT` | 5m         | Frame extraction timeout |
@@ -86,6 +87,16 @@ The reference form (`${FIRST_SCAN_PERIOD:${application.records-watcher.watch-per
 | `DETECT_MIN_INTERVAL` | 1.0 | Min interval between frames (sec). Validated `0.1..30.0`. |
 | `DETECT_MAX_FRAMES` | 6 | Frames per recording — a cap, not a target. Validated `1..200`. |
 | `DETECT_FRAME_QUALITY` | 85 | Extracted frame JPEG quality. Validated `1..100`. |
+
+### Changed Frames
+
+The cascade asks `DETECT_GOOD_MODEL` only about frames on which `DETECT_DEFAULT_MODEL` found something, so whatever the small model misses is lost — it missed cars on a distant road that the big one sees, and the big model on every frame is too expensive without a strong GPU. So `ChangedFrameDetector` (`core/pipeline/frame/`) compares each frame of a daylight recording with its first frame, and a changed frame goes straight to the good model, with the same `conf` and `imgsz`. The first frame, unchanged frames and night recordings keep the cascade; so does a changed frame whose good-model call failed. Turn it off with `DETECT_CHANGED_FRAMES_ENABLED=false`.
+
+Day is told by the picture, not by the clock: the infrared mode of the cameras gives exactly grey frames (mean `max − min` of the channels ≤ 2). The comparison runs at width ≈640: grey levels with a 3×3 blur, the global brightness shift removed, pixel threshold 22, the top 8 % (camera clock) ignored, 3×3 opening and 7×7 dilation; a frame changed if a region of at least 300 px remains or more than 8 % of the frame changed. The thresholds are constants — they are the ones the effect was measured with.
+
+Measured on a replay of 920 recordings (cameras of this deployment, autumn–winter 2026): 12 more recordings with objects (9 with cars, 2 with people), no new detections on 600 empty ones, about 5–10 % more detection time — in daylight only a few per cent of the non-first frames change. Wind, rain or snowfall in daylight change more frames and cost more. The comparison costs CPU on the analyzer host: about 55 ms per daylight frame and 40 ms per night recording (only the first frame is read) on a Ryzen 7 5800X; an older server CPU takes proportionally longer.
+
+The `Extracted … frames` INFO line names the outcome: `; changed 1/3 -> good model`, `; monochrome, changed-frame check skipped` or `; changed-frame check failed`.
 
 ### Remote Visualization
 

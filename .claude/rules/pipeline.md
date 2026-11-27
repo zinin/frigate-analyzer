@@ -12,6 +12,7 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 |-----------|----------|---------|
 | FrameAnalysisPipeline | `core/pipeline/frame/` | Orchestrates entire lifecycle |
 | FrameExtractorProducer | `core/pipeline/frame/` | Extracts frames via detection servers |
+| ChangedFrameDetector | `core/pipeline/frame/` | Which frames of a daylight recording differ from its first frame |
 | FrameAnalyzerConsumer | `core/pipeline/frame/` | Sends frames to detection servers |
 | RecordingTracker | `core/pipeline/frame/` | Thread-safe state management |
 | RecordingState | `core/pipeline/frame/` | Per-recording state data class |
@@ -31,12 +32,14 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 - Queries DB for unprocessed recordings in batches (configurable)
 - Sends frame extraction requests to detection servers
 - Keeps each frame's `timestamp` from vision-api as `FrameData.offsetSeconds` (seconds from the start of the recording, `toFrameData`) — the only record of when a frame was taken once the list is renumbered; the event storyboard places detections on its timeline with it, and the AI description and the LLM judge time their frames by it
+- Marks the frames that differ from the first one (`ChangedFrameDetector`, on `Dispatchers.Default`) in `FrameTask.changed`; the extraction INFO line says how many
 - Registers recordings with RecordingTracker
 - Configurable idle/error delays between batches
 
 ## FrameAnalyzerConsumer
 
 - Multiple consumers (min-consumers to N based on server capacity)
+- A changed frame goes straight to the good model (`DetectionPostProcessor.processChanged`), the others through the default → good cascade
 - Reads frame files, sends to detection servers via DetectionPostProcessor
 - Tracks completion/failure via RecordingTracker
 - Calls RecordingProcessingFacade when all frames processed

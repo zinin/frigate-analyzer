@@ -153,6 +153,7 @@ All settings use environment variables with sensible defaults. Key variables:
 | `DETECT_DEFAULT_IMG_SIZE` | `2016` | Image size for inference |
 | `DETECT_DEFAULT_MODEL` | `yolo26s.pt` | Fast model for initial scan |
 | `DETECT_GOOD_MODEL` | `yolo26x.pt` | Accurate model for re-check |
+| `DETECT_CHANGED_FRAMES_ENABLED` | `true` | In daylight recordings, send frames that differ from the first frame straight to the accurate model |
 | `DETECTION_FILTER_CLASSES` | `person,car,motorcycle,...` | Allowed object classes (comma-separated) |
 
 ### Pipeline
