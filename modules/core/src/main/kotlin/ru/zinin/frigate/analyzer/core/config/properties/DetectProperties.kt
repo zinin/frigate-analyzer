@@ -31,6 +31,16 @@ data class DetectProperties(
     val visualize: VisualizeConfig = VisualizeConfig(),
     @field:Valid
     val videoVisualize: VideoVisualizeConfig = VideoVisualizeConfig(),
+    @field:Valid
+    val changedFrames: ChangedFramesConfig = ChangedFramesConfig(),
+)
+
+/**
+ * Кадр, отличающийся от первого кадра дневной записи, анализируется сразу [DetectProperties.goodModel],
+ * остальные — каскадом default → good. Пороги сравнения — константы `ChangedFrameDetector`.
+ */
+data class ChangedFramesConfig(
+    val enabled: Boolean = true,
 )
 
 /**
