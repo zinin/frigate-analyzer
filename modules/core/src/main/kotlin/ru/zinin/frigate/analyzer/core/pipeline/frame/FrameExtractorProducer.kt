@@ -142,7 +142,8 @@ class FrameExtractorProducer(
         try {
             val response = extractFramesFromVideo(record)
             val frameDataList = toFrameData(record.id, response.frames)
-            // Декодирование и сравнение картинок — работа для CPU, а не для потоков ввода-вывода.
+            // Декодирование и сравнение картинок — работа для CPU. Производители и так работают на Dispatchers.Default, и
+            // сейчас переключения нет: withContext лишь удержит её вне потоков ввода-вывода при запуске на другом диспетчере.
             val (changes, comparison) =
                 measureTimedValue { withContext(Dispatchers.Default) { changedFrameDetector.detect(frameDataList) } }
             logger.info {
