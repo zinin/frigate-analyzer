@@ -96,7 +96,7 @@ Day is told by the picture, not by the clock: the infrared mode of the cameras g
 
 Measured on a replay of 920 recordings (cameras of this deployment, autumn–winter 2026): 12 more recordings with objects (9 with cars, 2 with people), no new detections on 600 empty ones, about 5–10 % more detection time — in daylight only a few per cent of the non-first frames change. Wind, rain or snowfall in daylight change more frames and cost more. The comparison costs CPU on the analyzer host: about 55 ms per daylight frame and 40 ms per night recording (only the first frame is read) on a Ryzen 7 5800X; an older server CPU takes proportionally longer.
 
-The `Extracted … frames` INFO line names the outcome and how long the comparison took: `; changed 1/3 -> good model (240 ms)`, `; monochrome, changed-frame check skipped (40 ms)` or `; changed-frame check failed (3 ms)`; unreadable frames get one WARN per recording with the first cause. After a rollout, those times show the CPU cost on the host, and the `changed X/Y` counts the extra good-model load.
+The `Extracted … frames` INFO line names the outcome and how long the comparison took: `; changed 1/3 -> good model (240 ms)`, `; monochrome, changed-frame check skipped (40 ms)` or `; changed-frame check failed (3 ms)`; frames that could not be read or compared get one WARN per recording with the first cause. After a rollout, those times show the CPU cost on the host, and `changed X/Y` counts the frames sent straight to the good model — an upper bound on the extra good-model load, since some of them would have reached it through the cascade anyway.
 
 ### Remote Visualization
 

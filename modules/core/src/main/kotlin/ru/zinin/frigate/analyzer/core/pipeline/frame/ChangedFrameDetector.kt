@@ -25,7 +25,7 @@ internal fun unreadableFramesWarning(
     recordId: UUID,
     failures: List<FrameFailure>,
 ): String =
-    "Changed-frame check: could not read frames ${failures.map { it.frameIndex }} of recording $recordId " +
+    "Changed-frame check: could not read or compare frames ${failures.map { it.frameIndex }} of recording $recordId " +
         "(first cause: ${failures.first().cause}); analyzing them as usual"
 
 /** Какие кадры записи отличаются от первого и почему сравнение не делалось, если не делалось. */
@@ -95,7 +95,10 @@ class ChangedFrameDetector(
         val result =
             try {
                 block(frame)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Throwable, а не Exception: Error — OOM на большом кадре, LinkageError в Java2D — вышел бы из
+                // производителя кадров и остановил бы его, а не пропустил бы проверку одного кадра. detect не
+                // suspend, так что отмены здесь не бывает.
                 logger.debug(e) { "Changed-frame check: frame ${frame.frameIndex} of recording ${frame.recordId}" }
                 failed += FrameFailure(frame.frameIndex, "${e.javaClass.simpleName}: ${e.message}")
                 return null
@@ -106,8 +109,10 @@ class ChangedFrameDetector(
 
     private fun read(frame: FrameData): WorkingFrame? = JpegCodec.decode(frame.frameBytes)?.let(::workingFrame)
 
-    /** Уменьшенная копия кадра: яркость с размытием 3×3 и средняя цветность. */
+    /** Уменьшенная копия кадра: яркость с размытием 3×3 и средняя цветность, плюс размер исходного кадра. */
     private class WorkingFrame(
+        val sourceWidth: Int,
+        val sourceHeight: Int,
         val width: Int,
         val height: Int,
         val luma: IntArray,
@@ -125,6 +130,9 @@ class ChangedFrameDetector(
         val height = source.height / factor
         if (width == 0 || height == 0) return null
 
+        // Быстрый путь рассчитан на компактный растр, который выделяют ImageIO.read и asBgr (смещение 0, строка —
+        // width × 3 байт), поэтому картинку из другого источника (например, подкартинку) сначала нужно скопировать:
+        // asBgr копирует только картинку другого типа.
         val data = (source.raster.dataBuffer as DataBufferByte).data
         val blue = IntArray(width * height)
         val green = IntArray(width * height)
@@ -161,7 +169,7 @@ class ChangedFrameDetector(
             if (i / width >= top) spread += maxOf(r, g, b) - minOf(r, g, b)
         }
         val counted = (height - top) * width
-        return WorkingFrame(width, height, blur(luma, width, height), spread.toDouble() / counted)
+        return WorkingFrame(source.width, source.height, width, height, blur(luma, width, height), spread.toDouble() / counted)
     }
 
     private fun asBgr(image: BufferedImage): BufferedImage {
@@ -180,14 +188,16 @@ class ChangedFrameDetector(
         reference: WorkingFrame,
         current: WorkingFrame,
     ): Boolean {
-        if (reference.width != current.width || reference.height != current.height) return false
+        // Кадр другого размера не сравнивается; при равных исходных размерах равны и рабочие.
+        if (reference.sourceWidth != current.sourceWidth || reference.sourceHeight != current.sourceHeight) return false
         val width = current.width
         val height = current.height
+        // Верхняя полоса — часы камеры, они меняются в каждом кадре: она не входит ни в общий сдвиг, ни в маску.
+        val start = (height * TOP_STRIP).toInt() * width
         // Общее изменение яркости (облако, экспозиция) — не изменение сцены.
-        val shift = median(current.luma) - median(reference.luma)
+        val shift = median(current.luma, start) - median(reference.luma, start)
         val mask = BooleanArray(width * height)
-        // Верхняя полоса — часы камеры, они меняются в каждом кадре.
-        for (i in (height * TOP_STRIP).toInt() * width until mask.size) {
+        for (i in start until mask.size) {
             val expected = (reference.luma[i] + shift).coerceIn(0, BYTE_MASK)
             mask[i] = abs(current.luma[i] - expected) > PIXEL_THRESHOLD
         }
@@ -226,13 +236,18 @@ class ChangedFrameDetector(
         return result
     }
 
-    private fun median(values: IntArray): Int {
+    /** Медиана [values] с индекса [from] до конца. */
+    private fun median(
+        values: IntArray,
+        from: Int,
+    ): Int {
         val histogram = IntArray(BYTE_MASK + 1)
-        values.forEach { histogram[it]++ }
+        for (i in from until values.size) histogram[values[i]]++
+        val count = values.size - from
         var seen = 0
         for (value in histogram.indices) {
             seen += histogram[value]
-            if (seen * 2 >= values.size) return value
+            if (seen * 2 >= count) return value
         }
         return BYTE_MASK
     }

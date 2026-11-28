@@ -37,7 +37,7 @@ Frame extraction, object detection, and video annotation are performed by an ext
 
 - **Automatic recording processing** — watches Frigate recording directories, extracts frames on a time grid plus wherever motion appears, runs object detection on each frame
 - **Multi-server load balancing** — distributes detection workload across multiple vision-api-server instances with priority-based scheduling and health monitoring
-- **Two-stage detection** — initial fast scan with a lightweight model, then re-checks detected objects with a higher-accuracy model for validation
+- **Two-stage detection** — initial fast scan with a lightweight model, then re-checks detected objects with a higher-accuracy model for validation; in daylight recordings, a frame that differs from the recording's first frame goes straight to the accurate model, which sees small distant objects the fast one misses (`DETECT_CHANGED_FRAMES_ENABLED`)
 - **Configurable object filtering** — only keep detections for classes you care about (person, car, dog, etc.)
 - **Object tracking** — cross-recording IoU matching suppresses duplicate notifications when the same object lingers across consecutive recordings
 - **Signal-loss detection** — polls the database for last recording per camera and alerts (Telegram) on signal loss / recovery

@@ -94,6 +94,18 @@ class DetectPropertiesBindingTest {
         assertThat(violations.map { it.propertyPath.toString() }).containsExactly("frameExtraction.motionThreshold")
     }
 
+    @Test
+    fun `with nothing set, the changed-frame check is on`() {
+        assertThat(bind().changedFrames.enabled).isTrue()
+    }
+
+    @Test
+    fun `the changed-frame check is turned off by its environment variable`() {
+        val props = bind(env = mapOf("DETECT_CHANGED_FRAMES_ENABLED" to "false"))
+
+        assertThat(props.changedFrames.enabled).isFalse()
+    }
+
     private fun bind(env: Map<String, Any> = emptyMap()): DetectProperties =
         ProductionYamlBinder.bind("application.detect", DetectProperties::class.java, env = env)
 }

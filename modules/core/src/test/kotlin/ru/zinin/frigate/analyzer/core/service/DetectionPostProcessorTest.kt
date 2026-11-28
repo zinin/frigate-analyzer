@@ -19,7 +19,8 @@ import ru.zinin.frigate.analyzer.model.response.ImageSize
 
 /** Изменившийся кадр идёт сразу в good-model; если она не отвечает, кадр проходит обычный каскад. */
 class DetectionPostProcessorTest {
-    private val properties = DetectProperties(defaultModel = "small.pt", goodModel = "good.pt")
+    private val properties =
+        DetectProperties(defaultModel = "small.pt", goodModel = "good.pt", defaultConfidence = 0.45, defaultImgSize = 1280)
 
     // spyk, а не mockk: значения параметров по умолчанию `detectWithRetry` берутся из настоящих полей.
     private val detectService = spyk(DetectService(mockk(), mockk(), properties, mockk(), mockk()))

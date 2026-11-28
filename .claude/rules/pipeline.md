@@ -32,7 +32,7 @@ Coroutine-based producer-consumer pattern using Kotlin Channels.
 - Queries DB for unprocessed recordings in batches (configurable)
 - Sends frame extraction requests to detection servers
 - Keeps each frame's `timestamp` from vision-api as `FrameData.offsetSeconds` (seconds from the start of the recording, `toFrameData`) — the only record of when a frame was taken once the list is renumbered; the event storyboard places detections on its timeline with it, and the AI description and the LLM judge time their frames by it
-- Marks the frames that differ from the first one (`ChangedFrameDetector`, on `Dispatchers.Default`) in `FrameTask.changed`; the extraction INFO line says how many
+- Marks the frames that differ from the first one (`ChangedFrameDetector`, on `Dispatchers.Default`) in `FrameTask.changed`; the extraction INFO line says how many — see "Changed Frames" in `configuration.md`
 - Registers recordings with RecordingTracker
 - Configurable idle/error delays between batches
 

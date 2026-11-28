@@ -1,6 +1,10 @@
 package ru.zinin.frigate.analyzer.core.pipeline.frame
 
+import io.mockk.every
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import ru.zinin.frigate.analyzer.ai.description.core.JpegCodec
 import ru.zinin.frigate.analyzer.core.config.properties.ChangedFramesConfig
@@ -11,6 +15,7 @@ import java.awt.Graphics2D
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.util.UUID
+import javax.imageio.IIOException
 import javax.imageio.ImageIO
 
 /**
@@ -51,8 +56,50 @@ class ChangedFrameDetectorTest {
     }
 
     @Test
+    fun `a weakly coloured daylight frame is still compared`() {
+        // Разброс каналов ровно 4 — нижняя граница дневного кадра; PNG, как и выше, держит его без потерь.
+        val pale = Color(102, 100, 98)
+
+        val result = detector.detect(frames(png(pale), jpeg(pale) { box(400, 400, 160, 80, dark) }))
+
+        assertThat(result.indexes).containsExactly(1)
+        assertThat(result.skip).isNull()
+    }
+
+    @Test
+    fun `a single-channel grey JPEG is monochrome`() {
+        // Такой JPEG читается как TYPE_BYTE_GRAY — единственный путь через перевод кадра в BGR.
+        val night = Color(100, 100, 100)
+        val grey = BufferedImage.TYPE_BYTE_GRAY
+
+        val result =
+            detector.detect(
+                frames(jpeg(night, type = grey), jpeg(night, type = grey) { box(400, 400, 160, 80, dark) }),
+            )
+
+        assertThat(result.skip).isEqualTo(ChangedFrames.Skip.MONOCHROME)
+    }
+
+    @Test
     fun `a speck smaller than the minimal area is not a change`() {
         val result = detector.detect(frames(jpeg(day), jpeg(day) { box(400, 400, 10, 10, dark) }))
+
+        assertThat(result.indexes).isEmpty()
+        assertThat(result.skip).isNull()
+    }
+
+    @Test
+    fun `a region a little above the minimal area is a change`() {
+        // 15×15 на рабочей ширине, после расширения 7×7 — около 520 пикселей: больше 300, но меньше 2000.
+        val result = detector.detect(frames(jpeg(day), jpeg(day) { box(400, 400, 30, 30, dark) }))
+
+        assertThat(result.indexes).containsExactly(1)
+    }
+
+    @Test
+    fun `a thin line is not a change`() {
+        // 2 пикселя на рабочей ширине: после размытия порог превышают два столбца, и открытие 3×3 их убирает.
+        val result = detector.detect(frames(jpeg(day), jpeg(day) { box(640, 100, 4, 800, Color(40, 90, 40)) }))
 
         assertThat(result.indexes).isEmpty()
         assertThat(result.skip).isNull()
@@ -64,6 +111,7 @@ class ChangedFrameDetectorTest {
         val result = detector.detect(frames(jpeg(day), jpeg(Color(130, 180, 130))))
 
         assertThat(result.indexes).isEmpty()
+        assertThat(result.skip).isNull()
     }
 
     @Test
@@ -77,6 +125,29 @@ class ChangedFrameDetectorTest {
             )
 
         assertThat(result.indexes).isEmpty()
+        assertThat(result.skip).isNull()
+    }
+
+    @Test
+    fun `a change in the clock strip does not shift the brightness of the rest`() {
+        // Светлое и тёмное делят кадр почти пополам: пятно в полосе часов перетянуло бы медиану всего кадра
+        // через провал гистограммы, и общий сдвиг яркости пометил бы весь кадр.
+        val light = Color(170, 200, 170)
+        val shade = Color(55, 85, 55)
+
+        val result =
+            detector.detect(
+                frames(
+                    jpeg(light) { box(0, 80, 1280, 464, shade) },
+                    jpeg(light) {
+                        box(0, 80, 1280, 464, shade)
+                        box(128, 8, 768, 56, shade)
+                    },
+                ),
+            )
+
+        assertThat(result.indexes).isEmpty()
+        assertThat(result.skip).isNull()
     }
 
     @Test
@@ -132,6 +203,19 @@ class ChangedFrameDetectorTest {
     }
 
     @Test
+    fun `an error while reading the first frame gives the previous behaviour`() {
+        val first = jpeg(day)
+
+        val result =
+            decodeFailing(first, NoClassDefFoundError("Could not initialize class java.awt.image.BufferedImage")) {
+                detector.detect(frames(first, jpeg(day) { box(400, 400, 160, 80, dark) }))
+            }
+
+        assertThat(result.indexes).isEmpty()
+        assertThat(result.skip).isEqualTo(ChangedFrames.Skip.FAILED)
+    }
+
+    @Test
     fun `an unreadable later frame is not marked and others still are`() {
         val result =
             detector.detect(
@@ -142,9 +226,43 @@ class ChangedFrameDetectorTest {
     }
 
     @Test
+    fun `a later frame the JPEG reader fails on is not marked and others still are`() {
+        val broken = jpegOfEmptyImage()
+        // Reader узнаёт JPEG и бросает, а не возвращает null, как на байтах, которые не узнал никто.
+        assertThatThrownBy { JpegCodec.decode(broken) }.isInstanceOf(IIOException::class.java)
+
+        val result = detector.detect(frames(jpeg(day), broken, jpeg(day) { box(400, 400, 160, 80, dark) }))
+
+        assertThat(result.indexes).containsExactly(2)
+    }
+
+    @Test
+    fun `a later frame that throws an error is not marked and others still are`() {
+        val broken = jpeg(day) { box(100, 600, 160, 80, dark) }
+
+        val result =
+            decodeFailing(broken, UnsatisfiedLinkError("no javajpeg in java.library.path")) {
+                detector.detect(frames(jpeg(day), broken, jpeg(day) { box(400, 400, 160, 80, dark) }))
+            }
+
+        assertThat(result.indexes).containsExactly(2)
+    }
+
+    @Test
     fun `a frame of another size is not compared`() {
         // Меньше рабочей ширины: без проверки размеров массивы сравнились бы молча, со сдвигом строк.
         val other = jpeg(day, width = 480, height = 360) { box(100, 100, 120, 60, dark) }
+
+        val result = detector.detect(frames(jpeg(day), other))
+
+        assertThat(result.indexes).isEmpty()
+        assertThat(result.skip).isNull()
+    }
+
+    @Test
+    fun `a frame of another size is not compared even when it shrinks to the same working size`() {
+        // 1920×1440 уменьшается до тех же 640×480, что и 1280×960, но это другой кадр.
+        val other = jpeg(day, width = 1920, height = 1440) { box(600, 600, 240, 120, dark) }
 
         val result = detector.detect(frames(jpeg(day), other))
 
@@ -167,13 +285,39 @@ class ChangedFrameDetectorTest {
         return bytes.mapIndexed { index, frame -> FrameData(recordId, index, frame) }
     }
 
+    /** [JpegCodec.decode] бросает [error] на этом самом массиве [bytes]; остальные вызовы идут в настоящий кодек. */
+    private fun <T> decodeFailing(
+        bytes: ByteArray,
+        error: Throwable,
+        block: () -> T,
+    ): T {
+        mockkObject(JpegCodec)
+        try {
+            every { JpegCodec.decode(match { it === bytes }) } throws error
+            return block()
+        } finally {
+            unmockkObject(JpegCodec)
+        }
+    }
+
+    /** Настоящий JPEG, в заголовке которого высота кадра 0: reader его узнаёт, но прочитать не может. */
+    private fun jpegOfEmptyImage(): ByteArray {
+        val bytes = jpeg(day)
+        val sof = (0 until bytes.size - 1).first { bytes[it] == 0xFF.toByte() && bytes[it + 1] == 0xC0.toByte() }
+        // После маркера SOF0: длина (2 байта), точность (1), высота (2).
+        bytes[sof + 5] = 0
+        bytes[sof + 6] = 0
+        return bytes
+    }
+
     private fun jpeg(
         background: Color,
         width: Int = 1280,
         height: Int = 960,
+        type: Int = BufferedImage.TYPE_INT_RGB,
         draw: Graphics2D.() -> Unit = {},
     ): ByteArray {
-        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+        val image = BufferedImage(width, height, type)
         val graphics = image.createGraphics()
         try {
             graphics.color = background
