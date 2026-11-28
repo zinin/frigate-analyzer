@@ -15,6 +15,33 @@ class DetectionPostProcessor(
     private val detectionFilterService: DetectionFilterService,
     private val detectProperties: DetectProperties,
 ) {
+    /**
+     * Кадр, отличающийся от первого кадра записи: сразу good-model, без малой, которая пропускает
+     * мелкие далёкие объекты. Если good-model не отвечает, кадр получает отфильтрованный результат малой
+     * модели — как и в каскаде, когда не удалась перепроверка, — без второго обращения к только что
+     * отказавшей модели; кадр не теряется.
+     */
+    suspend fun processChanged(
+        bytes: ByteArray,
+        frameIndex: Int,
+        consumerId: Int,
+    ): DetectResponse {
+        val goodModel = detectProperties.goodModel
+        logger.debug { "Consumer #$consumerId: frame $frameIndex changed, analyzing with $goodModel" }
+
+        return try {
+            detectionFilterService.filterDetections(detectService.detectWithRetry(bytes = bytes, model = goodModel))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) {
+                "Consumer #$consumerId: $goodModel failed for changed frame $frameIndex; " +
+                    "falling back to ${detectProperties.defaultModel}"
+            }
+            detectionFilterService.filterDetections(detectService.detectWithRetry(bytes))
+        }
+    }
+
     suspend fun process(
         bytes: ByteArray,
         initialResponse: DetectResponse,

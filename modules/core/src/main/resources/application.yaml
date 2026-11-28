@@ -239,6 +239,10 @@ application:
       min-interval: ${DETECT_MIN_INTERVAL:1.0}
       max-frames: ${DETECT_MAX_FRAMES:6}
       quality: ${DETECT_FRAME_QUALITY:85}
+    # Кадр, отличающийся от первого кадра дневной (цветной) записи, анализируется сразу good-model:
+    # малая модель пропускает мелкие далёкие объекты. Ночные (серые) записи и первые кадры — как обычно.
+    changed-frames:
+      enabled: ${DETECT_CHANGED_FRAMES_ENABLED:true}
     visualize:
       max-det: ${DETECT_MAX_DET:100}
       line-width: ${DETECT_LINE_WIDTH:2}

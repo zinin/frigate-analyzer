@@ -22,6 +22,7 @@ import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.util.Base64
 import java.util.UUID
+import kotlin.time.measureTimedValue
 
 private val logger = KotlinLogging.logger {}
 
@@ -56,6 +57,23 @@ internal fun toFrameData(
     }
 }
 
+/**
+ * Хвост той же строки про сравнение с первым кадром: сколько кадров из `total - 1` уйдут сразу в
+ * good-model или почему сравнения не было, и сколько оно заняло: по этому после выката видно, сколько
+ * режим стоит по GPU и CPU.
+ */
+internal fun changedFramesSuffix(
+    changes: ChangedFrames,
+    total: Int,
+    millis: Long,
+): String =
+    when (changes.skip) {
+        null -> "; changed ${changes.indexes.size}/${total - 1} -> good model ($millis ms)"
+        ChangedFrames.Skip.MONOCHROME -> "; monochrome, changed-frame check skipped ($millis ms)"
+        ChangedFrames.Skip.FAILED -> "; changed-frame check failed ($millis ms)"
+        ChangedFrames.Skip.DISABLED, ChangedFrames.Skip.NOTHING_TO_COMPARE -> ""
+    }
+
 @Component
 class FrameExtractorProducer(
     private val detectService: DetectService,
@@ -63,6 +81,7 @@ class FrameExtractorProducer(
     private val recordingTracker: RecordingTracker,
     private val pipelineProperties: PipelineProperties,
     private val detectProperties: DetectProperties,
+    private val changedFrameDetector: ChangedFrameDetector,
 ) {
     /**
      * Main producer loop. Extracts frames from video and sends them to the channel.
@@ -122,9 +141,15 @@ class FrameExtractorProducer(
 
         try {
             val response = extractFramesFromVideo(record)
+            val frameDataList = toFrameData(record.id, response.frames)
+            // Декодирование и сравнение картинок — работа для CPU. Производители и так работают на Dispatchers.Default, и
+            // сейчас переключения нет: withContext лишь удержит её вне потоков ввода-вывода при запуске на другом диспетчере.
+            val (changes, comparison) =
+                measureTimedValue { withContext(Dispatchers.Default) { changedFrameDetector.detect(frameDataList) } }
             logger.info {
                 "Extracted ${response.frames.size} frames for recording ${record.id}" +
-                    frameReasonSuffix(response.frames)
+                    frameReasonSuffix(response.frames) +
+                    changedFramesSuffix(changes, frameDataList.size, comparison.inWholeMilliseconds)
             }
 
             // Still reachable although the server always returns frame 0: the zero-byte file path
@@ -137,12 +162,17 @@ class FrameExtractorProducer(
                 return
             }
 
-            val frameDataList = toFrameData(record.id, response.frames)
-
             recordingTracker.registerRecording(record.id, frameDataList)
 
             for (frameData in frameDataList) {
-                channel.send(FrameTask(frameData.recordId, frameData.frameIndex, frameData.frameBytes))
+                channel.send(
+                    FrameTask(
+                        frameData.recordId,
+                        frameData.frameIndex,
+                        frameData.frameBytes,
+                        changed = frameData.frameIndex in changes.indexes,
+                    ),
+                )
             }
 
             logger.debug { "Sent ${frameDataList.size} frame tasks for recording ${record.id}" }

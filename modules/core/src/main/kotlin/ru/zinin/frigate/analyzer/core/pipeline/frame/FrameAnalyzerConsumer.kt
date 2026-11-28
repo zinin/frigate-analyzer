@@ -9,6 +9,7 @@ import ru.zinin.frigate.analyzer.core.service.DetectService
 import ru.zinin.frigate.analyzer.core.service.DetectionPostProcessor
 import ru.zinin.frigate.analyzer.model.exception.DetectTimeoutException
 import ru.zinin.frigate.analyzer.model.request.SaveProcessingResultRequest
+import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import java.util.UUID
 
 private val logger = KotlinLogging.logger {}
@@ -69,20 +70,12 @@ class FrameAnalyzerConsumer(
     ): Boolean {
         logger.debug { "Consumer #$consumerId processing frame ${task.frameIndex}" }
 
-        // Perform detection (retry is built-in)
-        val initialResponse = detectService.detectWithRetry(task.frameBytes)
-
-        logger.debug {
-            "Consumer #$consumerId: Detected ${initialResponse.detections.size} objects on model ${initialResponse.model}"
-        }
-
         val finalResponse =
-            detectionPostProcessor.process(
-                bytes = task.frameBytes,
-                initialResponse = initialResponse,
-                frameIndex = task.frameIndex,
-                consumerId = consumerId,
-            )
+            if (task.changed) {
+                detectionPostProcessor.processChanged(task.frameBytes, task.frameIndex, consumerId)
+            } else {
+                detectWithCascade(task, consumerId)
+            }
 
         logger.debug {
             "Consumer #$consumerId: Detected ${finalResponse.detections.size} objects (final)"
@@ -90,6 +83,26 @@ class FrameAnalyzerConsumer(
 
         // Mark as successfully processed
         return recordingTracker.markCompleted(task.recordId, task.frameIndex, finalResponse)
+    }
+
+    /** Малая модель на кадре, и только если она что-то нашла — перепроверка большой. */
+    private suspend fun detectWithCascade(
+        task: FrameTask,
+        consumerId: Int,
+    ): DetectResponse {
+        // Perform detection (retry is built-in)
+        val initialResponse = detectService.detectWithRetry(task.frameBytes)
+
+        logger.debug {
+            "Consumer #$consumerId: Detected ${initialResponse.detections.size} objects on model ${initialResponse.model}"
+        }
+
+        return detectionPostProcessor.process(
+            bytes = task.frameBytes,
+            initialResponse = initialResponse,
+            frameIndex = task.frameIndex,
+            consumerId = consumerId,
+        )
     }
 
     private suspend fun finalizeRecording(recordId: UUID) {

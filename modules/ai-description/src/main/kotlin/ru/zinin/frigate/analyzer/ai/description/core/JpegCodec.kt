@@ -14,8 +14,8 @@ import javax.imageio.stream.MemoryCacheImageOutputStream
  * Чтение и запись JPEG в памяти. Потоки ImageIO по умолчанию (`ImageIO.getUseCache`) кэшируются во
  * временном файле в `java.io.tmpdir` — по файлу на каждое чтение и каждую запись, а на отсутствующем,
  * read-only или переполненном каталоге ImageIO бросает. Картинки здесь — сотни килобайт, и буфер в памяти
- * почти ничего не стоит. Общий для [FrameDownscaler] и сборщика раскадровки в `core`; качество каждый
- * передаёт своё.
+ * почти ничего не стоит. Общий для [FrameDownscaler], сборщика раскадровки в `core` и `ChangedFrameDetector`
+ * (пайплайн детекции в `core`); качество каждый передаёт своё.
  */
 object JpegCodec {
     /**

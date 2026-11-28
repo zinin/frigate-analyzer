@@ -6,6 +6,8 @@ data class FrameTask(
     val recordId: UUID,
     val frameIndex: Int,
     val frameBytes: ByteArray,
+    /** Кадр отличается от первого кадра дневной записи — анализируется сразу good-model. */
+    val changed: Boolean = false,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -15,5 +17,5 @@ data class FrameTask(
 
     override fun hashCode(): Int = 31 * recordId.hashCode() + frameIndex
 
-    override fun toString(): String = "FrameTask(recordId=$recordId, frameIndex=$frameIndex, size=${frameBytes.size})"
+    override fun toString(): String = "FrameTask(recordId=$recordId, frameIndex=$frameIndex, size=${frameBytes.size}, changed=$changed)"
 }
