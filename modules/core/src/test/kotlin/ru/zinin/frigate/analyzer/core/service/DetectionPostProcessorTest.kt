@@ -45,7 +45,7 @@ class DetectionPostProcessorTest {
             assertThat(result.model).isEqualTo("good.pt")
             assertThat(result.detections.map { it.className }).containsExactly("car")
             coVerify(exactly = 1) { detectService.detectWithRetry(any(), any(), any(), any(), any()) }
-            // Те же conf и imgsz, что и всегда: иначе параллельные вызовы vision-api подменят их друг другу.
+            // Те же conf и imgsz, что и в каскаде: режим меняет только модель.
             coVerify {
                 detectService.detectWithRetry(
                     bytes,
