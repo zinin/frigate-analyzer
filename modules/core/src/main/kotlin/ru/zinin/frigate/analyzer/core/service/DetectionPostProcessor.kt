@@ -17,7 +17,9 @@ class DetectionPostProcessor(
 ) {
     /**
      * Кадр, отличающийся от первого кадра записи: сразу good-model, без малой, которая пропускает
-     * мелкие далёкие объекты. Если good-model не отвечает, кадр проходит обычный каскад, а не теряется.
+     * мелкие далёкие объекты. Если good-model не отвечает, кадр получает отфильтрованный результат малой
+     * модели — как и в каскаде, когда не удалась перепроверка, — без второго обращения к только что
+     * отказавшей модели; кадр не теряется.
      */
     suspend fun processChanged(
         bytes: ByteArray,
@@ -36,7 +38,7 @@ class DetectionPostProcessor(
                 "Consumer #$consumerId: $goodModel failed for changed frame $frameIndex; " +
                     "falling back to ${detectProperties.defaultModel}"
             }
-            process(bytes, detectService.detectWithRetry(bytes), frameIndex, consumerId)
+            detectionFilterService.filterDetections(detectService.detectWithRetry(bytes))
         }
     }
 

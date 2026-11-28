@@ -17,7 +17,7 @@ import ru.zinin.frigate.analyzer.model.response.DetectResponse
 import ru.zinin.frigate.analyzer.model.response.Detection
 import ru.zinin.frigate.analyzer.model.response.ImageSize
 
-/** Изменившийся кадр идёт сразу в good-model; если она не отвечает, кадр проходит обычный каскад. */
+/** Изменившийся кадр идёт сразу в good-model; если она не отвечает, кадр получает результат малой модели без перепроверки. */
 class DetectionPostProcessorTest {
     private val properties =
         DetectProperties(defaultModel = "small.pt", goodModel = "good.pt", defaultConfidence = 0.45, defaultImgSize = 1280)
@@ -58,23 +58,24 @@ class DetectionPostProcessorTest {
         }
 
     @Test
-    fun `a good model timeout falls back to the cascade`() =
+    fun `a good model timeout falls back to the default model without a re-check`() =
         runTest {
             coEvery { detectService.detectWithRetry(any(), any(), any(), "good.pt", any()) } throws
-                DetectTimeoutException("slow") andThen response("good.pt", "car")
+                DetectTimeoutException("slow")
             coEvery { detectService.detectWithRetry(any(), any(), any(), "small.pt", any()) } returns
                 response("small.pt", "person")
 
             val result = processor.processChanged(bytes, frameIndex = 1, consumerId = 0)
 
-            // Каскад: малая модель нашла человека, перепроверка good-model (уже отвечающей) — машину.
-            assertThat(result.detections.map { it.className }).containsExactly("car")
+            // Перепроверка ждала бы ещё один полный таймаут ту же good-model, которая только что не ответила.
+            assertThat(result.model).isEqualTo("small.pt")
+            assertThat(result.detections.map { it.className }).containsExactly("person")
+            coVerify(exactly = 1) { detectService.detectWithRetry(any(), any(), any(), "good.pt", any()) }
             coVerify(exactly = 1) { detectService.detectWithRetry(any(), any(), any(), "small.pt", any()) }
-            coVerify(exactly = 2) { detectService.detectWithRetry(any(), any(), any(), "good.pt", any()) }
         }
 
     @Test
-    fun `a good model failure falls back to the cascade`() =
+    fun `a good model failure falls back to the default model`() =
         runTest {
             coEvery { detectService.detectWithRetry(any(), any(), any(), "good.pt", any()) } throws
                 IllegalStateException("no server")
@@ -86,6 +87,7 @@ class DetectionPostProcessorTest {
             assertThat(result.model).isEqualTo("small.pt")
             assertThat(result.detections).isEmpty()
             coVerify(exactly = 1) { detectService.detectWithRetry(any(), any(), any(), "good.pt", any()) }
+            coVerify(exactly = 1) { detectService.detectWithRetry(any(), any(), any(), "small.pt", any()) }
             coVerify {
                 detectService.detectWithRetry(
                     bytes,

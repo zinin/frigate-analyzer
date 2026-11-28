@@ -47,7 +47,7 @@ Each server has configurable capacity per request type.
 - Retries on `DetectTimeoutException`
 - Catches `CancellationException` for graceful shutdown
 - `process` — the cascade: the default model's result, re-checked by the good model only when it found something
-- `processChanged` — a frame that differs from the first frame of a daylight recording goes straight to the good model; if that fails, it runs the cascade instead (see "Changed Frames" in `configuration.md`)
+- `processChanged` — a frame that differs from the first frame of a daylight recording goes straight to the good model; if that fails, it takes the default model's filtered result — the cascade's own outcome when its re-check fails — without asking the good model again (see "Changed Frames" in `configuration.md`)
 
 ## Visualization Services
 
